@@ -649,22 +649,33 @@ async function runCommandInFrame(
   const wrapped = `${cmd}; ec=$?; echo ${sentinelId}=$ec`;
   emit(nowEvent({ type: 'log', stream: 'info', line: `$ ${cmd}` }));
 
-  // Re-click the xterm viewport so xterm.js refocuses its helper textarea
-  // (clicking 'body' or programmatic .focus() is NOT enough on this Cockpit
-  // build — xterm's input plumbing keys off the .xterm-screen click).
-  await frame.click('.xterm-screen', { timeout: 2_000 }).catch(() => null);
-  // page.keyboard.type generates real keypress events — what xterm reliably
-  // consumes. insertText fires only an 'input' event, which some xterm
-  // builds drop on the floor (file-lister hit exactly this bug). delay:4 is
-  // fast enough that the typing isn't visible char-by-char in screenshots.
-  await page.keyboard.type(wrapped, { delay: 4 });
-  await page.keyboard.press('Enter');
+  // Per-step tracing so any future hang shows the exact failing call in
+  // the live log. Each operation is wrapped with a hard timeout so a hung
+  // browser context can't pin the polling loop behind it.
+  const trace = (msg: string) => emit(nowEvent({ type: 'log', stream: 'info', line: `[trace:${step}] ${msg}` }));
+  const withTimeout = async <T>(label: string, p: Promise<T>, ms: number): Promise<T | undefined> => {
+    return await Promise.race<T | undefined>([
+      p,
+      new Promise<undefined>((resolve) => setTimeout(() => {
+        emit(nowEvent({ type: 'log', stream: 'error', line: `[trace:${step}] ${label} timed out after ${ms}ms — possible Chromium hang` }));
+        resolve(undefined);
+      }, ms)),
+    ]);
+  };
 
-  // Let xterm settle (full command echo + first prompt redraw) before we
-  // baseline our diff cursor. Anything before this point is the typed
-  // command + prompt, not output we want to stream.
+  trace('focus xterm viewport');
+  await withTimeout('frame.click(.xterm-screen)', frame.click('.xterm-screen', { timeout: 2_000 }).catch(() => null), 5_000);
+
+  trace(`typing ${wrapped.length} chars`);
+  await withTimeout('keyboard.type', page.keyboard.type(wrapped, { delay: 4 }), 30_000);
+
+  trace('press Enter');
+  await withTimeout('keyboard.press(Enter)', page.keyboard.press('Enter'), 5_000);
+
+  trace('settle 600ms then baseline');
   await new Promise((r) => setTimeout(r, 600));
-  state.emitted = trimTrailingBlanks(await readTerminalIn(frame));
+  const baseline = await withTimeout('readTerminalIn(baseline)', readTerminalIn(frame), 5_000);
+  state.emitted = trimTrailingBlanks(baseline ?? '');
 
   const t0 = Date.now();
   const pollIntervalMs = 400;
