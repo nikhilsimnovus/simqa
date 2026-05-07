@@ -171,32 +171,52 @@ export async function listVmFiles(inv: Inventory, req: ListVmFilesRequest): Prom
     await frame.click('body').catch(() => null);
     await new Promise((r) => setTimeout(r, 600));
 
-    // Build the find. We use printf so we get a stable parse format regardless
-    // of locale: PATH<TAB>SIZE<TAB>MTIME(epoch)
+    // Build the find. We use a delimiter (':::') instead of a tab character
+    // because xterm.js renders tabs as visual spaces in its DOM — by the
+    // time we read .innerText back, the tab columns are gone. A 3-char
+    // printable delimiter survives xterm rendering reliably and is
+    // virtually never present in real filesystem paths.
     //
-    // -prune nonexistent dirs gracefully (so missing /home/simnovus on a
-    // fresh VM doesn't blow the whole list up).
+    // We let `find` only print what we want; sorting happens client-side
+    // (avoids any bash-only `$'\t'` syntax in `sort -t`).
+    const SEP = ':::';
     const dirArgs = dirs.map(shellQuote).join(' ');
     const cmd =
-      `find ${dirArgs} -maxdepth ${maxDepth} -type f \\( -iname '*.tar.gz' -o -iname '*.tgz' \\) -printf '%p\\t%s\\t%T@\\n' 2>/dev/null | sort -t $'\\t' -k3,3nr`;
-    const output = await runCommandCapture(page, frame, cmd, 15_000);
+      `find ${dirArgs} -maxdepth ${maxDepth} -type f \\( -iname '*.tar.gz' -o -iname '*.tgz' \\) ` +
+      `-printf '%p${SEP}%s${SEP}%T@\\n' 2>/dev/null`;
+    const output = await runCommandCapture(page, frame, cmd, 20_000);
 
-    // Extract just the lines that look like our printf format (PATH\tSIZE\tEPOCH).
-    const tabRe = /^(\S.*?)\t(\d+)\t(\d+(?:\.\d+)?)$/;
+    // Match lines that look like our printf format. Anchoring to the start
+    // of the path (`/`) keeps stray prompt / banner text out, and using `m`
+    // flag means we can scan the whole captured screen at once.
+    const re = new RegExp('(^|\\n)(/[^\\n]+?)' + SEP + '(\\d+)' + SEP + '(\\d+(?:\\.\\d+)?)(?=\\n|$)', 'g');
     const seen = new Set<string>();
     const files: VmFile[] = [];
-    for (const ln of output.split(/\r?\n/)) {
-      const m = ln.match(tabRe);
-      if (!m) continue;
-      const pathStr = m[1];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(output)) !== null) {
+      const pathStr = m[2].trim();
       if (seen.has(pathStr)) continue;
       seen.add(pathStr);
       files.push({
         path: pathStr,
-        size: Number(m[2]),
-        mtime: new Date(Number(m[3]) * 1000).toISOString(),
+        size: Number(m[3]),
+        mtime: new Date(Number(m[4]) * 1000).toISOString(),
       });
     }
+    // Newest first.
+    files.sort((a, b) => (b.mtime || '').localeCompare(a.mtime || ''));
+
+    if (files.length === 0) {
+      // Surface the raw screen so the user (and we) can see what find
+      // actually returned. Trimmed to keep it manageable.
+      const screenSnippet = output
+        .split(/\r?\n/)
+        .filter((s) => s.trim().length > 0)
+        .slice(-30)
+        .join('\n');
+      return { ok: true, files, searchedDirs: dirs, error: `find returned no .tar.gz matches. Last 30 non-empty lines from terminal:\n${screenSnippet}` };
+    }
+
     return { ok: true, files, searchedDirs: dirs };
   } catch (e: any) {
     return { ok: false, files: [], searchedDirs: dirs, error: e?.message ?? String(e) };

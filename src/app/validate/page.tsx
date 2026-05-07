@@ -391,6 +391,10 @@ export default function ValidatePage() {
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
       setVmFiles(j.files ?? []);
+      // The backend may also surface a diagnostic 'error' string on a
+      // successful empty result (e.g. raw terminal output) — show it so the
+      // user can see what the VM actually returned.
+      if ((j.files?.length ?? 0) === 0 && j.error) setBrowseErr(j.error);
     } catch (e: any) {
       setBrowseErr(e?.message ?? String(e));
     } finally {
@@ -752,7 +756,10 @@ export default function ValidatePage() {
                         </div>
 
                         {browseErr ? (
-                          <div className="text-[11px] text-red-600 flex items-start gap-1.5"><XCircle className="h-3 w-3 mt-0.5" /> {browseErr}</div>
+                          <details className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900">
+                            <summary className="cursor-pointer flex items-start gap-1.5"><AlertTriangle className="h-3 w-3 mt-0.5" /> Diagnostic from VM (click to expand)</summary>
+                            <pre className="mt-2 whitespace-pre-wrap font-mono text-[10.5px] text-slate-700 max-h-48 overflow-auto">{browseErr}</pre>
+                          </details>
                         ) : null}
 
                         {vmFiles ? (
