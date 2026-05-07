@@ -47,6 +47,9 @@ export interface BuildInstallRequest {
   skip?: { app_server?: boolean; app_manager?: boolean; simnovator?: boolean; ue?: boolean; oru?: boolean };
   restore?: boolean;
   extraArgs?: string;
+  /** When true, launch Chromium in HEADED mode so the user can watch the
+   *  Cockpit Terminal type the install commands. Defaults to headless. */
+  headed?: boolean;
 }
 
 export interface BuildInstallContext {
@@ -114,8 +117,15 @@ function cockpitCreds(target: InventorySystem): { user: string; password: string
 }
 
 /** Try chrome → edge → bundled chromium → firefox until one launches. */
-async function launchBrowser(): Promise<{ browser: Browser; label: string }> {
-  const baseOpts = { headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] };
+async function launchBrowser(headed = false): Promise<{ browser: Browser; label: string }> {
+  // In headed mode the user wants to *see* the install happen, so we slow
+  // each Playwright action down a touch (slowMo) — otherwise commands get
+  // typed too fast to watch. Headless stays at full speed.
+  const baseOpts = {
+    headless: !headed,
+    slowMo: headed ? 80 : 0,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  };
   const attempts: Array<{ label: string; opts: any; launcher: typeof chromium | typeof firefox }> = [
     { label: 'chrome (system)',    opts: { ...baseOpts, channel: 'chrome' }, launcher: chromium },
     { label: 'msedge (system)',    opts: { ...baseOpts, channel: 'msedge' }, launcher: chromium },
@@ -265,6 +275,19 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     return { ok: false };
   }
 
+  // The Simnovator installer requires --ue and --app. Refuse to launch a
+  // browser at all if either of those is missing in the request — the install
+  // would only fail downstream with "FAILED : Please provide UE/App credentials".
+  const haveFlag = (flag: '--ue' | '--app') => req.hosts.some((h) => h.flag === flag && h.ip?.trim());
+  const missing: string[] = [];
+  if (!haveFlag('--ue'))  missing.push('--ue');
+  if (!haveFlag('--app')) missing.push('--app');
+  if (missing.length > 0) {
+    emit(nowEvent({ type: 'log', stream: 'error', line: `missing required flag(s): ${missing.join(', ')}. Add the corresponding system in Inventory or type the IP into the host card on the Build Check page.` }));
+    emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
+    return { ok: false };
+  }
+
   const creds = cockpitCreds(target);
   const cockpitUrl = `https://${target.host}:${creds.port}`;
   const { fileName, dirName } = nameFromUrl(req.buildUrl);
@@ -292,9 +315,9 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     // ── Launch ──────────────────────────────────────────
     const tLaunch = Date.now();
     emit(nowEvent({ type: 'step', step: 'launch', status: 'start' }));
-    const { browser: b, label } = await launchBrowser();
+    const { browser: b, label } = await launchBrowser(!!req.headed);
     browser = b;
-    emit(nowEvent({ type: 'log', stream: 'info', line: `using browser: ${label}` }));
+    emit(nowEvent({ type: 'log', stream: 'info', line: `using browser: ${label} (${req.headed ? 'headed — visible window' : 'headless'})` }));
     const ctxBrowser = await browser.newContext({
       ignoreHTTPSErrors: true,
       viewport: { width: 1440, height: 900 },

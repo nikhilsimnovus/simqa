@@ -233,6 +233,9 @@ export default function ValidatePage() {
   });
   const [installDone,    setInstallDone]    = useState<{ ok: boolean; durationMs: number } | null>(null);
   const [showManualFallback, setShowManualFallback] = useState(false);
+  /** When true, ask the backend to launch Chromium in HEADED mode so the
+   *  user can watch the install happen in a real browser window. */
+  const [headedMode, setHeadedMode] = useState(false);
 
   useEffect(() => {
     // Inventory is fast (local file read) — fetch + render its result regardless
@@ -275,6 +278,15 @@ export default function ValidatePage() {
     }
     return out;
   }, [systems, hostIp]);
+
+  // Required host flags that the user has enabled but for which we still
+  // can't resolve an IP. The install line will be malformed without these.
+  const missingRequired: string[] = useMemo(() => {
+    return HOST_FLAGS
+      .filter((f) => f.required && hostEnabled[f.key])
+      .filter((f) => !resolvedHostIp[f.key])
+      .map((f) => f.flag);
+  }, [hostEnabled, resolvedHostIp]);
 
   // Build the full install plan as discrete commands.
   const plan = useMemo(() => {
@@ -355,6 +367,20 @@ export default function ValidatePage() {
       setInstallErr('Enter a Build URL first.');
       return { ok: false, buildId: null };
     }
+    // Validate required host flags resolve to an IP. The Simnovator install
+    // script refuses to proceed without --ue and --app, so we refuse to
+    // generate an obviously-broken command.
+    const missing: string[] = [];
+    for (const f of HOST_FLAGS) {
+      if (!f.required) continue;
+      if (!hostEnabled[f.key]) continue;
+      const ip = ((hostIp[f.key] || '').trim() || resolvedHostIp[f.key] || '').trim();
+      if (!ip) missing.push(f.flag);
+    }
+    if (missing.length > 0) {
+      setInstallErr(`Missing required IP for ${missing.join(', ')}. Add an ${missing.includes('--app') ? 'APPSERVER' : 'system'} in Inventory or type the IP into the host card above.`);
+      return { ok: false, buildId: null };
+    }
     setInstallErr(null);
     setInstallBusy(true);
     setInstallEvents([]);
@@ -385,6 +411,7 @@ export default function ValidatePage() {
       },
       restore,
       extraArgs: extraArgs.trim() || undefined,
+      headed: headedMode,
     };
 
     let buildId: string | null = null;
@@ -544,10 +571,18 @@ export default function ValidatePage() {
             <Card>
               <CardHeader className="flex items-center justify-between">
                 <CardTitle>Cockpit install plan</CardTitle>
-                <label className="flex items-center gap-2 text-xs text-slate-600">
-                  <input type="checkbox" checked={includeBuild} onChange={(e) => setIncludeBuild(e.target.checked)} />
-                  I want to install a new build
-                </label>
+                <div className="flex items-center gap-4">
+                  {includeBuild ? (
+                    <label className="flex items-center gap-2 text-xs text-slate-600" title="Run with a visible browser window so you can watch the Cockpit Terminal type the install commands. Slower; uses display.">
+                      <input type="checkbox" checked={headedMode} onChange={(e) => setHeadedMode(e.target.checked)} />
+                      Show browser window (live demo)
+                    </label>
+                  ) : null}
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    <input type="checkbox" checked={includeBuild} onChange={(e) => setIncludeBuild(e.target.checked)} />
+                    I want to install a new build
+                  </label>
+                </div>
               </CardHeader>
               {!includeBuild ? (
                 <CardBody>
@@ -723,6 +758,18 @@ export default function ValidatePage() {
                   <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-2">
                     <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Generated install command</div>
                     <CommandBlock command={plan.install} />
+                    {missingRequired.length > 0 ? (
+                      <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-[12px] text-red-700 leading-relaxed flex gap-2">
+                        <AlertTriangle className="h-4 w-4 mt-0.5 flex-none" />
+                        <div>
+                          <div className="font-semibold">Required flag{missingRequired.length > 1 ? 's' : ''} missing: {missingRequired.join(', ')}</div>
+                          <div className="mt-0.5">
+                            The Simnovator installer will refuse to run without {missingRequired.length > 1 ? 'these' : 'this'}.{' '}
+                            {missingRequired.includes('--app') ? <>Add an <span className="font-semibold">APPSERVER</span> system in <Link href="/inventory" className="underline hover:no-underline">Inventory</Link>, or type the IP into the App Server card above.</> : null}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="text-[11px] text-slate-500">
                       This is the exact line the tool will run on <span className="font-mono">{targetSys?.host}</span> after fetching + extracting the build. Click <span className="font-medium">Install + Validate</span> at the top to do it automatically.
                     </div>
