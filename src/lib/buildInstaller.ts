@@ -493,16 +493,24 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     } else {
       // Local-file mode — verify the file actually exists on the VM before
       // we try to extract it. Cheap sanity check; same step pill so the UI
-      // doesn't get confused.
+      // doesn't get confused. We use the simplest possible test (`ls`) so
+      // the wrapped command stays short and there's no compound logic for
+      // the shell to choke on.
       emit(nowEvent({ type: 'log', stream: 'info', line: `(skipping preflight + fetch — using existing file ${dir}/${fileName})` }));
-      const checkCmd = `test -r ${shellQuote(`${dir}/${fileName}`)} && echo OK_FILE_EXISTS || (echo "MISSING: ${dir}/${fileName} not readable on VM"; exit 1)`;
-      const ok = await runCommandInFrame(page, frame, checkCmd, 'fetch', emit, state, 15_000);
+      const tCheck = Date.now();
+      emit(nowEvent({ type: 'step', step: 'fetch', status: 'start', detail: `checking ${dir}/${fileName}` }));
+      const checkCmd = `ls -la ${shellQuote(`${dir}/${fileName}`)}`;
+      const ok = await runCommandInFrame(page, frame, checkCmd, 'fetch', emit, state, 20_000);
       if (!ok.ok) {
+        emit(nowEvent({ type: 'log', stream: 'error', line: `Local file not found / not readable: ${dir}/${fileName}` }));
+        emit(nowEvent({ type: 'log', stream: 'info',  line: `Hint: confirm via Cockpit Files at https://${target.host}:${creds.port}/files#/?path=${encodeURIComponent(dir)} that the file exists at the expected path.` }));
         await snap(page, 'fetch' as InstallStepName, 'missing');
-        emit(nowEvent({ type: 'step', step: 'fetch', status: 'fail', detail: `localFile not readable on VM: ${dir}/${fileName}`, durationMs: 0 }));
+        emit(nowEvent({ type: 'step', step: 'fetch', status: 'fail', detail: `local file not readable: ${dir}/${fileName}`, durationMs: Date.now() - tCheck }));
         emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
         return { ok: false };
       }
+      await snap(page, 'fetch', 'verified');
+      emit(nowEvent({ type: 'step', step: 'fetch', status: 'ok', detail: 'file exists, ready to extract', durationMs: Date.now() - tCheck }));
     }
 
     // ── Extract ────────────────────────────────────────
@@ -657,6 +665,7 @@ async function runCommandInFrame(
   const pollIntervalMs = 400;
   let exitCode = -1;
   let ok = false;
+  let lastHeartbeat = Date.now();
   while (Date.now() - t0 < timeoutMs) {
     await new Promise((r) => setTimeout(r, pollIntervalMs));
     const rawScreen = await readTerminalIn(frame);
@@ -678,6 +687,7 @@ async function runCommandInFrame(
       for (const ln of fresh.split(/\r?\n/)) {
         if (!isNoiseLine(ln) && !ln.includes(sentinelId)) {
           emit(nowEvent({ type: 'log', stream: 'stdout', line: ln }));
+          lastHeartbeat = Date.now();
         }
       }
       state.emitted = screen;
@@ -688,6 +698,15 @@ async function runCommandInFrame(
       exitCode = parseInt(match[1], 10);
       ok = exitCode === 0;
       break;
+    }
+
+    // Emit a "still waiting" heartbeat every 5s with no fresh stdout, so
+    // the user can see we haven't deadlocked. Otherwise a long-running
+    // command (or an unresponsive xterm) looks identical to a hang.
+    if (Date.now() - lastHeartbeat > 5_000) {
+      const elapsed = Math.round((Date.now() - t0) / 1000);
+      emit(nowEvent({ type: 'log', stream: 'info', line: `[${step}] still polling… ${elapsed}s elapsed, no new output yet` }));
+      lastHeartbeat = Date.now();
     }
   }
   if (exitCode === -1) {
