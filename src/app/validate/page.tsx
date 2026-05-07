@@ -42,18 +42,68 @@ const ALL_CHECKS: Array<{ id: string; label: string; default: boolean }> = [
   { id: 'sample-execution',        label: 'Run a sample testcase live',    default: false },
 ];
 
-// Optional flags for `./install`. The `--ue` and `--app` ones are always
-// shown (they're in the basic install command). The rest are toggleable
-// because most labs only have a subset.
-interface InstallFlag { key: string; flag: string; types: string[]; label: string; default: boolean; alwaysOn?: boolean }
-const INSTALL_FLAGS: InstallFlag[] = [
-  { key: 'ue',  flag: '--ue',  types: ['UESIM', 'SIMNOVATOR'], label: 'UE simulator',  default: true,  alwaysOn: true },
-  { key: 'app', flag: '--app', types: ['APPSERVER'],            label: 'App server',    default: true,  alwaysOn: true },
-  { key: 'enb', flag: '--enb', types: ['ENB', 'CALLBOX'],       label: 'eNB',           default: false },
-  { key: 'gnb', flag: '--gnb', types: ['GNB', 'CALLBOX'],       label: 'gNB',           default: false },
-  { key: 'mme', flag: '--mme', types: ['MME', 'CALLBOX'],       label: 'MME',           default: false },
-  { key: 'ims', flag: '--ims', types: ['IMS', 'CALLBOX'],       label: 'IMS',           default: false },
+// Flags for the Simnovator `./install` script. Mirror the real `./install --help`
+// output:
+//
+//   -u, --ue              credentials of the UE machine to install UE stack
+//   -o, --oru             credentials of the ORU machine to install ORU stack
+//   -a, --app             credentials of the App server machine
+//   -e, --external        IP address of the external data generator
+//   -m, --max_simulators  number of simulators to use
+//   --no_app_server       skip installing app server
+//   --no_app_manager      skip installing app manager
+//   --no_simnovator       skip installing simnovator manager
+//   --no_ue               skip installing UE
+//   --no_oru              skip installing ORU
+//   -t, --timezone        set timezone on all machines (e.g. -t Asia/Kolkata)
+//   -r, --restore         restore simnovator testcases
+//
+// `--ue`, `--oru`, `--app` take "user@IP". `--external` is just an IP.
+// The "host" flags get auto-filled from inventory by type; everything else
+// is a free-form input or toggle.
+
+interface HostFlag {
+  key: 'ue' | 'oru' | 'app' | 'external';
+  flag: string;            // e.g. "--ue"
+  short?: string;          // e.g. "-u"
+  label: string;
+  description: string;
+  /** What inventory types should auto-populate this flag's IP? */
+  types: string[];
+  /** True for `--external` which takes just an IP (no user@). */
+  ipOnly?: boolean;
+  required: boolean;
+}
+
+const HOST_FLAGS: HostFlag[] = [
+  { key: 'ue',       flag: '--ue',       short: '-u', label: 'UE Machine',          description: 'Where the UE stack is installed',  types: ['UESIM', 'SIMNOVATOR'], required: true },
+  { key: 'app',      flag: '--app',      short: '-a', label: 'App Server',          description: 'Where the App server is installed', types: ['APPSERVER'],           required: true },
+  { key: 'oru',      flag: '--oru',      short: '-o', label: 'ORU Machine',         description: 'Where the ORU stack is installed (optional)', types: ['ORU', 'CALLBOX'], required: false },
+  { key: 'external', flag: '--external', short: '-e', label: 'External Generator',  description: 'IP of the external data generator (optional)',  types: [], ipOnly: true, required: false },
 ];
+
+interface SkipFlag { key: string; flag: string; label: string }
+const SKIP_FLAGS: SkipFlag[] = [
+  { key: 'no_app_server',  flag: '--no_app_server',  label: 'Skip App server'    },
+  { key: 'no_app_manager', flag: '--no_app_manager', label: 'Skip App manager'   },
+  { key: 'no_simnovator',  flag: '--no_simnovator',  label: 'Skip Simnovator mgr' },
+  { key: 'no_ue',          flag: '--no_ue',          label: 'Skip UE install'    },
+  { key: 'no_oru',          flag: '--no_oru',         label: 'Skip ORU install'   },
+];
+
+interface TimezoneOption { value: string; label: string }
+const TIMEZONES: TimezoneOption[] = [
+  { value: 'Asia/Kolkata',     label: '🇮🇳 Asia/Kolkata (IST)' },
+  { value: 'America/New_York', label: '🇺🇸 America/New_York (EST)' },
+  { value: 'America/Toronto',  label: '🇨🇦 America/Toronto (EST)' },
+  { value: 'America/Los_Angeles', label: '🇺🇸 America/Los_Angeles (PST)' },
+  { value: 'Europe/London',    label: '🇬🇧 Europe/London (GMT)' },
+  { value: 'Europe/Paris',     label: '🇫🇷 Europe/Paris (CET)' },
+  { value: 'Asia/Tokyo',       label: '🇯🇵 Asia/Tokyo (JST)' },
+  { value: 'Asia/Shanghai',    label: '🇨🇳 Asia/Shanghai (CST)' },
+  { value: 'Australia/Sydney', label: '🇦🇺 Australia/Sydney (AEST)' },
+];
+const DEFAULT_TIMEZONE = 'Asia/Kolkata';
 
 const INSTALL_USER = 'sysadmin'; // user the Simnovator install script SSHes as
 
@@ -113,10 +163,23 @@ export default function ValidatePage() {
   const [buildUrl, setBuildUrl] = useState('');
   const [installDir, setInstallDir] = useState('/tmp');
   const [extraArgs, setExtraArgs] = useState('');
-  const [flagsEnabled, setFlagsEnabled] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(INSTALL_FLAGS.map((f) => [f.key, f.default])),
+  // Per-host-flag enabled state (UE & App default ON because they're required;
+  // ORU & External are off until the user opts in).
+  const [hostEnabled, setHostEnabled] = useState<Record<string, boolean>>(
+    () => Object.fromEntries(HOST_FLAGS.map((f) => [f.key, f.required])),
   );
-  const [overrides, setOverrides] = useState<Record<string, string>>({}); // per-flag IP override
+  // Per-host IP override (when blank, falls back to inventory auto-pick).
+  const [hostIp, setHostIp] = useState<Record<string, string>>({});
+  // Per-host SSH user override (defaults to "sysadmin").
+  const [hostUser, setHostUser] = useState<Record<string, string>>({});
+  // Skip flags state
+  const [skipFlags, setSkipFlags] = useState<Record<string, boolean>>(
+    () => Object.fromEntries(SKIP_FLAGS.map((f) => [f.key, false])),
+  );
+  // Timezone (default Asia/Kolkata, dropdown + free-form override)
+  const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE);
+  const [maxSimulators, setMaxSimulators] = useState<string>('');
+  const [restore, setRestore] = useState<boolean>(false);
   const [urlCheck, setUrlCheck] = useState<{ status: 'idle' | 'checking' | 'ok' | 'fail'; detail?: string }>({ status: 'idle' });
 
   const [busy, setBusy] = useState(false);
@@ -157,26 +220,40 @@ export default function ValidatePage() {
   const inventoryHostFor = (types: string[]): string | undefined =>
     systems.find((s) => types.includes(s.type))?.host;
 
-  // For each install flag, resolve the IP it would point at.
-  const resolvedFlagIps: Record<string, string | undefined> = useMemo(() => {
+  // For each host flag, resolve the IP it would point at (override > inventory auto-pick).
+  const resolvedHostIp: Record<string, string | undefined> = useMemo(() => {
     const out: Record<string, string | undefined> = {};
-    for (const f of INSTALL_FLAGS) {
-      out[f.key] = overrides[f.key] ?? inventoryHostFor(f.types);
+    for (const f of HOST_FLAGS) {
+      out[f.key] = (hostIp[f.key] || '').trim() || inventoryHostFor(f.types);
     }
     return out;
-  }, [systems, overrides]);
+  }, [systems, hostIp]);
 
   // Build the full install plan as discrete commands.
   const plan = useMemo(() => {
     const url = buildUrl.trim();
     const { fileName, dirName } = nameFromUrl(url || 'build.tar.gz');
     const dir = (installDir.trim() || '/tmp').replace(/\/+$/, '');
-    const flags = INSTALL_FLAGS
-      .filter((f) => flagsEnabled[f.key] || f.alwaysOn)
-      .filter((f) => resolvedFlagIps[f.key])
-      .map((f) => `${f.flag} ${INSTALL_USER}@${resolvedFlagIps[f.key]}`);
+
+    // Build the install flags string.
+    const parts: string[] = [];
+    for (const f of HOST_FLAGS) {
+      if (!hostEnabled[f.key]) continue;
+      const ip = resolvedHostIp[f.key];
+      if (!ip) continue;
+      const user = (hostUser[f.key] || '').trim() || INSTALL_USER;
+      // --external is IP-only; the others use 'user@IP' (single-quoted to be safe).
+      parts.push(f.ipOnly ? `${f.flag} '${ip}'` : `${f.flag} '${user}@${ip}'`);
+    }
+    if (timezone.trim()) parts.push(`-t '${timezone.trim()}'`);
+    if (maxSimulators.trim()) parts.push(`-m ${maxSimulators.trim()}`);
+    for (const s of SKIP_FLAGS) {
+      if (skipFlags[s.key]) parts.push(s.flag);
+    }
+    if (restore) parts.push('--restore');
     const extra = extraArgs.trim() ? ' ' + extraArgs.trim() : '';
-    const installLine = `./install ${flags.join(' ')}${extra}`.replace(/\s+/g, ' ').trim();
+    const installLine = `./install ${parts.join(' ')}${extra}`.replace(/\s+/g, ' ').trim();
+
     return {
       fileName, dirName, dir,
       cdTmp:    `cd ${dir}`,
@@ -192,7 +269,7 @@ export default function ValidatePage() {
         installLine,
       ].join(' && \\\n  '),
     };
-  }, [buildUrl, installDir, extraArgs, flagsEnabled, resolvedFlagIps]);
+  }, [buildUrl, installDir, extraArgs, hostEnabled, hostIp, hostUser, resolvedHostIp, skipFlags, timezone, maxSimulators, restore]);
 
   const cockpitTerminalUrl = useMemo(() => {
     if (!targetSys?.host) return '';
@@ -372,14 +449,18 @@ export default function ValidatePage() {
                     </Field>
                   </div>
 
-                  {/* Per-flag config */}
+                  {/* Host machines (--ue, --app, --oru, --external) */}
                   <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
-                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Install flags</div>
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Host machines</div>
+                      <div className="text-[10px] text-slate-500">user defaults to <span className="font-mono">{INSTALL_USER}</span></div>
+                    </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {INSTALL_FLAGS.map((f) => {
-                        const ip = resolvedFlagIps[f.key];
-                        const auto = !overrides[f.key];
-                        const enabled = flagsEnabled[f.key] || f.alwaysOn;
+                      {HOST_FLAGS.map((f) => {
+                        const ip = resolvedHostIp[f.key];
+                        const ipOverridden = !!(hostIp[f.key] || '').trim();
+                        const userOverridden = !!(hostUser[f.key] || '').trim();
+                        const enabled = hostEnabled[f.key];
                         return (
                           <div key={f.key} className={`rounded-lg border bg-white px-3 py-2 ${enabled ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
                             <label className="flex items-center justify-between gap-2 text-xs">
@@ -387,26 +468,41 @@ export default function ValidatePage() {
                                 <input
                                   type="checkbox"
                                   checked={!!enabled}
-                                  disabled={!!f.alwaysOn}
-                                  onChange={(e) => setFlagsEnabled((s) => ({ ...s, [f.key]: e.target.checked }))}
+                                  disabled={f.required}
+                                  onChange={(e) => setHostEnabled((s) => ({ ...s, [f.key]: e.target.checked }))}
                                 />
                                 <span className="font-mono text-slate-900">{f.flag}</span>
                                 <span className="text-slate-500">· {f.label}</span>
+                                {f.required ? <span className="text-[9px] uppercase tracking-wider text-red-500">req</span> : null}
                               </span>
-                              {auto && ip ? <span className="text-[10px] uppercase tracking-wider text-slate-400">auto</span> : null}
+                              {!ipOverridden && ip ? <span className="text-[10px] uppercase tracking-wider text-slate-400">auto</span> : null}
                             </label>
-                            <div className="mt-2 flex items-center gap-2">
-                              <span className="text-[11px] text-slate-500 font-mono whitespace-nowrap">{INSTALL_USER}@</span>
+                            <div className="text-[10px] text-slate-500 mt-1">{f.description}</div>
+                            <div className="mt-2 flex items-center gap-1.5">
+                              {!f.ipOnly ? (
+                                <>
+                                  <input
+                                    value={hostUser[f.key] ?? ''}
+                                    onChange={(e) => setHostUser((o) => ({ ...o, [f.key]: e.target.value }))}
+                                    placeholder={INSTALL_USER}
+                                    className="w-24 h-7 rounded-md border border-slate-300 bg-white px-2 text-[12px] font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
+                                  />
+                                  <span className="text-[11px] text-slate-500 font-mono">@</span>
+                                </>
+                              ) : null}
                               <input
-                                value={overrides[f.key] ?? ip ?? ''}
-                                onChange={(e) => setOverrides((o) => ({ ...o, [f.key]: e.target.value }))}
-                                placeholder={ip ? '' : `(no ${f.types.join(' / ')} in Inventory)`}
+                                value={hostIp[f.key] ?? ip ?? ''}
+                                onChange={(e) => setHostIp((o) => ({ ...o, [f.key]: e.target.value }))}
+                                placeholder={ip ? '' : (f.types.length ? `(no ${f.types.join(' / ')} in Inventory)` : 'IP address')}
                                 className="flex-1 h-7 rounded-md border border-slate-300 bg-white px-2 text-[12px] font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
                               />
-                              {overrides[f.key] ? (
+                              {(ipOverridden || userOverridden) ? (
                                 <button
                                   className="text-[10px] text-slate-500 underline hover:no-underline"
-                                  onClick={() => setOverrides((o) => { const n = { ...o }; delete n[f.key]; return n; })}
+                                  onClick={() => {
+                                    setHostIp((o) => { const n = { ...o }; delete n[f.key]; return n; });
+                                    setHostUser((o) => { const n = { ...o }; delete n[f.key]; return n; });
+                                  }}
                                   title="Reset to inventory value"
                                 >reset</button>
                               ) : null}
@@ -415,6 +511,68 @@ export default function ValidatePage() {
                         );
                       })}
                     </div>
+                  </div>
+
+                  {/* Timezone + max simulators + restore */}
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <Field label="Timezone (-t)" hint="set on all machines during install">
+                      <select
+                        value={TIMEZONES.some((tz) => tz.value === timezone) ? timezone : '__manual__'}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v === '__manual__') return; // keep user's free-form value
+                          if (v === '__none__') { setTimezone(''); return; }
+                          setTimezone(v);
+                        }}
+                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                      >
+                        <option value="__none__">— none —</option>
+                        {TIMEZONES.map((tz) => (
+                          <option key={tz.value} value={tz.value}>{tz.label}</option>
+                        ))}
+                        <option value="__manual__">✏ Enter manually below</option>
+                      </select>
+                      {!TIMEZONES.some((tz) => tz.value === timezone) && timezone !== '' ? (
+                        <Input
+                          value={timezone}
+                          onChange={(e) => setTimezone(e.target.value)}
+                          placeholder="e.g. Asia/Singapore"
+                          className="mt-1.5"
+                        />
+                      ) : null}
+                    </Field>
+                    <Field label="Max simulators (-m)" hint="optional — number of simulators to use">
+                      <Input
+                        value={maxSimulators}
+                        onChange={(e) => setMaxSimulators(e.target.value.replace(/[^0-9]/g, ''))}
+                        placeholder="e.g. 4"
+                      />
+                    </Field>
+                    <Field label="Other" hint="">
+                      <label className="flex items-center gap-2 text-sm h-9 mt-0">
+                        <input type="checkbox" checked={restore} onChange={(e) => setRestore(e.target.checked)} />
+                        <span className="font-mono text-[12px]">--restore</span>
+                        <span className="text-[11px] text-slate-500">restore testcases</span>
+                      </label>
+                    </Field>
+                  </div>
+
+                  {/* Skip flags */}
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">Skip options</div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+                      {SKIP_FLAGS.map((s) => (
+                        <label key={s.key} className={`flex items-center gap-2 rounded-md border bg-white px-2.5 py-1.5 text-[11px] cursor-pointer ${skipFlags[s.key] ? 'border-orange-300 bg-orange-50' : 'border-slate-200'}`}>
+                          <input
+                            type="checkbox"
+                            checked={!!skipFlags[s.key]}
+                            onChange={(e) => setSkipFlags((p) => ({ ...p, [s.key]: e.target.checked }))}
+                          />
+                          <span className="font-mono">{s.flag}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="mt-2 text-[10px] text-slate-500">{SKIP_FLAGS.map((s) => s.label).join(' · ')}</div>
                   </div>
 
                   {/* GENERATED COMMANDS */}
