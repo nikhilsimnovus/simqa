@@ -430,7 +430,9 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     const fetched = await runCommandInFrame(page, frame, fetchCmd, 'fetch', emit, state, 15 * 60_000);
     if (!fetched.ok) {
       await snap(page, 'fetch', 'failed');
-      emit(nowEvent({ type: 'step', step: 'fetch', status: 'fail', detail: `exit code ${fetched.exitCode}`, durationMs: Date.now() - tFetch }));
+      const hint = exitCodeHint('fetch', fetched.exitCode);
+      if (hint) emit(nowEvent({ type: 'log', stream: 'error', line: hint }));
+      emit(nowEvent({ type: 'step', step: 'fetch', status: 'fail', detail: hint ?? `exit code ${fetched.exitCode}`, durationMs: Date.now() - tFetch }));
       emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
       return { ok: false };
     }
@@ -444,7 +446,9 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     const extracted = await runCommandInFrame(page, frame, extractCmd, 'extract', emit, state, 5 * 60_000);
     if (!extracted.ok) {
       await snap(page, 'extract', 'failed');
-      emit(nowEvent({ type: 'step', step: 'extract', status: 'fail', detail: `exit code ${extracted.exitCode}`, durationMs: Date.now() - tExtract }));
+      const hint = exitCodeHint('extract', extracted.exitCode);
+      if (hint) emit(nowEvent({ type: 'log', stream: 'error', line: hint }));
+      emit(nowEvent({ type: 'step', step: 'extract', status: 'fail', detail: hint ?? `exit code ${extracted.exitCode}`, durationMs: Date.now() - tExtract }));
       emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
       return { ok: false };
     }
@@ -537,6 +541,22 @@ async function readTerminalIn(frame: Frame): Promise<string> {
   });
 }
 
+/** True when a "line" coming out of xterm-rows innerText is just visual padding
+ *  (whitespace only, or a prompt with no body). Filtering those keeps the log
+ *  readable. */
+function isNoiseLine(s: string): boolean {
+  if (!s) return true;
+  const t = s.trim();
+  if (t === '') return true;
+  return false;
+}
+
+/** xterm renders the full viewport in its DOM, including blank rows below
+ *  the cursor. Trim trailing empty rows so we don't keep re-emitting them. */
+function trimTrailingBlanks(s: string): string {
+  return s.replace(/(\r?\n\s*){2,}$/, '\n');
+}
+
 async function runCommandInFrame(
   page: Page,
   frame: Frame,
@@ -555,41 +575,49 @@ async function runCommandInFrame(
     const ta = document.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
     ta?.focus();
   });
-  await page.keyboard.type(wrapped);
+  // insertText is atomic from xterm's POV — the whole string lands as one
+  // input event rather than per-keypress, so we don't see partial commands
+  // in the polled DOM. The Enter press still kicks the shell.
+  await page.keyboard.insertText(wrapped);
   await page.keyboard.press('Enter');
 
+  // Let xterm settle (full command echo + first prompt redraw) before we
+  // baseline our diff cursor. Anything before this point is the typed
+  // command + prompt, not output we want to stream.
+  await new Promise((r) => setTimeout(r, 600));
+  state.emitted = trimTrailingBlanks(await readTerminalIn(frame));
+
   const t0 = Date.now();
-  const pollIntervalMs = 350;
+  const pollIntervalMs = 400;
   let exitCode = -1;
   let ok = false;
   while (Date.now() - t0 < timeoutMs) {
     await new Promise((r) => setTimeout(r, pollIntervalMs));
-    const screen = await readTerminalIn(frame);
+    const rawScreen = await readTerminalIn(frame);
+    const screen = trimTrailingBlanks(rawScreen);
 
+    let fresh = '';
     if (screen.length > state.emitted.length && screen.startsWith(state.emitted)) {
-      const fresh = screen.slice(state.emitted.length);
-      for (const ln of fresh.split(/\r?\n/)) {
-        if (ln) emit(nowEvent({ type: 'log', stream: 'stdout', line: ln }));
-      }
-      state.emitted = screen;
+      fresh = screen.slice(state.emitted.length);
     } else if (screen.length > 0 && screen !== state.emitted) {
+      // Buffer rolled (long output trims top); look for the trailing context
+      // and emit anything past it. If we can't find an anchor, emit the
+      // diff against the previous screen length to avoid double-printing.
       const tail = state.emitted.slice(-160);
       const idx = tail ? screen.indexOf(tail) : -1;
-      if (idx > 0) {
-        const fresh = screen.slice(idx + tail.length);
-        for (const ln of fresh.split(/\r?\n/)) {
-          if (ln) emit(nowEvent({ type: 'log', stream: 'stdout', line: ln }));
-        }
-      } else {
-        // Total reset: just emit the whole new screen.
-        for (const ln of screen.split(/\r?\n/)) {
-          if (ln) emit(nowEvent({ type: 'log', stream: 'stdout', line: ln }));
+      if (idx >= 0) fresh = screen.slice(idx + tail.length);
+      else fresh = screen.length > state.emitted.length ? screen.slice(state.emitted.length) : '';
+    }
+    if (fresh) {
+      for (const ln of fresh.split(/\r?\n/)) {
+        if (!isNoiseLine(ln) && !ln.includes(sentinelId)) {
+          emit(nowEvent({ type: 'log', stream: 'stdout', line: ln }));
         }
       }
       state.emitted = screen;
     }
 
-    const match = screen.match(new RegExp(`${sentinelId}=(\\d+)`));
+    const match = rawScreen.match(new RegExp(`${sentinelId}=(\\d+)`));
     if (match) {
       exitCode = parseInt(match[1], 10);
       ok = exitCode === 0;
@@ -600,4 +628,28 @@ async function runCommandInFrame(
     emit(nowEvent({ type: 'log', stream: 'error', line: `(timed out after ${Math.round((Date.now() - t0) / 1000)}s on step "${step}")` }));
   }
   return { ok, exitCode };
+}
+
+/** Map common exit codes from wget / tar / install to a human-readable hint. */
+function exitCodeHint(step: InstallStepName, code: number): string | undefined {
+  if (step === 'fetch') {
+    // wget exit codes
+    switch (code) {
+      case 1: return 'wget: generic error';
+      case 2: return 'wget: parse error / bad URL';
+      case 3: return 'wget: file I/O error';
+      case 4: return 'wget: NETWORK FAILURE — the Simnovator VM cannot reach the build server. Check routing/firewall between the VM and the build host.';
+      case 5: return 'wget: SSL verification failed';
+      case 6: return 'wget: authentication failure';
+      case 7: return 'wget: protocol error';
+      case 8: return 'wget: server response error (e.g. 404, 500). The URL may be wrong or the build is no longer published.';
+    }
+  }
+  if (step === 'extract') {
+    switch (code) {
+      case 1: return 'tar: warnings (some files differ from archive)';
+      case 2: return 'tar: fatal error (corrupt archive or write failure)';
+    }
+  }
+  return undefined;
 }
