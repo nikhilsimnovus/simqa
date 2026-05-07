@@ -108,17 +108,18 @@ const DEFAULT_TIMEZONE = 'Asia/Kolkata';
 const INSTALL_USER = 'sysadmin'; // user the Simnovator install script SSHes as
 
 // Step status pill for the install progress strip.
-type StepName = 'launch' | 'login' | 'terminal' | 'fetch' | 'extract' | 'install';
+type StepName = 'launch' | 'login' | 'terminal' | 'preflight' | 'fetch' | 'extract' | 'install';
 type StepStatus = 'idle' | 'start' | 'ok' | 'fail';
 const STEP_LABEL: Record<StepName, string> = {
-  launch:   '1. Launch browser',
-  login:    '2. Cockpit login',
-  terminal: '3. Open Terminal',
-  fetch:    '4. wget tarball',
-  extract:  '5. Extract',
-  install:  '6. ./install',
+  launch:    '1. Launch browser',
+  login:     '2. Cockpit login',
+  terminal:  '3. Open Terminal',
+  preflight: '4. Reach build URL',
+  fetch:     '5. wget tarball',
+  extract:   '6. Extract',
+  install:   '7. ./install',
 };
-const STEP_ORDER: StepName[] = ['launch', 'login', 'terminal', 'fetch', 'extract', 'install'];
+const STEP_ORDER: StepName[] = ['launch', 'login', 'terminal', 'preflight', 'fetch', 'extract', 'install'];
 function StepPill({ name, status }: { name: StepName; status: StepStatus }) {
   const cls =
     status === 'ok'    ? 'border-emerald-300 bg-emerald-50 text-emerald-800' :
@@ -201,8 +202,12 @@ export default function ValidatePage() {
   );
   // Per-host IP override (when blank, falls back to inventory auto-pick).
   const [hostIp, setHostIp] = useState<Record<string, string>>({});
-  // Per-host SSH user override (defaults to "sysadmin").
-  const [hostUser, setHostUser] = useState<Record<string, string>>({});
+  // Per-host SSH user override. Pre-filled with "sysadmin" for every host
+  // flag (the default user the Simnovator install script SSHes as) — the
+  // user can edit any of these before clicking Install.
+  const [hostUser, setHostUser] = useState<Record<string, string>>(
+    () => Object.fromEntries(HOST_FLAGS.filter((f) => !f.ipOnly).map((f) => [f.key, INSTALL_USER])),
+  );
   // Skip flags state
   const [skipFlags, setSkipFlags] = useState<Record<string, boolean>>(
     () => Object.fromEntries(SKIP_FLAGS.map((f) => [f.key, false])),
@@ -229,7 +234,7 @@ export default function ValidatePage() {
   const [installErr,     setInstallErr]     = useState<string | null>(null);
   const [installEvents,  setInstallEvents]  = useState<AnyEvent[]>([]);
   const [installSteps,   setInstallSteps]   = useState<Record<StepName, StepStatus>>({
-    launch: 'idle', login: 'idle', terminal: 'idle', fetch: 'idle', extract: 'idle', install: 'idle',
+    launch: 'idle', login: 'idle', terminal: 'idle', preflight: 'idle', fetch: 'idle', extract: 'idle', install: 'idle',
   });
   const [installDone,    setInstallDone]    = useState<{ ok: boolean; durationMs: number } | null>(null);
   const [showManualFallback, setShowManualFallback] = useState(false);
@@ -260,6 +265,23 @@ export default function ValidatePage() {
       .then((t) => setTcs(t.items ?? []))
       .catch(() => { /* silent — sample-execution will show "no testcases" */ });
   }, []);
+
+  // Once inventory is loaded, pre-fill the host IPs from the first matching
+  // system per flag so the per-host dropdown shows the auto-pick (rather
+  // than appearing as "custom" with an empty input). User edits override.
+  useEffect(() => {
+    if (systems.length === 0) return;
+    setHostIp((cur) => {
+      const next = { ...cur };
+      let changed = false;
+      for (const f of HOST_FLAGS) {
+        if (next[f.key]?.trim()) continue; // user already filled it
+        const sys = systems.find((s) => f.types.includes(s.type));
+        if (sys?.host) { next[f.key] = sys.host; changed = true; }
+      }
+      return changed ? next : cur;
+    });
+  }, [systems]);
 
   const simnovators = useMemo(() => systems.filter((s) => s.type === 'SIMNOVATOR'), [systems]);
   const overallOk   = result?.ok;
@@ -384,7 +406,7 @@ export default function ValidatePage() {
     setInstallErr(null);
     setInstallBusy(true);
     setInstallEvents([]);
-    setInstallSteps({ launch: 'idle', login: 'idle', terminal: 'idle', fetch: 'idle', extract: 'idle', install: 'idle' });
+    setInstallSteps({ launch: 'idle', login: 'idle', terminal: 'idle', preflight: 'idle', fetch: 'idle', extract: 'idle', install: 'idle' });
     setInstallDone(null);
 
     const body = {
@@ -632,14 +654,17 @@ export default function ValidatePage() {
                   <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Host machines</div>
-                      <div className="text-[10px] text-slate-500">user defaults to <span className="font-mono">{INSTALL_USER}</span></div>
+                      <div className="text-[10px] text-slate-500">user defaults to <span className="font-mono">{INSTALL_USER}</span> · pick from inventory or type a custom IP</div>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {HOST_FLAGS.map((f) => {
-                        const ip = resolvedHostIp[f.key];
-                        const ipOverridden = !!(hostIp[f.key] || '').trim();
-                        const userOverridden = !!(hostUser[f.key] || '').trim();
+                        const candidates = systems.filter((s) => f.types.includes(s.type));
                         const enabled = hostEnabled[f.key];
+                        const ipValue   = hostIp[f.key]   ?? '';
+                        const userValue = hostUser[f.key] ?? INSTALL_USER;
+                        // Match the current IP to a system in inventory so the
+                        // dropdown shows the right entry as selected.
+                        const matchedSystemId = candidates.find((s) => s.host === ipValue)?.id ?? '';
                         return (
                           <div key={f.key} className={`rounded-lg border bg-white px-3 py-2 ${enabled ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
                             <label className="flex items-center justify-between gap-2 text-xs">
@@ -654,14 +679,58 @@ export default function ValidatePage() {
                                 <span className="text-slate-500">· {f.label}</span>
                                 {f.required ? <span className="text-[9px] uppercase tracking-wider text-red-500">req</span> : null}
                               </span>
-                              {!ipOverridden && ip ? <span className="text-[10px] uppercase tracking-wider text-slate-400">auto</span> : null}
                             </label>
                             <div className="text-[10px] text-slate-500 mt-1">{f.description}</div>
+
+                            {/* System picker (skipped for --external which is IP-only) */}
+                            {!f.ipOnly ? (
+                              <div className="mt-2">
+                                <select
+                                  value={matchedSystemId}
+                                  onChange={(e) => {
+                                    const id = e.target.value;
+                                    if (!id) {
+                                      // "Custom" was picked — clear the IP so the user types one.
+                                      setHostIp((o) => ({ ...o, [f.key]: '' }));
+                                      return;
+                                    }
+                                    const sys = systems.find((s) => s.id === id);
+                                    if (sys) {
+                                      setHostIp((o) => ({ ...o, [f.key]: sys.host }));
+                                      // Don't overwrite a user-edited username with system.username; only
+                                      // pre-fill if it's still the default.
+                                      setHostUser((o) => ({
+                                        ...o,
+                                        [f.key]: o[f.key] && o[f.key] !== INSTALL_USER ? o[f.key] : ((sys as any).username || INSTALL_USER),
+                                      }));
+                                    }
+                                  }}
+                                  className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-[12px] text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
+                                >
+                                  <option value="">— custom IP below —</option>
+                                  {candidates.length > 0 ? (
+                                    <optgroup label="From Inventory">
+                                      {candidates.map((s) => (
+                                        <option key={s.id} value={s.id}>{(s.name || s.id) + ' · ' + s.host + (s.type ? ` (${s.type})` : '')}</option>
+                                      ))}
+                                    </optgroup>
+                                  ) : null}
+                                </select>
+                                {candidates.length === 0 ? (
+                                  <div className="text-[10px] text-slate-500 mt-1">
+                                    No <span className="font-mono">{f.types.join(' / ')}</span> systems in inventory yet.{' '}
+                                    <Link href="/inventory" className="underline hover:no-underline">Add one</Link>{' '}
+                                    or type the IP below.
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : null}
+
                             <div className="mt-2 flex items-center gap-1.5">
                               {!f.ipOnly ? (
                                 <>
                                   <input
-                                    value={hostUser[f.key] ?? ''}
+                                    value={userValue}
                                     onChange={(e) => setHostUser((o) => ({ ...o, [f.key]: e.target.value }))}
                                     placeholder={INSTALL_USER}
                                     className="w-24 h-7 rounded-md border border-slate-300 bg-white px-2 text-[12px] font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
@@ -670,21 +739,11 @@ export default function ValidatePage() {
                                 </>
                               ) : null}
                               <input
-                                value={hostIp[f.key] ?? ip ?? ''}
+                                value={ipValue}
                                 onChange={(e) => setHostIp((o) => ({ ...o, [f.key]: e.target.value }))}
-                                placeholder={ip ? '' : (f.types.length ? `(no ${f.types.join(' / ')} in Inventory)` : 'IP address')}
+                                placeholder={f.ipOnly ? 'IP address' : (matchedSystemId ? '' : '192.168.x.x')}
                                 className="flex-1 h-7 rounded-md border border-slate-300 bg-white px-2 text-[12px] font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
                               />
-                              {(ipOverridden || userOverridden) ? (
-                                <button
-                                  className="text-[10px] text-slate-500 underline hover:no-underline"
-                                  onClick={() => {
-                                    setHostIp((o) => { const n = { ...o }; delete n[f.key]; return n; });
-                                    setHostUser((o) => { const n = { ...o }; delete n[f.key]; return n; });
-                                  }}
-                                  title="Reset to inventory value"
-                                >reset</button>
-                              ) : null}
                             </div>
                           </div>
                         );
@@ -792,7 +851,7 @@ export default function ValidatePage() {
               </CardHeader>
               <CardBody className="space-y-3">
                 {/* Step strip */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
                   {STEP_ORDER.map((s) => (
                     <StepPill key={s} name={s} status={installSteps[s]} />
                   ))}

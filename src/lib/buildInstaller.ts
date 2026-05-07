@@ -30,7 +30,7 @@ export type InstallEvent =
   | { type: 'screenshot'; step: InstallStepName | 'final'; file: string; ts: number }
   | { type: 'done'; ok: boolean; durationMs: number; ts: number };
 
-export type InstallStepName = 'launch' | 'login' | 'terminal' | 'fetch' | 'extract' | 'install';
+export type InstallStepName = 'launch' | 'login' | 'terminal' | 'preflight' | 'fetch' | 'extract' | 'install';
 
 export interface BuildInstallRequest {
   systemId: string;
@@ -420,6 +420,38 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
 
     // Pre-read the prompt so our diff baseline is current.
     state.emitted = await readTerminalIn(frame);
+
+    // ── Preflight reachability ─────────────────────────
+    // Before we even try to wget, ask the Simnovator VM whether it can
+    // reach the build server. wget will hit the same wall after a 30+s
+    // retry storm if it can't, but this way we fail in 5 seconds with a
+    // crystal-clear message: the VM cannot route to that host.
+    const tPre = Date.now();
+    emit(nowEvent({ type: 'step', step: 'preflight', status: 'start', detail: req.buildUrl }));
+    const probeCmd =
+      `curl -ksI --max-time 10 --connect-timeout 5 ${shellQuote(req.buildUrl)} | head -1 || ` +
+      `(echo "PREFLIGHT_FAIL: VM cannot reach $(${shellQuote('echo')} ${shellQuote(req.buildUrl)} | sed -E ${shellQuote("'s|^[^/]+//([^/]+).*|\\1|'")}) — check routing/firewall on the Simnovator VM"; exit 1)`;
+    // Simpler version that's less brittle than the inline awk above:
+    const simpleProbeCmd =
+      `curl -ksI --max-time 10 --connect-timeout 5 ${shellQuote(req.buildUrl)} -o /dev/null -w 'HTTP %{http_code} time=%{time_total}s\\n'`;
+    const probed = await runCommandInFrame(page, frame, simpleProbeCmd, 'preflight', emit, state, 30_000);
+    if (!probed.ok) {
+      // curl exit codes: 6=resolve, 7=connect, 28=timeout, 22=HTTP >=400
+      const hint =
+        probed.exitCode === 6  ? 'curl: DNS resolution failed — the build host is not resolvable from the Simnovator VM.' :
+        probed.exitCode === 7  ? 'curl: cannot connect — the Simnovator VM has no route to the build host. Check `ip route` on the VM and any firewall between the two networks.' :
+        probed.exitCode === 28 ? 'curl: connection timed out — the build host accepted no connection within 5s. VM->build path is blocked.' :
+        probed.exitCode === 22 ? 'curl: server responded with an HTTP error (4xx/5xx). The build URL is wrong or the build is no longer published.' :
+                                 `curl exit ${probed.exitCode} — the Simnovator VM could not reach the build URL.`;
+      emit(nowEvent({ type: 'log', stream: 'error', line: hint }));
+      emit(nowEvent({ type: 'log', stream: 'info',  line: 'Hint: confirm by SSHing into the VM and running:  ping -c 2 ' + (() => { try { return new URL(req.buildUrl).host; } catch { return '<host>'; } })() }));
+      await snap(page, 'preflight' as InstallStepName, 'failed');
+      emit(nowEvent({ type: 'step', step: 'preflight', status: 'fail', detail: hint, durationMs: Date.now() - tPre }));
+      emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
+      return { ok: false };
+    }
+    void probeCmd; // (kept available for future hardening — currently using simpleProbeCmd)
+    emit(nowEvent({ type: 'step', step: 'preflight', status: 'ok', durationMs: Date.now() - tPre }));
 
     // ── Fetch ──────────────────────────────────────────
     const fetchCmd =
