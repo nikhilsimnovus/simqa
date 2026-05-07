@@ -114,15 +114,17 @@ async function readTerminal(frame: Frame): Promise<string> {
 /**
  * Run a single command in the Cockpit terminal, wait until the sentinel
  * fires, then return the full screen text.
+ *
+ * Uses page.keyboard.type (real keypress events) rather than insertText —
+ * some xterm.js builds filter synthetic-only input events and the data
+ * never reaches the shell.
  */
 async function runCommandCapture(page: Page, frame: Frame, cmd: string, timeoutMs: number): Promise<string> {
   const sentinelId = `${SENTINEL_PREFIX}${Math.random().toString(36).slice(2, 8)}`;
   const wrapped = `${cmd}; echo ${sentinelId}_DONE`;
-  await frame.evaluate(() => {
-    const ta = document.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
-    ta?.focus();
-  });
-  await page.keyboard.insertText(wrapped);
+  // Re-click the xterm viewport right before typing as a final focus guard.
+  await frame.click('.xterm-screen', { timeout: 2_000 }).catch(() => null);
+  await page.keyboard.type(wrapped, { delay: 4 });
   await page.keyboard.press('Enter');
   const t0 = Date.now();
   while (Date.now() - t0 < timeoutMs) {
@@ -168,8 +170,19 @@ export async function listVmFiles(inv: Inventory, req: ListVmFilesRequest): Prom
     await page.goto(`${cockpitUrl}/system/terminal`, { waitUntil: 'domcontentloaded' });
     const frame = await waitForCockpitTerminalFrame(page);
     if (!frame) return { ok: false, files: [], searchedDirs: dirs, error: 'Cockpit terminal iframe did not load' };
-    await frame.click('body').catch(() => null);
-    await new Promise((r) => setTimeout(r, 600));
+    // Real-click the xterm viewport — xterm.js wires up its helper textarea
+    // on focus events from the .xterm-screen element. Clicking 'body' or
+    // programmatically focusing the textarea is NOT enough; xterm filters
+    // synthetic input.
+    const focused =
+      await frame.click('.xterm-screen', { timeout: 3_000 }).then(() => true).catch(() => false) ||
+      await frame.click('.xterm',         { timeout: 1_500 }).then(() => true).catch(() => false) ||
+      await frame.click('.terminal',      { timeout: 1_500 }).then(() => true).catch(() => false) ||
+      await frame.click('body',           { timeout: 1_500 }).then(() => true).catch(() => false);
+    if (!focused) {
+      return { ok: false, files: [], searchedDirs: dirs, error: 'could not focus the Cockpit terminal viewport' };
+    }
+    await new Promise((r) => setTimeout(r, 800));
 
     // Build the find. We use a delimiter (':::') instead of a tab character
     // because xterm.js renders tabs as visual spaces in its DOM — by the
