@@ -495,26 +495,16 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
       await snap(page, 'fetch', 'done');
       emit(nowEvent({ type: 'step', step: 'fetch', status: 'ok', durationMs: Date.now() - tFetch }));
     } else {
-      // Local-file mode — verify the file actually exists on the VM before
-      // we try to extract it. Cheap sanity check; same step pill so the UI
-      // doesn't get confused. We use the simplest possible test (`ls`) so
-      // the wrapped command stays short and there's no compound logic for
-      // the shell to choke on.
-      emit(nowEvent({ type: 'log', stream: 'info', line: `(skipping preflight + fetch — using existing file ${dir}/${fileName})` }));
-      const tCheck = Date.now();
-      emit(nowEvent({ type: 'step', step: 'fetch', status: 'start', detail: `checking ${dir}/${fileName}` }));
-      const checkCmd = `ls -la ${shellQuote(`${dir}/${fileName}`)}`;
-      const ok = await runCommandInFrame(page, frame, checkCmd, 'fetch', emit, state, 20_000, ctx.isCanceled);
-      if (!ok.ok) {
-        emit(nowEvent({ type: 'log', stream: 'error', line: `Local file not found / not readable: ${dir}/${fileName}` }));
-        emit(nowEvent({ type: 'log', stream: 'info',  line: `Hint: confirm via Cockpit Files at https://${target.host}:${creds.port}/files#/?path=${encodeURIComponent(dir)} that the file exists at the expected path.` }));
-        await snap(page, 'fetch' as InstallStepName, 'missing');
-        emit(nowEvent({ type: 'step', step: 'fetch', status: 'fail', detail: `local file not readable: ${dir}/${fileName}`, durationMs: Date.now() - tCheck }));
-        emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
-        return { ok: false };
-      }
-      await snap(page, 'fetch', 'verified');
-      emit(nowEvent({ type: 'step', step: 'fetch', status: 'ok', detail: 'file exists, ready to extract', durationMs: Date.now() - tCheck }));
+      // Local-file mode — the file was already validated when the user
+      // picked it from the inventory dropdown (or typed a path they're
+      // sure of), so we skip the verify step entirely. Each xterm
+      // round-trip on this Cockpit/Chrome combo costs minutes due to
+      // CDP latency in headless mode (every frame.evaluate to read the
+      // terminal DOM is slow); cutting redundant interactions is the
+      // single biggest speed-up. If the path is wrong, the next 'tar -zxvf'
+      // will fail with a clear "No such file or directory" message.
+      emit(nowEvent({ type: 'log', stream: 'info', line: `(skipping preflight + fetch — using existing file ${dir}/${fileName}, going straight to extract)` }));
+      emit(nowEvent({ type: 'step', step: 'fetch', status: 'ok', detail: `assuming ${dir}/${fileName}`, durationMs: 0 }));
     }
 
     // ── Extract ────────────────────────────────────────
@@ -651,16 +641,25 @@ async function runCommandInFrame(
 
   // Per-step tracing so any future hang shows the exact failing call in
   // the live log. Each operation is wrapped with a hard timeout so a hung
-  // browser context can't pin the polling loop behind it.
+  // browser context can't pin the polling loop behind it. We clear the
+  // timer when the underlying promise resolves first, otherwise it fires
+  // a misleading "timed out" message minutes after the call succeeded.
   const trace = (msg: string) => emit(nowEvent({ type: 'log', stream: 'info', line: `[trace:${step}] ${msg}` }));
   const withTimeout = async <T>(label: string, p: Promise<T>, ms: number): Promise<T | undefined> => {
-    return await Promise.race<T | undefined>([
-      p,
-      new Promise<undefined>((resolve) => setTimeout(() => {
+    let timer: NodeJS.Timeout | undefined;
+    let timedOut = false;
+    const timeoutPromise = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
         emit(nowEvent({ type: 'log', stream: 'error', line: `[trace:${step}] ${label} timed out after ${ms}ms — possible Chromium hang` }));
         resolve(undefined);
-      }, ms)),
-    ]);
+      }, ms);
+    });
+    try {
+      return await Promise.race<T | undefined>([p, timeoutPromise]);
+    } finally {
+      if (!timedOut && timer) clearTimeout(timer);
+    }
   };
 
   trace('focus xterm viewport');
@@ -678,7 +677,12 @@ async function runCommandInFrame(
   state.emitted = trimTrailingBlanks(baseline ?? '');
 
   const t0 = Date.now();
-  const pollIntervalMs = 400;
+  // 1.5s poll rate. We tried 400ms but on this Cockpit/Chrome combo every
+  // frame.evaluate readTerminal call costs several seconds of CDP latency,
+  // so polling more often just queues redundant reads behind the slow ones.
+  // 1.5s is fast enough to feel live and slow enough to let one read finish
+  // before kicking off the next.
+  const pollIntervalMs = 1_500;
   let exitCode = -1;
   let ok = false;
   let lastHeartbeat = Date.now();
