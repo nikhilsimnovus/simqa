@@ -331,17 +331,37 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     const tLogin = Date.now();
     emit(nowEvent({ type: 'step', step: 'login', status: 'start', detail: cockpitUrl }));
     await page.goto(`${cockpitUrl}/`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('#login-user-input, input[name="user"]', { timeout: 20_000 });
+    await page.waitForSelector('#login-user-input, input[name="user"]', { timeout: 30_000 });
     await snap(page, 'login', 'before');
     await page.fill('#login-user-input, input[name="user"]', creds.user);
     await page.fill('#login-password-input, input[name="password"]', creds.password);
-    // Cockpit may require accepting reauth scope, etc. We submit and wait.
-    await Promise.all([
-      page.waitForLoadState('domcontentloaded', { timeout: 30_000 }).catch(() => null),
-      page.click('#login-button, button[type="submit"]'),
-    ]);
-    // Wait for the dashboard chrome to render.
-    await page.waitForSelector('iframe[name="cockpit1:localhost/system"], .pf-c-page, #host-apps, body', { timeout: 30_000 }).catch(() => null);
+
+    // Cockpit's login button is #login-button. Click it and wait for the
+    // page to navigate away from the login form rather than racing on
+    // arbitrary load events — Cockpit's shell loads piecewise via XHR.
+    await page.click('#login-button, button[type="submit"]');
+
+    // Confirm we're past the login form by waiting for it to detach.
+    const loggedIn = await page.locator('#login-user-input').waitFor({ state: 'detached', timeout: 30_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!loggedIn) {
+      // Look for an explicit error message that Cockpit shows on bad creds.
+      const errText = await page.locator('#login-error-message, .login-error, [aria-live="polite"]').first().textContent().catch(() => null);
+      await snap(page, 'login', 'failed');
+      emit(nowEvent({ type: 'step', step: 'login', status: 'fail', detail: `login form still visible. Cockpit error: ${(errText || '').trim() || '(none captured — check the screenshot)'}`, durationMs: Date.now() - tLogin }));
+      emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
+      return { ok: false };
+    }
+
+    // Wait for the Cockpit shell chrome to actually mount (this is what
+    // bootstraps the iframes). It can take a few seconds on first login.
+    await page.waitForFunction(() => {
+      const url = location.pathname;
+      return url !== '/' || !!document.querySelector('iframe[name^="cockpit1:"], .pf-c-page, .ct-page, #host-apps');
+    }, { timeout: 30_000 }).catch(() => null);
+    await page.waitForTimeout(800); // small settle before deep-linking
+    emit(nowEvent({ type: 'log', stream: 'info', line: `post-login url: ${page.url()}` }));
     await snap(page, 'login', 'after');
     emit(nowEvent({ type: 'step', step: 'login', status: 'ok', durationMs: Date.now() - tLogin }));
 
@@ -349,15 +369,48 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     const tTerm = Date.now();
     emit(nowEvent({ type: 'step', step: 'terminal', status: 'start' }));
     await page.goto(`${cockpitUrl}/system/terminal`, { waitUntil: 'domcontentloaded' });
-    // Cockpit Terminal lives in an iframe.
-    const frame = await waitForCockpitTerminalFrame(page);
+    // Cockpit Terminal lives in an iframe inside the shell. The iframe name
+    // looks like "cockpit1:localhost/system/terminal" and its URL is under
+    // /cockpit/@localhost/... . Either signal is enough.
+    //
+    // First emit the frame inventory so when this step fails we can see
+    // exactly what Cockpit rendered. Headed-mode runs typically reveal a
+    // login-required prompt or a "browser unsupported" page in the iframe.
+    const pageRef = page;
+    const dumpFrames = async (where: string) => {
+      const frames = pageRef.frames();
+      emit(nowEvent({ type: 'log', stream: 'info', line: `[frames @ ${where}] count=${frames.length}` }));
+      for (const f of frames) {
+        let bodyPreview = '';
+        try {
+          bodyPreview = (await f.evaluate(() => document.body?.innerText?.slice(0, 80) ?? '')).replace(/\s+/g, ' ').trim();
+        } catch { bodyPreview = '(blocked)'; }
+        emit(nowEvent({ type: 'log', stream: 'info', line: `  · name="${f.name()}" url="${f.url()}" body~"${bodyPreview}"` }));
+      }
+    };
+    await dumpFrames('initial');
+    await snap(page, 'terminal', 'before-find');
+
+    const frame = await waitForCockpitTerminalFrame(page, emit);
     if (!frame) {
-      emit(nowEvent({ type: 'step', step: 'terminal', status: 'fail', detail: 'terminal iframe not ready', durationMs: Date.now() - tTerm }));
+      // Final dump on failure for the human reading the log.
+      await dumpFrames('on-fail');
+      await snap(page, 'terminal', 'iframe-not-ready');
+      emit(nowEvent({ type: 'step', step: 'terminal', status: 'fail', detail: 'terminal iframe not ready (see frame inventory above + screenshot)', durationMs: Date.now() - tTerm }));
       emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
       return { ok: false };
     }
-    // The terminal renderer needs a click to focus.
-    await frame.click('body').catch(() => null);
+    emit(nowEvent({ type: 'log', stream: 'info', line: `terminal frame: name="${frame.name()}" url="${frame.url()}"` }));
+    // Click the terminal viewport to focus the xterm input.
+    try {
+      const clickInside = async (sel: string) => { try { await frame.click(sel, { timeout: 2000 }); return true; } catch { return false; } };
+      const focused =
+        await clickInside('.xterm-screen') ||
+        await clickInside('.xterm') ||
+        await clickInside('.terminal') ||
+        await clickInside('body');
+      if (!focused) emit(nowEvent({ type: 'log', stream: 'info', line: 'could not click any terminal selector to focus' }));
+    } catch { /* ignore */ }
     await snap(page, 'terminal', 'ready');
     emit(nowEvent({ type: 'step', step: 'terminal', status: 'ok', durationMs: Date.now() - tTerm }));
 
@@ -428,22 +481,47 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
 
 import type { Frame } from 'playwright';
 
-async function waitForCockpitTerminalFrame(page: Page): Promise<Frame | null> {
-  // Cockpit iframes itself: the terminal lives at name="cockpit1:localhost/system/terminal".
+async function waitForCockpitTerminalFrame(page: Page, emit: (e: InstallEvent) => void): Promise<Frame | null> {
+  // Cockpit nests the terminal in an iframe. Modern shells use names like
+  //   "cockpit1:localhost/system/terminal"
+  // with URLs like
+  //   https://<host>:9090/cockpit/@localhost/system/terminal/index.html
+  // Older or vendor-tweaked shells vary, so we accept anything that mentions
+  // "terminal" anywhere in name OR URL, plus a fallback that probes any
+  // frame for an xterm-shaped element.
   const start = Date.now();
-  while (Date.now() - start < 30_000) {
+  const maxMs = 60_000;
+  let lastReport = 0;
+  while (Date.now() - start < maxMs) {
     const frames = page.frames();
+
+    // First pass: explicit terminal-named frames.
     for (const f of frames) {
       const name = f.name();
       const url = f.url();
-      if (/terminal/.test(name) || /system\/terminal/.test(url)) {
+      if (/terminal/i.test(name) || /terminal/i.test(url)) {
         try {
-          await f.waitForSelector('.xterm-rows, .xterm-screen, .xterm, .terminal', { timeout: 10_000 });
+          await f.waitForSelector('.xterm-rows, .xterm-screen, .xterm, .xterm-helper-textarea, .terminal, .ct-terminal', { timeout: 5_000 });
           return f;
-        } catch { /* try next iteration */ }
+        } catch { /* try next */ }
       }
     }
-    await new Promise((r) => setTimeout(r, 500));
+
+    // Second pass: any frame that has xterm DOM, regardless of name.
+    for (const f of frames) {
+      try {
+        const has = await f.evaluate(() => !!document.querySelector('.xterm, .xterm-rows, .xterm-screen, .xterm-helper-textarea'));
+        if (has) return f;
+      } catch { /* cross-origin or detached */ }
+    }
+
+    // Periodic progress emission (every ~5s) so the user knows we're still trying.
+    const elapsed = Date.now() - start;
+    if (elapsed - lastReport > 5_000) {
+      lastReport = elapsed;
+      emit({ type: 'log', stream: 'info', line: `[terminal] still waiting for xterm in any iframe… (${Math.round(elapsed / 1000)}s; ${frames.length} frame${frames.length === 1 ? '' : 's'} present)`, ts: Date.now() });
+    }
+    await new Promise((r) => setTimeout(r, 600));
   }
   return null;
 }
