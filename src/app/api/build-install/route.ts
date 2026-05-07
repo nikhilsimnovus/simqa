@@ -41,14 +41,30 @@ export async function POST(req: Request) {
   const eventStream = fs.createWriteStream(eventsPath, { flags: 'a' });
 
   const encoder = new TextEncoder();
+  // The client may close the response (browser refresh, navigate away, network
+  // blip) while the install is still running. We watch for that and flip
+  // `clientGone` so the installer can short-circuit its polling loops and
+  // close the browser instead of looping for the full per-step timeout.
+  let clientGone = false;
   const stream = new ReadableStream({
     start(controller) {
       // Wrap an emit() that writes to both:
       //   - the HTTP response stream (line-delimited JSON for the UI)
       //   - the on-disk log + events files (for later inspection)
       const emit = (e: InstallEvent) => {
+        if (clientGone) {
+          // Still write to disk so the run is auditable, but don't try to
+          // enqueue into a closed controller (it throws 'Invalid state').
+          try { eventStream.write(JSON.stringify(e) + '\n'); } catch { /* ignore */ }
+          if (e.type === 'log') {
+            const stamp = new Date(e.ts).toISOString();
+            const tag = e.stream === 'stderr' ? '[err] ' : e.stream === 'error' ? '[ERR] ' : e.stream === 'info' ? '[--] ' : '';
+            try { logStream.write(`${stamp} ${tag}${e.line}\n`); } catch { /* ignore */ }
+          }
+          return;
+        }
         const json = JSON.stringify(e);
-        try { controller.enqueue(encoder.encode(json + '\n')); } catch { /* client gone */ }
+        try { controller.enqueue(encoder.encode(json + '\n')); } catch { clientGone = true; }
         try { eventStream.write(json + '\n'); } catch { /* ignore */ }
         if (e.type === 'log') {
           const stamp = new Date(e.ts).toISOString();
@@ -63,15 +79,21 @@ export async function POST(req: Request) {
       // Header line so the client knows the buildId immediately.
       emit({ type: 'log', stream: 'info', line: `buildId=${buildId}`, ts: Date.now() });
 
-      runBuildInstall({ inv, req: body, emit, buildDir })
+      runBuildInstall({ inv, req: body, emit, buildDir, isCanceled: () => clientGone })
         .catch((e: any) => emit({ type: 'log', stream: 'error', line: `unexpected: ${e?.message ?? e}`, ts: Date.now() }))
         .finally(() => {
           try { logStream.end(); } catch { /* ignore */ }
           try { eventStream.end(); } catch { /* ignore */ }
-          try { controller.close(); } catch { /* ignore */ }
+          if (!clientGone) {
+            try { controller.close(); } catch { /* ignore */ }
+          }
         });
     },
     cancel() {
+      // Browser closed the stream — flag the installer so it bails out and
+      // closes its Chromium instance rather than running to completion.
+      clientGone = true;
+      try { logStream.write(`${new Date().toISOString()} -- CLIENT_DISCONNECTED — install will abort at next checkpoint\n`); } catch { /* ignore */ }
       try { logStream.end(); } catch { /* ignore */ }
       try { eventStream.end(); } catch { /* ignore */ }
     },

@@ -65,6 +65,10 @@ export interface BuildInstallContext {
   req: BuildInstallRequest;
   /** Where to drop screenshots. The endpoint creates this. */
   buildDir: string;
+  /** Returns true once the HTTP client has disconnected. The installer
+   *  polls this and aborts its current step early, so we close Chromium
+   *  instead of running to completion against a vanished client. */
+  isCanceled?: () => boolean;
 }
 
 const DEFAULT_COCKPIT_USER     = 'simnovus';
@@ -456,7 +460,7 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
       emit(nowEvent({ type: 'step', step: 'preflight', status: 'start', detail: req.buildUrl }));
       const simpleProbeCmd =
         `curl -ksI --max-time 10 --connect-timeout 5 ${shellQuote(req.buildUrl!)} -o /dev/null -w 'HTTP %{http_code} time=%{time_total}s\\n'`;
-      const probed = await runCommandInFrame(page, frame, simpleProbeCmd, 'preflight', emit, state, 30_000);
+      const probed = await runCommandInFrame(page, frame, simpleProbeCmd, 'preflight', emit, state, 30_000, ctx.isCanceled);
       if (!probed.ok) {
         const hint =
           probed.exitCode === 6  ? 'curl: DNS resolution failed — the build host is not resolvable from the Simnovator VM.' :
@@ -479,7 +483,7 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
         `wget --no-check-certificate -c -q --show-progress ${shellQuote(req.buildUrl!)}`;
       const tFetch = Date.now();
       emit(nowEvent({ type: 'step', step: 'fetch', status: 'start', detail: req.buildUrl }));
-      const fetched = await runCommandInFrame(page, frame, fetchCmd, 'fetch', emit, state, 15 * 60_000);
+      const fetched = await runCommandInFrame(page, frame, fetchCmd, 'fetch', emit, state, 15 * 60_000, ctx.isCanceled);
       if (!fetched.ok) {
         await snap(page, 'fetch', 'failed');
         const hint = exitCodeHint('fetch', fetched.exitCode);
@@ -500,7 +504,7 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
       const tCheck = Date.now();
       emit(nowEvent({ type: 'step', step: 'fetch', status: 'start', detail: `checking ${dir}/${fileName}` }));
       const checkCmd = `ls -la ${shellQuote(`${dir}/${fileName}`)}`;
-      const ok = await runCommandInFrame(page, frame, checkCmd, 'fetch', emit, state, 20_000);
+      const ok = await runCommandInFrame(page, frame, checkCmd, 'fetch', emit, state, 20_000, ctx.isCanceled);
       if (!ok.ok) {
         emit(nowEvent({ type: 'log', stream: 'error', line: `Local file not found / not readable: ${dir}/${fileName}` }));
         emit(nowEvent({ type: 'log', stream: 'info',  line: `Hint: confirm via Cockpit Files at https://${target.host}:${creds.port}/files#/?path=${encodeURIComponent(dir)} that the file exists at the expected path.` }));
@@ -517,7 +521,7 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     const extractCmd = `cd ${shellQuote(dir)} && tar -zxvf ${shellQuote(fileName)} 2>&1 | tail -50`;
     const tExtract = Date.now();
     emit(nowEvent({ type: 'step', step: 'extract', status: 'start' }));
-    const extracted = await runCommandInFrame(page, frame, extractCmd, 'extract', emit, state, 5 * 60_000);
+    const extracted = await runCommandInFrame(page, frame, extractCmd, 'extract', emit, state, 5 * 60_000, ctx.isCanceled);
     if (!extracted.ok) {
       await snap(page, 'extract', 'failed');
       const hint = exitCodeHint('extract', extracted.exitCode);
@@ -533,7 +537,7 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     const installCmd = `cd ${shellQuote(`${dir}/${dirName}`)} && ${installLine}`;
     const tInstall = Date.now();
     emit(nowEvent({ type: 'step', step: 'install', status: 'start', detail: installLine.slice(0, 220) }));
-    const installed = await runCommandInFrame(page, frame, installCmd, 'install', emit, state, 30 * 60_000);
+    const installed = await runCommandInFrame(page, frame, installCmd, 'install', emit, state, 30 * 60_000, ctx.isCanceled);
     await snap(page, installed.ok ? 'install' : 'install', installed.ok ? 'done' : 'failed');
     if (!installed.ok) {
       emit(nowEvent({ type: 'step', step: 'install', status: 'fail', detail: `exit code ${installed.exitCode}`, durationMs: Date.now() - tInstall }));
@@ -639,20 +643,21 @@ async function runCommandInFrame(
   emit: (e: InstallEvent) => void,
   state: StreamingState,
   timeoutMs: number,
+  isCanceled?: () => boolean,
 ): Promise<{ ok: boolean; exitCode: number }> {
   const sentinelId = `${SENTINEL_PREFIX}${Math.random().toString(36).slice(2, 8)}`;
   const wrapped = `${cmd}; ec=$?; echo ${sentinelId}=$ec`;
   emit(nowEvent({ type: 'log', stream: 'info', line: `$ ${cmd}` }));
 
-  // Focus the xterm input and send the command.
-  await frame.evaluate(() => {
-    const ta = document.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
-    ta?.focus();
-  });
-  // insertText is atomic from xterm's POV — the whole string lands as one
-  // input event rather than per-keypress, so we don't see partial commands
-  // in the polled DOM. The Enter press still kicks the shell.
-  await page.keyboard.insertText(wrapped);
+  // Re-click the xterm viewport so xterm.js refocuses its helper textarea
+  // (clicking 'body' or programmatic .focus() is NOT enough on this Cockpit
+  // build — xterm's input plumbing keys off the .xterm-screen click).
+  await frame.click('.xterm-screen', { timeout: 2_000 }).catch(() => null);
+  // page.keyboard.type generates real keypress events — what xterm reliably
+  // consumes. insertText fires only an 'input' event, which some xterm
+  // builds drop on the floor (file-lister hit exactly this bug). delay:4 is
+  // fast enough that the typing isn't visible char-by-char in screenshots.
+  await page.keyboard.type(wrapped, { delay: 4 });
   await page.keyboard.press('Enter');
 
   // Let xterm settle (full command echo + first prompt redraw) before we
@@ -667,6 +672,10 @@ async function runCommandInFrame(
   let ok = false;
   let lastHeartbeat = Date.now();
   while (Date.now() - t0 < timeoutMs) {
+    if (isCanceled?.()) {
+      emit(nowEvent({ type: 'log', stream: 'info', line: `[${step}] client disconnected — aborting` }));
+      return { ok: false, exitCode: -2 };
+    }
     await new Promise((r) => setTimeout(r, pollIntervalMs));
     const rawScreen = await readTerminalIn(frame);
     const screen = trimTrailingBlanks(rawScreen);
