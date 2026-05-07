@@ -107,6 +107,34 @@ const DEFAULT_TIMEZONE = 'Asia/Kolkata';
 
 const INSTALL_USER = 'sysadmin'; // user the Simnovator install script SSHes as
 
+// Step status pill for the install progress strip.
+type StepName = 'connect' | 'fetch' | 'extract' | 'install';
+type StepStatus = 'idle' | 'start' | 'ok' | 'fail';
+const STEP_LABEL: Record<StepName, string> = {
+  connect: '1. SSH connect',
+  fetch:   '2. wget tarball',
+  extract: '3. Extract',
+  install: '4. ./install',
+};
+function StepPill({ name, status }: { name: StepName; status: StepStatus }) {
+  const cls =
+    status === 'ok'    ? 'border-emerald-300 bg-emerald-50 text-emerald-800' :
+    status === 'fail'  ? 'border-red-300 bg-red-50 text-red-700' :
+    status === 'start' ? 'border-sky-300 bg-sky-50 text-sky-700' :
+                         'border-slate-200 bg-slate-50 text-slate-500';
+  const icon =
+    status === 'ok'    ? <CheckCircle2 className="h-3.5 w-3.5" /> :
+    status === 'fail'  ? <XCircle className="h-3.5 w-3.5" /> :
+    status === 'start' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
+                         <span className="h-3.5 w-3.5 inline-block rounded-full border border-slate-300" />;
+  return (
+    <div className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium ${cls}`}>
+      {icon}
+      <span className="truncate">{STEP_LABEL[name]}</span>
+    </div>
+  );
+}
+
 function CopyBtn({ text, label }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   const onClick = async () => {
@@ -186,6 +214,21 @@ export default function ValidatePage() {
   const [result, setResult] = useState<ValidationResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [inventoryLoading, setInventoryLoading] = useState(true);
+
+  // Install run state (StepName/StepStatus are module-level above)
+  type LogEvent  = { type: 'log'; stream: 'stdout'|'stderr'|'info'|'error'; line: string; ts: number };
+  type StepEvent = { type: 'step'; step: StepName; status: 'start'|'ok'|'fail'; detail?: string; durationMs?: number; ts: number };
+  type DoneEvent = { type: 'done'; ok: boolean; durationMs: number; ts: number };
+  type AnyEvent  = LogEvent | StepEvent | DoneEvent;
+
+  const [installBusy,    setInstallBusy]    = useState(false);
+  const [installErr,     setInstallErr]     = useState<string | null>(null);
+  const [installEvents,  setInstallEvents]  = useState<AnyEvent[]>([]);
+  const [installSteps,   setInstallSteps]   = useState<Record<StepName, StepStatus>>({
+    connect: 'idle', fetch: 'idle', extract: 'idle', install: 'idle',
+  });
+  const [installDone,    setInstallDone]    = useState<{ ok: boolean; durationMs: number } | null>(null);
+  const [showManualFallback, setShowManualFallback] = useState(false);
 
   useEffect(() => {
     // Inventory is fast (local file read) — fetch + render its result regardless
@@ -301,7 +344,104 @@ export default function ValidatePage() {
     }
   }
 
-  async function run() {
+  // ── Install + Validate flow (backend-driven) ────────────────────────────
+  async function runInstall(): Promise<{ ok: boolean; buildId: string | null }> {
+    if (!targetSys) return { ok: false, buildId: null };
+    if (!buildUrl.trim()) {
+      setInstallErr('Enter a Build URL first.');
+      return { ok: false, buildId: null };
+    }
+    setInstallErr(null);
+    setInstallBusy(true);
+    setInstallEvents([]);
+    setInstallSteps({ connect: 'idle', fetch: 'idle', extract: 'idle', install: 'idle' });
+    setInstallDone(null);
+
+    const body = {
+      systemId: targetSys.id,
+      buildUrl: buildUrl.trim(),
+      workingDir: installDir.trim() || '/tmp',
+      hosts: HOST_FLAGS
+        .filter((f) => hostEnabled[f.key])
+        .map((f) => ({
+          flag: f.flag as '--ue' | '--app' | '--oru' | '--external',
+          ip: ((hostIp[f.key] || '').trim() || resolvedHostIp[f.key] || ''),
+          user: (hostUser[f.key] || '').trim() || undefined,
+          ipOnly: !!f.ipOnly,
+        }))
+        .filter((h) => h.ip),
+      timezone: timezone.trim() || undefined,
+      maxSimulators: maxSimulators.trim() || undefined,
+      skip: {
+        app_server: !!skipFlags.no_app_server,
+        app_manager: !!skipFlags.no_app_manager,
+        simnovator: !!skipFlags.no_simnovator,
+        ue: !!skipFlags.no_ue,
+        oru: !!skipFlags.no_oru,
+      },
+      restore,
+      extraArgs: extraArgs.trim() || undefined,
+    };
+
+    let buildId: string | null = null;
+    try {
+      const resp = await fetch('/api/build-install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      buildId = resp.headers.get('X-Build-Id');
+      if (!resp.ok || !resp.body) {
+        const txt = await resp.text().catch(() => '');
+        setInstallErr(`HTTP ${resp.status}: ${txt.slice(0, 300)}`);
+        setInstallBusy(false);
+        return { ok: false, buildId };
+      }
+      // Stream-decode line-delimited JSON events.
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let finalOk = false;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          if (!line.trim()) continue;
+          let ev: any;
+          try { ev = JSON.parse(line); } catch { continue; }
+          setInstallEvents((prev) => [...prev, ev]);
+          if (ev.type === 'step') {
+            setInstallSteps((prev) => ({ ...prev, [ev.step]: ev.status }));
+          } else if (ev.type === 'done') {
+            finalOk = !!ev.ok;
+            setInstallDone({ ok: finalOk, durationMs: ev.durationMs });
+          }
+        }
+      }
+      setInstallBusy(false);
+      return { ok: finalOk, buildId };
+    } catch (e: any) {
+      setInstallErr(e?.message ?? String(e));
+      setInstallBusy(false);
+      return { ok: false, buildId };
+    }
+  }
+
+  // Top-of-page button: if "install a new build" is ticked, run install
+  // then checks. Otherwise just run checks.
+  async function runAll() {
+    if (includeBuild) {
+      const r = await runInstall();
+      if (!r.ok) return;
+    }
+    await runChecks();
+  }
+
+  async function runChecks() {
     setBusy(true); setErr(null); setResult(null);
     try {
       const body: any = {
@@ -325,11 +465,11 @@ export default function ValidatePage() {
     <>
       <Header
         title="Build validation"
-        subtitle="Install a Simnovator build via Cockpit, then run the checklist"
+        subtitle="Install a Simnovator build and run the checklist — fully automated, with a saved report"
         right={
-          <Button size="sm" onClick={run} disabled={busy || !hasTarget}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-            {busy ? 'Running…' : 'Run checks'}
+          <Button size="sm" onClick={runAll} disabled={busy || installBusy || !hasTarget}>
+            {(busy || installBusy) ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+            {installBusy ? 'Installing…' : busy ? 'Running checks…' : (includeBuild ? 'Install + Validate' : 'Run checks')}
           </Button>
         }
       />
@@ -575,10 +715,84 @@ export default function ValidatePage() {
                     <div className="mt-2 text-[10px] text-slate-500">{SKIP_FLAGS.map((s) => s.label).join(' · ')}</div>
                   </div>
 
-                  {/* GENERATED COMMANDS */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Run these in Cockpit Terminal</div>
+                  {/* GENERATED COMMAND PREVIEW (read-only) */}
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-2">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Generated install command</div>
+                    <CommandBlock command={plan.install} />
+                    <div className="text-[11px] text-slate-500">
+                      This is the exact line the tool will run on <span className="font-mono">{targetSys?.host}</span> after fetching + extracting the build. Click <span className="font-medium">Install + Validate</span> at the top to do it automatically.
+                    </div>
+                  </div>
+                </CardBody>
+              )}
+            </Card>
+          ) : null}
+
+          {/* INSTALL PROGRESS / LOG */}
+          {hasTarget && includeBuild ? (
+            <Card>
+              <CardHeader className="flex items-center justify-between">
+                <CardTitle>Install progress</CardTitle>
+                {installDone ? (
+                  installDone.ok
+                    ? <Badge tone="success">install ok · {(installDone.durationMs / 1000).toFixed(0)}s</Badge>
+                    : <Badge tone="danger">install failed · {(installDone.durationMs / 1000).toFixed(0)}s</Badge>
+                ) : installBusy ? <Badge tone="info">running…</Badge> : null}
+              </CardHeader>
+              <CardBody className="space-y-3">
+                {/* Step strip */}
+                <div className="grid grid-cols-4 gap-2">
+                  {(['connect','fetch','extract','install'] as StepName[]).map((s) => (
+                    <StepPill key={s} name={s} status={installSteps[s]} />
+                  ))}
+                </div>
+
+                {installErr ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-[12px] text-red-700">{installErr}</div>
+                ) : null}
+
+                {/* Live log */}
+                {installEvents.length > 0 ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-900 overflow-hidden">
+                    <div className="flex items-center justify-between border-b border-slate-800 bg-slate-950 px-3 py-1.5">
+                      <span className="text-[11px] uppercase tracking-wider text-slate-400">Live log · {installEvents.filter((e) => e.type === 'log').length} lines</span>
+                      <CopyBtn text={installEvents.filter((e): e is LogEvent => e.type === 'log').map((e) => e.line).join('\n')} label="log" />
+                    </div>
+                    <div className="max-h-80 overflow-auto px-3 py-2.5 text-[12px] leading-relaxed font-mono whitespace-pre-wrap">
+                      {installEvents.map((e, i) =>
+                        e.type === 'log' ? (
+                          <div
+                            key={i}
+                            className={
+                              e.stream === 'error'  ? 'text-red-300' :
+                              e.stream === 'stderr' ? 'text-amber-300' :
+                              e.stream === 'info'   ? 'text-sky-300' :
+                              'text-slate-100'
+                            }
+                          >{e.line}</div>
+                        ) : e.type === 'step' ? (
+                          <div key={i} className={
+                            e.status === 'fail' ? 'text-red-400' :
+                            e.status === 'ok'   ? 'text-emerald-400' :
+                            'text-slate-400'
+                          }>
+                            ── {e.step.toUpperCase()} {e.status}{e.durationMs ? ` (${e.durationMs}ms)` : ''}{e.detail ? ` :: ${e.detail.slice(0, 200)}` : ''}
+                          </div>
+                        ) : null
+                      )}
+                    </div>
+                  </div>
+                ) : !installBusy ? (
+                  <div className="text-[12px] text-slate-500">Waiting to start. Click <span className="font-medium">Install + Validate</span> at the top.</div>
+                ) : null}
+
+                {/* Manual fallback */}
+                <details className="rounded-lg border border-slate-200 bg-slate-50/60 p-3" open={showManualFallback} onToggle={(e) => setShowManualFallback((e.target as HTMLDetailsElement).open)}>
+                  <summary className="cursor-pointer text-[11px] uppercase tracking-wider text-slate-500 flex items-center gap-2">
+                    <Terminal className="h-3.5 w-3.5" /> Manual fallback — paste these into Cockpit if SSH is blocked
+                  </summary>
+                  <div className="mt-3 space-y-2">
+                    <div className="flex items-center justify-end">
                       <a
                         href={cockpitTerminalUrl}
                         target="_blank" rel="noopener noreferrer"
@@ -589,9 +803,7 @@ export default function ValidatePage() {
                       </a>
                     </div>
                     <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
-                      <div className="text-[11px] text-slate-600">
-                        Cockpit Terminal opens at <span className="font-mono">{cockpitTerminalUrl || '<set host on selected system>'}</span>. Log in with:
-                      </div>
+                      <div className="text-[11px] text-slate-600">Log in with:</div>
                       <div className="grid grid-cols-2 gap-2">
                         <div className="rounded-md bg-slate-50 border border-slate-200 px-2.5 py-1.5 flex items-center justify-between gap-2">
                           <div className="min-w-0">
@@ -608,23 +820,13 @@ export default function ValidatePage() {
                           <CopyBtn text={cockpitCreds.password} label="password" />
                         </div>
                       </div>
-                      <div className="text-[10px] text-slate-500">
-                        Defaults shown — change them on the Simnovator system in <Link className="underline hover:no-underline" href="/inventory">Inventory</Link>.
-                      </div>
                     </div>
                     <CommandBlock title={`1. Fetch — ${plan.fileName}`} command={`${plan.cdTmp}\n${plan.wget}`} />
                     <CommandBlock title="2. Extract" command={`${plan.untar}\n${plan.cdBuild}`} />
                     <CommandBlock title="3. Install" command={plan.install} />
-                    <details className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-                      <summary className="cursor-pointer text-[11px] uppercase tracking-wider text-slate-500">As a single one-liner</summary>
-                      <div className="mt-2"><CommandBlock command={plan.oneLiner} /></div>
-                    </details>
-                    <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-[11px] text-sky-900 leading-relaxed">
-                      <span className="font-medium">Tip:</span> if you don't know the full set of <span className="font-mono">./install</span> flags this build supports, run <span className="font-mono">./install --help</span> in step 3 first. Anything you find can be added under <span className="font-medium">Extra args</span>.
-                    </div>
                   </div>
-                </CardBody>
-              )}
+                </details>
+              </CardBody>
             </Card>
           ) : null}
 
