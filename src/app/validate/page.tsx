@@ -108,14 +108,17 @@ const DEFAULT_TIMEZONE = 'Asia/Kolkata';
 const INSTALL_USER = 'sysadmin'; // user the Simnovator install script SSHes as
 
 // Step status pill for the install progress strip.
-type StepName = 'connect' | 'fetch' | 'extract' | 'install';
+type StepName = 'launch' | 'login' | 'terminal' | 'fetch' | 'extract' | 'install';
 type StepStatus = 'idle' | 'start' | 'ok' | 'fail';
 const STEP_LABEL: Record<StepName, string> = {
-  connect: '1. SSH connect',
-  fetch:   '2. wget tarball',
-  extract: '3. Extract',
-  install: '4. ./install',
+  launch:   '1. Launch browser',
+  login:    '2. Cockpit login',
+  terminal: '3. Open Terminal',
+  fetch:    '4. wget tarball',
+  extract:  '5. Extract',
+  install:  '6. ./install',
 };
+const STEP_ORDER: StepName[] = ['launch', 'login', 'terminal', 'fetch', 'extract', 'install'];
 function StepPill({ name, status }: { name: StepName; status: StepStatus }) {
   const cls =
     status === 'ok'    ? 'border-emerald-300 bg-emerald-50 text-emerald-800' :
@@ -218,14 +221,15 @@ export default function ValidatePage() {
   // Install run state (StepName/StepStatus are module-level above)
   type LogEvent  = { type: 'log'; stream: 'stdout'|'stderr'|'info'|'error'; line: string; ts: number };
   type StepEvent = { type: 'step'; step: StepName; status: 'start'|'ok'|'fail'; detail?: string; durationMs?: number; ts: number };
+  type ShotEvent = { type: 'screenshot'; step: StepName | 'final'; file: string; ts: number };
   type DoneEvent = { type: 'done'; ok: boolean; durationMs: number; ts: number };
-  type AnyEvent  = LogEvent | StepEvent | DoneEvent;
+  type AnyEvent  = LogEvent | StepEvent | ShotEvent | DoneEvent;
 
   const [installBusy,    setInstallBusy]    = useState(false);
   const [installErr,     setInstallErr]     = useState<string | null>(null);
   const [installEvents,  setInstallEvents]  = useState<AnyEvent[]>([]);
   const [installSteps,   setInstallSteps]   = useState<Record<StepName, StepStatus>>({
-    connect: 'idle', fetch: 'idle', extract: 'idle', install: 'idle',
+    launch: 'idle', login: 'idle', terminal: 'idle', fetch: 'idle', extract: 'idle', install: 'idle',
   });
   const [installDone,    setInstallDone]    = useState<{ ok: boolean; durationMs: number } | null>(null);
   const [showManualFallback, setShowManualFallback] = useState(false);
@@ -354,7 +358,7 @@ export default function ValidatePage() {
     setInstallErr(null);
     setInstallBusy(true);
     setInstallEvents([]);
-    setInstallSteps({ connect: 'idle', fetch: 'idle', extract: 'idle', install: 'idle' });
+    setInstallSteps({ launch: 'idle', login: 'idle', terminal: 'idle', fetch: 'idle', extract: 'idle', install: 'idle' });
     setInstallDone(null);
 
     const body = {
@@ -741,8 +745,8 @@ export default function ValidatePage() {
               </CardHeader>
               <CardBody className="space-y-3">
                 {/* Step strip */}
-                <div className="grid grid-cols-4 gap-2">
-                  {(['connect','fetch','extract','install'] as StepName[]).map((s) => (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                  {STEP_ORDER.map((s) => (
                     <StepPill key={s} name={s} status={installSteps[s]} />
                   ))}
                 </div>

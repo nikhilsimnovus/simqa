@@ -63,7 +63,7 @@ export async function POST(req: Request) {
       // Header line so the client knows the buildId immediately.
       emit({ type: 'log', stream: 'info', line: `buildId=${buildId}`, ts: Date.now() });
 
-      runBuildInstall({ inv, req: body, emit })
+      runBuildInstall({ inv, req: body, emit, buildDir })
         .catch((e: any) => emit({ type: 'log', stream: 'error', line: `unexpected: ${e?.message ?? e}`, ts: Date.now() }))
         .finally(() => {
           try { logStream.end(); } catch { /* ignore */ }

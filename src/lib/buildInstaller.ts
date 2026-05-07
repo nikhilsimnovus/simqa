@@ -1,61 +1,67 @@
-// Build installer for SIMNOVATOR systems.
+// Build installer for SIMNOVATOR systems — Chromium + Cockpit edition.
 //
-// Connects to the Simnovator VM over SSH (using the inventory credentials)
-// and runs the same wget + tar + ./install pipeline a human would type into
-// Cockpit Terminal. Streams stdout/stderr line-by-line back to the caller
-// so the UI can render a live log.
+// Drives the *real* Cockpit web UI (https://<host>:<port>/system/terminal)
+// using a headless Chromium instance via Playwright. No SSH from this app —
+// authentication, terminal access, and command execution all happen the
+// same way they would for a human user opening Cockpit in their browser.
 //
-// We deliberately keep this straightforward — no exotic Cockpit-channel
-// stuff; just SSH. The Simnovator account that owns Cockpit (`simnovus`)
-// is also a real Linux user with the same password, so its creds work for
-// SSH authentication too. The actual `./install` script is what eventually
-// SSHes onward to the UE / App / ORU machines from the Simnovator VM.
+// Flow:
+//   1. Launch Chromium with ignoreHTTPSErrors=true (Cockpit uses self-signed)
+//   2. Navigate to https://<host>:<port>/
+//   3. Fill in the Cockpit login form, submit
+//   4. Navigate to /system/terminal
+//   5. Type the wget / tar / ./install commands, one at a time
+//   6. Poll xterm.js's rendered DOM for new lines, stream them as `log` events
+//   7. Detect command completion with a sentinel echo (`__QAKB_DONE_<n>_$?__`)
+//   8. Take a screenshot at every step as visual evidence
+//   9. Persist screenshots + final log to data/builds/<buildId>/
 
-import { NodeSSH } from 'node-ssh';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { chromium, firefox, type Browser, type Page } from 'playwright';
 import type { Inventory, InventorySystem } from './inventory';
 import { getSystem, isSimnovatorTarget } from './inventory';
 
-/** A single event the caller can stream to the browser. */
+// ───────────── Public types ─────────────
+
 export type InstallEvent =
   | { type: 'log'; stream: 'stdout' | 'stderr' | 'info' | 'error'; line: string; ts: number }
   | { type: 'step'; step: InstallStepName; status: 'start' | 'ok' | 'fail'; detail?: string; durationMs?: number; ts: number }
+  | { type: 'screenshot'; step: InstallStepName | 'final'; file: string; ts: number }
   | { type: 'done'; ok: boolean; durationMs: number; ts: number };
 
-export type InstallStepName = 'connect' | 'fetch' | 'extract' | 'install';
+export type InstallStepName = 'launch' | 'login' | 'terminal' | 'fetch' | 'extract' | 'install';
 
 export interface BuildInstallRequest {
-  /** Inventory id of the SIMNOVATOR system to install onto. */
   systemId: string;
-  /** http(s) URL of the .tar.gz to install. */
   buildUrl: string;
-  /** Working dir on the VM (default /tmp). */
   workingDir?: string;
-  /** Per-host (--ue, --app, --oru, --external) IPs and SSH users. */
   hosts: Array<{
     flag: '--ue' | '--app' | '--oru' | '--external';
     ip: string;
-    user?: string;       // ignored for --external
-    ipOnly?: boolean;    // true for --external
+    user?: string;
+    ipOnly?: boolean;
   }>;
-  /** Timezone passed to ./install via -t. Empty/undefined = skip the flag. */
   timezone?: string;
-  /** Numeric value for -m / --max_simulators. Empty = skip. */
   maxSimulators?: string;
-  /** Each truthy entry adds a `--no_*` flag. */
   skip?: { app_server?: boolean; app_manager?: boolean; simnovator?: boolean; ue?: boolean; oru?: boolean };
-  /** If true, append --restore. */
   restore?: boolean;
-  /** Free-form pass-through args appended to the install line. */
   extraArgs?: string;
 }
 
-interface BuildInstallContext {
+export interface BuildInstallContext {
   emit: (e: InstallEvent) => void;
   inv: Inventory;
   req: BuildInstallRequest;
+  /** Where to drop screenshots. The endpoint creates this. */
+  buildDir: string;
 }
 
-const UTF8 = 'utf-8';
+const DEFAULT_COCKPIT_USER     = 'simnovus';
+const DEFAULT_COCKPIT_PASSWORD = 'admin@123';
+const DEFAULT_COCKPIT_PORT     = 9090;
+
+// ───────────── Helpers ─────────────
 
 function nowEvent<T extends Omit<InstallEvent, 'ts'>>(e: T): InstallEvent {
   return { ...(e as any), ts: Date.now() };
@@ -73,58 +79,175 @@ function nameFromUrl(url: string): { fileName: string; dirName: string } {
 }
 
 function shellQuote(s: string): string {
-  // POSIX-safe single-quote wrapping.
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-/** Build the `./install <flags>` line from a request. */
 export function buildInstallCommand(req: BuildInstallRequest): string {
   const parts: string[] = ['./install'];
   for (const h of req.hosts) {
     if (!h.ip) continue;
-    if (h.ipOnly) {
-      parts.push(h.flag, shellQuote(h.ip));
-    } else {
+    if (h.ipOnly) parts.push(h.flag, shellQuote(h.ip));
+    else {
       const user = (h.user || 'sysadmin').trim() || 'sysadmin';
       parts.push(h.flag, shellQuote(`${user}@${h.ip}`));
     }
   }
-  if (req.timezone && req.timezone.trim()) parts.push('-t', shellQuote(req.timezone.trim()));
-  if (req.maxSimulators && req.maxSimulators.trim()) parts.push('-m', req.maxSimulators.trim());
+  if (req.timezone?.trim()) parts.push('-t', shellQuote(req.timezone.trim()));
+  if (req.maxSimulators?.trim()) parts.push('-m', req.maxSimulators.trim());
   if (req.skip?.app_server)  parts.push('--no_app_server');
   if (req.skip?.app_manager) parts.push('--no_app_manager');
   if (req.skip?.simnovator)  parts.push('--no_simnovator');
   if (req.skip?.ue)          parts.push('--no_ue');
   if (req.skip?.oru)         parts.push('--no_oru');
   if (req.restore)           parts.push('--restore');
-  if (req.extraArgs && req.extraArgs.trim()) parts.push(req.extraArgs.trim());
+  if (req.extraArgs?.trim()) parts.push(req.extraArgs.trim());
   return parts.join(' ');
 }
 
-/** Resolve the SSH credentials we'll use to log into the Simnovator VM. */
-function sshCreds(target: InventorySystem): { username: string; password: string } {
-  // Cockpit creds are the same Linux user, so we try cockpitUser/cockpitPassword
-  // first (those are visibly set on the Inventory page for the Simnovator
-  // system), then fall back to the generic SSH username/password.
-  const username = target.cockpitUser ?? target.username ?? '';
-  const password = target.cockpitPassword ?? target.password ?? '';
-  if (!username) throw new Error(`system ${target.id}: no username (set Cockpit user or SSH user in Inventory)`);
-  if (!password) throw new Error(`system ${target.id}: no password (set Cockpit password or SSH password in Inventory)`);
-  return { username, password };
+/** Cockpit creds, applying lab defaults when fields are blank in inventory. */
+function cockpitCreds(target: InventorySystem): { user: string; password: string; port: number } {
+  return {
+    user:     target.cockpitUser     ?? DEFAULT_COCKPIT_USER,
+    password: target.cockpitPassword ?? DEFAULT_COCKPIT_PASSWORD,
+    port:     target.cockpitPort     ?? DEFAULT_COCKPIT_PORT,
+  };
+}
+
+/** Try chrome → edge → bundled chromium → firefox until one launches. */
+async function launchBrowser(): Promise<{ browser: Browser; label: string }> {
+  const baseOpts = { headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] };
+  const attempts: Array<{ label: string; opts: any; launcher: typeof chromium | typeof firefox }> = [
+    { label: 'chrome (system)',    opts: { ...baseOpts, channel: 'chrome' }, launcher: chromium },
+    { label: 'msedge (system)',    opts: { ...baseOpts, channel: 'msedge' }, launcher: chromium },
+    { label: 'chromium (bundled)', opts: baseOpts,                            launcher: chromium },
+    { label: 'firefox (bundled)',  opts: baseOpts,                            launcher: firefox  },
+  ];
+  let lastErr: any;
+  for (const a of attempts) {
+    try {
+      const browser = await a.launcher.launch(a.opts);
+      return { browser, label: a.label };
+    } catch (e) { lastErr = e; }
+  }
+  throw new Error(`could not launch any browser: ${lastErr?.message ?? lastErr}`);
+}
+
+// ───────────── The driver ─────────────
+
+const PROMPT_PATTERN = /\$\s*$/;            // POSIX shell prompt at EOL (rough)
+const SENTINEL_PREFIX = '__QAKB_DONE__';   // sentinel echoed after each command
+
+interface StreamingState {
+  /** All visible terminal text we've already emitted, joined. */
+  emitted: string;
 }
 
 /**
- * Run the build install.
- *
- * Calls `emit` with progress events; resolves once the install line returns
- * (regardless of exit code — overall success/failure is signalled in the
- * final 'done' event). On unexpected exceptions a 'log' (error) event is
- * emitted and the function still resolves.
+ * Read xterm's currently rendered + scrollback buffer as plain text.
+ * Cockpit uses xterm.js with DOM rendering; .xterm-rows is the visible viewport
+ * but the buffer history can be longer. We grab the whole .xterm-screen
+ * innerText which the renderer keeps in sync with the buffer.
  */
+async function readTerminal(page: Page): Promise<string> {
+  return await page.evaluate(() => {
+    // Cockpit nests the xterm container; grab whichever exists.
+    const candidates = [
+      '.xterm-rows', '.xterm-screen', '.xterm', '.terminal', '.ct-terminal',
+    ];
+    for (const sel of candidates) {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (el && el.innerText && el.innerText.length) return el.innerText;
+    }
+    return '';
+  });
+}
+
+/** Press a string into the focused terminal, using xterm's input pipeline. */
+async function termType(page: Page, text: string): Promise<void> {
+  // Make sure the terminal is focused first.
+  await page.evaluate(() => {
+    const el = document.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
+    if (el) el.focus();
+  });
+  await page.keyboard.type(text);
+}
+
+async function termPressEnter(page: Page): Promise<void> {
+  await page.keyboard.press('Enter');
+}
+
+/**
+ * Run a single shell command in the connected Cockpit Terminal, streaming
+ * new output lines as `log` events. Resolves when the command finishes
+ * (sentinel observed) or hard-times-out.
+ */
+async function runCommand(
+  page: Page,
+  cmd: string,
+  step: InstallStepName,
+  emit: (e: InstallEvent) => void,
+  state: StreamingState,
+  timeoutMs: number,
+): Promise<{ ok: boolean; exitCode: number }> {
+  const sentinelId = `${SENTINEL_PREFIX}${Math.random().toString(36).slice(2, 8)}`;
+  // Wrap the user command so we always get an exit-code marker.
+  const wrapped = `${cmd}; ec=$?; echo ${sentinelId}=$ec`;
+  emit(nowEvent({ type: 'log', stream: 'info', line: `$ ${cmd}` }));
+
+  await termType(page, wrapped);
+  await termPressEnter(page);
+
+  const t0 = Date.now();
+  const pollIntervalMs = 350;
+  let exitCode = -1;
+  let ok = false;
+  while (Date.now() - t0 < timeoutMs) {
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    const screen = await readTerminal(page);
+
+    // Diff against what we've already streamed.
+    if (screen.length > state.emitted.length && screen.startsWith(state.emitted)) {
+      const fresh = screen.slice(state.emitted.length);
+      const lines = fresh.split(/\r?\n/);
+      for (const ln of lines) {
+        if (!ln) continue;
+        emit(nowEvent({ type: 'log', stream: 'stdout', line: ln }));
+      }
+      state.emitted = screen;
+    } else if (screen.length > 0 && screen !== state.emitted) {
+      // Buffer rolled (long output trims top); just emit the visible diff
+      // crudely so the user sees something.
+      const idx = screen.indexOf(state.emitted.slice(-200));
+      if (idx > 0) {
+        const fresh = screen.slice(idx + 200);
+        for (const ln of fresh.split(/\r?\n/)) {
+          if (ln) emit(nowEvent({ type: 'log', stream: 'stdout', line: ln }));
+        }
+      }
+      state.emitted = screen;
+    }
+
+    // Look for the sentinel.
+    const match = screen.match(new RegExp(`${sentinelId}=(\\d+)`));
+    if (match) {
+      exitCode = parseInt(match[1], 10);
+      ok = exitCode === 0;
+      break;
+    }
+  }
+  if (exitCode === -1) {
+    emit(nowEvent({ type: 'log', stream: 'error', line: `(timed out after ${Math.round((Date.now() - t0) / 1000)}s on step "${step}")` }));
+  }
+  return { ok, exitCode };
+}
+
+// ───────────── Main entrypoint ─────────────
+
 export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: boolean }> {
-  const { emit, inv, req } = ctx;
+  const { emit, inv, req, buildDir } = ctx;
   const t0 = Date.now();
 
+  // ── Validate request ────────────────────────────────
   const target = getSystem(inv, req.systemId);
   if (!target) {
     emit(nowEvent({ type: 'log', stream: 'error', line: `system not found: ${req.systemId}` }));
@@ -142,105 +265,238 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     return { ok: false };
   }
 
+  const creds = cockpitCreds(target);
+  const cockpitUrl = `https://${target.host}:${creds.port}`;
   const { fileName, dirName } = nameFromUrl(req.buildUrl);
   const dir = (req.workingDir?.trim() || '/tmp').replace(/\/+$/, '');
-  const installCmd = buildInstallCommand(req);
+  const installLine = buildInstallCommand(req);
 
-  emit(nowEvent({ type: 'log', stream: 'info', line: `target: ${target.name || target.id} (${target.host})` }));
+  emit(nowEvent({ type: 'log', stream: 'info', line: `target: ${target.name || target.id} · ${cockpitUrl}` }));
 
-  const ssh = new NodeSSH();
-  let creds: { username: string; password: string };
-  try {
-    creds = sshCreds(target);
-  } catch (e: any) {
-    emit(nowEvent({ type: 'log', stream: 'error', line: e?.message ?? String(e) }));
-    emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
-    return { ok: false };
-  }
-
-  // ── connect ──────────────────────────────────────────────
-  const tConnect = Date.now();
-  emit(nowEvent({ type: 'step', step: 'connect', status: 'start', detail: `${creds.username}@${target.host}:22` }));
-  try {
-    await ssh.connect({
-      host: target.host,
-      port: 22,
-      username: creds.username,
-      password: creds.password,
-      readyTimeout: 30_000,
-    });
-    emit(nowEvent({ type: 'step', step: 'connect', status: 'ok', durationMs: Date.now() - tConnect }));
-  } catch (e: any) {
-    emit(nowEvent({ type: 'step', step: 'connect', status: 'fail', detail: e?.message ?? String(e), durationMs: Date.now() - tConnect }));
-    emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
-    return { ok: false };
-  }
-
-  // helper that runs a single command, streaming stdout/stderr line-by-line.
-  const runStreaming = async (label: InstallStepName, cmd: string, opts?: { cwd?: string }): Promise<{ ok: boolean; durationMs: number }> => {
-    const tStep = Date.now();
-    emit(nowEvent({ type: 'step', step: label, status: 'start', detail: cmd.slice(0, 200) }));
-    emit(nowEvent({ type: 'log', stream: 'info', line: `$ ${cmd}` }));
-    const buf = { stdout: '', stderr: '' };
-    const flushLines = (s: 'stdout' | 'stderr') => {
-      const lines = buf[s].split(/\r?\n/);
-      buf[s] = lines.pop() ?? '';
-      for (const ln of lines) emit(nowEvent({ type: 'log', stream: s, line: ln }));
-    };
-    let exitCode = 0;
+  // Helper that snaps a screenshot and emits an event.
+  let shotIx = 0;
+  async function snap(page: Page, step: InstallStepName | 'final', label: string): Promise<void> {
+    shotIx += 1;
+    const file = path.join(buildDir, `${String(shotIx).padStart(2, '0')}-${step}-${label}.png`);
     try {
-      const r = await ssh.execCommand(cmd, {
-        cwd: opts?.cwd,
-        execOptions: { pty: false },
-        onStdout: (chunk) => { buf.stdout += chunk.toString(UTF8); flushLines('stdout'); },
-        onStderr: (chunk) => { buf.stderr += chunk.toString(UTF8); flushLines('stderr'); },
-      });
-      exitCode = r.code ?? 0;
-      // flush any trailing partial line
-      if (buf.stdout) emit(nowEvent({ type: 'log', stream: 'stdout', line: buf.stdout }));
-      if (buf.stderr) emit(nowEvent({ type: 'log', stream: 'stderr', line: buf.stderr }));
+      await page.screenshot({ path: file, fullPage: false });
+      emit(nowEvent({ type: 'screenshot', step, file: path.basename(file) }));
     } catch (e: any) {
-      emit(nowEvent({ type: 'log', stream: 'error', line: e?.message ?? String(e) }));
-      exitCode = 1;
+      emit(nowEvent({ type: 'log', stream: 'error', line: `screenshot failed: ${e?.message ?? e}` }));
     }
-    const durationMs = Date.now() - tStep;
-    if (exitCode === 0) emit(nowEvent({ type: 'step', step: label, status: 'ok', durationMs }));
-    else emit(nowEvent({ type: 'step', step: label, status: 'fail', detail: `exit code ${exitCode}`, durationMs }));
-    return { ok: exitCode === 0, durationMs };
-  };
+  }
 
+  let browser: Browser | undefined;
+  let page: Page | undefined;
   try {
-    // ── fetch ──────────────────────────────────────────────
+    // ── Launch ──────────────────────────────────────────
+    const tLaunch = Date.now();
+    emit(nowEvent({ type: 'step', step: 'launch', status: 'start' }));
+    const { browser: b, label } = await launchBrowser();
+    browser = b;
+    emit(nowEvent({ type: 'log', stream: 'info', line: `using browser: ${label}` }));
+    const ctxBrowser = await browser.newContext({
+      ignoreHTTPSErrors: true,
+      viewport: { width: 1440, height: 900 },
+    });
+    page = await ctxBrowser.newPage();
+    page.setDefaultTimeout(20_000);
+    page.setDefaultNavigationTimeout(60_000);
+    emit(nowEvent({ type: 'step', step: 'launch', status: 'ok', durationMs: Date.now() - tLaunch }));
+
+    // ── Login ───────────────────────────────────────────
+    const tLogin = Date.now();
+    emit(nowEvent({ type: 'step', step: 'login', status: 'start', detail: cockpitUrl }));
+    await page.goto(`${cockpitUrl}/`, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#login-user-input, input[name="user"]', { timeout: 20_000 });
+    await snap(page, 'login', 'before');
+    await page.fill('#login-user-input, input[name="user"]', creds.user);
+    await page.fill('#login-password-input, input[name="password"]', creds.password);
+    // Cockpit may require accepting reauth scope, etc. We submit and wait.
+    await Promise.all([
+      page.waitForLoadState('domcontentloaded', { timeout: 30_000 }).catch(() => null),
+      page.click('#login-button, button[type="submit"]'),
+    ]);
+    // Wait for the dashboard chrome to render.
+    await page.waitForSelector('iframe[name="cockpit1:localhost/system"], .pf-c-page, #host-apps, body', { timeout: 30_000 }).catch(() => null);
+    await snap(page, 'login', 'after');
+    emit(nowEvent({ type: 'step', step: 'login', status: 'ok', durationMs: Date.now() - tLogin }));
+
+    // ── Terminal ────────────────────────────────────────
+    const tTerm = Date.now();
+    emit(nowEvent({ type: 'step', step: 'terminal', status: 'start' }));
+    await page.goto(`${cockpitUrl}/system/terminal`, { waitUntil: 'domcontentloaded' });
+    // Cockpit Terminal lives in an iframe.
+    const frame = await waitForCockpitTerminalFrame(page);
+    if (!frame) {
+      emit(nowEvent({ type: 'step', step: 'terminal', status: 'fail', detail: 'terminal iframe not ready', durationMs: Date.now() - tTerm }));
+      emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
+      return { ok: false };
+    }
+    // The terminal renderer needs a click to focus.
+    await frame.click('body').catch(() => null);
+    await snap(page, 'terminal', 'ready');
+    emit(nowEvent({ type: 'step', step: 'terminal', status: 'ok', durationMs: Date.now() - tTerm }));
+
+    // The page object we type into is the iframe wrapper, but Playwright's
+    // keyboard targets the focused frame, so we use the outer page.
+    const state: StreamingState = { emitted: '' };
+
+    // Pre-read the prompt so our diff baseline is current.
+    state.emitted = await readTerminalIn(frame);
+
+    // ── Fetch ──────────────────────────────────────────
     const fetchCmd =
       `mkdir -p ${shellQuote(dir)} && cd ${shellQuote(dir)} && ` +
       `wget --no-check-certificate -c -q --show-progress ${shellQuote(req.buildUrl)}`;
-    const fetched = await runStreaming('fetch', fetchCmd);
+    const tFetch = Date.now();
+    emit(nowEvent({ type: 'step', step: 'fetch', status: 'start', detail: req.buildUrl }));
+    const fetched = await runCommandInFrame(page, frame, fetchCmd, 'fetch', emit, state, 15 * 60_000);
     if (!fetched.ok) {
+      await snap(page, 'fetch', 'failed');
+      emit(nowEvent({ type: 'step', step: 'fetch', status: 'fail', detail: `exit code ${fetched.exitCode}`, durationMs: Date.now() - tFetch }));
       emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
       return { ok: false };
     }
+    await snap(page, 'fetch', 'done');
+    emit(nowEvent({ type: 'step', step: 'fetch', status: 'ok', durationMs: Date.now() - tFetch }));
 
-    // ── extract ────────────────────────────────────────────
-    const extractCmd =
-      `cd ${shellQuote(dir)} && tar -zxvf ${shellQuote(fileName)} 2>&1 | tail -50`;
-    const extracted = await runStreaming('extract', extractCmd);
+    // ── Extract ────────────────────────────────────────
+    const extractCmd = `cd ${shellQuote(dir)} && tar -zxvf ${shellQuote(fileName)} 2>&1 | tail -50`;
+    const tExtract = Date.now();
+    emit(nowEvent({ type: 'step', step: 'extract', status: 'start' }));
+    const extracted = await runCommandInFrame(page, frame, extractCmd, 'extract', emit, state, 5 * 60_000);
     if (!extracted.ok) {
+      await snap(page, 'extract', 'failed');
+      emit(nowEvent({ type: 'step', step: 'extract', status: 'fail', detail: `exit code ${extracted.exitCode}`, durationMs: Date.now() - tExtract }));
       emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
       return { ok: false };
     }
+    await snap(page, 'extract', 'done');
+    emit(nowEvent({ type: 'step', step: 'extract', status: 'ok', durationMs: Date.now() - tExtract }));
 
-    // ── install ────────────────────────────────────────────
-    const installFull =
-      `cd ${shellQuote(`${dir}/${dirName}`)} && ${installCmd}`;
-    const installed = await runStreaming('install', installFull);
+    // ── Install ────────────────────────────────────────
+    const installCmd = `cd ${shellQuote(`${dir}/${dirName}`)} && ${installLine}`;
+    const tInstall = Date.now();
+    emit(nowEvent({ type: 'step', step: 'install', status: 'start', detail: installLine.slice(0, 220) }));
+    const installed = await runCommandInFrame(page, frame, installCmd, 'install', emit, state, 30 * 60_000);
+    await snap(page, installed.ok ? 'install' : 'install', installed.ok ? 'done' : 'failed');
     if (!installed.ok) {
+      emit(nowEvent({ type: 'step', step: 'install', status: 'fail', detail: `exit code ${installed.exitCode}`, durationMs: Date.now() - tInstall }));
       emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
       return { ok: false };
     }
+    emit(nowEvent({ type: 'step', step: 'install', status: 'ok', durationMs: Date.now() - tInstall }));
 
+    await snap(page, 'final', 'success');
     emit(nowEvent({ type: 'done', ok: true, durationMs: Date.now() - t0 }));
     return { ok: true };
+  } catch (e: any) {
+    emit(nowEvent({ type: 'log', stream: 'error', line: `unexpected: ${e?.message ?? e}` }));
+    if (page) try { await snap(page, 'final', 'crash'); } catch { /* ignore */ }
+    emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
+    return { ok: false };
   } finally {
-    try { ssh.dispose(); } catch { /* ignore */ }
+    try { await browser?.close(); } catch { /* ignore */ }
   }
+}
+
+// ───────────── Cockpit-iframe specifics ─────────────
+
+import type { Frame } from 'playwright';
+
+async function waitForCockpitTerminalFrame(page: Page): Promise<Frame | null> {
+  // Cockpit iframes itself: the terminal lives at name="cockpit1:localhost/system/terminal".
+  const start = Date.now();
+  while (Date.now() - start < 30_000) {
+    const frames = page.frames();
+    for (const f of frames) {
+      const name = f.name();
+      const url = f.url();
+      if (/terminal/.test(name) || /system\/terminal/.test(url)) {
+        try {
+          await f.waitForSelector('.xterm-rows, .xterm-screen, .xterm, .terminal', { timeout: 10_000 });
+          return f;
+        } catch { /* try next iteration */ }
+      }
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return null;
+}
+
+async function readTerminalIn(frame: Frame): Promise<string> {
+  return await frame.evaluate(() => {
+    const candidates = ['.xterm-rows', '.xterm-screen', '.xterm', '.terminal', '.ct-terminal'];
+    for (const sel of candidates) {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (el && el.innerText && el.innerText.length) return el.innerText;
+    }
+    return '';
+  });
+}
+
+async function runCommandInFrame(
+  page: Page,
+  frame: Frame,
+  cmd: string,
+  step: InstallStepName,
+  emit: (e: InstallEvent) => void,
+  state: StreamingState,
+  timeoutMs: number,
+): Promise<{ ok: boolean; exitCode: number }> {
+  const sentinelId = `${SENTINEL_PREFIX}${Math.random().toString(36).slice(2, 8)}`;
+  const wrapped = `${cmd}; ec=$?; echo ${sentinelId}=$ec`;
+  emit(nowEvent({ type: 'log', stream: 'info', line: `$ ${cmd}` }));
+
+  // Focus the xterm input and send the command.
+  await frame.evaluate(() => {
+    const ta = document.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
+    ta?.focus();
+  });
+  await page.keyboard.type(wrapped);
+  await page.keyboard.press('Enter');
+
+  const t0 = Date.now();
+  const pollIntervalMs = 350;
+  let exitCode = -1;
+  let ok = false;
+  while (Date.now() - t0 < timeoutMs) {
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    const screen = await readTerminalIn(frame);
+
+    if (screen.length > state.emitted.length && screen.startsWith(state.emitted)) {
+      const fresh = screen.slice(state.emitted.length);
+      for (const ln of fresh.split(/\r?\n/)) {
+        if (ln) emit(nowEvent({ type: 'log', stream: 'stdout', line: ln }));
+      }
+      state.emitted = screen;
+    } else if (screen.length > 0 && screen !== state.emitted) {
+      const tail = state.emitted.slice(-160);
+      const idx = tail ? screen.indexOf(tail) : -1;
+      if (idx > 0) {
+        const fresh = screen.slice(idx + tail.length);
+        for (const ln of fresh.split(/\r?\n/)) {
+          if (ln) emit(nowEvent({ type: 'log', stream: 'stdout', line: ln }));
+        }
+      } else {
+        // Total reset: just emit the whole new screen.
+        for (const ln of screen.split(/\r?\n/)) {
+          if (ln) emit(nowEvent({ type: 'log', stream: 'stdout', line: ln }));
+        }
+      }
+      state.emitted = screen;
+    }
+
+    const match = screen.match(new RegExp(`${sentinelId}=(\\d+)`));
+    if (match) {
+      exitCode = parseInt(match[1], 10);
+      ok = exitCode === 0;
+      break;
+    }
+  }
+  if (exitCode === -1) {
+    emit(nowEvent({ type: 'log', stream: 'error', line: `(timed out after ${Math.round((Date.now() - t0) / 1000)}s on step "${step}")` }));
+  }
+  return { ok, exitCode };
 }
