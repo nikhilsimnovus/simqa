@@ -1,0 +1,17 @@
+/* SIB4 template to be filled */
+{
+  message c1: systemInformation: {
+    criticalExtensions systemInformation-r8: {
+      sib-TypeAndInfo {
+        sib4: {
+          intraFreqNeighCellList {
+            {
+              physCellId 100,
+              q-OffsetCell dB0
+            }
+          }
+        }
+      }
+    }
+  }
+}

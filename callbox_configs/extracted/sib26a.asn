@@ -1,0 +1,19 @@
+/* This is a template file, fill it with your parameters */
+{
+  message c1: systemInformation: {
+    criticalExtensions systemInformation-r8: {
+      sib-TypeAndInfo {
+        sib26a-v1610: {
+          plmn-InfoList-r16 {
+            {
+              nr-BandList-r16 '1000000000'B
+            }
+          },
+          bandListENDC-r16 {
+            78
+          }
+        }
+      }
+    }
+  }
+}

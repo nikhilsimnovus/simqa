@@ -1,0 +1,29 @@
+/* This is a template file, fill it with your parameters */
+{
+  message c1: systemInformation: {
+    criticalExtensions systemInformation-r8: {
+      sib-TypeAndInfo {
+        sib7: {
+          t-ReselectionGERAN 1,
+          carrierFreqsInfoList {
+            {
+              carrierFreqs {
+                startingARFCN 515,
+                bandIndicator dcs1800,
+                followingARFCNs explicitListOfARFCNs: {
+                }
+              },
+              commonInfo {
+                cellReselectionPriority 7,
+                ncc-Permitted  '11111111'B,
+                q-RxLevMin 2,
+                threshX-High 7,
+                threshX-Low  8
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

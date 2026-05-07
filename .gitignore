@@ -1,0 +1,70 @@
+# ──────────────────────────────────────────────────────────────────────
+# Dependencies
+# ──────────────────────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# ──────────────────────────────────────────────────────────────────────
+# Build / runtime artifacts
+# ──────────────────────────────────────────────────────────────────────
+.next/
+dist/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts.bak
+
+# ──────────────────────────────────────────────────────────────────────
+# Local data, test artifacts, evidence
+#
+# The runner writes screenshots, traces, videos, network logs, and
+# generated cfgs under these directories — they're huge, change on every
+# run, and may contain output captured against a real product instance.
+# Never commit them.
+# ──────────────────────────────────────────────────────────────────────
+data/
+output/
+.out/
+scripts/.out/
+scripts/staging/
+
+# ──────────────────────────────────────────────────────────────────────
+# Local secrets — never commit
+#
+# inventory.yaml carries SSH passwords and Cockpit credentials for the
+# lab boxes. Copy inventory.example.yaml on first run and fill in your
+# own values; the gitignore keeps your live file out of source control.
+# ──────────────────────────────────────────────────────────────────────
+inventory.yaml
+.env
+.env.local
+.env.*.local
+.env.jira
+*.pem
+*.key
+id_rsa
+id_rsa.*
+known_hosts
+
+# ──────────────────────────────────────────────────────────────────────
+# Editor / OS junk
+# ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ──────────────────────────────────────────────────────────────────────
+# Logs
+# ──────────────────────────────────────────────────────────────────────
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.log

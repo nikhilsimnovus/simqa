@@ -1,0 +1,61 @@
+# Lab inventory — copy this file to inventory.yaml on first run and fill in
+# your own values. inventory.yaml is gitignored so your credentials never
+# leave your machine.
+#
+# At minimum register one SIMNOVATOR system (the box that runs the product
+# and receives Build Check installs). Add CALLBOX / IMS / MME / APPSERVER
+# entries as your topology requires, then bind them into a QA Test Setup
+# on the End to End page.
+
+systems:
+  # The Simnovator VM that runs the controller / receives the build install.
+  - id: simnovator-vm
+    type: SIMNOVATOR
+    name: Simnovator VM
+    host: 192.0.2.10
+    vendor: simnovus
+    # UESIM REST API credentials (used by the test framework to talk to the box)
+    uesim:
+      username: admin
+      password: admin
+    # Cockpit web admin UI credentials. Used only to display login hints in
+    # the Build Check install plan — this app never logs into Cockpit on
+    # your behalf, you do it from your own browser.
+    cockpitUser: simnovus
+    cockpitPassword: admin@123
+    cockpitPort: 9090
+    notes: Build Check installs onto this box.
+
+  # A separate UESIM rig (optional — only if your simnovator VM doesn't
+  # play the UESIM role itself).
+  - id: lab-uesim
+    type: UESIM
+    name: Lab UESIM
+    host: 192.0.2.11
+    uesim:
+      username: admin
+      password: admin
+
+  # A callbox (network simulator). May also play the IMS / MME / AppServer
+  # roles in your QA Test Setup, in which case set "same as callbox" on
+  # those roles in the End to End page.
+  - id: lab-callbox
+    type: CALLBOX
+    name: Lab Callbox
+    host: 192.0.2.12
+    username: sysadmin
+    password: <your-ssh-password>
+    vendor: simnovus
+
+  # Separate App Server box (optional — leave out if you're sharing the
+  # callbox).
+  # - id: lab-appserver
+  #   type: APPSERVER
+  #   name: Lab App Server
+  #   host: 192.0.2.13
+  #   username: sysadmin
+  #   password: <your-ssh-password>
+
+# QA Test Setups — bind the systems above into named end-to-end topologies.
+# You can also create / edit these from the End to End page in the UI.
+profiles: []

@@ -1,0 +1,437 @@
+/* gNodeB test mode for PDSCH */
+{
+//  log_options: "all.level=debug,all.max_size=0",
+  log_options: "all.level=error,all.max_size=0,nas.level=debug,nas.max_size=1,s1ap.level=debug,rrc.level=debug,rrc.max_size=1",
+  log_filename: "/tmp/gnb0.log",
+
+#define FR2 0 /* 0=FR1, 1=FR2 */
+
+#if FR2
+/* FR2 parameters */
+#define TDD 1
+#define BANDWIDTH 50 /* MHz */
+#define SCS 120 /* kHz */
+#else
+/* FR1 parameters */
+#define TDD 0
+#define BANDWIDTH 20 /* MHz */
+#define SCS 30 /* kHz */
+#endif
+
+/* the signal is replicated on all the TX antennas */
+#define N_ANTENNA_DL        1
+
+/* Test models from TS 38.141-1 section 4.9.2.2 */
+#define TEST_MODEL "UE-SIM"
+//#define TEST_MODEL "FR1-TM1.1"
+//#define TEST_MODEL "FR1-TM1.2"
+//#define TEST_MODEL "FR1-TM2"
+//#define TEST_MODEL "FR1-TM2a"
+//#define TEST_MODEL "FR1-TM3.1"
+//#define TEST_MODEL "FR1-TM3.1a"
+//#define TEST_MODEL "FR1-TM3.2"
+//#define TEST_MODEL "FR1-TM3.3"
+
+
+#if TEST_MODEL == "UE-SIM"
+#define SSB_ENABLED 1
+#else
+#define SSB_ENABLED 0 /* no SSB is generated */
+#endif
+
+  /* RF driver configuration */
+  rf_driver: {
+        name: "sdr",
+
+        /* list of devices. 'dev0' is always the master. */
+        args: "dev0=/dev/sdr0",
+
+        /* synchronisation source: none, internal, gps, external (default = none) */
+        // sync: "gps",
+  },
+  tx_gain: 90.0, /* TX gain (in dB) */
+  rx_gain: 20.0, /* RX gain (in dB) */
+
+  rf_ports: [
+    {
+#if FR2
+      /* an external frequency translator must be used */
+      rf_dl_freq: 3500,
+      rf_ul_freq: 3500,
+#endif
+#if N_ANTENNA_DL >= 2
+      /* use the channel simulator to replicate the signal on all the
+         TX antennas */
+      n_antenna_dl: N_ANTENNA_DL,
+      channel_dl: {
+        type: "awgn", 
+        noise_level: -200, /* no noise by default */
+      },
+#endif
+    }
+  ],
+
+  /* address of MME for S1AP connection. Must be modified if the MME
+     runs on a different host. */
+  mme_list: [ ],
+  /* GTP bind address (=address of the ethernet interface connected to
+     the MME). Must be modified if the MME runs on a different host. */
+  gtp_addr: "127.0.1.1",
+
+  /* PLMN */
+  mcc: "001",
+  mnc: "01",
+
+  /* list of cells */
+  cell_list: [
+  ], /* cell_list */
+
+  /* NR cells */
+  nr_cell_list: [
+  {
+      rf_port: 0,
+      cell_id: 0x01,
+#if TDD
+#if FR2
+      band: 257,
+      dl_nr_arfcn: 2079167,  /* 28000.08 MHz */
+      ssb_nr_arfcn: 2079167,
+      ssb_subcarrier_spacing: 120, /* kHz */
+#if SSB_ENABLED      
+      ssb_pos_bitmap: "0100000000000000000000000000000000000000000000000000000000000000",
+#else
+      ssb_pos_bitmap: "0000000000000000000000000000000000000000000000000000000000000000",
+#endif
+#else
+      band: 78,
+      dl_nr_arfcn: 633332,  /* 3499.98 MHz */
+      ssb_nr_arfcn: 633332,
+      ssb_subcarrier_spacing: 30, /* kHz */
+#if SSB_ENABLED      
+      ssb_pos_bitmap: "00000001",
+#else
+      ssb_pos_bitmap: "00000000",
+#endif
+#endif
+#else
+      band: 2,
+      dl_nr_arfcn: 396000, /* 1980 MHz */
+      ssb_nr_arfcn: 396000,
+      ssb_subcarrier_spacing: 15, /* kHz */
+#if SSB_ENABLED      
+      ssb_pos_bitmap: "1000",
+#else
+      ssb_pos_bitmap: "0000",
+#endif
+#endif
+      no_ssb_allowed: true,
+      ssb_period: 10, /* in ms */
+      subcarrier_spacing: SCS, /* kHz */
+      bandwidth: BANDWIDTH, /* MHz */
+      n_antenna_dl: 1, /* 1-8 */
+      n_antenna_ul: 1, /* 1-8 */
+
+      n_id_cell: 1,
+
+#if TDD
+#if FR2
+#if SCS == 60
+      tdd_ul_dl_config: {
+        pattern1: {
+          period: 1.25, /* in ms */
+          dl_slots: 3,
+          dl_symbols: 10,
+          ul_slots: 1,
+          ul_symbols: 2,
+        },
+      },
+#elif SCS == 120
+#if 0
+      tdd_ul_dl_config: {
+        pattern1: {
+          period: 1.25, /* in ms */
+          dl_slots: 7,
+          dl_symbols: 6,
+          ul_slots: 2,
+          ul_symbols: 4,
+        },
+      },
+#else
+      /* alternate 120 kHz TDD configuration */
+      tdd_ul_dl_config: {
+        pattern1: {
+          period: 0.625, /* in ms */
+          dl_slots: 3,
+          dl_symbols: 10,
+          ul_slots: 1,
+          ul_symbols: 2,
+        },
+      },
+#endif
+#endif /* SCS */
+#else
+#if SCS == 15
+      tdd_ul_dl_config: {
+        pattern1: {
+          period: 5, /* in ms */
+          dl_slots: 3,
+          dl_symbols: 10,
+          ul_slots: 1,
+          ul_symbols: 2,
+        },
+      },
+#elif SCS == 30
+      tdd_ul_dl_config: {
+        pattern1: {
+          period: 5, /* in ms */
+          dl_slots: 7,
+          dl_symbols: 6,
+          ul_slots: 2,
+          ul_symbols: 4,
+        },
+      },
+#elif SCS == 60
+      tdd_ul_dl_config: {
+        pattern1: {
+          period: 5, /* in ms */
+          dl_slots: 14,
+          dl_symbols: 12,
+          ul_slots: 4,
+          ul_symbols: 8,
+        },
+      },
+#endif /* SCS */
+#endif /* !FR2 */
+#endif /* TDD */
+
+      p_max: 10, /* dBm */
+
+      root_sequence_index: 1, /* PRACH root sequence index */
+
+      dmrs_type_a_pos: 2,
+      sr_period: 0,
+
+      prach: {
+#if TDD
+#if FR2
+        prach_config_index: 149, /* format B4, subframe 9 */
+        msg1_subcarrier_spacing: 120, /* kHz */
+#else
+        prach_config_index: 160, /* format B4, subframe 9 */
+        msg1_subcarrier_spacing: 30, /* kHz */
+#endif
+#else
+        prach_config_index: 16, /* subframe 1 every frame */
+#endif
+        msg1_fdm: 1,
+        msg1_frequency_start: -1,
+        zero_correlation_zone_config: 15,
+        preamble_received_target_power: -110,
+        preamble_trans_max: 7,
+        power_ramping_step: 4,
+        ra_response_window: 20,
+        restricted_set_config: "unrestricted_set",
+        ra_contention_resolution_timer: 64, /* in ms */
+        ssb_per_prach_occasion: 1,
+#if FR2
+        cb_preambles_per_ssb: 4,
+#else
+        cb_preambles_per_ssb: 8,
+#endif
+      },
+      
+      pdcch: {
+        common_coreset: {
+          rb_start: 0,
+          l_crb: 6,
+#if TEST_MODEL == "UE-SIM"
+          duration: 1,
+#else
+          duration: 2,
+#endif
+          precoder_granularity: "sameAsREG_bundle",
+        },
+        css: {
+          n_candidates: [ 1, 0, 0, 0, 0 ],
+        },
+        rar_al_index: 0,
+
+        uss: {
+          n_candidates: [ 1, 0, 0, 0, 0 ],
+          dci_0_1_and_1_1: true,
+#if TEST_MODEL != "UE-SIM"
+          force_cce0: true, /* force PDCCH in CCE 0 */
+#endif          
+        },
+        al_index: 0,
+      },
+
+      pdsch: {
+        mapping_type: "typeA",
+        dmrs_add_pos: 1,
+        dmrs_type: 1,
+        dmrs_max_len: 1,
+        mcs_table: "qam256",
+        k0: 0, /* delay in slots from DCI to PDSCH */
+#if TDD
+#if FR2
+        k1: [ 14, 13, 12, 11],
+#else
+        k1: [ 8, 7, 7, 6, 5, 4, 12, 11 ],
+#endif
+#else
+        k1: 4,
+#endif /* TDD */
+        /* hardcoded scheduling parameters */
+#if TEST_MODEL == "UE-SIM" 
+        mcs: 28, /* 256QAM */
+#elif TEST_MODEL == "FR1-TM1.1"
+        mcs: 3, /* QPSK */
+#elif TEST_MODEL == "FR1-TM1.2"
+        mcs: 3, /* QPSK */
+#elif TEST_MODEL == "FR1-TM2"
+        mcs: 14, /* 64QAM */
+#elif TEST_MODEL == "FR1-TM2a"
+        mcs: 23, /* 256QAM */
+#elif TEST_MODEL == "FR1-TM3.1"
+        mcs: 14, /* 64QAM */
+#elif TEST_MODEL == "FR1-TM3.1a"
+        mcs: 23, /* 256QAM */
+#elif TEST_MODEL == "FR1-TM3.2"
+        mcs: 3, /* QPSK */
+#elif TEST_MODEL == "FR1-TM3.3"
+        mcs: 3, /* QPSK */
+#else
+#error unsupported test model
+#endif
+        rar_mcs: 2,
+        fer: 0,
+        fixed_rb_alloc: true,
+#if TEST_MODEL == "UE-SIM"
+        rb_start: 0,
+#if FR2
+        l_crb: 32,
+#else
+        l_crb: 51,
+#endif /* FR2 */
+
+#elif TEST_MODEL == "FR1-TM2" || TEST_MODEL == "FR1-TM2a"
+        /* Note: adjust according to the bandwidth and SCS (period = 10 ms) */
+        rb_start: [ 0, 25, 50, 0, 25, 50, 0, 25, 50,
+                    0, 25, 50, 0, 25, 50, 0, 25, 50,
+                    0, 25 ],
+        l_crb: 1,
+#else /* other test models */
+        rb_start: 0,
+        l_crb: 3,
+#endif /* TEST_MODEL */
+      },
+
+      pucch: {
+        pucch_group_hopping: "neither",
+        hopping_id: -1, /* -1 = n_cell_id */
+        p0_nominal: -96,
+        pucch1: {
+          n_cs: 3,
+          n_occ: 3,
+        },
+        pucch4: {
+          occ_len: 4,
+          bpsk: false,
+          additional_dmrs: false,
+          freq_hopping: true,
+          max_code_rate: 0.25,
+        },
+      },
+
+      pusch: {
+        mapping_type: "typeA",
+        beta_offset_ack_index: 9,
+        n_symb: 14,
+        dmrs_add_pos: 1,
+        dmrs_type: 1,
+        dmrs_max_len: 1,
+        tf_precoding: false,
+        mcs_table: "qam256", /* without transform precoding */
+        mcs_table_tp: "qam256", /* with transform precoding */
+        ldpc_max_its: 5,
+#if FR2
+        k2: 11, /* delay in slots from DCI to PUSCH */
+        msg3_k2: 14,
+#else
+        k2: 4, /* delay in slots from DCI to PUSCH */
+        msg3_k2: 6,
+#endif
+        msg3_mcs: 5,
+        msg3_delta_power: 0, /* in dB */
+        p0_nominal_with_grant: -84,
+
+        /* hardcoded scheduling parameters */
+        mcs: 27,
+      },
+
+      /* MAC configuration */
+      mac_config: {
+         msg3_max_harq_tx: 5,
+         ul_max_harq_tx: 1, /* max number of HARQ transmissions for uplink */
+         dl_max_harq_tx: 5, /* max number of HARQ transmissions for downlink */
+         ul_max_consecutive_retx: 30, /* disconnect UE if reached */
+         dl_max_consecutive_retx: 30, /* disconnect UE if reached */
+         periodic_bsr_timer: 20,
+         retx_bsr_timer: 320,
+         periodic_phr_timer: 500,
+         prohibit_phr_timer: 200,
+         phr_tx_power_factor_change: "dB3"
+      },
+
+      /* additional PDSCH with RNTI=0 and optionally RNTI=1 for boosted PRBS */
+#if TEST_MODEL != "UE-SIM" && TEST_MODEL != "FR1-TM2" && TEST_MODEL != "FR1-TM2a"
+      tm_pdsch: {
+        rb_start: 3,
+#if TEST_MODEL == "FR1-TM1.1"
+        mcs: 3, /* QPSK */
+#elif TEST_MODEL == "FR1-TM1.2"
+        mcs: 3, /* QPSK */
+        boosted_ratio: 0.4,
+        boosted_power: 3, /* dB */
+        deboosted_mcs: 3, /* QPSK */
+#elif TEST_MODEL == "FR1-TM3.1"
+        mcs: 14, /* 64QAM */
+#elif TEST_MODEL == "FR1-TM3.1a"
+        mcs: 23, /* 256QAM */
+#elif TEST_MODEL == "FR1-TM3.2"
+        mcs: 7, /* 16QAM */
+        boosted_ratio: 0.6,
+        boosted_power: -3, /* dB */
+        deboosted_mcs: 3, /* QPSK */
+#elif TEST_MODEL == "FR1-TM3.3"
+        mcs: 3, /* QPSK */
+        boosted_ratio: 0.5,
+        boosted_power: -6, /* dB */
+        deboosted_mcs: 3, /* QPSK */
+#else
+#error unsupported test model
+#endif
+      },
+#endif /* !UE-SIM */
+
+      test_mode: {
+        type: "pdsch",
+        random_data: false, /* if true, send random data instead of zeros */
+#if FR2
+        pdsch_harq_ack_disable: true, /* needed to use all DL slots */
+#endif
+#if TEST_MODEL == "UE-SIM"
+        rnti: 0x100,
+#else
+        rnti: 0x2,
+#endif
+      },
+
+      cipher_algo_pref: [],
+      integ_algo_pref: [2, 1],
+
+      drb_config: "drb_nr.cfg",
+  },
+  ], /* nr_cell_list */
+}

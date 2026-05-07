@@ -1,0 +1,17 @@
+/* NR SIB3 template to be filled */
+{
+  message c1: systemInformation: {
+    criticalExtensions systemInformation: {
+      sib-TypeAndInfo {
+        sib3: {
+          intraFreqNeighCellList {
+            {
+              physCellId 501,
+              q-OffsetCell dB0
+            }
+          }
+        }
+      }
+    }
+  }
+}

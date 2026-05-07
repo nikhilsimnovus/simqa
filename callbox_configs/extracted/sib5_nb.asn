@@ -1,0 +1,27 @@
+/* NB-IoT SIB5 template to be filled */
+{
+  message c1: systemInformation-r13: {
+    criticalExtensions systemInformation-r13: {
+      sib-TypeAndInfo-r13 {
+        sib5-r13: {
+          interFreqCarrierFreqList-r13 {
+            {
+              dl-CarrierFreq-r13 {
+                carrierFreq-r13 1
+              },
+              q-RxLevMin-r13 -60
+            },
+            {
+              dl-CarrierFreq-r13 {
+                carrierFreq-r13 20,
+                carrierFreqOffset-r13 v-3
+              },
+              q-RxLevMin-r13 -65
+            }
+          },
+          t-Reselection-r13 s6
+        }
+      }
+    }
+  }
+}

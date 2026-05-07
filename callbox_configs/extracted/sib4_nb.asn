@@ -1,0 +1,21 @@
+/* NB-IoT SIB4 template to be filled */
+{
+  message c1: systemInformation-r13: {
+    criticalExtensions systemInformation-r13: {
+      sib-TypeAndInfo-r13 {
+        sib4-r13: {
+          intraFreqNeighCellList-r13 {
+            {
+              physCellId 100,
+              q-OffsetCell dB0
+            },
+            {
+              physCellId 200,
+              q-OffsetCell dB-10
+            }
+          }
+        }
+      }
+    }
+  }
+}

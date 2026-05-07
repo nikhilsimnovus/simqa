@@ -1,0 +1,64 @@
+/* MeasConfig ASN.1 object for RRC reconfiguration */
+{
+  measObjectToAddModList {
+    {
+      measObjectId 1,
+      measObject measObjectNR: {
+        ssbFrequency 0, /* automatically patched by gNodeB if set to 0 */
+        ssbSubcarrierSpacing spare1, /* automatically patched by gNodeB if ssbFrequency is set to 0 */
+        smtc1 { /* automatically patched by gNodeB if ssbFrequency is set to 0 */
+          periodicityAndOffset sf5: 0,
+          duration sf1
+        },
+        referenceSignalConfig {
+          ssb-ConfigMobility {
+            deriveSSB-IndexFromCell FALSE
+          }
+        },
+        quantityConfigIndex 1,
+        offsetMO {
+        },
+        freqBandIndicatorNR 1 /* automatically patched by gNodeB if ssbFrequency is set to 0 */
+      }
+    }
+  },
+  reportConfigToAddModList {
+    {
+      reportConfigId 1,
+      reportConfig reportConfigNR: {
+        reportType periodical: {
+          rsType ssb,
+          reportInterval ms1024,
+          reportAmount infinity,
+          reportQuantityCell {
+            rsrp TRUE,
+            rsrq TRUE,
+            sinr TRUE
+          },
+          maxReportCells 1,
+          includeBeamMeasurements FALSE,
+          useAllowedCellList FALSE
+        }
+      }
+    }
+  },
+  measIdToAddModList {
+    {
+      measId 1,
+      measObjectId 1,
+      reportConfigId 1
+    }
+  },
+  quantityConfig {
+    quantityConfigNR-List {
+      {
+        quantityConfigCell {
+          ssb-FilterConfig {
+          },
+          csi-RS-FilterConfig {
+          }
+        }
+      }
+    }
+  }
+}

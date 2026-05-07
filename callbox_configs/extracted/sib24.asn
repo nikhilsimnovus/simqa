@@ -1,0 +1,24 @@
+/* SIB24 template to be filled */
+{
+  message c1: systemInformation: {
+    criticalExtensions systemInformation-r8: {
+      sib-TypeAndInfo {
+        sib24-v1530: {
+          carrierFreqListNR-r15 {
+            {
+              carrierFreq-r15 632544,
+              subcarrierSpacingSSB-r15 kHz30,
+              cellReselectionPriority-r15 7,
+              threshX-High-r15 0,
+              threshX-Low-r15 0,
+              q-RxLevMin-r15 -40,
+              p-MaxNR-r15 10,
+              deriveSSB-IndexFromCell-r15 TRUE
+            }
+          },
+          t-ReselectionNR-r15 1
+        }
+      }
+    }
+  }
+}

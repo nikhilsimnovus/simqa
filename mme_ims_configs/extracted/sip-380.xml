@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding="UTF-8"?>
+<ims-3gpp version="1.0">
+<alternative-service>
+<type>emergency</type>
+<action>emergency-registration</action>
+<reason>sample reason</reason>
+</alternative-service>
+</ims-3gpp>

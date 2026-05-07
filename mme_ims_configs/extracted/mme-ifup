@@ -1,0 +1,96 @@
+#!/bin/sh
+ifname="$1"     # Interface name
+index="$2"      # Network index (PDN index)
+apn="$3"        # Access point name
+type="$4"       # ipv4, ipv6 or ethernet
+
+if [ "$type" = "ipv4" ] ; then
+
+    ifaddr="$5" # Interface address
+    addr1="$6"  # First IP address
+    addr2="$7"  # Last IP address
+    mask="$8"   # Mask
+
+    #echo "*** Configuring IPv4 pdn '$apn' on ${ifname}, $ifaddr/$mask"
+
+    # allow pinging UEs on same PDN
+    echo '0' > /proc/sys/net/ipv4/conf/$ifname/accept_redirects
+    if [ -f "/proc/sys/net/ipv4/conf/$ifname/send_redirects" ] ; then
+        echo '0' > /proc/sys/net/ipv4/conf/$ifname/send_redirects
+    fi
+
+    # Configure interface
+    ifconfig ${ifname} ${ifaddr}/${mask} up txqueuelen 1000
+
+    ipt=$(iptables -w 5 -S | grep -P "\-A INPUT \-i ${ifname} \-j ACCEPT")
+    if [ "$ipt" = "" ] ; then
+        iptables -w 5 -I INPUT -i ${ifname} -j ACCEPT
+    fi
+
+    # IPv6 is always enabled after ipv4
+    if [ -d "/proc/sys/net/ipv6/conf/$ifname" ] ; then
+        echo '1' > /proc/sys/net/ipv6/conf/$ifname/disable_ipv6
+    fi
+
+elif [ "$type" = "ipv6" ] ; then
+
+    ll="$5"     # ipv6 link local address
+    addr0="$6"  # Interface ipv6 address
+    addr1="$7"  # first ipv6 prefix
+    addr2="$8"  # last ipv6 prefix
+    mask="$9"   # Mask
+
+    #echo "*** Configuring IPv6 pdn '$apn' on ${ifname}, $addr0/$mask"
+
+    echo '0' > /proc/sys/net/ipv6/conf/$ifname/disable_ipv6
+    # allow pinging UEs on same PDN
+    echo '0' > /proc/sys/net/ipv6/conf/$ifname/accept_redirects
+    if [ -f "/proc/sys/net/ipv6/conf/$ifname/send_redirects" ] ; then
+        echo '0' > /proc/sys/net/ipv6/conf/$ifname/send_redirects
+    fi
+
+    # Add link local address
+    old_ll=`ip addr show dev $ifname | sed -e's/^.*inet6 \([^ ]*\)\/.*$/\1/;t;d'`
+    if [ "$old_ll" != "" ] ; then
+        ifconfig ${ifname} inet6 del ${old_ll}/64
+    fi
+    ifconfig ${ifname} inet6 add ${ll}/64 up txqueuelen 1000
+
+    # Add global address
+    ifconfig ${ifname} inet6 add ${addr0}/${mask} up
+
+    # Add route for all prefixes
+    ip -6 route add ${addr1}/${mask} dev ${ifname}
+
+    ipt=$(ip6tables -w 5 -S | grep -P "\-A INPUT \-i ${ifname} \-j ACCEPT")
+    if [ "$ipt" = "" ] ; then
+        ip6tables -w 5 -I INPUT -i ${ifname} -j ACCEPT
+    fi
+
+elif [ "$type" = "ethernet" ] ; then
+
+    #echo "*** Configuring ethernet pdn '$apn' on ${ifname}"
+
+    # Put interface up
+    ifconfig ${ifname} up
+
+    # Disable IPv6
+    echo '1' > /proc/sys/net/ipv6/conf/$ifname/disable_ipv6
+
+    # To bridge the tap interface with an ethernet card, uncomment the code below 
+    # and change replace <physical ifname> by your ethernet card interface name
+    #ip link add br0 type bridge
+    #ip link set dev br0 up
+    #ip link set <physical ifname> master br0
+    #ip link set $ifname master br0
+
+elif [ "$type" = "bridge" ] ; then
+
+    br="$5"
+    #echo "*** Configuring pdn '$apn' on ${ifname} via bridge $br"
+
+    ip link set $ifname master $br
+    ip link set $ifname up
+    #brctl show $br
+fi
+

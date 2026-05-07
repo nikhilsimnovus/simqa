@@ -1,0 +1,33 @@
+/* NR SIB4 template to be filled */
+{
+  message c1: systemInformation: {
+    criticalExtensions systemInformation: {
+      sib-TypeAndInfo {
+        sib4: {
+          interFreqCarrierFreqList {
+            {
+              dl-CarrierFreq 0,
+              frequencyBandList {
+                {
+                  freqBandIndicatorNR 78
+                }
+              },
+              smtc {
+                periodicityAndOffset sf20: 0,
+                duration sf1
+              },
+              ssbSubcarrierSpacing kHz30,
+              ssb-ToMeasure mediumBitmap: '10000000'B,
+              deriveSSB-IndexFromCell TRUE,
+              q-RxLevMin -70,
+              t-ReselectionNR 1,
+              threshX-HighP 0,
+              threshX-LowP 0,
+              cellReselectionPriority 6
+            }
+          }
+        }
+      }
+    }
+  }
+}

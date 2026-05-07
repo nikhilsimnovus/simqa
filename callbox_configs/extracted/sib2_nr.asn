@@ -1,0 +1,29 @@
+/* NR SIB2 template to be filled */
+{
+  message c1: systemInformation: {
+    criticalExtensions systemInformation: {
+      sib-TypeAndInfo {
+        sib2: {
+          cellReselectionInfoCommon {
+            q-Hyst dB3
+          },
+          cellReselectionServingFreqInfo {
+            threshServingLowP 0,
+            cellReselectionPriority 6
+          },
+          intraFreqCellReselectionInfo {
+            q-RxLevMin -70,
+            s-IntraSearchP 31,
+            t-ReselectionNR 1,
+            smtc {
+              periodicityAndOffset sf20: 0,
+              duration sf1
+            },
+            ssb-ToMeasure mediumBitmap: '10000000'B,
+            deriveSSB-IndexFromCell TRUE
+          }
+        }
+      }
+    }
+  }
+}

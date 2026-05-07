@@ -1,0 +1,2588 @@
+{
+  "generatedAt": "2026-05-06T04:07:16.245Z",
+  "perRat": {
+    "NR": {
+      "ok": 32,
+      "fail": 0,
+      "total": 32
+    },
+    "LTE": {
+      "ok": 28,
+      "fail": 0,
+      "total": 28
+    },
+    "CATM": {
+      "ok": 18,
+      "fail": 0,
+      "total": 18
+    },
+    "NBIOT": {
+      "ok": 17,
+      "fail": 0,
+      "total": 17
+    }
+  },
+  "bands": {
+    "NR": [
+      {
+        "rat": "NR",
+        "band": 1,
+        "duplex": "FDD",
+        "bwMHz": 15,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 428040,
+        "dlFreqMHz": 2140.2,
+        "ssbArfcn": 427470,
+        "ssbGscn": 5343,
+        "ssbFreqMHz": 2137.35,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 1,
+            "bandwidth": 15,
+            "dl_nr_arfcn": 428040,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 427470
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 2,
+        "duplex": "FDD",
+        "bwMHz": 20,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 392040,
+        "dlFreqMHz": 1960.2,
+        "ssbArfcn": 391950,
+        "ssbGscn": 4899,
+        "ssbFreqMHz": 1959.75,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 2,
+            "bandwidth": 20,
+            "dl_nr_arfcn": 392040,
+            "subcarrier_spacing": 15,
+            "ssb_subcarrier_spacing": 15,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 391950
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 3,
+        "duplex": "FDD",
+        "bwMHz": 30,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 368520,
+        "dlFreqMHz": 1842.6,
+        "ssbArfcn": 367470,
+        "ssbGscn": 4593,
+        "ssbFreqMHz": 1837.35,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 3,
+            "bandwidth": 30,
+            "dl_nr_arfcn": 368520,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 367470
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 5,
+        "duplex": "FDD",
+        "bwMHz": 15,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 176340,
+        "dlFreqMHz": 881.7,
+        "ssbArfcn": 175710,
+        "ssbGscn": 2196,
+        "ssbFreqMHz": 878.55,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 5,
+            "bandwidth": 15,
+            "dl_nr_arfcn": 176340,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 175710
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 7,
+        "duplex": "FDD",
+        "bwMHz": 20,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 531000,
+        "dlFreqMHz": 2655,
+        "ssbArfcn": 530910,
+        "ssbGscn": 6636,
+        "ssbFreqMHz": 2654.55,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 7,
+            "bandwidth": 20,
+            "dl_nr_arfcn": 531000,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 530910
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 8,
+        "duplex": "FDD",
+        "bwMHz": 20,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 188520,
+        "dlFreqMHz": 942.6,
+        "ssbArfcn": 188430,
+        "ssbGscn": 2355,
+        "ssbFreqMHz": 942.15,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 8,
+            "bandwidth": 20,
+            "dl_nr_arfcn": 188520,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 188430
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 12,
+        "duplex": "FDD",
+        "bwMHz": 10,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 147540,
+        "dlFreqMHz": 737.7,
+        "ssbArfcn": 147630,
+        "ssbGscn": 1845,
+        "ssbFreqMHz": 738.15,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 12,
+            "bandwidth": 10,
+            "dl_nr_arfcn": 147540,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 147630
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 13,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 150180,
+        "dlFreqMHz": 750.9,
+        "ssbArfcn": 150270,
+        "ssbGscn": 1878,
+        "ssbFreqMHz": 751.35,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 13,
+            "bandwidth": 5,
+            "dl_nr_arfcn": 150180,
+            "subcarrier_spacing": 15,
+            "ssb_subcarrier_spacing": 15,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 150270
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 14,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 152580,
+        "dlFreqMHz": 762.9,
+        "ssbArfcn": 152670,
+        "ssbGscn": 1908,
+        "ssbFreqMHz": 763.35,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 14,
+            "bandwidth": 5,
+            "dl_nr_arfcn": 152580,
+            "subcarrier_spacing": 15,
+            "ssb_subcarrier_spacing": 15,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 152670
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 18,
+        "duplex": "FDD",
+        "bwMHz": 10,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 173520,
+        "dlFreqMHz": 867.6,
+        "ssbArfcn": 173550,
+        "ssbGscn": 2169,
+        "ssbFreqMHz": 867.75,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 18,
+            "bandwidth": 10,
+            "dl_nr_arfcn": 173520,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 173550
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 20,
+        "duplex": "FDD",
+        "bwMHz": 20,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 161220,
+        "dlFreqMHz": 806.1,
+        "ssbArfcn": 161070,
+        "ssbGscn": 2013,
+        "ssbFreqMHz": 805.35,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 20,
+            "bandwidth": 20,
+            "dl_nr_arfcn": 161220,
+            "subcarrier_spacing": 15,
+            "ssb_subcarrier_spacing": 15,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 161070
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 25,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 392520,
+        "dlFreqMHz": 1962.6,
+        "ssbArfcn": 392430,
+        "ssbGscn": 4905,
+        "ssbFreqMHz": 1962.15,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 25,
+            "bandwidth": 5,
+            "dl_nr_arfcn": 392520,
+            "subcarrier_spacing": 15,
+            "ssb_subcarrier_spacing": 15,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 392430
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 26,
+        "duplex": "FDD",
+        "bwMHz": 20,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 175320,
+        "dlFreqMHz": 876.6,
+        "ssbArfcn": 175230,
+        "ssbGscn": 2190,
+        "ssbFreqMHz": 876.15,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 26,
+            "bandwidth": 20,
+            "dl_nr_arfcn": 175320,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 175230
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 28,
+        "duplex": "FDD",
+        "bwMHz": 40,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 156120,
+        "dlFreqMHz": 780.6,
+        "ssbArfcn": 154110,
+        "ssbGscn": 1926,
+        "ssbFreqMHz": 770.55,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 28,
+            "bandwidth": 40,
+            "dl_nr_arfcn": 156120,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 154110
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 30,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 471000,
+        "dlFreqMHz": 2355,
+        "ssbArfcn": 470910,
+        "ssbGscn": 5886,
+        "ssbFreqMHz": 2354.55,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 30,
+            "bandwidth": 5,
+            "dl_nr_arfcn": 471000,
+            "subcarrier_spacing": 15,
+            "ssb_subcarrier_spacing": 15,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 470910
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 34,
+        "duplex": "TDD",
+        "bwMHz": 10,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 403500,
+        "dlFreqMHz": 2017.5,
+        "ssbArfcn": 403470,
+        "ssbGscn": 5043,
+        "ssbFreqMHz": 2017.35,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 34,
+            "bandwidth": 10,
+            "dl_nr_arfcn": 403500,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 403470
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 38,
+        "duplex": "TDD",
+        "bwMHz": 20,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 519000,
+        "dlFreqMHz": 2595,
+        "ssbArfcn": 518910,
+        "ssbGscn": 6486,
+        "ssbFreqMHz": 2594.55,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 38,
+            "bandwidth": 20,
+            "dl_nr_arfcn": 519000,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 518910
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 39,
+        "duplex": "TDD",
+        "bwMHz": 30,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 380040,
+        "dlFreqMHz": 1900.2,
+        "ssbArfcn": 378990,
+        "ssbGscn": 4737,
+        "ssbFreqMHz": 1894.95,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 39,
+            "bandwidth": 30,
+            "dl_nr_arfcn": 380040,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 378990
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 40,
+        "duplex": "TDD",
+        "bwMHz": 80,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 469980,
+        "dlFreqMHz": 2349.9,
+        "ssbArfcn": 463950,
+        "ssbGscn": 5799,
+        "ssbFreqMHz": 2319.75,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 40,
+            "bandwidth": 80,
+            "dl_nr_arfcn": 469980,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 463950
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 41,
+        "duplex": "TDD",
+        "bwMHz": 100,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 518604,
+        "dlFreqMHz": 2593.02,
+        "ssbArfcn": 510510,
+        "ssbGscn": 6381,
+        "ssbFreqMHz": 2552.55,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 41,
+            "bandwidth": 100,
+            "dl_nr_arfcn": 518604,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 510510
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 48,
+        "duplex": "TDD",
+        "bwMHz": 100,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 641666,
+        "dlFreqMHz": 3624.99,
+        "ssbArfcn": 638976,
+        "ssbGscn": 7905,
+        "ssbFreqMHz": 3584.64,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 48,
+            "bandwidth": 100,
+            "dl_nr_arfcn": 641666,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "10000000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 638976
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 50,
+        "duplex": "TDD",
+        "bwMHz": 80,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 294900,
+        "dlFreqMHz": 1474.5,
+        "ssbArfcn": 288750,
+        "ssbGscn": 3609,
+        "ssbFreqMHz": 1443.75,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 50,
+            "bandwidth": 80,
+            "dl_nr_arfcn": 294900,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 288750
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 53,
+        "duplex": "TDD",
+        "bwMHz": 10,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 497880,
+        "dlFreqMHz": 2489.4,
+        "ssbArfcn": 497790,
+        "ssbGscn": 6222,
+        "ssbFreqMHz": 2488.95,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 53,
+            "bandwidth": 10,
+            "dl_nr_arfcn": 497880,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 497790
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 65,
+        "duplex": "FDD",
+        "bwMHz": 20,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 431040,
+        "dlFreqMHz": 2155.2,
+        "ssbArfcn": 431070,
+        "ssbGscn": 5388,
+        "ssbFreqMHz": 2155.35,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 65,
+            "bandwidth": 20,
+            "dl_nr_arfcn": 431040,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 431070
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 66,
+        "duplex": "FDD",
+        "bwMHz": 40,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 429000,
+        "dlFreqMHz": 2145,
+        "ssbArfcn": 426990,
+        "ssbGscn": 5337,
+        "ssbFreqMHz": 2134.95,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 66,
+            "bandwidth": 40,
+            "dl_nr_arfcn": 429000,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 426990
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 70,
+        "duplex": "FDD",
+        "bwMHz": 10,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 400500,
+        "dlFreqMHz": 2002.5,
+        "ssbArfcn": 400590,
+        "ssbGscn": 5007,
+        "ssbFreqMHz": 2002.95,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 70,
+            "bandwidth": 10,
+            "dl_nr_arfcn": 400500,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 400590
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 71,
+        "duplex": "FDD",
+        "bwMHz": 20,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 126900,
+        "dlFreqMHz": 634.5,
+        "ssbArfcn": 126750,
+        "ssbGscn": 1584,
+        "ssbFreqMHz": 633.75,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 71,
+            "bandwidth": 20,
+            "dl_nr_arfcn": 126900,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 126750
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 74,
+        "duplex": "FDD",
+        "bwMHz": 20,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 299280,
+        "dlFreqMHz": 1496.4,
+        "ssbArfcn": 299310,
+        "ssbGscn": 3741,
+        "ssbFreqMHz": 1496.55,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 74,
+            "bandwidth": 20,
+            "dl_nr_arfcn": 299280,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 299310
+          },
+          "rach": {
+            "prach_config_index": 16,
+            "msg1_subcarrier_spacing": 15,
+            "ra_response_window": 10
+          },
+          "tdd": null
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 77,
+        "duplex": "TDD",
+        "bwMHz": 100,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 650000,
+        "dlFreqMHz": 3750,
+        "ssbArfcn": 647328,
+        "ssbGscn": 7992,
+        "ssbFreqMHz": 3709.92,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 77,
+            "bandwidth": 100,
+            "dl_nr_arfcn": 650000,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "10000000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 647328
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 78,
+        "duplex": "TDD",
+        "bwMHz": 100,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 636668,
+        "dlFreqMHz": 3550.02,
+        "ssbArfcn": 633984,
+        "ssbGscn": 7853,
+        "ssbFreqMHz": 3509.76,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 78,
+            "bandwidth": 100,
+            "dl_nr_arfcn": 636668,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "10000000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 633984
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 79,
+        "duplex": "TDD",
+        "bwMHz": 100,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 713334,
+        "dlFreqMHz": 4700.01,
+        "ssbArfcn": 711072,
+        "ssbGscn": 8656,
+        "ssbFreqMHz": 4666.08,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 79,
+            "bandwidth": 100,
+            "dl_nr_arfcn": 713334,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "10000000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 711072
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      },
+      {
+        "rat": "NR",
+        "band": 90,
+        "duplex": "TDD",
+        "bwMHz": 100,
+        "scsKHz": 30,
+        "ssbScsKHz": 30,
+        "dlArfcn": 518604,
+        "dlFreqMHz": 2593.02,
+        "ssbArfcn": 510510,
+        "ssbGscn": 6381,
+        "ssbFreqMHz": 2552.55,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 90,
+            "bandwidth": 100,
+            "dl_nr_arfcn": 518604,
+            "subcarrier_spacing": 30,
+            "ssb_subcarrier_spacing": 30,
+            "ssb_pos_bitmap": "1000",
+            "dmrs_type_a_pos": 2,
+            "ssb_nr_arfcn": 510510
+          },
+          "rach": {
+            "prach_config_index": 160,
+            "msg1_subcarrier_spacing": 30,
+            "ra_response_window": 20
+          },
+          "tdd": {
+            "pattern1": {
+              "period_ms": 5,
+              "dl_slots": 7,
+              "dl_symbols": 6,
+              "ul_slots": 2,
+              "ul_symbols": 4
+            }
+          }
+        }
+      }
+    ],
+    "LTE": [
+      {
+        "rat": "LTE",
+        "band": 1,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 25,
+        "dlFreqMHz": 2112.5,
+        "ssbArfcn": 25,
+        "ssbFreqMHz": 2112.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 1,
+            "dl_earfcn": 25,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 2,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 607,
+        "dlFreqMHz": 1930.7,
+        "ssbArfcn": 607,
+        "ssbFreqMHz": 1930.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 2,
+            "dl_earfcn": 607,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 3,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 1207,
+        "dlFreqMHz": 1805.7,
+        "ssbArfcn": 1207,
+        "ssbFreqMHz": 1805.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 3,
+            "dl_earfcn": 1207,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 4,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 1957,
+        "dlFreqMHz": 2110.7,
+        "ssbArfcn": 1957,
+        "ssbFreqMHz": 2110.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 4,
+            "dl_earfcn": 1957,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 5,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 2407,
+        "dlFreqMHz": 869.7,
+        "ssbArfcn": 2407,
+        "ssbFreqMHz": 869.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 5,
+            "dl_earfcn": 2407,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 7,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 2775,
+        "dlFreqMHz": 2622.5,
+        "ssbArfcn": 2775,
+        "ssbFreqMHz": 2622.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 7,
+            "dl_earfcn": 2775,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 8,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 3457,
+        "dlFreqMHz": 925.7,
+        "ssbArfcn": 3457,
+        "ssbFreqMHz": 925.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 8,
+            "dl_earfcn": 3457,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 12,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5017,
+        "dlFreqMHz": 729.7,
+        "ssbArfcn": 5017,
+        "ssbFreqMHz": 729.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 12,
+            "dl_earfcn": 5017,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 13,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5205,
+        "dlFreqMHz": 748.5,
+        "ssbArfcn": 5205,
+        "ssbFreqMHz": 748.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 13,
+            "dl_earfcn": 5205,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 14,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5305,
+        "dlFreqMHz": 760.5,
+        "ssbArfcn": 5305,
+        "ssbFreqMHz": 760.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 14,
+            "dl_earfcn": 5305,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 17,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5755,
+        "dlFreqMHz": 736.5,
+        "ssbArfcn": 5755,
+        "ssbFreqMHz": 736.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 17,
+            "dl_earfcn": 5755,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 18,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5875,
+        "dlFreqMHz": 862.5,
+        "ssbArfcn": 5875,
+        "ssbFreqMHz": 862.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 18,
+            "dl_earfcn": 5875,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 19,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 6025,
+        "dlFreqMHz": 877.5,
+        "ssbArfcn": 6025,
+        "ssbFreqMHz": 877.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 19,
+            "dl_earfcn": 6025,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 20,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 6175,
+        "dlFreqMHz": 793.5,
+        "ssbArfcn": 6175,
+        "ssbFreqMHz": 793.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 20,
+            "dl_earfcn": 6175,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 25,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 8047,
+        "dlFreqMHz": 1930.7,
+        "ssbArfcn": 8047,
+        "ssbFreqMHz": 1930.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 25,
+            "dl_earfcn": 8047,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 26,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 8697,
+        "dlFreqMHz": 859.7,
+        "ssbArfcn": 8697,
+        "ssbFreqMHz": 859.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 26,
+            "dl_earfcn": 8697,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 28,
+        "duplex": "FDD",
+        "bwMHz": 3,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 9225,
+        "dlFreqMHz": 759.5,
+        "ssbArfcn": 9225,
+        "ssbFreqMHz": 759.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 28,
+            "dl_earfcn": 9225,
+            "n_rb_dl": 15,
+            "bandwidth_mhz": 3
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 30,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 9795,
+        "dlFreqMHz": 2352.5,
+        "ssbArfcn": 9795,
+        "ssbFreqMHz": 2352.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 30,
+            "dl_earfcn": 9795,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 34,
+        "duplex": "TDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 36225,
+        "dlFreqMHz": 2012.5,
+        "ssbArfcn": 36225,
+        "ssbFreqMHz": 2012.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 34,
+            "dl_earfcn": 36225,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          },
+          "tdd": {
+            "uldl_config": 2,
+            "sp_config": 7
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 38,
+        "duplex": "TDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 37775,
+        "dlFreqMHz": 2572.5,
+        "ssbArfcn": 37775,
+        "ssbFreqMHz": 2572.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 38,
+            "dl_earfcn": 37775,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          },
+          "tdd": {
+            "uldl_config": 2,
+            "sp_config": 7
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 39,
+        "duplex": "TDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 38275,
+        "dlFreqMHz": 1882.5,
+        "ssbArfcn": 38275,
+        "ssbFreqMHz": 1882.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 39,
+            "dl_earfcn": 38275,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          },
+          "tdd": {
+            "uldl_config": 2,
+            "sp_config": 7
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 40,
+        "duplex": "TDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 38675,
+        "dlFreqMHz": 2302.5,
+        "ssbArfcn": 38675,
+        "ssbFreqMHz": 2302.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 40,
+            "dl_earfcn": 38675,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          },
+          "tdd": {
+            "uldl_config": 2,
+            "sp_config": 7
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 41,
+        "duplex": "TDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 39675,
+        "dlFreqMHz": 2498.5,
+        "ssbArfcn": 39675,
+        "ssbFreqMHz": 2498.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 41,
+            "dl_earfcn": 39675,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          },
+          "tdd": {
+            "uldl_config": 2,
+            "sp_config": 7
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 42,
+        "duplex": "TDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 41615,
+        "dlFreqMHz": 3402.5,
+        "ssbArfcn": 41615,
+        "ssbFreqMHz": 3402.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 42,
+            "dl_earfcn": 41615,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          },
+          "tdd": {
+            "uldl_config": 2,
+            "sp_config": 7
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 43,
+        "duplex": "TDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 43615,
+        "dlFreqMHz": 3602.5,
+        "ssbArfcn": 43615,
+        "ssbFreqMHz": 3602.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 43,
+            "dl_earfcn": 43615,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          },
+          "tdd": {
+            "uldl_config": 2,
+            "sp_config": 7
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 48,
+        "duplex": "TDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 55265,
+        "dlFreqMHz": 3552.5,
+        "ssbArfcn": 55265,
+        "ssbFreqMHz": 3552.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 48,
+            "dl_earfcn": 55265,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          },
+          "tdd": {
+            "uldl_config": 2,
+            "sp_config": 7
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 66,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 66443,
+        "dlFreqMHz": 2110.7,
+        "ssbArfcn": 66443,
+        "ssbFreqMHz": 2110.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 66,
+            "dl_earfcn": 66443,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "LTE",
+        "band": 71,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 68611,
+        "dlFreqMHz": 619.5,
+        "ssbArfcn": 68611,
+        "ssbFreqMHz": 619.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 71,
+            "dl_earfcn": 68611,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      }
+    ],
+    "CATM": [
+      {
+        "rat": "CATM",
+        "band": 1,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 25,
+        "dlFreqMHz": 2112.5,
+        "ssbArfcn": 25,
+        "ssbFreqMHz": 2112.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 1,
+            "dl_earfcn": 25,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 2,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 607,
+        "dlFreqMHz": 1930.7,
+        "ssbArfcn": 607,
+        "ssbFreqMHz": 1930.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 2,
+            "dl_earfcn": 607,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 3,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 1207,
+        "dlFreqMHz": 1805.7,
+        "ssbArfcn": 1207,
+        "ssbFreqMHz": 1805.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 3,
+            "dl_earfcn": 1207,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 4,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 1957,
+        "dlFreqMHz": 2110.7,
+        "ssbArfcn": 1957,
+        "ssbFreqMHz": 2110.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 4,
+            "dl_earfcn": 1957,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 5,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 2407,
+        "dlFreqMHz": 869.7,
+        "ssbArfcn": 2407,
+        "ssbFreqMHz": 869.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 5,
+            "dl_earfcn": 2407,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 7,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 2775,
+        "dlFreqMHz": 2622.5,
+        "ssbArfcn": 2775,
+        "ssbFreqMHz": 2622.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 7,
+            "dl_earfcn": 2775,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 8,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 3457,
+        "dlFreqMHz": 925.7,
+        "ssbArfcn": 3457,
+        "ssbFreqMHz": 925.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 8,
+            "dl_earfcn": 3457,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 12,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5017,
+        "dlFreqMHz": 729.7,
+        "ssbArfcn": 5017,
+        "ssbFreqMHz": 729.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 12,
+            "dl_earfcn": 5017,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 13,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5205,
+        "dlFreqMHz": 748.5,
+        "ssbArfcn": 5205,
+        "ssbFreqMHz": 748.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 13,
+            "dl_earfcn": 5205,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 14,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5305,
+        "dlFreqMHz": 760.5,
+        "ssbArfcn": 5305,
+        "ssbFreqMHz": 760.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 14,
+            "dl_earfcn": 5305,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 18,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5875,
+        "dlFreqMHz": 862.5,
+        "ssbArfcn": 5875,
+        "ssbFreqMHz": 862.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 18,
+            "dl_earfcn": 5875,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 19,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 6025,
+        "dlFreqMHz": 877.5,
+        "ssbArfcn": 6025,
+        "ssbFreqMHz": 877.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 19,
+            "dl_earfcn": 6025,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 20,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 6175,
+        "dlFreqMHz": 793.5,
+        "ssbArfcn": 6175,
+        "ssbFreqMHz": 793.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 20,
+            "dl_earfcn": 6175,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 25,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 8047,
+        "dlFreqMHz": 1930.7,
+        "ssbArfcn": 8047,
+        "ssbFreqMHz": 1930.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 25,
+            "dl_earfcn": 8047,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 26,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 8697,
+        "dlFreqMHz": 859.7,
+        "ssbArfcn": 8697,
+        "ssbFreqMHz": 859.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 26,
+            "dl_earfcn": 8697,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 28,
+        "duplex": "FDD",
+        "bwMHz": 3,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 9225,
+        "dlFreqMHz": 759.5,
+        "ssbArfcn": 9225,
+        "ssbFreqMHz": 759.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 28,
+            "dl_earfcn": 9225,
+            "n_rb_dl": 15,
+            "bandwidth_mhz": 3
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 66,
+        "duplex": "FDD",
+        "bwMHz": 1.4,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 66443,
+        "dlFreqMHz": 2110.7,
+        "ssbArfcn": 66443,
+        "ssbFreqMHz": 2110.7,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 66,
+            "dl_earfcn": 66443,
+            "n_rb_dl": 6,
+            "bandwidth_mhz": 1.4
+          }
+        }
+      },
+      {
+        "rat": "CATM",
+        "band": 71,
+        "duplex": "FDD",
+        "bwMHz": 5,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 68611,
+        "dlFreqMHz": 619.5,
+        "ssbArfcn": 68611,
+        "ssbFreqMHz": 619.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "band": 71,
+            "dl_earfcn": 68611,
+            "n_rb_dl": 25,
+            "bandwidth_mhz": 5
+          }
+        }
+      }
+    ],
+    "NBIOT": [
+      {
+        "rat": "NBIOT",
+        "band": 1,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 300,
+        "dlFreqMHz": 2140,
+        "ssbArfcn": 300,
+        "ssbFreqMHz": 2140,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 300,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 2,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 900,
+        "dlFreqMHz": 1960,
+        "ssbArfcn": 900,
+        "ssbFreqMHz": 1960,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 900,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 3,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 1575,
+        "dlFreqMHz": 1842.5,
+        "ssbArfcn": 1575,
+        "ssbFreqMHz": 1842.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 1575,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 5,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 2525,
+        "dlFreqMHz": 881.5,
+        "ssbArfcn": 2525,
+        "ssbFreqMHz": 881.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 2525,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 8,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 3625,
+        "dlFreqMHz": 942.5,
+        "ssbArfcn": 3625,
+        "ssbFreqMHz": 942.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 3625,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 12,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5095,
+        "dlFreqMHz": 737.5,
+        "ssbArfcn": 5095,
+        "ssbFreqMHz": 737.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 5095,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 13,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5230,
+        "dlFreqMHz": 751,
+        "ssbArfcn": 5230,
+        "ssbFreqMHz": 751,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 5230,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 14,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5330,
+        "dlFreqMHz": 763,
+        "ssbArfcn": 5330,
+        "ssbFreqMHz": 763,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 5330,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 18,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 5925,
+        "dlFreqMHz": 867.5,
+        "ssbArfcn": 5925,
+        "ssbFreqMHz": 867.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 5925,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 19,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 6075,
+        "dlFreqMHz": 882.5,
+        "ssbArfcn": 6075,
+        "ssbFreqMHz": 882.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 6075,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 20,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 6300,
+        "dlFreqMHz": 806,
+        "ssbArfcn": 6300,
+        "ssbFreqMHz": 806,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 6300,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 25,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 8365,
+        "dlFreqMHz": 1962.5,
+        "ssbArfcn": 8365,
+        "ssbFreqMHz": 1962.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 8365,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 26,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 8865,
+        "dlFreqMHz": 876.5,
+        "ssbArfcn": 8865,
+        "ssbFreqMHz": 876.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 8865,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 28,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 9435,
+        "dlFreqMHz": 780.5,
+        "ssbArfcn": 9435,
+        "ssbFreqMHz": 780.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 9435,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 41,
+        "duplex": "TDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 40620,
+        "dlFreqMHz": 2593,
+        "ssbArfcn": 40620,
+        "ssbFreqMHz": 2593,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 40620,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 66,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 66786,
+        "dlFreqMHz": 2145,
+        "ssbArfcn": 66786,
+        "ssbFreqMHz": 2145,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 66786,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      },
+      {
+        "rat": "NBIOT",
+        "band": 71,
+        "duplex": "FDD",
+        "bwMHz": 0.2,
+        "scsKHz": 15,
+        "ssbScsKHz": 15,
+        "dlArfcn": 68761,
+        "dlFreqMHz": 634.5,
+        "ssbArfcn": 68761,
+        "ssbFreqMHz": 634.5,
+        "status": "ok",
+        "notes": "",
+        "cfg": {
+          "core": {
+            "dl_earfcn": 68761,
+            "operation_mode": "standalone",
+            "n_id_ncell": 37
+          }
+        }
+      }
+    ]
+  }
+}

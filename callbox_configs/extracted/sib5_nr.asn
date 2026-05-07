@@ -1,0 +1,25 @@
+/* NR SIB5 template to be filled */
+{
+  message c1: systemInformation: {
+    criticalExtensions systemInformation: {
+      sib-TypeAndInfo {
+        sib5: {
+          carrierFreqListEUTRA {
+            {
+              carrierFreq 300,
+              allowedMeasBandwidth mbw100,
+              presenceAntennaPort1 TRUE,
+              cellReselectionPriority 7,
+              threshX-High 0,
+              threshX-Low 0,
+              q-RxLevMin -40,
+              q-QualMin -34,
+              p-MaxEUTRA 10
+            }
+          },
+          t-ReselectionEUTRA 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+/* NB-IoT SIB3 template to be filled */
+{
+  message c1: systemInformation-r13: {
+    criticalExtensions systemInformation-r13: {
+      sib-TypeAndInfo-r13 {
+        sib3-r13: {
+          cellReselectionInfoCommon-r13 {
+            q-Hyst-r13 dB0
+          },
+          cellReselectionServingFreqInfo-r13 {
+            s-NonIntraSearch-r13 0
+          },
+          intraFreqCellReselectionInfo-r13 {
+            q-RxLevMin-r13 -60,
+            s-IntraSearchP-r13 0,
+            t-Reselection-r13 s3
+          }
+        }
+      }
+    }
+  }
+}

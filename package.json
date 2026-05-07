@@ -1,0 +1,40 @@
+{
+  "name": "simqa",
+  "version": "0.1.0",
+  "private": true,
+  "description": "QA tooling for Simnovator UESIM: pull testcases, generate enb/gnb/mme/ims/ue_db configs, push, run, collect.",
+  "type": "module",
+  "bin": {
+    "simqa": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "next dev -p 4000",
+    "build": "next build",
+    "start": "next start -p 4000",
+    "cli": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.14.0",
+    "next": "^15.5.15",
+    "node-ssh": "^13.2.0",
+    "playwright": "^1.59.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "tailwind-merge": "^3.5.0",
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "^10.5.0",
+    "postcss": "^8.5.13",
+    "tailwindcss": "^3.4.19",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
