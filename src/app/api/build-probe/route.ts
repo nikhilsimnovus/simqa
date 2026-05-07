@@ -41,7 +41,21 @@ export async function GET(req: Request) {
       try { await res.arrayBuffer(); } catch { /* ignore */ }
     }
     if (!res.ok) {
-      return NextResponse.json({ ok: false, status: res.status, error: `${res.status} ${res.statusText}` });
+      // Friendly hints for the most common gotchas. The 401 case in particular
+      // catches SharePoint / OneDrive share URLs that pretend to be downloads
+      // but actually serve an HTML viewer page behind a browser-session login.
+      const host = (() => { try { return new URL(url).host; } catch { return ''; } })();
+      const isMsShare = /sharepoint\.com|onedrive\.live\.com|1drv\.ms/.test(host);
+      const isGShare  = /drive\.google\.com|docs\.google\.com/.test(host);
+      const isDbx     = /dropbox\.com/.test(host);
+      let hint = `${res.status} ${res.statusText}`;
+      if (res.status === 401 && isMsShare) hint = '401 Unauthorized — SharePoint/OneDrive share URLs require a browser session (cookies + auth handshake). wget cannot use them. Host the .tar.gz on a plain HTTP server the VM can reach.';
+      else if (res.status === 401 || res.status === 403) {
+        if (isGShare)   hint = `${res.status} ${res.statusText} — Google Drive share URLs require a browser session. wget cannot fetch them.`;
+        else if (isDbx) hint = `${res.status} ${res.statusText} — Dropbox share URLs need ?dl=1 appended (and the share must be set to public-link).`;
+      }
+      else if (res.status === 404) hint = '404 Not Found — the URL is wrong or the build is no longer published.';
+      return NextResponse.json({ ok: false, status: res.status, error: hint });
     }
     return NextResponse.json({ ok: true, status: res.status, bytes, url });
   } catch (e: any) {

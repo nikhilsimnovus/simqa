@@ -638,6 +638,37 @@ export default function ValidatePage() {
                     ) : urlCheck.status === 'fail' ? (
                       <div className="mt-1 text-[11px] text-red-600 flex items-center gap-1.5"><XCircle className="h-3 w-3" /> {urlCheck.detail}</div>
                     ) : null}
+
+                    {/* Catch SharePoint / OneDrive / Drive / Dropbox URLs upfront — */}
+                    {/* they're never going to work with wget. */}
+                    {(() => {
+                      const u = buildUrl.trim().toLowerCase();
+                      if (!u) return null;
+                      const matches = [
+                        { test: /sharepoint\.com/, name: 'SharePoint' },
+                        { test: /onedrive\.live\.com|1drv\.ms/, name: 'OneDrive' },
+                        { test: /drive\.google\.com|docs\.google\.com/, name: 'Google Drive' },
+                        { test: /dropbox\.com/, name: 'Dropbox' },
+                      ];
+                      const hit = matches.find((m) => m.test.test(u));
+                      if (!hit) return null;
+                      return (
+                        <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 leading-relaxed flex gap-2">
+                          <AlertTriangle className="h-4 w-4 mt-0.5 flex-none" />
+                          <div>
+                            <div className="font-semibold">{hit.name} share URLs don't work with <span className="font-mono">wget</span>.</div>
+                            <div className="mt-0.5">
+                              {hit.name} share links serve an HTML viewer that authenticates via browser cookies, not a direct file. <span className="font-mono">wget</span> hits a 401 before any redirect chain. Use one of:
+                              <ul className="list-disc pl-5 mt-1 space-y-0.5">
+                                <li>A plain HTTP server reachable from the VM (e.g. <span className="font-mono">python3 -m http.server 8080</span> on a box the VM can reach)</li>
+                                <li>Drop the .tar.gz onto the VM via Cockpit Files, then skip this tool's wget step</li>
+                                <li>Internal artifact server (Nexus / Artifactory / S3 with public-read or pre-signed URL)</li>
+                              </ul>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Working dir + Install flags + extra args */}
