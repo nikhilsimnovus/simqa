@@ -192,7 +192,15 @@ export default function ValidatePage() {
 
   // Build install plan state
   const [includeBuild, setIncludeBuild] = useState(false);
+  /** Where the build comes from. 'url' = wget on the VM. 'local' = file is
+   *  already on the VM (uploaded via Cockpit File Browser, scp, etc). */
+  const [sourceMode, setSourceMode] = useState<'url' | 'local'>('url');
   const [buildUrl, setBuildUrl] = useState('');
+  const [localFile, setLocalFile] = useState('');
+  const [browseDirs, setBrowseDirs] = useState<string>('/tmp, /home/simnovus, /home/simnovus/builds');
+  const [browseBusy, setBrowseBusy] = useState(false);
+  const [browseErr, setBrowseErr]  = useState<string | null>(null);
+  const [vmFiles, setVmFiles]      = useState<Array<{ path: string; size: number; mtime: string }> | null>(null);
   const [installDir, setInstallDir] = useState('/tmp');
   const [extraArgs, setExtraArgs] = useState('');
   // Per-host-flag enabled state (UE & App default ON because they're required;
@@ -369,6 +377,27 @@ export default function ValidatePage() {
     setEnabled(next);
   }
 
+  // ── VM file browser (Cockpit-driven `find` for .tar.gz files) ──────────
+  async function browseVmFiles() {
+    if (!targetSys) return;
+    setBrowseBusy(true); setBrowseErr(null); setVmFiles(null);
+    try {
+      const dirs = browseDirs.split(',').map((s) => s.trim()).filter(Boolean);
+      const r = await fetch('/api/vm-files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ systemId: targetSys.id, searchDirs: dirs, maxDepth: 3 }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      setVmFiles(j.files ?? []);
+    } catch (e: any) {
+      setBrowseErr(e?.message ?? String(e));
+    } finally {
+      setBrowseBusy(false);
+    }
+  }
+
   async function probeUrl() {
     if (!buildUrl.trim()) { setUrlCheck({ status: 'fail', detail: 'enter a URL first' }); return; }
     setUrlCheck({ status: 'checking' });
@@ -385,8 +414,12 @@ export default function ValidatePage() {
   // ── Install + Validate flow (backend-driven) ────────────────────────────
   async function runInstall(): Promise<{ ok: boolean; buildId: string | null }> {
     if (!targetSys) return { ok: false, buildId: null };
-    if (!buildUrl.trim()) {
+    if (sourceMode === 'url' && !buildUrl.trim()) {
       setInstallErr('Enter a Build URL first.');
+      return { ok: false, buildId: null };
+    }
+    if (sourceMode === 'local' && !localFile.trim()) {
+      setInstallErr('Pick (or type) the path to the .tar.gz on the VM.');
       return { ok: false, buildId: null };
     }
     // Validate required host flags resolve to an IP. The Simnovator install
@@ -411,7 +444,8 @@ export default function ValidatePage() {
 
     const body = {
       systemId: targetSys.id,
-      buildUrl: buildUrl.trim(),
+      buildUrl:  sourceMode === 'url'   ? buildUrl.trim()  : undefined,
+      localFile: sourceMode === 'local' ? localFile.trim() : undefined,
       workingDir: installDir.trim() || '/tmp',
       hosts: HOST_FLAGS
         .filter((f) => hostEnabled[f.key])
@@ -614,62 +648,161 @@ export default function ValidatePage() {
                 </CardBody>
               ) : (
                 <CardBody className="space-y-4">
-                  {/* Build URL */}
-                  <div>
-                    <Field
-                      label="Build URL (.tar.gz)"
-                      hint='Pasting works even when Chrome blocks the download — the Simnovator VM fetches it directly with wget, not your browser.'
-                    >
-                      <div className="flex gap-2">
-                        <Input
-                          value={buildUrl}
-                          onChange={(e) => { setBuildUrl(e.target.value); setUrlCheck({ status: 'idle' }); }}
-                          placeholder="http://192.168.0.19/builds/.../Simnovator-4.0.0_260424.tar.gz"
-                          className="flex-1"
-                        />
-                        <Button size="sm" variant="secondary" onClick={probeUrl} disabled={!buildUrl.trim() || urlCheck.status === 'checking'}>
-                          {urlCheck.status === 'checking' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                          Test URL
-                        </Button>
-                      </div>
-                    </Field>
-                    {urlCheck.status === 'ok' ? (
-                      <div className="mt-1 text-[11px] text-emerald-700 flex items-center gap-1.5"><CheckCircle2 className="h-3 w-3" /> Reachable from this server · {urlCheck.detail}</div>
-                    ) : urlCheck.status === 'fail' ? (
-                      <div className="mt-1 text-[11px] text-red-600 flex items-center gap-1.5"><XCircle className="h-3 w-3" /> {urlCheck.detail}</div>
-                    ) : null}
+                  {/* SOURCE MODE PICKER */}
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Build source</div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {([
+                        { id: 'url',   title: 'Download from URL', desc: 'wget runs on the VM. Best when the VM has network access to the build host.' },
+                        { id: 'local', title: 'File already on VM', desc: 'You uploaded the .tar.gz to the VM (Cockpit Files / scp). Pick it from the list.' },
+                      ] as const).map((m) => (
+                        <label
+                          key={m.id}
+                          className={`flex gap-3 cursor-pointer rounded-lg border px-3 py-2 transition-colors ${sourceMode === m.id ? 'border-primary-500 bg-primary-50/40 ring-1 ring-primary-200' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+                        >
+                          <input
+                            type="radio"
+                            name="source-mode"
+                            value={m.id}
+                            checked={sourceMode === m.id}
+                            onChange={() => setSourceMode(m.id)}
+                            className="mt-1"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-slate-900">{m.title}</div>
+                            <div className="text-[11px] text-slate-500 mt-0.5">{m.desc}</div>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
 
-                    {/* Catch SharePoint / OneDrive / Drive / Dropbox URLs upfront — */}
-                    {/* they're never going to work with wget. */}
-                    {(() => {
-                      const u = buildUrl.trim().toLowerCase();
-                      if (!u) return null;
-                      const matches = [
-                        { test: /sharepoint\.com/, name: 'SharePoint' },
-                        { test: /onedrive\.live\.com|1drv\.ms/, name: 'OneDrive' },
-                        { test: /drive\.google\.com|docs\.google\.com/, name: 'Google Drive' },
-                        { test: /dropbox\.com/, name: 'Dropbox' },
-                      ];
-                      const hit = matches.find((m) => m.test.test(u));
-                      if (!hit) return null;
-                      return (
-                        <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 leading-relaxed flex gap-2">
-                          <AlertTriangle className="h-4 w-4 mt-0.5 flex-none" />
-                          <div>
-                            <div className="font-semibold">{hit.name} share URLs don't work with <span className="font-mono">wget</span>.</div>
-                            <div className="mt-0.5">
-                              {hit.name} share links serve an HTML viewer that authenticates via browser cookies, not a direct file. <span className="font-mono">wget</span> hits a 401 before any redirect chain. Use one of:
-                              <ul className="list-disc pl-5 mt-1 space-y-0.5">
-                                <li>A plain HTTP server reachable from the VM (e.g. <span className="font-mono">python3 -m http.server 8080</span> on a box the VM can reach)</li>
-                                <li>Drop the .tar.gz onto the VM via Cockpit Files, then skip this tool's wget step</li>
-                                <li>Internal artifact server (Nexus / Artifactory / S3 with public-read or pre-signed URL)</li>
-                              </ul>
+                  {/* URL MODE */}
+                  {sourceMode === 'url' ? (
+                    <div>
+                      <Field
+                        label="Build URL (.tar.gz)"
+                        hint='Pasting works even when Chrome blocks the download — the Simnovator VM fetches it directly with wget, not your browser.'
+                      >
+                        <div className="flex gap-2">
+                          <Input
+                            value={buildUrl}
+                            onChange={(e) => { setBuildUrl(e.target.value); setUrlCheck({ status: 'idle' }); }}
+                            placeholder="http://192.168.0.19/builds/.../Simnovator-4.0.0_260424.tar.gz"
+                            className="flex-1"
+                          />
+                          <Button size="sm" variant="secondary" onClick={probeUrl} disabled={!buildUrl.trim() || urlCheck.status === 'checking'}>
+                            {urlCheck.status === 'checking' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                            Test URL
+                          </Button>
+                        </div>
+                      </Field>
+                      {urlCheck.status === 'ok' ? (
+                        <div className="mt-1 text-[11px] text-emerald-700 flex items-center gap-1.5"><CheckCircle2 className="h-3 w-3" /> Reachable from this server · {urlCheck.detail}</div>
+                      ) : urlCheck.status === 'fail' ? (
+                        <div className="mt-1 text-[11px] text-red-600 flex items-center gap-1.5"><XCircle className="h-3 w-3" /> {urlCheck.detail}</div>
+                      ) : null}
+
+                      {(() => {
+                        const u = buildUrl.trim().toLowerCase();
+                        if (!u) return null;
+                        const matches = [
+                          { test: /sharepoint\.com/, name: 'SharePoint' },
+                          { test: /onedrive\.live\.com|1drv\.ms/, name: 'OneDrive' },
+                          { test: /drive\.google\.com|docs\.google\.com/, name: 'Google Drive' },
+                          { test: /dropbox\.com/, name: 'Dropbox' },
+                        ];
+                        const hit = matches.find((m) => m.test.test(u));
+                        if (!hit) return null;
+                        return (
+                          <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 leading-relaxed flex gap-2">
+                            <AlertTriangle className="h-4 w-4 mt-0.5 flex-none" />
+                            <div>
+                              <div className="font-semibold">{hit.name} share URLs don't work with <span className="font-mono">wget</span>.</div>
+                              <div className="mt-0.5">
+                                {hit.name} share links serve an HTML viewer that authenticates via browser cookies, not a direct file. Switch to <span className="font-semibold">"File already on VM"</span> above and upload the .tar.gz to the VM via Cockpit Files first, or host it on a plain HTTP server reachable from the VM.
+                              </div>
                             </div>
                           </div>
+                        );
+                      })()}
+                    </div>
+                  ) : null}
+
+                  {/* LOCAL-FILE MODE */}
+                  {sourceMode === 'local' ? (
+                    <div className="space-y-3">
+                      {/* Browser */}
+                      <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
+                        <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Browse VM for .tar.gz files</div>
+                        <div className="flex gap-2">
+                          <Input
+                            value={browseDirs}
+                            onChange={(e) => setBrowseDirs(e.target.value)}
+                            placeholder="/tmp, /home/simnovus, /home/simnovus/builds"
+                            className="flex-1"
+                          />
+                          <Button size="sm" variant="secondary" onClick={browseVmFiles} disabled={browseBusy || !targetSys}>
+                            {browseBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                            {browseBusy ? 'Searching…' : 'Find files'}
+                          </Button>
                         </div>
-                      );
-                    })()}
-                  </div>
+                        <div className="text-[11px] text-slate-500">
+                          Comma-separated list of directories on the VM to scan (max depth 3). Tool opens Cockpit Terminal, runs <span className="font-mono">find</span>, and returns matches sorted newest-first. Takes ~15-25s on first run.
+                        </div>
+
+                        {browseErr ? (
+                          <div className="text-[11px] text-red-600 flex items-start gap-1.5"><XCircle className="h-3 w-3 mt-0.5" /> {browseErr}</div>
+                        ) : null}
+
+                        {vmFiles ? (
+                          vmFiles.length === 0 ? (
+                            <div className="text-[12px] text-slate-600 italic">No <span className="font-mono">.tar.gz</span> / <span className="font-mono">.tgz</span> files found in those directories.</div>
+                          ) : (
+                            <div className="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 max-h-72 overflow-auto">
+                              {vmFiles.map((f) => {
+                                const sizeMB = (f.size / (1024 * 1024)).toFixed(1);
+                                const sizeGB = (f.size / (1024 * 1024 * 1024)).toFixed(2);
+                                const sizeStr = f.size >= 1e9 ? `${sizeGB} GB` : `${sizeMB} MB`;
+                                const when = new Date(f.mtime).toLocaleString();
+                                const selected = localFile === f.path;
+                                return (
+                                  <label
+                                    key={f.path}
+                                    className={`flex items-start gap-3 px-3 py-2 cursor-pointer ${selected ? 'bg-primary-50/60' : 'hover:bg-slate-50'}`}
+                                  >
+                                    <input
+                                      type="radio"
+                                      name="vm-file"
+                                      checked={selected}
+                                      onChange={() => setLocalFile(f.path)}
+                                      className="mt-1"
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                      <div className="text-[12px] font-mono text-slate-900 break-all">{f.path}</div>
+                                      <div className="text-[11px] text-slate-500 flex flex-wrap gap-x-3 mt-0.5">
+                                        <span>{sizeStr}</span>
+                                        <span>· {when}</span>
+                                      </div>
+                                    </div>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )
+                        ) : null}
+                      </div>
+
+                      {/* Manual path fallback */}
+                      <Field label="Or type the .tar.gz path on the VM" hint="absolute path; the file must already exist on the Simnovator VM">
+                        <Input
+                          value={localFile}
+                          onChange={(e) => setLocalFile(e.target.value)}
+                          placeholder="/home/simnovus/Simnovator-4.0.0_260424.tar.gz"
+                        />
+                      </Field>
+                    </div>
+                  ) : null}
 
                   {/* Working dir + Install flags + extra args */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -962,9 +1095,18 @@ export default function ValidatePage() {
                         </div>
                       </div>
                     </div>
-                    <CommandBlock title={`1. Fetch — ${plan.fileName}`} command={`${plan.cdTmp}\n${plan.wget}`} />
-                    <CommandBlock title="2. Extract" command={`${plan.untar}\n${plan.cdBuild}`} />
-                    <CommandBlock title="3. Install" command={plan.install} />
+                    {sourceMode === 'url' ? (
+                      <>
+                        <CommandBlock title={`1. Fetch — ${plan.fileName}`} command={`${plan.cdTmp}\n${plan.wget}`} />
+                        <CommandBlock title="2. Extract" command={`${plan.untar}\n${plan.cdBuild}`} />
+                        <CommandBlock title="3. Install" command={plan.install} />
+                      </>
+                    ) : (
+                      <>
+                        <CommandBlock title={`1. Extract — ${localFile || '(pick a file above)'}`} command={localFile ? `cd ${localFile.replace(/\/[^/]+$/, '') || '/'}\ntar -zxvf ${localFile.replace(/.*\//, '')}` : '(pick a file above)'} />
+                        <CommandBlock title="2. Install" command={plan.install} />
+                      </>
+                    )}
                   </div>
                 </details>
               </CardBody>
