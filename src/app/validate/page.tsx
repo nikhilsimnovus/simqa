@@ -122,21 +122,30 @@ export default function ValidatePage() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ValidationResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [inventoryLoading, setInventoryLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([
-      fetch('/api/inventory').then((r) => r.json()),
-      fetch('/api/testcases?limit=500').then((r) => r.json()),
-    ]).then(([inv, t]) => {
-      const sys: InventorySystem[] = inv.systems ?? [];
-      setSystems(sys);
-      // Build Check only ever installs Simnovator. If no Simnovator system is
-      // in inventory yet, the dropdown stays empty and the user is pointed at
-      // the Inventory page.
-      const sn = sys.find((s) => s.type === 'SIMNOVATOR');
-      if (sn) setTarget(sn.id);
-      setTcs(t.items ?? []);
-    });
+    // Inventory is fast (local file read) — fetch + render its result regardless
+    // of whether testcases comes back. The testcases call hits the live UESIM
+    // box and can take 10–30s; we don't want that latency to keep the user from
+    // seeing their Simnovator system or making it look like inventory is empty.
+    fetch('/api/inventory')
+      .then((r) => r.json())
+      .then((inv) => {
+        const sys: InventorySystem[] = inv.systems ?? [];
+        setSystems(sys);
+        const sn = sys.find((s) => s.type === 'SIMNOVATOR');
+        if (sn) setTarget(sn.id);
+      })
+      .catch((e) => setErr(`Failed to load inventory: ${e?.message ?? e}`))
+      .finally(() => setInventoryLoading(false));
+
+    // Testcases is best-effort and only used by the optional "Run a sample
+    // testcase live" check. Failures here must not block the page.
+    fetch('/api/testcases?limit=500')
+      .then((r) => r.json())
+      .then((t) => setTcs(t.items ?? []))
+      .catch(() => { /* silent — sample-execution will show "no testcases" */ });
   }, []);
 
   const simnovators = useMemo(() => systems.filter((s) => s.type === 'SIMNOVATOR'), [systems]);
@@ -253,7 +262,11 @@ export default function ValidatePage() {
           <Card>
             <CardHeader><CardTitle>Target</CardTitle></CardHeader>
             <CardBody className="space-y-3">
-              {simnovators.length === 0 ? (
+              {inventoryLoading ? (
+                <div className="flex items-center gap-2 text-[12px] text-slate-500">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading inventory…
+                </div>
+              ) : simnovators.length === 0 ? (
                 <div className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-[11px] text-orange-800 leading-relaxed flex gap-2">
                   <AlertTriangle className="h-4 w-4 mt-0.5 flex-none" />
                   <div>
