@@ -16,7 +16,7 @@ const NAV = [
   { href: '/end-to-end',  label: 'End to End',      icon: Layers },
   { href: '/api-tests',   label: 'API Tests',       icon: Beaker },
   { href: '/ui-tests',    label: 'UI Tests',        icon: MousePointerClick },
-  { href: '/inventory',   label: 'Inventory',       icon: Server },
+  { href: '/inventory',   label: 'Systems Mgmt',    icon: Server },
   { href: '/runs',        label: 'Runs',            icon: History },
   { href: '/settings',    label: 'Settings',        icon: Settings2 },
 ];

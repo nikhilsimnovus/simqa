@@ -163,8 +163,8 @@ export default function InventoryPage() {
   return (
     <>
       <Header
-        title="Inventory"
-        subtitle="Lab systems and topology profiles"
+        title="Systems Management"
+        subtitle="Lab systems and topology profiles · click any field to edit, then Save"
         right={
           <div className="flex items-center gap-2">
             {msg ? (
@@ -189,6 +189,18 @@ export default function InventoryPage() {
           <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">Loading…</div>
         ) : (
           <>
+            {/* How-to-edit hint */}
+            <div className="rounded-xl border border-sky-200 bg-sky-50/70 px-4 py-2.5 flex items-start gap-3 text-[12px] text-sky-900">
+              <div className="mt-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-full bg-sky-100 text-sky-700 font-semibold">?</div>
+              <div className="leading-relaxed">
+                <span className="font-semibold">Editing systems:</span>{' '}
+                click into any field on a card below — ID, Name, Type, Host/IP, credentials — change the value, then click{' '}
+                <span className="rounded bg-white px-1.5 py-0.5 border border-sky-200 font-medium">Save</span>{' '}
+                at the top-right. Nothing persists to <span className="font-mono">inventory.yaml</span> until you save.{' '}
+                Use the <Trash2 className="inline h-3 w-3" /> on a card to remove a system.
+              </div>
+            </div>
+
             {/* Stats strip */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <StatCard icon={ShieldCheck} tone="orange" label="Simnovator"   value={stats.simnovator} />
