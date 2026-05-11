@@ -1,9 +1,12 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Header } from '@/components/Header';
 import { Card, CardBody, CardHeader, CardTitle, Button, Badge, Stat, Input } from '@/components/ui';
 import { CheckCircle2, XCircle, MinusCircle, Loader2, Beaker, Download, Copy, ChevronRight, ChevronDown, Filter } from 'lucide-react';
+
+/** Shape of a row returned by /api/ui-tests/systems — same endpoint UI Tests uses. */
+interface TestSystem { id: string; name: string; host: string; type: string; vendor?: string }
 
 type Category =
   | 'auth' | 'version' | 'users' | 'admin-users' | 'simulators'
@@ -81,6 +84,25 @@ export default function ApiTestsPage() {
   const [sortBy, setSortBy] = useState<SortBy>('failures-first');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
+  // Target system picker — same flow as /ui-tests: list testable systems
+  // from inventory, persist the last choice in localStorage so a refresh
+  // doesn't reset the dropdown.
+  const [systems, setSystems] = useState<TestSystem[] | null>(null);
+  const [targetSystemId, setTargetSystemId] = useState<string>('');
+  useEffect(() => {
+    fetch('/api/ui-tests/systems').then((r) => r.json()).then((j) => {
+      const list: TestSystem[] = j.systems ?? [];
+      setSystems(list);
+      const stored = (typeof window !== 'undefined' ? localStorage.getItem('simqa-target-system') : null) ?? '';
+      const valid = list.find((s) => s.id === stored);
+      if (valid) setTargetSystemId(valid.id);
+      else if (list.length > 0) setTargetSystemId(list[0].id);
+    }).catch(() => setSystems([]));
+  }, []);
+  useEffect(() => {
+    if (typeof window !== 'undefined' && targetSystemId) localStorage.setItem('simqa-target-system', targetSystemId);
+  }, [targetSystemId]);
+
   function toggle(c: Category) {
     const next = new Set(enabled);
     next.has(c) ? next.delete(c) : next.add(c);
@@ -96,6 +118,7 @@ export default function ApiTestsPage() {
         body: JSON.stringify({
           categories: Array.from(enabled),
           includeDestructive, includeLongRunning,
+          targetSystemId: targetSystemId || undefined,
         }),
       });
       const j: Response = await r.json();
@@ -215,6 +238,30 @@ export default function ApiTestsPage() {
       />
       <main className="p-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-1 space-y-4">
+          <Card>
+            <CardHeader><CardTitle>Test target</CardTitle></CardHeader>
+            <CardBody className="space-y-2 text-sm">
+              {!systems ? (
+                <div className="text-xs text-slate-500">Loading systems…</div>
+              ) : systems.length === 0 ? (
+                <div className="text-xs text-red-700">No UESIM / Simnovator / Callbox systems in inventory.yaml.</div>
+              ) : (
+                <select
+                  value={targetSystemId}
+                  onChange={(e) => setTargetSystemId(e.target.value)}
+                  disabled={busy}
+                  className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 bg-white"
+                >
+                  {systems.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name} ({s.host}) · {s.type}</option>
+                  ))}
+                </select>
+              )}
+              <div className="text-[10px] text-slate-500 pt-1">
+                The API runner logs in with the UESIM REST credentials on the selected system.
+              </div>
+            </CardBody>
+          </Card>
           <Card>
             <CardHeader><CardTitle>Categories</CardTitle></CardHeader>
             <CardBody className="space-y-2">

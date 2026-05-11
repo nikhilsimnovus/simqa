@@ -11,7 +11,7 @@
 
 import { ensureToken } from './uesimClient';
 import type { Inventory } from './inventory';
-import { uesimApiOptsFromInventory } from './inventory';
+import { uesimApiOptsFromInventory, uesimApiOptsForSystem } from './inventory';
 
 export type ApiTestCategory =
   | 'auth' | 'version' | 'users' | 'admin-users' | 'simulators'
@@ -71,6 +71,10 @@ export interface ApiTesterRequest {
   includeLongRunning?: boolean;
   /** Include negative tests (401/404/400 verification). Default true. */
   includeNegative?: boolean;
+  /** Inventory system id to test against. If omitted, the first UESIM-capable
+   *  system is used (legacy behaviour). Lets two teammates target different
+   *  boxes from the same simqa install. */
+  targetSystemId?: string;
 }
 
 export interface ApiTesterResponse {
@@ -1165,13 +1169,25 @@ function defs(): TestDef[] {
 
 export async function runApiTests(inv: Inventory, req: ApiTesterRequest): Promise<ApiTesterResponse> {
   const startedAt = new Date().toISOString();
-  const apiOpts = uesimApiOptsFromInventory(inv);
+  // Resolve the target system. If a specific id was passed, use it; otherwise
+  // fall back to the first UESIM-capable system in inventory (legacy
+  // behaviour). This lets the UI offer a target dropdown the same way
+  // /ui-tests does, so two teammates can test different boxes in parallel.
+  const apiOpts = req.targetSystemId
+    ? uesimApiOptsForSystem(inv, req.targetSystemId)
+    : uesimApiOptsFromInventory(inv);
   if (!apiOpts) {
     return {
       startedAt, finishedAt: new Date().toISOString(),
       ok: false,
       counts: { total: 0, passed: 0, failed: 0, skipped: 0 },
-      results: [{ id: 'preflight', name: 'inventory has UESIM', category: 'auth', method: '-', endpoint: '-', severity: 'critical', destructive: false, ok: false, detail: 'no UESIM system in inventory.yaml' }],
+      results: [{
+        id: 'preflight', name: 'inventory has UESIM', category: 'auth',
+        method: '-', endpoint: '-', severity: 'critical', destructive: false, ok: false,
+        detail: req.targetSystemId
+          ? `system "${req.targetSystemId}" not found or not UESIM-capable in inventory.yaml`
+          : 'no UESIM system in inventory.yaml',
+      }],
       byCategory: {},
     };
   }
