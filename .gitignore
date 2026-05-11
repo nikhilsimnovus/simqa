@@ -10,7 +10,7 @@ node_modules/
 # Build / runtime artifacts
 # ──────────────────────────────────────────────────────────────────────
 .next/
-dist/
+dist/          # also where `npm run release` drops the shippable tarball
 out/
 build/
 *.tsbuildinfo
