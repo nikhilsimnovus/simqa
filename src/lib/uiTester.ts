@@ -4469,6 +4469,15 @@ interface ActiveRun {
   totalPlanned: number;
   completed: number;
   currentTestId?: string;
+  /** Results that have finished so far, pushed in completion order. The page
+   *  polls /status and merges these into its row state so test cards flip from
+   *  "pending" → PASS/FAIL/SKIP live, instead of all at once when the run
+   *  finally returns. */
+  liveResults: UiTestResult[];
+  /** Test ids currently executing (a Set because with concurrency>1 multiple
+   *  tests run in parallel). The page renders a spinner on cards whose id is
+   *  in here. */
+  runningTestIds: Set<string>;
 }
 
 // Multi-user / multi-target: one active run per target host. Two engineers
@@ -4485,23 +4494,16 @@ export interface RunStatusSnapshot {
   totalPlanned?: number;
   completed?: number;
   currentTestId?: string;
+  /** Results that have completed so far in this run. Streamed via polling so
+   *  the page can flip cards live instead of waiting for the final POST
+   *  response. Absent / empty before any test has finished. */
+  liveResults?: UiTestResult[];
+  /** Test ids currently in flight (>=1 for concurrency>1). */
+  runningTestIds?: string[];
 }
 
-/** Status of a specific target (or the first active run if no target given). */
-export function getCurrentRunStatus(targetHost?: string): RunStatusSnapshot {
-  if (targetHost) {
-    const r = activeRunsByHost.get(targetHost);
-    if (!r) return { running: false };
-    return { running: true, targetSystemId: r.targetSystemId, targetHost: r.targetHost, targetName: r.targetName, startedAt: r.startedAt, totalPlanned: r.totalPlanned, completed: r.completed, currentTestId: r.currentTestId };
-  }
-  const first = activeRunsByHost.values().next().value;
-  if (!first) return { running: false };
-  return { running: true, targetSystemId: first.targetSystemId, targetHost: first.targetHost, targetName: first.targetName, startedAt: first.startedAt, totalPlanned: first.totalPlanned, completed: first.completed, currentTestId: first.currentTestId };
-}
-
-/** All currently-running test runs across every target host. */
-export function listActiveRuns(): RunStatusSnapshot[] {
-  return [...activeRunsByHost.values()].map((r) => ({
+function snapshotOf(r: ActiveRun): RunStatusSnapshot {
+  return {
     running: true,
     targetSystemId: r.targetSystemId,
     targetHost: r.targetHost,
@@ -4510,7 +4512,27 @@ export function listActiveRuns(): RunStatusSnapshot[] {
     totalPlanned: r.totalPlanned,
     completed: r.completed,
     currentTestId: r.currentTestId,
-  }));
+    // Defensive shallow copy so callers can't mutate our internal arrays.
+    liveResults: r.liveResults.slice(),
+    runningTestIds: [...r.runningTestIds],
+  };
+}
+
+/** Status of a specific target (or the first active run if no target given). */
+export function getCurrentRunStatus(targetHost?: string): RunStatusSnapshot {
+  if (targetHost) {
+    const r = activeRunsByHost.get(targetHost);
+    if (!r) return { running: false };
+    return snapshotOf(r);
+  }
+  const first = activeRunsByHost.values().next().value;
+  if (!first) return { running: false };
+  return snapshotOf(first);
+}
+
+/** All currently-running test runs across every target host. */
+export function listActiveRuns(): RunStatusSnapshot[] {
+  return [...activeRunsByHost.values()].map(snapshotOf);
 }
 
 /** Signal a specific run to abort. Returns true if a run was found and signalled. */
@@ -4637,6 +4659,7 @@ export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<
   const activeRun: ActiveRun = {
     targetSystemId: target.systemId, targetHost: target.host, targetName: target.name,
     abortController, startedAt, totalPlanned: 0, completed: 0,
+    liveResults: [], runningTestIds: new Set(),
   };
   activeRunsByHost.set(target.host, activeRun);
 
@@ -4686,7 +4709,8 @@ export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<
 
     // Surface stage-1 login as a visible result row. If it failed, every
     // needsAuth test below will be marked skipped with a pointer to it.
-    results.push({
+    // Also pushed into ar.liveResults so the page lights up immediately.
+    const preflightRow: UiTestResult = {
       number: 0,
       id: 'preflight-login',
       name: 'Preflight: stage-1 admin login + capture storageState',
@@ -4702,7 +4726,10 @@ export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<
       evidence: preflightEvidence,
       ranAt: new Date().toISOString(),
       expected: loginVerdict.ok ? undefined : 'login returns 200 and the SPA stashes a JWT in localStorage. If 0/N tests in this run pass with route-bouncing detail, this preflight failed.',
-    });
+    };
+    results.push(preflightRow);
+    activeRun.liveResults.push(preflightRow);
+    activeRun.completed = results.length;
 
     // Per-test runner. Each test gets its own context with optional trace +
     // video. On failure, trace is saved as trace.zip; video is saved as the
@@ -4828,21 +4855,36 @@ export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<
     // Reflect total planned in the live status now that filtering is final.
     ar.totalPlanned = (selected?.length ?? 0) + 1;
     // Run serial first (preflight-dependent + state-modifying), then parallel pool.
+    // Each call: mark id "running" before, push result + clear "running" after,
+    // so /api/ui-tests/status reports live progress accurately even when
+    // concurrency>1 means multiple tests are in flight.
     for (const def of serialDefs) {
       if (abortController.signal.aborted) break;
       ar.currentTestId = def.id;
-      const r = await runOne(def, (indexFor.get(def) ?? 0) + 1);
-      results.push(r);
-      ar.completed = results.length;
+      ar.runningTestIds.add(def.id);
+      try {
+        const r = await runOne(def, (indexFor.get(def) ?? 0) + 1);
+        results.push(r);
+        ar.liveResults.push(r);
+        ar.completed = results.length;
+      } finally {
+        ar.runningTestIds.delete(def.id);
+      }
     }
 
     if (concurrency === 1) {
       for (const def of parallelDefs) {
         if (abortController.signal.aborted) break;
         ar.currentTestId = def.id;
-        const r = await runOne(def, (indexFor.get(def) ?? 0) + 1);
-        results.push(r);
-        ar.completed = results.length;
+        ar.runningTestIds.add(def.id);
+        try {
+          const r = await runOne(def, (indexFor.get(def) ?? 0) + 1);
+          results.push(r);
+          ar.liveResults.push(r);
+          ar.completed = results.length;
+        } finally {
+          ar.runningTestIds.delete(def.id);
+        }
       }
     } else {
       let qIdx = 0;
@@ -4853,9 +4895,15 @@ export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<
           if (myIdx >= parallelDefs.length) return;
           const def = parallelDefs[myIdx];
           ar.currentTestId = def.id;
-          const r = await runOne(def, (indexFor.get(def) ?? 0) + 1);
-          results.push(r);
-          ar.completed = results.length;
+          ar.runningTestIds.add(def.id);
+          try {
+            const r = await runOne(def, (indexFor.get(def) ?? 0) + 1);
+            results.push(r);
+            ar.liveResults.push(r);
+            ar.completed = results.length;
+          } finally {
+            ar.runningTestIds.delete(def.id);
+          }
         }
       });
       await Promise.all(workers);

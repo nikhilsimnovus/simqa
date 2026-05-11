@@ -72,6 +72,14 @@ interface RunStatus {
   totalPlanned?: number;
   completed?: number;
   currentTestId?: string;
+  /** Tests that have completed so far in this run. Updated every poll while
+   *  busy — drives the live "card flips from pending → PASS/FAIL" behaviour
+   *  so the user doesn't have to wait for the final POST response to see
+   *  anything. */
+  liveResults?: UiTestResult[];
+  /** Test ids currently executing. With concurrency=1 this is at most one
+   *  id; with concurrency>1 multiple cards may show a spinner at once. */
+  runningTestIds?: string[];
   /** All currently-active runs across every target host. */
   runs?: RunStatus[];
 }
@@ -296,25 +304,36 @@ export default function UiTestsPage() {
   }
 
   // Compose the display rows: post-run results overlaid on catalog (so unrun rows show as pending)
-  type Row = (CatalogEntry & { state: 'pending' }) | (UiTestResult & { state: 'pass' | 'fail' | 'skip' });
+  // While a run is in flight, also overlay runStatus.liveResults so cards
+  // flip from pending → PASS/FAIL in real time during the poll loop. The
+  // 'running' state is a third in-progress flavour for cards whose id is in
+  // runStatus.runningTestIds. Final results from `data` always win over live
+  // results (post-run state is canonical).
+  type Row =
+    | (CatalogEntry & { state: 'pending' })
+    | (CatalogEntry & { state: 'running' })
+    | (UiTestResult & { state: 'pass' | 'fail' | 'skip' });
   const rows: Row[] = useMemo(() => {
     if (!catalog) return [];
-    if (!data) return catalog.filter((c) => enabled.has(c.category)).map((c) => ({ ...c, state: 'pending' as const }));
-    // After a run, build a map of results
-    const byId = new Map(data.results.map((r) => [r.id, r]));
+    const liveById = new Map((runStatus.liveResults ?? []).map((r) => [r.id, r]));
+    const finalById = data ? new Map(data.results.map((r) => [r.id, r])) : null;
+    const runningSet = new Set(runStatus.runningTestIds ?? []);
     return catalog.filter((c) => enabled.has(c.category)).map((c) => {
-      const r = byId.get(c.id);
-      if (!r) return { ...c, state: 'pending' as const };
-      return { ...r, state: r.skipped ? 'skip' as const : (r.ok ? 'pass' as const : 'fail' as const) };
+      const r = (finalById?.get(c.id)) ?? liveById.get(c.id);
+      if (r) return { ...r, state: r.skipped ? 'skip' as const : (r.ok ? 'pass' as const : 'fail' as const) };
+      if (runningSet.has(c.id)) return { ...c, state: 'running' as const };
+      return { ...c, state: 'pending' as const };
     });
-  }, [data, catalog, enabled]);
+  }, [data, catalog, enabled, runStatus.liveResults, runStatus.runningTestIds]);
 
   const visible = useMemo(() => {
     const ql = search.trim().toLowerCase();
     return rows.filter((r) => {
       if (statusFilter === 'failed' && r.state !== 'fail') return false;
       if (statusFilter === 'passed' && r.state !== 'pass') return false;
-      if (statusFilter === 'pending' && r.state !== 'pending') return false;
+      // 'pending' filter covers both unstarted and in-flight (RUNNING) — both
+      // are tests that haven't yielded a verdict yet.
+      if (statusFilter === 'pending' && r.state !== 'pending' && r.state !== 'running') return false;
       if (ql) {
         const hay = `${r.id} ${r.name} ${r.description ?? ''} ${r.category} ${(r as any).detail ?? ''}`.toLowerCase();
         if (!hay.includes(ql)) return false;
@@ -350,7 +369,10 @@ export default function UiTestsPage() {
     const total = rows.length;
     const passed = rows.filter((r) => r.state === 'pass').length;
     const failed = rows.filter((r) => r.state === 'fail').length;
-    const pending = rows.filter((r) => r.state === 'pending').length;
+    // Pending count includes both unstarted and currently-running tests, so
+    // during a run the PENDING stat card counts down from total → 0 as
+    // results stream in.
+    const pending = rows.filter((r) => r.state === 'pending' || r.state === 'running').length;
     const passRate = total > 0 ? (passed / total) * 100 : 0;
     return { total, passed, failed, pending, passRate };
   }, [rows]);
@@ -713,21 +735,28 @@ export default function UiTestsPage() {
             <CardBody className="p-0">
               <ul className="divide-y divide-slate-100">
                 {visible.map((r) => {
-                  const expandable = r.state !== 'pending';
+                  // 'pending' (not yet started) and 'running' (in flight, no
+                  // result yet) are both un-expandable — there's no evidence
+                  // panel to show. Anything with a final result is expandable.
+                  const expandable = r.state !== 'pending' && r.state !== 'running';
                   const dr = r as UiTestResult & { state: 'pass' | 'fail' | 'skip' };
                   const meta = CATEGORY_META[r.category];
                   const isSingleRunning = singleRunningId === r.id;
+                  const isInFlight = isSingleRunning || r.state === 'running';
                   return (
                     <li key={r.id} className={
                       'group px-5 py-3 transition-colors ' +
-                      (r.state === 'fail' ? 'hover:bg-red-50/40' : r.state === 'pass' ? 'hover:bg-emerald-50/40' : 'hover:bg-slate-50/60')
+                      (r.state === 'fail' ? 'hover:bg-red-50/40' :
+                       r.state === 'pass' ? 'hover:bg-emerald-50/40' :
+                       r.state === 'running' ? 'bg-primary-50/40 hover:bg-primary-50/60' :
+                       'hover:bg-slate-50/60')
                     }>
                       <div className="flex items-start gap-3">
                         <span className="mt-0.5 inline-flex items-center justify-center min-w-[2.5rem] h-6 px-2 rounded-md bg-slate-100 text-slate-700 text-xs font-mono tabular-nums">
                           #{r.number}
                         </span>
                         <span className="mt-0.5">
-                          {isSingleRunning ? <Loader2 className="h-4 w-4 text-primary-600 animate-spin" /> :
+                          {isInFlight        ? <Loader2 className="h-4 w-4 text-primary-600 animate-spin" /> :
                            r.state === 'pending' ? <Circle className="h-4 w-4 text-slate-300" /> :
                            r.state === 'skip'    ? <Loader2 className="h-4 w-4 text-slate-400" /> :
                            r.state === 'pass'    ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> :
@@ -749,20 +778,21 @@ export default function UiTestsPage() {
                                                             'bg-slate-50 text-slate-600 border-slate-200')
                             }>{r.severity}</span>
                             <StatePill state={r.state} />
-                            {r.state !== 'pending' && (dr.consoleErrorCount ?? 0) > 0 ? (
+                            {/* Result-only chips: skipped for pending+running (no result object yet). */}
+                            {r.state !== 'pending' && r.state !== 'running' && (dr.consoleErrorCount ?? 0) > 0 ? (
                               <span className="inline-flex items-center gap-1 text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
                                 <AlertTriangle className="h-3 w-3" /> {dr.consoleErrorCount} console err
                               </span>
                             ) : null}
                           </div>
                           <div className="text-xs text-slate-600 mt-1 leading-relaxed">{r.description}</div>
-                          {r.state !== 'pending' && dr.detail ? (
+                          {r.state !== 'pending' && r.state !== 'running' && dr.detail ? (
                             <div className="text-[11px] text-slate-500 mt-1 break-all leading-relaxed">↳ {dr.detail}</div>
                           ) : null}
                         </button>
 
                         <div className="flex items-center gap-1 self-start">
-                          {r.state !== 'pending' ? (
+                          {r.state !== 'pending' && r.state !== 'running' ? (
                             <span className="text-[11px] text-slate-400 tabular-nums whitespace-nowrap">{dr.durationMs ?? 0}ms</span>
                           ) : null}
                           <button
@@ -877,10 +907,11 @@ function StatCard({ label, value, icon, tone }: { label: string; value: number; 
   );
 }
 
-function StatePill({ state }: { state: 'pass' | 'fail' | 'skip' | 'pending' }) {
+function StatePill({ state }: { state: 'pass' | 'fail' | 'skip' | 'pending' | 'running' }) {
   if (state === 'pass') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-emerald-600 text-white">PASS</span>;
   if (state === 'fail') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-red-600 text-white">FAIL</span>;
   if (state === 'skip') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-amber-500 text-white">SKIP</span>;
+  if (state === 'running') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-primary-600 text-white animate-pulse">RUNNING</span>;
   return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-slate-200 text-slate-600">not run</span>;
 }
 
