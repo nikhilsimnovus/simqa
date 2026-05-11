@@ -542,6 +542,17 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     }
     emit(nowEvent({ type: 'step', step: 'install', status: 'ok', durationMs: Date.now() - tInstall }));
 
+    // ── Post-install status snapshot ──────────────────
+    // The Simnovator install drops a `simnovator` CLI on the VM that reports
+    // the state of all docker containers it manages. Running it once at the
+    // end gives the user immediate confidence the install actually brought
+    // services up, not just that ./install exited 0. Output is informational —
+    // we don't fail the overall install based on it (the install step itself
+    // is the source of truth), just surface it for visibility.
+    emit(nowEvent({ type: 'log', stream: 'info', line: '── post-install status (sudo simnovator status) ──' }));
+    const statusCmd = `sudo simnovator status 2>&1 || echo '(simnovator CLI not on PATH yet — open a new shell or wait a few seconds for installer to finish wiring it up)'`;
+    await runCommandInFrame(page, frame, statusCmd, 'install', emit, state, 60_000, ctx.isCanceled);
+
     await snap(page, 'final', 'success');
     emit(nowEvent({ type: 'done', ok: true, durationMs: Date.now() - t0 }));
     return { ok: true };
@@ -623,6 +634,25 @@ function isNoiseLine(s: string): boolean {
   const t = s.trim();
   if (t === '') return true;
   return false;
+}
+
+/**
+ * Strip the unicode-spinner frames the Simnovator install script paints
+ * during long-running steps. Each frame looks like `Installing ▖`, `Installing ▘`,
+ * `Installing ▝`, or `Installing ▗`, and xterm renders thousands of them per
+ * step — they dominate the live log and the events file without conveying any
+ * progress beyond "still working".
+ *
+ * After stripping, anything left over (e.g. `✔ App Server Installed
+ * successfully!!`, `Step 2: ...`, `- Installing UE stack`) survives and gets
+ * emitted normally. A line that is entirely spinner frames collapses to ''
+ * and is dropped.
+ */
+function stripSpinnerFrames(line: string): string {
+  return line
+    .replace(/\s*Installing\s+[▖▘▝▗]/g, ' ')   // each frame token
+    .replace(/\s+/g, ' ')                       // collapse runs of spaces
+    .trim();
 }
 
 /** xterm renders the full viewport in its DOM, including blank rows below
@@ -714,11 +744,17 @@ async function runCommandInFrame(
       else fresh = screen.length > state.emitted.length ? screen.slice(state.emitted.length) : '';
     }
     if (fresh) {
-      for (const ln of fresh.split(/\r?\n/)) {
-        if (!isNoiseLine(ln) && !ln.includes(sentinelId)) {
-          emit(nowEvent({ type: 'log', stream: 'stdout', line: ln }));
-          lastHeartbeat = Date.now();
-        }
+      for (const raw of fresh.split(/\r?\n/)) {
+        if (isNoiseLine(raw)) continue;
+        if (raw.includes(sentinelId)) continue;
+        // Collapse install-script spinner frames so a 200-frame iteration
+        // emits at most one log line per real progress event. The full,
+        // unfiltered output is still captured on disk in events.ndjson via
+        // the screenshot trail if anyone needs it for diagnosis.
+        const cleaned = stripSpinnerFrames(raw);
+        if (!cleaned) continue;
+        emit(nowEvent({ type: 'log', stream: 'stdout', line: cleaned }));
+        lastHeartbeat = Date.now();
       }
       state.emitted = screen;
     }

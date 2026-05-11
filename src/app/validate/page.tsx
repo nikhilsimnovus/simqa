@@ -245,6 +245,9 @@ export default function ValidatePage() {
     launch: 'idle', login: 'idle', terminal: 'idle', preflight: 'idle', fetch: 'idle', extract: 'idle', install: 'idle',
   });
   const [installDone,    setInstallDone]    = useState<{ ok: boolean; durationMs: number } | null>(null);
+  /** Captured from the X-Build-Id response header on /api/build-install; used
+   *  to deep-link the "Download log" button at install.log on disk. */
+  const [installBuildId, setInstallBuildId] = useState<string | null>(null);
   const [showManualFallback, setShowManualFallback] = useState(false);
   /** When true, ask the backend to launch Chromium in HEADED mode so the
    *  user can watch the install happen in a real browser window. */
@@ -475,6 +478,7 @@ export default function ValidatePage() {
     };
 
     let buildId: string | null = null;
+    setInstallBuildId(null);
     try {
       const resp = await fetch('/api/build-install', {
         method: 'POST',
@@ -482,6 +486,7 @@ export default function ValidatePage() {
         body: JSON.stringify(body),
       });
       buildId = resp.headers.get('X-Build-Id');
+      if (buildId) setInstallBuildId(buildId);
       if (!resp.ok || !resp.body) {
         const txt = await resp.text().catch(() => '');
         setInstallErr(`HTTP ${resp.status}: ${txt.slice(0, 300)}`);
@@ -1012,13 +1017,35 @@ export default function ValidatePage() {
           {/* INSTALL PROGRESS / LOG */}
           {hasTarget && includeBuild ? (
             <Card>
-              <CardHeader className="flex items-center justify-between">
+              <CardHeader className="flex items-center justify-between gap-2">
                 <CardTitle>Install progress</CardTitle>
-                {installDone ? (
-                  installDone.ok
-                    ? <Badge tone="success">install ok · {(installDone.durationMs / 1000).toFixed(0)}s</Badge>
-                    : <Badge tone="danger">install failed · {(installDone.durationMs / 1000).toFixed(0)}s</Badge>
-                ) : installBusy ? <Badge tone="info">running…</Badge> : null}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {installDone ? (
+                    installDone.ok
+                      ? <Badge tone="success">install ok · total {(installDone.durationMs / 1000 / 60).toFixed(1)} min</Badge>
+                      : <Badge tone="danger">install failed · {(installDone.durationMs / 1000 / 60).toFixed(1)} min</Badge>
+                  ) : installBusy ? <Badge tone="info">running…</Badge> : null}
+                  {installBuildId ? (
+                    <>
+                      <a
+                        href={`/api/build-log?buildId=${encodeURIComponent(installBuildId)}&file=install.log`}
+                        target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                        title="Download the full timestamped transcript"
+                      >
+                        <Download className="h-3 w-3" /> install.log
+                      </a>
+                      <a
+                        href={`/api/build-log?buildId=${encodeURIComponent(installBuildId)}&file=events.ndjson`}
+                        target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                        title="Download every event as raw JSON for replay / triage"
+                      >
+                        <Download className="h-3 w-3" /> events.ndjson
+                      </a>
+                    </>
+                  ) : null}
+                </div>
               </CardHeader>
               <CardBody className="space-y-3">
                 {/* Step strip */}
