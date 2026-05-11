@@ -64,7 +64,11 @@ const ga = spawnSync('git', ['archive', '--format=tar', '-o', archiveFile, 'HEAD
 if (ga.status !== 0) fail('git archive failed. Is this a git checkout?');
 
 info('Unpacking into stage directory...');
-const ux = spawnSync('tar', ['-xf', archiveFile, '-C', relDir], { stdio: 'inherit' });
+// On Windows, passing an absolute path like `C:\...` to `-C` makes tar
+// interpret the colon as a remote host. Avoid by changing directory via
+// child_process cwd:, and pass the archive file as a relative path.
+const archiveRelToRelDir = path.relative(relDir, archiveFile);
+const ux = spawnSync('tar', ['-xf', archiveRelToRelDir], { stdio: 'inherit', cwd: relDir });
 if (ux.status !== 0) fail('tar extraction failed.');
 fs.unlinkSync(archiveFile);
 ok('Source staged');
@@ -94,11 +98,13 @@ for (const b of banned) {
 }
 ok('No user/runtime artifacts leaked');
 
-// ── Pack the tarball. ──────────────────────────────────────────────────────
+// ── Pack the tarball. Same Windows-colon caveat: run tar from stageDir so
+// the version dir is just a relative name, and write the output to a path
+// relative to stageDir to keep the C:\ out of tar's argv. ──────────────────
 const outFile = path.join(distDir, `${version}.tar.gz`);
 info(`Packing ${path.relative(ROOT, outFile)}...`);
-const tarArgs = ['-czf', outFile, '-C', stageDir, version];
-const pack = spawnSync('tar', tarArgs, { stdio: 'inherit' });
+const outRelToStage = path.relative(stageDir, outFile);
+const pack = spawnSync('tar', ['-czf', outRelToStage, version], { stdio: 'inherit', cwd: stageDir });
 if (pack.status !== 0) fail('tar pack failed.');
 const sizeBytes = fs.statSync(outFile).size;
 const sizeMB = (sizeBytes / 1024 / 1024).toFixed(1);
