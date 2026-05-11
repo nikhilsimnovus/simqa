@@ -527,16 +527,55 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     const installCmd = `cd ${shellQuote(`${dir}/${dirName}`)} && ${installLine}`;
     const tInstall = Date.now();
     emit(nowEvent({ type: 'step', step: 'install', status: 'start', detail: installLine.slice(0, 220) }));
-    const installed = await runCommandInFrame(page, frame, installCmd, 'install', emit, state, 30 * 60_000, ctx.isCanceled);
+
+    // ── License watcher ──────────────────────────────────
+    // The Simnovator install script validates the license early and prints
+    // a line like:   sysadmin ue_license=0 oru_license=3
+    // If ue_license=0 and the user hasn't skipped App Manager, the App
+    // Manager install will fail ~30s into Step 2 even when --no_ue is set,
+    // because the App Manager package re-validates the UE license count.
+    // Surfacing this the moment we see it lets the user cancel + refresh
+    // the license instead of waiting out an inevitable failure. We wrap
+    // the emit function for the install step only so the scan adds zero
+    // overhead to the other steps.
+    let licenseSeen = false;
+    const licenseRe = /ue_license=(\d+)\s+oru_license=(\d+)/;
+    const willInstallAppMgr = !req.skip?.app_manager;
+    const installEmit = (e: InstallEvent) => {
+      emit(e);
+      if (!licenseSeen && e.type === 'log' && typeof e.line === 'string') {
+        const m = e.line.match(licenseRe);
+        if (m) {
+          licenseSeen = true;
+          const ueLic  = Number(m[1]);
+          const oruLic = Number(m[2]);
+          if (ueLic === 0 && willInstallAppMgr) {
+            emit(nowEvent({ type: 'log', stream: 'error', line: `⚠  LICENSE: ue_license=${ueLic}, oru_license=${oruLic} — App Manager install is enabled.` }));
+            emit(nowEvent({ type: 'log', stream: 'error', line: `   App Manager re-validates the UE license count even with --no_ue and will fail ~30s into Step 2.` }));
+            emit(nowEvent({ type: 'log', stream: 'error', line: `   Fix: refresh the license on this VM so ue_license>=1, OR re-run with "Skip App manager" checked.` }));
+          } else if (ueLic === 0) {
+            emit(nowEvent({ type: 'log', stream: 'info', line: `(license: ue_license=0, oru_license=${oruLic} — App Manager is skipped, install can proceed)` }));
+          } else {
+            emit(nowEvent({ type: 'log', stream: 'info', line: `(license OK: ue_license=${ueLic}, oru_license=${oruLic})` }));
+          }
+        }
+      }
+    };
+
+    const installed = await runCommandInFrame(page, frame, installCmd, 'install', installEmit, state, 30 * 60_000, ctx.isCanceled);
     await snap(page, installed.ok ? 'install' : 'install', installed.ok ? 'done' : 'failed');
     if (!installed.ok) {
       // xterm visual wrapping often clips the actual error message before our
       // diff cursor catches it. The install script writes a full log to
-      // /tmp/master_setup.log — tail the last 80 lines and stream them so the
-      // user sees the real reason in the live log, not just an exit code.
-      emit(nowEvent({ type: 'log', stream: 'info', line: '── auto-tailing /tmp/master_setup.log for the full error ──' }));
-      await runCommandInFrame(page, frame, `tail -n 80 /tmp/master_setup.log 2>/dev/null || echo '(no master_setup.log found on VM)'`, 'install', emit, state, 60_000, ctx.isCanceled);
-      emit(nowEvent({ type: 'step', step: 'install', status: 'fail', detail: `exit code ${installed.exitCode} — see auto-tailed master_setup.log above`, durationMs: Date.now() - tInstall }));
+      // /tmp/master_setup.log — tail the last 300 lines (80 was too few; the
+      // real failure line was getting truncated mid-line on long App Manager
+      // failures) and then run a focused grep so the user sees the actual
+      // "FAILED" / "error" / "fatal" lines without having to scan all 300.
+      emit(nowEvent({ type: 'log', stream: 'info', line: '── auto-tailing /tmp/master_setup.log for the full error (last 300 lines) ──' }));
+      await runCommandInFrame(page, frame, `tail -n 300 /tmp/master_setup.log 2>/dev/null || echo '(no master_setup.log found on VM)'`, 'install', emit, state, 60_000, ctx.isCanceled);
+      emit(nowEvent({ type: 'log', stream: 'info', line: '── focused grep: FAILED / error / fatal lines (case-insensitive, last 50 matches) ──' }));
+      await runCommandInFrame(page, frame, `grep -niE 'failed|error|fatal' /tmp/master_setup.log 2>/dev/null | tail -n 50 || echo '(no matches in master_setup.log)'`, 'install', emit, state, 60_000, ctx.isCanceled);
+      emit(nowEvent({ type: 'step', step: 'install', status: 'fail', detail: `exit code ${installed.exitCode} — see auto-tailed master_setup.log + grep above`, durationMs: Date.now() - tInstall }));
       emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
       return { ok: false };
     }

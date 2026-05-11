@@ -987,6 +987,25 @@ export default function ValidatePage() {
                       ))}
                     </div>
                     <div className="mt-2 text-[10px] text-slate-500">{SKIP_FLAGS.map((s) => s.label).join(' · ')}</div>
+                    {/*
+                      License-vs-skip-flag gotcha: the App Manager package's
+                      installer re-validates the UE license count even when
+                      --no_ue is set. So a VM with ue_license=0 will fail
+                      ~30s into Step 2 unless --no_app_manager is also set.
+                      We surface this in the live log when license=0 is
+                      detected, but flag it here too so users know up front.
+                    */}
+                    {skipFlags.no_ue && !skipFlags.no_app_manager ? (
+                      <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2.5 text-[11px] text-amber-800 leading-relaxed flex gap-2">
+                        <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-none" />
+                        <div>
+                          <span className="font-semibold">Heads-up:</span> if this VM has <span className="font-mono">ue_license=0</span>, App Manager
+                          install will still fail (~30s into Step 2) even with <span className="font-mono">--no_ue</span>. Either refresh the UE
+                          license on the VM or also check <span className="font-mono">--no_app_manager</span>. The live log will warn you the
+                          moment it sees the license counts on the first run.
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   {/* GENERATED COMMAND PREVIEW (read-only) */}
