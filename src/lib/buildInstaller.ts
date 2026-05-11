@@ -530,7 +530,13 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     const installed = await runCommandInFrame(page, frame, installCmd, 'install', emit, state, 30 * 60_000, ctx.isCanceled);
     await snap(page, installed.ok ? 'install' : 'install', installed.ok ? 'done' : 'failed');
     if (!installed.ok) {
-      emit(nowEvent({ type: 'step', step: 'install', status: 'fail', detail: `exit code ${installed.exitCode}`, durationMs: Date.now() - tInstall }));
+      // xterm visual wrapping often clips the actual error message before our
+      // diff cursor catches it. The install script writes a full log to
+      // /tmp/master_setup.log — tail the last 80 lines and stream them so the
+      // user sees the real reason in the live log, not just an exit code.
+      emit(nowEvent({ type: 'log', stream: 'info', line: '── auto-tailing /tmp/master_setup.log for the full error ──' }));
+      await runCommandInFrame(page, frame, `tail -n 80 /tmp/master_setup.log 2>/dev/null || echo '(no master_setup.log found on VM)'`, 'install', emit, state, 60_000, ctx.isCanceled);
+      emit(nowEvent({ type: 'step', step: 'install', status: 'fail', detail: `exit code ${installed.exitCode} — see auto-tailed master_setup.log above`, durationMs: Date.now() - tInstall }));
       emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
       return { ok: false };
     }
