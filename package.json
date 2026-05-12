@@ -9,9 +9,9 @@
   },
   "main": "./dist/index.js",
   "scripts": {
-    "dev": "next dev -p 4000",
+    "dev": "node scripts/run.cjs dev",
     "build": "next build",
-    "start": "next start -p 4000",
+    "start": "node scripts/run.cjs start",
     "cli": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",
     "release": "node scripts/release.cjs"

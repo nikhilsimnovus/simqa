@@ -12,6 +12,14 @@ node install.cjs
 
 Then edit `inventory.yaml` and run `npm run dev` — open http://localhost:4000.
 
+**At a customer site behind a firewall?** Use the minimal install:
+
+```bash
+node install.cjs --skip-playwright --port 8080
+```
+
+That skips the ~150 MB Chromium download (uses system Chrome / Edge at runtime if available) and runs on port 8080 instead of 4000.
+
 ## Step by step
 
 ### 1. Prerequisites
@@ -43,17 +51,21 @@ cd qakabaap-<version>
 node install.cjs
 ```
 
-This will:
-1. Verify Node 18+
-2. `npm install` (downloads ~200 MB of npm packages)
-3. `npx playwright install chromium` (downloads ~150 MB Chromium for Build Check + UI Tests)
-4. Copy `inventory.example.yaml` → `inventory.yaml` if you don't have one yet
+Flags you might need:
 
-If you're behind a corporate firewall and the Playwright Chromium download fails, re-run with `--skip-playwright`:
-```bash
-node install.cjs --skip-playwright
-```
-The app will then fall back to system Chrome / Edge at runtime.
+| Flag | When to use |
+|------|-------------|
+| `--skip-playwright` | Chromium download is blocked at your site. App falls back to system Chrome/Edge at runtime — see [Features without Chromium](#features-without-chromium) below. |
+| `--port <n>` | Default port 4000 is firewalled or busy. Writes `.env.local` so subsequent `npm run dev` / `start` use the new port. |
+| `--no-prompt` | Non-interactive install (CI / scripted). |
+
+What it does:
+
+1. Verify Node 18+
+2. `npm install` (~200 MB of npm packages)
+3. `npx playwright install chromium` (~150 MB) — **skippable**
+4. Set the default port (writes `.env.local` if `--port` given)
+5. Copy `inventory.example.yaml` → `inventory.yaml` if you don't have one
 
 ### 4. Edit `inventory.yaml`
 
@@ -70,7 +82,7 @@ systems:
     cockpitPort: 9090
 ```
 
-Add Callbox, UESIM, App Server entries the same way — see `inventory.example.yaml` for the full schema.
+Add Callbox, UESIM, App Server entries the same way — see `inventory.example.yaml` for the full schema, including the SSH credential fields a UESIM needs for the **Tools → UE-sim cfg patcher** feature.
 
 ### 5. Start
 
@@ -85,14 +97,52 @@ npm run build
 npm run start
 ```
 
-Either way, open **http://localhost:4000** in your browser.
+Default URL: **http://localhost:4000** (or whatever port you set).
+
+## Choosing a different port
+
+If port 4000 is firewalled at your site (common at customer locations), pick a different one. Four ways, in order of permanence:
+
+| Where | How | When to use |
+|-------|-----|-------------|
+| One-off flag | `npm run dev -- -p 8080` | Quick test |
+| Environment variable | `PORT=8080 npm run dev` (Linux/macOS) <br> `$env:PORT=8080; npm run dev` (PowerShell) <br> `set PORT=8080 && npm run dev` (cmd.exe) | Per-session |
+| `.env.local` file | Add `PORT=8080` to `.env.local` in the install dir | Persistent for this checkout |
+| Re-run installer | `node install.cjs --port 8080` | Persistent (writes `.env.local` for you) |
+
+The wrapper `scripts/run.cjs` reads `PORT` from env (default 4000) and starts Next on that port. Any `-p` flag passed via `npm run dev -- -p N` overrides it.
+
+## Features without Chromium
+
+simqa uses Playwright Chromium for two features. The other ~70% of the app is pure HTTP / SSH and needs no browser.
+
+| Feature | Needs browser? | Works if Chromium skipped? |
+|---------|----------------|----------------------------|
+| **Build Check** (Cockpit terminal automation) | ✅ yes | ✅ if system Chrome or Edge is installed |
+| **UI Tests** (drives Simnovator web UI) | ✅ yes | ✅ if system Chrome or Edge is installed |
+| API Tests | ❌ no | ✅ always |
+| Tools (UE-sim cfg patcher) | ❌ no (SSH only) | ✅ always |
+| Test Cases / Inventory / Systems Mgmt | ❌ no | ✅ always |
+| Runs / Settings / Dashboard | ❌ no | ✅ always |
+
+Runtime browser fallback chain inside the app:
+
+1. System **Chrome** (`channel: 'chrome'`) — usually present on Windows
+2. System **Edge** (`channel: 'msedge'`) — present on Windows 10+ by default
+3. Bundled **Chromium** (skipped if `--skip-playwright`)
+4. Bundled **Firefox**
+
+So on a Windows customer box, you almost never need the bundled Chromium download — system Edge handles it.
+
+**Why don't we bundle Chromium in the tarball?** It's ~150 MB and OS-specific (separate binaries for Windows/Linux/macOS, each architecture). The tarball today is 1.3 MB — bundling Chromium would balloon it 100×, ship three OS variants, and still get out-of-date. Better to use system Chrome/Edge (always patched) or download fresh.
 
 ## Smoke test
 
-1. Sidebar should show the QA Ka BAAP mascot + nav entries
+1. Sidebar should show the QA Ka BAAP mascot + nav entries (Dashboard, Test Cases, Automation, Build Check, End to End, API Tests, UI Tests, Systems Mgmt, **Tools**, Runs, Settings)
 2. **Systems Mgmt** — your Simnovator system should be listed
-3. **Build Check** — picking the system should populate the install plan
-4. **End to End** — you should be able to create a QA Test Setup
+3. **API Tests** — clicking Run should fire requests (no browser needed, smoke test for the install)
+4. **Tools** — pick a UESIM box, see status panel (only works if SSH creds are in inventory.yaml)
+5. **Build Check** — picking the system should populate the install plan (smoke test for browser launch)
 
 ## Troubleshooting
 
@@ -100,12 +150,15 @@ Either way, open **http://localhost:4000** in your browser.
 |---------|-----|
 | `Node 18+ required` | Upgrade Node — see prereqs table above |
 | `npm install` hangs | Check corporate proxy: `npm config set proxy http://your-proxy:port` |
-| Playwright download blocked | Re-run with `--skip-playwright` and rely on system Chrome |
-| Port 4000 already in use | Edit `package.json` → `"dev"` and `"start"` scripts, change `-p 4000` to another port |
+| Playwright Chromium download blocked | Re-run with `--skip-playwright`. Make sure system Chrome or Edge is installed for Build Check + UI Tests. |
+| Port 4000 already in use / blocked | See [Choosing a different port](#choosing-a-different-port) above. |
+| Build Check fails with "could not launch any browser" | Install Chrome or Edge on the simqa host, OR rerun `node install.cjs` without `--skip-playwright` |
 | Cockpit Terminal can't be reached during Build Check | Verify the Simnovator VM is reachable: `curl -k https://<host>:9090/` should return HTTP 200 |
+| Tools → UE-sim patcher: system shows "missing: password" | Add SSH credentials to the UESIM entry in `inventory.yaml` — see `inventory.example.yaml` for the schema |
+| "Jest worker encountered N child process exceptions" during `npm run dev` | Long-lived Next.js dev server memory leak. Ctrl+C, `rm -rf .next`, `npm run dev` again. |
 
 ## Updating
 
-Drop a newer tarball alongside the old install dir, extract, `node install.cjs`. Your `inventory.yaml` is preserved (the installer never overwrites an existing one).
+Drop a newer tarball alongside the old install dir, extract, `node install.cjs`. Your `inventory.yaml` and `.env.local` are preserved (the installer never overwrites them).
 
-For git-based installs, just `git pull && npm install`.
+For git-based installs: `git pull && npm install`.
