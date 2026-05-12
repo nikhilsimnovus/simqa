@@ -142,10 +142,16 @@ if ! file "$TARBALL" | grep -qE 'gzip|tar archive'; then
   exit 1
 fi
 SIZE=$(stat -c%s "$TARBALL" 2>/dev/null || stat -f%z "$TARBALL")
-ok "Downloaded: $SIZE bytes ($(file -b "$TARBALL" | head -c 80))"
+FILEDESC=$(file -b "$TARBALL" | cut -c1-80 || true)
+ok "Downloaded: $SIZE bytes ($FILEDESC)"
 
 # ── 4. Detect the version-stamped dir inside the tarball ──────────────────
-INNER_DIR=$(tar -tzf "$TARBALL" | head -1 | cut -d/ -f1)
+# Note: don't use `tar -tzf | head -1` directly — head closes the pipe after
+# one line, tar gets SIGPIPE (exit 141), and with `set -o pipefail` the whole
+# pipeline reports 141, which `set -e` then turns into a silent script exit
+# right after the download with no error message. Wrap with `|| true` so the
+# pipeline's failure is swallowed; we check for an empty INNER_DIR below.
+INNER_DIR=$(tar -tzf "$TARBALL" 2>/dev/null | { read -r first || true; echo "${first%%/*}"; cat >/dev/null; })
 if [[ -z "$INNER_DIR" ]]; then
   fail "Could not determine inner directory name from tarball table of contents."
 fi
