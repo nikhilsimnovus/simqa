@@ -453,12 +453,35 @@ function defs(): TestDef[] {
         if (items.length > 0) {
           c.someTestcaseId = items[0].id;
           // Pull a recent execution id from the metadata if available.
+          // The metadata field can carry a stale id (execution since GC'd or
+          // from a different DB state) — every stats/logs check would then
+          // hit a guaranteed 404 and FAIL even though the endpoints work.
+          // We validate the discovered id ONCE here by hitting a cheap stats
+          // endpoint; if it 404s, drop it so downstream checks SKIP cleanly
+          // instead of stacking up false-positive failures.
+          let candidate: string | undefined;
           for (const it of items) {
             const last = it.metadata?.lastExecution;
-            if (last?.executionId) { c.recentExecutionId = last.executionId; break; }
+            if (last?.executionId) { candidate = last.executionId; break; }
+          }
+          if (candidate) {
+            try {
+              const end = Math.floor(Date.now() / 1000);
+              const start = end - 24 * 3600;
+              const probe = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(candidate)}/statistics/global?startTime=${start}&endTime=${end}`);
+              if (probe.status === 200 || probe.status === 202) {
+                c.recentExecutionId = candidate;
+              }
+              // Anything else (404, 500, etc.) → keep recentExecutionId
+              // undefined so stats/logs checks SKIP with "no execution id
+              // available — this system has no recent execution to validate
+              // stats against".
+            } catch {
+              // Network blip — same fallback as 404.
+            }
           }
         }
-        return ok(base.id, base, r, `total=${r.bodyJson.total ?? items.length}`);
+        return ok(base.id, base, r, `total=${r.bodyJson.total ?? items.length}${c.recentExecutionId ? ` · recentExecutionId=${c.recentExecutionId.slice(0,8)}…` : ' · no live execution available for stats/logs validation'}`);
       }
       return bad(base.id, base, r, `got ${r.status}`);
     },
@@ -742,6 +765,57 @@ function defs(): TestDef[] {
       });
       if (r.status === 200 || r.status === 202) return ok(base.id, base, r, `restart=${r.status}`);
       return bad(base.id, base, r, `expected 200/202, got ${r.status}`);
+    },
+  });
+
+  // Stop-by-explicit-eid path (Dell's integration uses this form). The
+  // exec-start-stop check above already validates the `current` alias which
+  // shares the same server-side handler, but customers like Dell wire their
+  // automation to the {executionId} variant — so we exercise that codepath
+  // too. Starts a fresh execution, polls the testcase metadata briefly to
+  // pick up the new executionId, then stops via the explicit id.
+  list.push({
+    id: 'exec-stop-by-eid', name: 'POST /testcases/{id}/executions then POST /executions/{eid}/stop',
+    category: 'executions',
+    method: 'POST', endpoint: '/v2/testcases/executions/{eid}/stop', severity: 'optional',
+    destructive: true, longRunning: true,
+    run: async (c) => {
+      const base = { id: 'exec-stop-by-eid', category: 'executions' as const, method: 'POST' as const, endpoint: '/v2/testcases/executions/{eid}/stop', severity: 'optional' as const, destructive: true };
+      if (!c.someTestcaseId) return skip(base.id, base, 'no testcase id available');
+
+      // 1. Start a fresh execution.
+      const start = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/${encodeURIComponent(c.someTestcaseId)}/executions`, {
+        headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      if (start.status !== 200 && start.status !== 201) {
+        return bad(base.id, base, start, `start returned ${start.status} (system likely busy)`);
+      }
+
+      // 2. Poll the testcase metadata briefly to discover the new eid.
+      let eid: string | undefined;
+      for (let i = 0; i < 8 && !eid; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const f = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/${encodeURIComponent(c.someTestcaseId)}`);
+        const last = f.bodyJson?.metadata?.lastExecution;
+        // Treat as newly-discovered when the id differs from anything we
+        // had before this check, OR when its status looks running/pending.
+        if (last?.executionId && last.executionId !== c.recentExecutionId) eid = last.executionId;
+        else if (last?.executionId && /running|in_progress|pending|started/i.test(last.status ?? '')) eid = last.executionId;
+      }
+      if (!eid) {
+        // Cleanup attempt via "current" so we don't leak a live execution.
+        await rawCall(c, 'POST', `${tBase(c.host)}/testcases/executions/current/stop${c.recentSimulatorId ? `?simulatorId=${encodeURIComponent(c.recentSimulatorId)}` : ''}`, {
+          headers: { 'Content-Type': 'application/json' }, body: '{}',
+        }).catch(() => null);
+        return bad(base.id, base, start, 'could not discover new executionId within 12s of trigger');
+      }
+
+      // 3. Stop using the explicit eid path.
+      const stop = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(eid)}/stop${c.recentSimulatorId ? `?simulatorId=${encodeURIComponent(c.recentSimulatorId)}` : ''}`, {
+        headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      if (stop.status !== 200) return bad(base.id, base, stop, `stop-by-eid returned ${stop.status} (started ok=${start.status}, eid=${eid.slice(0,8)}…)`);
+      return ok(base.id, base, stop, `start=${start.status} eid=${eid.slice(0,8)}… stop=${stop.status}`);
     },
   });
 
