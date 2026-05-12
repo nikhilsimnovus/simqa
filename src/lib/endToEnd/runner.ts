@@ -50,7 +50,16 @@ interface ActiveRun {
   catalog: Pick<CheckDef, 'id' | 'name' | 'phase' | 'severity' | 'description'>[];
 }
 
-const activeRuns = new Map<string, ActiveRun>();
+// Park activeRuns on globalThis so it survives Next.js dev-mode module reloads
+// between requests. Without this, POST /run sets an entry in Map-instance-A,
+// but the next GET /status reads from a freshly-imported Map-instance-B (the
+// HMR layer reloads the module) and finds nothing — so the live-progress
+// poll loop on the page always sees `{running: false, counts: 0/0/0/0}`
+// until the run finishes and writes report.json to disk. The fix is the
+// same pattern Next.js docs recommend for any in-memory state that must
+// outlive HMR boundaries.
+const __sg = globalThis as unknown as { __simqaEndToEndActive?: Map<string, ActiveRun> };
+const activeRuns: Map<string, ActiveRun> = __sg.__simqaEndToEndActive ?? (__sg.__simqaEndToEndActive = new Map<string, ActiveRun>());
 
 // ───────────── Public entry points ─────────────
 
