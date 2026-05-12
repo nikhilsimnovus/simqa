@@ -17,7 +17,25 @@
 
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { spawn } = require('node:child_process');
+
+// Pre-load .env.local so PORT (and any other env the wrapper itself cares
+// about) is available before we decide what to pass to next. Next.js will
+// load this file too at startup — we're not breaking that, just reading
+// it earlier so the wrapper's PORT logic sees the value. Lines that look
+// like KEY=VALUE win unless the var is already set in the process env.
+const envFile = path.join(process.cwd(), '.env.local');
+if (fs.existsSync(envFile)) {
+  for (const raw of fs.readFileSync(envFile, 'utf-8').split(/\r?\n/)) {
+    const m = raw.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/i);
+    if (m && process.env[m[1]] === undefined) {
+      // Strip optional surrounding quotes — matches Next.js / dotenv behaviour.
+      process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+    }
+  }
+}
 
 const mode = process.argv[2];
 if (!['dev', 'start'].includes(mode)) {
