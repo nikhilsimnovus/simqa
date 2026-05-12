@@ -28,6 +28,11 @@ systems:
 
   # A separate UESIM rig (optional — only if your simnovator VM doesn't
   # play the UESIM role itself).
+  #
+  # SSH credentials (username + password OR authMode: privateKey + privateKey)
+  # are required if you want to use the Tools → UE-sim cfg patcher feature.
+  # The patcher SSHes onto this box to run the watcher that swaps the SDR
+  # rf_driver for an IP-loopback include — needed on no-SDR lab boxes.
   - id: lab-uesim
     type: UESIM
     name: Lab UESIM
@@ -35,6 +40,16 @@ systems:
     uesim:
       username: admin
       password: admin
+    # SSH access (only needed for the Tools → UE-sim cfg patcher)
+    username: sysadmin
+    # Pick ONE of the two auth blocks below:
+    # (a) Password auth (simpler)
+    # password: <ssh-password>
+    # (b) Private key auth (recommended)
+    # authMode: privateKey
+    # privateKey: /absolute/path/to/your/id_ed25519
+    # If sudo on the box prompts for a password (no NOPASSWD), set this too:
+    # sudoPassword: <sudo-password>
 
   # A callbox (network simulator). May also play the IMS / MME / AppServer
   # roles in your QA Test Setup, in which case set "same as callbox" on

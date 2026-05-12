@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle, ShieldCheck, Beaker, MousePointerClick, Info, Layers,
+  LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle, ShieldCheck, Beaker, MousePointerClick, Info, Layers, Wrench,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
@@ -17,6 +17,7 @@ const NAV = [
   { href: '/api-tests',   label: 'API Tests',       icon: Beaker },
   { href: '/ui-tests',    label: 'UI Tests',        icon: MousePointerClick },
   { href: '/inventory',   label: 'Systems Mgmt',    icon: Server },
+  { href: '/tools',       label: 'Tools',           icon: Wrench },
   { href: '/runs',        label: 'Runs',            icon: History },
   { href: '/settings',    label: 'Settings',        icon: Settings2 },
 ];
