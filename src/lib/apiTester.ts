@@ -465,10 +465,16 @@ function defs(): TestDef[] {
             if (last?.executionId) { candidate = last.executionId; break; }
           }
           if (candidate) {
+            // Probe the eid with the /logs endpoint, not /statistics/global.
+            // Empirical: /statistics/global is permissive (returns 200 with
+            // empty data even when the execution has been GC'd) so it
+            // false-passes stale eids. /logs is strict — 404 if the
+            // execution doesn't exist. /v2/testcases/executions/{eid}/logs
+            // is the same code path the stats/ue-summary endpoint uses for
+            // its existence check, so its verdict matches what the other
+            // stats endpoints will do.
             try {
-              const end = Math.floor(Date.now() / 1000);
-              const start = end - 24 * 3600;
-              const probe = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(candidate)}/statistics/global?startTime=${start}&endTime=${end}`);
+              const probe = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(candidate)}/logs?limit=1`);
               if (probe.status === 200 || probe.status === 202) {
                 c.recentExecutionId = candidate;
               }
@@ -594,7 +600,7 @@ function defs(): TestDef[] {
       const start = end - 24 * 3600;
       const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/statistics/global?startTime=${start}&endTime=${end}`);
       if (r.status === 200) return ok(base.id, base, r, JSON.stringify(r.bodyJson).slice(0, 100));
-      if (r.status === 404) return bad(base.id, base, r, 'execution not found (id may be stale)');
+      if (r.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale — no recent execution to validate against). Run a test and re-try.');
       return bad(base.id, base, r, `got ${r.status}`);
     },
   });
@@ -608,7 +614,7 @@ function defs(): TestDef[] {
       const start = end - 24 * 3600;
       const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/statistics/cells-summary?startTime=${start}&endTime=${end}`);
       if (r.status === 200) return ok(base.id, base, r, JSON.stringify(r.bodyJson).slice(0, 100));
-      if (r.status === 404) return bad(base.id, base, r, 'execution not found (id may be stale)');
+      if (r.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale — no recent execution to validate against). Run a test and re-try.');
       return bad(base.id, base, r, `got ${r.status}`);
     },
   });
@@ -625,7 +631,7 @@ function defs(): TestDef[] {
         const start = end - 24 * 3600;
         const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/statistics/${slug}?startTime=${start}&endTime=${end}`);
         if (r.status === 200) return ok(base.id, base, r, JSON.stringify(r.bodyJson).slice(0, 100));
-        if (r.status === 404) return bad(base.id, base, r, 'execution not found (id may be stale)');
+        if (r.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale — no recent execution to validate against). Run a test and re-try.');
         return bad(base.id, base, r, `got ${r.status}`);
       },
     });
@@ -641,7 +647,7 @@ function defs(): TestDef[] {
         if (!c.recentExecutionId) return skip(base.id, base, 'no execution id available');
         const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/statistics/${slug}/export?format=zip`);
         if (r.status === 200 || r.status === 202) return ok(base.id, base, r, `status ${r.status}`);
-        if (r.status === 404) return bad(base.id, base, r, 'execution not found (id may be stale)');
+        if (r.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale — no recent execution to validate against). Run a test and re-try.');
         return bad(base.id, base, r, `got ${r.status}`);
       },
     });
@@ -656,7 +662,7 @@ function defs(): TestDef[] {
       if (!c.recentExecutionId) return skip(base.id, base, 'no execution id available');
       const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/logs?limit=10`);
       if (r.status === 200) return ok(base.id, base, r, JSON.stringify(r.bodyJson).slice(0, 100));
-      if (r.status === 404) return bad(base.id, base, r, 'execution not found (id may be stale)');
+      if (r.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale — no recent execution to validate against). Run a test and re-try.');
       return bad(base.id, base, r, `got ${r.status}`);
     },
   });
@@ -668,7 +674,7 @@ function defs(): TestDef[] {
       if (!c.recentExecutionId) return skip(base.id, base, 'no execution id available');
       const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/logs/export?format=zip`);
       if (r.status === 200 || r.status === 202) return ok(base.id, base, r, `status ${r.status}`);
-      if (r.status === 404) return bad(base.id, base, r, 'execution not found (id may be stale)');
+      if (r.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale — no recent execution to validate against). Run a test and re-try.');
       return bad(base.id, base, r, `got ${r.status}`);
     },
   });
