@@ -8,6 +8,7 @@ import {
   Plus, Trash2, Pencil, Check, X, ShieldCheck, Cpu, Server, Network,
   Globe, Database, Radio, ArrowRight, ExternalLink, AlertTriangle, Layers,
 } from 'lucide-react';
+import { RunValidateTab } from './RunValidateTab';
 
 // ───────────── Types (mirrors src/lib/inventory.ts) ─────────────
 
@@ -82,6 +83,7 @@ export default function EndToEndPage() {
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TestSetup | null>(null);
+  const [tab, setTab] = useState<'setups' | 'validate'>('setups');
 
   useEffect(() => {
     fetch('/api/inventory')
@@ -183,8 +185,11 @@ export default function EndToEndPage() {
     <>
       <Header
         title="End to End"
-        subtitle="QA Test Setups — bind systems together for a complete test topology"
-        right={
+        subtitle={tab === 'setups'
+          ? 'QA Test Setups — bind systems together for a complete test topology'
+          : 'Run & validate — execute a testcase end-to-end and report every check that passed or failed'
+        }
+        right={tab === 'setups' ? (
           <div className="flex items-center gap-2">
             {msg ? (
               <span className={`text-xs ${msg.kind === 'err' ? 'text-red-600' : 'text-emerald-600'}`}>{msg.text}</span>
@@ -193,9 +198,21 @@ export default function EndToEndPage() {
               <Plus className="h-4 w-4" /> New setup
             </Button>
           </div>
-        }
+        ) : null}
       />
 
+      {/* Tab strip — Test setups vs Run & validate. Sticky just under the
+          page header so it's always visible. */}
+      <div className="border-b border-slate-200 bg-white px-6">
+        <div className="flex gap-1 -mb-px">
+          <TabButton active={tab === 'setups'}   onClick={() => setTab('setups')}>Test setups</TabButton>
+          <TabButton active={tab === 'validate'} onClick={() => setTab('validate')}>Run &amp; validate</TabButton>
+        </div>
+      </div>
+
+      {tab === 'validate' ? <RunValidateTab /> : null}
+
+      {tab === 'setups' ? (
       <main
         className="relative min-h-[calc(100vh-3.5rem)] p-6 space-y-6"
         style={{
@@ -262,7 +279,26 @@ export default function EndToEndPage() {
           </div>
         )}
       </main>
+      ) : null}
     </>
+  );
+}
+
+// ───────────── Tab button + Run-validate tab body ─────────────
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        'px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ' +
+        (active
+          ? 'border-primary-600 text-primary-700'
+          : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300')
+      }
+    >
+      {children}
+    </button>
   );
 }
 

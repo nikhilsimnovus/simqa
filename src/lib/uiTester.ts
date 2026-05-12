@@ -137,6 +137,49 @@ interface PageBundle {
   close: () => Promise<void>;
 }
 
+/** Best-effort detection of the Playwright ffmpeg binary. Returns true if
+ *  either (a) PLAYWRIGHT_FFMPEG_PATH points at an existing file, or
+ *  (b) Playwright's own ms-playwright cache contains ffmpeg-<platform>, or
+ *  (c) `ffmpeg` is on the system PATH and executable.
+ *
+ *  Why this exists: see the long comment near where we wire `recordVideo`.
+ *  Customer sites routinely skip Playwright's per-binary download, so the
+ *  default video-recording path 500s every test. Detecting at runtime lets
+ *  us gracefully skip video while still capturing trace.zip on failures. */
+function detectFfmpeg(): boolean {
+  try {
+    const envPath = process.env.PLAYWRIGHT_FFMPEG_PATH;
+    if (envPath && fs.existsSync(envPath)) return true;
+
+    // Check Playwright's cache. The directory name includes a revision number
+    // (e.g. ffmpeg-1011) — we don't know the exact rev in advance, so probe
+    // any ffmpeg-* subdir under ~/.cache/ms-playwright/.
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    const cacheDir = path.join(home, '.cache', 'ms-playwright');
+    if (fs.existsSync(cacheDir)) {
+      const subs = fs.readdirSync(cacheDir).filter((n) => n.startsWith('ffmpeg-'));
+      for (const s of subs) {
+        // The binary inside is named ffmpeg-linux / ffmpeg-mac / ffmpeg-win32.exe.
+        const dir = path.join(cacheDir, s);
+        if (!fs.statSync(dir).isDirectory()) continue;
+        for (const f of fs.readdirSync(dir)) {
+          if (f.startsWith('ffmpeg-')) return true;
+        }
+      }
+    }
+
+    // Last resort: system ffmpeg.
+    const PATH = (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':');
+    const exeName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+    for (const dir of PATH) {
+      if (!dir) continue;
+      const candidate = path.join(dir, exeName);
+      if (fs.existsSync(candidate)) return true;
+    }
+  } catch { /* fall through */ }
+  return false;
+}
+
 function newRunDir(targetHost?: string): string {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const hostSuffix = targetHost ? `__${targetHost.replace(/[^A-Za-z0-9.-]/g, '_')}` : '';
@@ -4735,6 +4778,22 @@ export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<
     // video. On failure, trace is saved as trace.zip; video is saved as the
     // recorded webm. On pass, both are discarded to avoid disk bloat.
     const traceMode: 'on' | 'off' | 'retain-on-failure' = req.traceMode ?? 'retain-on-failure';
+
+    // Video recording needs the Playwright ffmpeg binary at
+    // ~/.cache/ms-playwright/ffmpeg-<rev>/ffmpeg-<platform>. Many installs
+    // (and most customer sites) skip the playwright install step entirely
+    // and don't have it. When Playwright's recordVideo option is set and
+    // ffmpeg is missing, every `browser.newContext()` throws a 500 like:
+    //   browserContext.newPage: Executable doesn't exist at .../ffmpeg-linux
+    // We detect ffmpeg's presence once at run start; if it's missing, we
+    // still keep trace recording (which doesn't need ffmpeg) but skip
+    // video. Users can override by setting PLAYWRIGHT_FFMPEG_PATH or by
+    // explicitly opting in.
+    const ffmpegAvailable = detectFfmpeg();
+    if (!ffmpegAvailable && traceMode !== 'off') {
+      // No emit param here yet — the runner pre-loop hasn't started. Just log.
+      console.warn('[ui-tests] ffmpeg not found — disabling video recording, trace.zip still captured. Run `npx playwright install ffmpeg` or `apt install ffmpeg` to enable video.');
+    }
     const wantTrace = (ok: boolean) => traceMode === 'on' || (traceMode === 'retain-on-failure' && !ok);
 
     async function runOne(def: UiTestDef, number: number): Promise<UiTestResult> {
@@ -4751,7 +4810,11 @@ export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<
       }
       const testDir = path.join(runDir, def.id);
       fs.mkdirSync(testDir, { recursive: true });
-      const videoDir = traceMode !== 'off' ? path.join(testDir, '.video') : undefined;
+      // Only request video when ffmpeg is actually installed — otherwise
+      // Playwright's newContext() rejects every test with a 500 about the
+      // missing ffmpeg-<platform> binary. Trace recording is independent of
+      // ffmpeg and stays on per traceMode.
+      const videoDir = (traceMode !== 'off' && ffmpegAvailable) ? path.join(testDir, '.video') : undefined;
       if (videoDir) fs.mkdirSync(videoDir, { recursive: true });
       const traceDir = traceMode !== 'off' ? testDir : undefined;
       const t0 = Date.now();
