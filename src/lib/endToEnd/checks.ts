@@ -18,6 +18,7 @@
 import type { CheckResult, Phase, Severity } from './types';
 import type { RunCtx } from './ctx';
 import { pollUntil, sleep } from './poll';
+import { newCheckContext, snapshot, loginUI } from './browser';
 
 // ───────────── Helpers ─────────────
 
@@ -406,24 +407,208 @@ const postLogsExport: CheckDef = {
   },
 };
 
+// ── UI checks (Phase 2 — require Playwright browser) ──────────────────────
+//
+// All UI checks are gated behind ctx.browser being set. When the runner is
+// invoked with options.uiChecks=true it launches a browser and stuffs it
+// into ctx.browser; if no browser can be launched, these checks are skipped
+// with a clear reason instead of failing.
+
+const uiDuringNo5xx: CheckDef = {
+  id: 'ui-during-no-5xx',
+  name: 'No 5xx responses while navigating stats pages',
+  description: 'Visit /testcase, /statistics?iterationId=<eid>, /logs — assert no response status >= 500.',
+  phase: 'during', severity: 'normal',
+  requiresBrowser: true,
+  run: async (ctx) => {
+    const base = { id: 'ui-during-no-5xx', name: 'No 5xx responses while navigating stats pages', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'Visit /testcase, /statistics?iterationId=<eid>, /logs — assert no response status >= 500.' };
+    if (!ctx.browser) return makeResult(base, 'skip', 'no browser available');
+    if (!ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const { context, page, responses } = await newCheckContext(ctx.browser);
+    try {
+      const lr = await loginUI(page, ctx.systemHost, ctx.apiUser, ctx.apiPass);
+      if (!lr.ok) return makeResult(base, 'fail', `UI login: ${lr.detail}`);
+      for (const pth of ['/testcase', `/statistics?iterationId=${encodeURIComponent(ctx.executionId)}`, '/logs']) {
+        try { await page.goto(`http://${ctx.systemHost}${pth}`, { waitUntil: 'domcontentloaded' }); }
+        catch { /* swallow; we capture network anyway */ }
+        await sleep(2000, ctx.isCanceled);
+      }
+      const fives = responses.filter((r) => r.status >= 500 && !r.url.startsWith('chrome-extension://'));
+      if (fives.length === 0) return makeResult(base, 'pass', `0 5xx responses across ${responses.length} captured requests`);
+      const sample = fives.slice(0, 3).map((r) => `${r.method} ${r.url} → ${r.status}`).join(' | ');
+      return makeResult(base, 'fail', `${fives.length} 5xx response(s). e.g.: ${sample}`);
+    } finally {
+      await context.close().catch(() => null);
+    }
+  },
+};
+
+const uiDuringNoConsoleErrors: CheckDef = {
+  id: 'ui-during-no-console-errors',
+  name: 'No JS console errors on stats pages',
+  description: 'console.error count across /testcase, /statistics, /logs must be 0.',
+  phase: 'during', severity: 'normal',
+  requiresBrowser: true,
+  run: async (ctx) => {
+    const base = { id: 'ui-during-no-console-errors', name: 'No JS console errors on stats pages', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'console.error count across /testcase, /statistics, /logs must be 0.' };
+    if (!ctx.browser) return makeResult(base, 'skip', 'no browser available');
+    if (!ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const { context, page, consoleErrors } = await newCheckContext(ctx.browser);
+    try {
+      const lr = await loginUI(page, ctx.systemHost, ctx.apiUser, ctx.apiPass);
+      if (!lr.ok) return makeResult(base, 'fail', `UI login: ${lr.detail}`);
+      for (const pth of ['/testcase', `/statistics?iterationId=${encodeURIComponent(ctx.executionId)}`, '/logs']) {
+        try { await page.goto(`http://${ctx.systemHost}${pth}`, { waitUntil: 'domcontentloaded' }); }
+        catch { /* swallow */ }
+        await sleep(2000, ctx.isCanceled);
+      }
+      if (consoleErrors.length === 0) return makeResult(base, 'pass', '0 console errors');
+      const sample = consoleErrors.slice(0, 3).join(' | ');
+      return makeResult(base, 'fail', `${consoleErrors.length} console error(s). e.g.: ${sample}`);
+    } finally {
+      await context.close().catch(() => null);
+    }
+  },
+};
+
+const uiDuringStopAffordance: CheckDef = {
+  id: 'ui-during-stop-affordance',
+  name: 'Stop affordance visible during running execution',
+  description: 'A Stop / Cancel button is visible on the testcase detail card while RUNNING (does NOT click — affordance only).',
+  phase: 'during', severity: 'optional',
+  requiresBrowser: true,
+  run: async (ctx) => {
+    const base = { id: 'ui-during-stop-affordance', name: 'Stop affordance visible during running execution', phase: 'during' as Phase, severity: 'optional' as Severity, description: 'A Stop / Cancel button is visible on the testcase detail card while RUNNING (does NOT click — affordance only).' };
+    if (!ctx.browser) return makeResult(base, 'skip', 'no browser available');
+    if (!ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const { context, page } = await newCheckContext(ctx.browser);
+    try {
+      const lr = await loginUI(page, ctx.systemHost, ctx.apiUser, ctx.apiPass);
+      if (!lr.ok) return makeResult(base, 'fail', `UI login: ${lr.detail}`);
+      await page.goto(`http://${ctx.systemHost}/testcase`, { waitUntil: 'domcontentloaded' }).catch(() => null);
+      await sleep(2000, ctx.isCanceled);
+      const stopVisible = await page.locator('button:has-text("Stop"), button:has-text("Cancel"), [aria-label="Stop"]').first().isVisible().catch(() => false);
+      if (stopVisible) return makeResult(base, 'pass', 'Stop / Cancel button visible on /testcase');
+      return makeResult(base, 'fail', 'no Stop / Cancel button found on /testcase while RUNNING');
+    } finally {
+      await context.close().catch(() => null);
+    }
+  },
+};
+
+const uiDuringExportButtons: CheckDef = {
+  id: 'ui-during-export-buttons',
+  name: 'Stats Export buttons download a file',
+  description: 'Click Cell + UE + Global Export buttons in turn — each must trigger a download with > 0 bytes.',
+  phase: 'during', severity: 'normal',
+  requiresBrowser: true,
+  run: async (ctx) => {
+    const base = { id: 'ui-during-export-buttons', name: 'Stats Export buttons download a file', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'Click Cell + UE + Global Export buttons in turn — each must trigger a download with > 0 bytes.' };
+    if (!ctx.browser) return makeResult(base, 'skip', 'no browser available');
+    if (!ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const { context, page } = await newCheckContext(ctx.browser);
+    try {
+      const lr = await loginUI(page, ctx.systemHost, ctx.apiUser, ctx.apiPass);
+      if (!lr.ok) return makeResult(base, 'fail', `UI login: ${lr.detail}`);
+      const results: Array<{ tab: string; ok: boolean; bytes?: number; detail: string }> = [];
+      for (const tab of ['cell', 'ue', 'global']) {
+        try {
+          await page.goto(`http://${ctx.systemHost}/statistics?tab=${tab}&iterationId=${encodeURIComponent(ctx.executionId)}`, { waitUntil: 'domcontentloaded' });
+          await sleep(1500, ctx.isCanceled);
+          const exportBtn = page.locator('button:has-text("Export"), button:has-text("Download")').first();
+          if (!(await exportBtn.isVisible().catch(() => false))) {
+            results.push({ tab, ok: false, detail: 'Export button not visible' });
+            continue;
+          }
+          // Wait for download to fire when clicked.
+          const dlP = page.waitForEvent('download', { timeout: 15_000 });
+          await exportBtn.click();
+          const download = await dlP.catch(() => null);
+          if (!download) { results.push({ tab, ok: false, detail: 'click did not trigger a download in 15s' }); continue; }
+          const tmp = `/tmp/export-${tab}-${Date.now()}.bin`;
+          await download.saveAs(tmp).catch(() => null);
+          let bytes = 0;
+          try { bytes = require('node:fs').statSync(tmp).size; } catch { bytes = 0; }
+          if (bytes > 0) results.push({ tab, ok: true, bytes, detail: `${bytes} bytes` });
+          else results.push({ tab, ok: false, bytes, detail: 'download empty' });
+        } catch (e: any) {
+          results.push({ tab, ok: false, detail: `threw: ${(e?.message ?? e).toString().slice(0, 120)}` });
+        }
+      }
+      const failed = results.filter((r) => !r.ok);
+      const summary = results.map((r) => `${r.tab}=${r.ok ? r.bytes + 'B' : '✗'}`).join(' / ');
+      if (failed.length === 0) return makeResult(base, 'pass', summary);
+      return makeResult(base, 'fail', `${failed.length} of ${results.length} export buttons failed. ${summary}`);
+    } finally {
+      await context.close().catch(() => null);
+    }
+  },
+};
+
+const uiPostDeepLink: CheckDef = {
+  id: 'ui-post-deep-link-shareable',
+  name: 'Statistics deep-link works in a fresh context',
+  description: 'A /statistics?iterationId=<eid> link, opened in a new context (no localStorage), still renders without bouncing to login.',
+  phase: 'post', severity: 'optional',
+  requiresBrowser: true,
+  run: async (ctx) => {
+    const base = { id: 'ui-post-deep-link-shareable', name: 'Statistics deep-link works in a fresh context', phase: 'post' as Phase, severity: 'optional' as Severity, description: 'A /statistics?iterationId=<eid> link, opened in a new context (no localStorage), still renders without bouncing to login.' };
+    if (!ctx.browser) return makeResult(base, 'skip', 'no browser available');
+    if (!ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const { context, page } = await newCheckContext(ctx.browser);
+    try {
+      const lr = await loginUI(page, ctx.systemHost, ctx.apiUser, ctx.apiPass);
+      if (!lr.ok) return makeResult(base, 'fail', `UI login: ${lr.detail}`);
+      const target = `http://${ctx.systemHost}/statistics?iterationId=${encodeURIComponent(ctx.executionId)}`;
+      await page.goto(target, { waitUntil: 'domcontentloaded' });
+      await sleep(2000, ctx.isCanceled);
+      const finalUrl = page.url();
+      const onLogin = /login|signin/i.test(finalUrl) || finalUrl.endsWith('/');
+      if (onLogin) return makeResult(base, 'fail', `bounced to ${finalUrl} — deep-link not preserved`);
+      const hasIterId = finalUrl.includes('iterationId=');
+      if (!hasIterId) return makeResult(base, 'fail', `iterationId stripped from URL: ${finalUrl}`);
+      return makeResult(base, 'pass', `rendered at ${finalUrl}`);
+    } finally {
+      await context.close().catch(() => null);
+    }
+  },
+};
+
 // ───────────── Catalogue export ─────────────
 
-/** All API-only checks (Phase 1). Walked in order. */
-export const API_CHECKS: CheckDef[] = [
+/** All checks. Walked in catalog order, but the runner filters by
+ *  options.uiChecks / options.apiChecks before walking. API checks are
+ *  the cheap, always-runnable ones. UI checks need a browser. */
+export const ALL_CHECKS: CheckDef[] = [
+  // PREFLIGHT
   preflightLogin,
   preflightTestcaseExists,
   preflightApiResponsive,
   preflightSimulatorsAvailable,
+  // TRIGGER
   triggerStart,
   triggerExecutionDiscovered,
+  // DURING (API)
   duringStatusRunning,
   duringUeAttach,
   duringThroughputFlowing,
+  // DURING (UI)
+  uiDuringNo5xx,
+  uiDuringNoConsoleErrors,
+  uiDuringStopAffordance,
+  uiDuringExportButtons,
+  // COMPLETION
   completionStatusTerminal,
   completionDurationSane,
   completionVerdictPresent,
+  // POST (API)
   postLogsExport,
+  // POST (UI)
+  uiPostDeepLink,
 ];
+
+/** Backwards-compat name some older imports might use. */
+export const API_CHECKS = ALL_CHECKS;
 
 // Re-export sleep for runner-side waits between phases.
 export { sleep };

@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
 import {
   Play, Square, RefreshCw, Loader2, CheckCircle2, XCircle, Circle, AlertTriangle, Activity,
-  Server, FlaskConical, Search,
+  Server, FlaskConical, Search, History, RotateCcw, ChevronDown, ChevronRight,
 } from 'lucide-react';
 
 interface TestSystem { id: string; name: string; host: string; type: string }
@@ -55,6 +55,27 @@ interface RunStatus {
   finalDetail?: string;
 }
 
+interface PastRunSummary {
+  runId: string;
+  startedAt: string;
+  finishedAt?: string;
+  ok?: boolean;
+  systemId: string;
+  testcaseId: string;
+  counts?: { total: number; passed: number; failed: number; skipped: number };
+}
+
+interface FullReport extends PastRunSummary {
+  systemHost: string;
+  systemName?: string;
+  testcaseName?: string;
+  executionId?: string;
+  finalDetail?: string;
+  configuredDurationSec?: number;
+  observedDurationSec?: number;
+  results: CheckRow[];
+}
+
 export function RunValidateTab() {
   // ── Picker state ──
   const [systems, setSystems] = useState<TestSystem[] | null>(null);
@@ -71,7 +92,36 @@ export function RunValidateTab() {
   const [runId, setRunId] = useState<string | null>(null);
   const [status, setStatus] = useState<RunStatus | null>(null);
   const [startErr, setStartErr] = useState<string | null>(null);
+  const [enableUiChecks, setEnableUiChecks] = useState(false);
   const pollerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // ── Past runs ──
+  const [pastRuns, setPastRuns] = useState<PastRunSummary[] | null>(null);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [expandedReport, setExpandedReport] = useState<FullReport | null>(null);
+
+  async function loadPastRuns() {
+    try {
+      const r = await fetch('/api/end-to-end/runs', { cache: 'no-store' });
+      const j = await r.json();
+      setPastRuns(j.runs ?? []);
+    } catch { setPastRuns([]); }
+  }
+  useEffect(() => { loadPastRuns(); }, []);
+  // Refresh past-runs list whenever a live run completes.
+  useEffect(() => {
+    if (status && !status.running && status.runId) loadPastRuns();
+  }, [status?.running, status?.runId]);
+
+  async function expandRun(runId: string) {
+    if (expandedRunId === runId) { setExpandedRunId(null); setExpandedReport(null); return; }
+    setExpandedRunId(runId); setExpandedReport(null);
+    try {
+      const r = await fetch(`/api/end-to-end/runs/${encodeURIComponent(runId)}`, { cache: 'no-store' });
+      const j = await r.json();
+      if (r.ok) setExpandedReport({ ...j, results: j.results ?? [] });
+    } catch { /* swallow */ }
+  }
 
   // ── Load systems on mount ──
   useEffect(() => {
@@ -127,7 +177,7 @@ export function RunValidateTab() {
     if (!systemId) return;
     setStartErr(null); setStatus(null);
     try {
-      const body: any = { systemId };
+      const body: any = { systemId, options: { apiChecks: true, uiChecks: enableUiChecks } };
       if (pickMode === 'last') body.useLastExecution = true;
       else if (testcaseId) body.testcaseId = testcaseId;
       else { setStartErr('Pick a testcase or switch to "Use last execution"'); return; }
@@ -148,6 +198,31 @@ export function RunValidateTab() {
     try {
       await fetch(`/api/end-to-end/abort?runId=${encodeURIComponent(runId)}`, { method: 'POST' });
     } catch { /* swallow */ }
+  }
+
+  async function rerunFailures() {
+    if (!status || !status.checks || !systemId) return;
+    const failedIds = status.checks.filter((c) => c.status === 'fail').map((c) => c.id);
+    if (failedIds.length === 0) return;
+    setStartErr(null); setStatus(null);
+    try {
+      const body: any = {
+        systemId,
+        options: { apiChecks: true, uiChecks: enableUiChecks },
+        onlyCheckIds: failedIds,
+      };
+      if (pickMode === 'last') body.useLastExecution = true;
+      else if (testcaseId) body.testcaseId = testcaseId;
+      const r = await fetch('/api/end-to-end/run', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) { setStartErr(j.error || `HTTP ${r.status}`); return; }
+      setRunId(j.runId);
+      setRunning(true);
+    } catch (e: any) {
+      setStartErr(e?.message ?? String(e));
+    }
   }
 
   const selectedTc = useMemo(
@@ -263,6 +338,26 @@ export function RunValidateTab() {
             </div>
           )}
 
+          {/* Browser-checks toggle */}
+          <div className="pt-2 border-t border-slate-100">
+            <label className="flex items-start gap-2 text-xs cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={enableUiChecks}
+                onChange={(e) => setEnableUiChecks(e.target.checked)}
+              />
+              <div>
+                <div className="font-medium text-slate-900">Also run UI checks (requires browser)</div>
+                <div className="text-slate-500 mt-0.5 leading-relaxed">
+                  Adds 5 Playwright-driven checks: no 5xx during navigation, no console errors, Stop affordance visible,
+                  Export buttons download files, deep-link works in fresh context. Skipped automatically if no browser
+                  is available on the simqa host.
+                </div>
+              </div>
+            </label>
+          </div>
+
           {/* Selected testcase summary + Validate button */}
           <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100">
             <Button
@@ -333,6 +428,17 @@ export function RunValidateTab() {
               </div>
             ) : null}
 
+            {/* Re-run failures action — only after a completed run with > 0 failures */}
+            {!status.running && (status.counts?.failed ?? 0) > 0 ? (
+              <div>
+                <Button onClick={rerunFailures} variant="secondary" size="sm">
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  <span className="ml-1.5">Re-run failed checks ({status.counts!.failed})</span>
+                </Button>
+                <span className="ml-2 text-[11px] text-slate-500">— skips the {(status.counts?.passed ?? 0)} passing check{(status.counts?.passed ?? 0) === 1 ? '' : 's'}</span>
+              </div>
+            ) : null}
+
             {/* Per-check rows */}
             <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-white">
               {(status.checks ?? []).map((c) => <CheckRow key={c.id} row={c} />)}
@@ -340,6 +446,71 @@ export function RunValidateTab() {
           </CardBody>
         </Card>
       ) : null}
+
+      {/* ── Card 3: Past runs ──────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <History className="h-4 w-4 text-primary-600" />
+            Past runs
+            <Button onClick={loadPastRuns} variant="ghost" size="sm" className="ml-auto">
+              <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
+          </CardTitle>
+        </CardHeader>
+        <CardBody className="space-y-2">
+          {pastRuns === null ? (
+            <div className="text-xs text-slate-500 flex items-center gap-1.5"><Loader2 className="h-3 w-3 animate-spin" /> loading…</div>
+          ) : pastRuns.length === 0 ? (
+            <div className="text-xs text-slate-500">No past validation runs yet. They'll appear here once a run finishes.</div>
+          ) : (
+            <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-white">
+              {pastRuns.slice(0, 20).map((r) => (
+                <li key={r.runId}>
+                  <button
+                    onClick={() => expandRun(r.runId)}
+                    className="block w-full text-left px-3 py-2 text-xs hover:bg-slate-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      {expandedRunId === r.runId ? <ChevronDown className="h-3 w-3 text-slate-400" /> : <ChevronRight className="h-3 w-3 text-slate-400" />}
+                      {r.ok ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> : <XCircle className="h-3.5 w-3.5 text-red-600" />}
+                      <span className="font-medium text-slate-900">{r.testcaseId}</span>
+                      <span className="text-slate-500">on {r.systemId}</span>
+                      {r.counts ? (
+                        <span className="ml-auto text-[10px] tabular-nums text-slate-500">
+                          {r.counts.passed} ✓ · {r.counts.failed} ✗ · {r.counts.skipped} ⊝
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-0.5 font-mono">{r.runId} · started {r.startedAt}</div>
+                  </button>
+                  {expandedRunId === r.runId ? (
+                    <div className="px-3 pb-3 pt-1 bg-slate-50 border-t border-slate-100">
+                      {!expandedReport ? (
+                        <div className="text-xs text-slate-500 flex items-center gap-1.5"><Loader2 className="h-3 w-3 animate-spin" /> loading report…</div>
+                      ) : (
+                        <div className="space-y-2">
+                          {expandedReport.finalDetail ? <div className="text-[11px] text-slate-600">{expandedReport.finalDetail}</div> : null}
+                          {expandedReport.observedDurationSec !== undefined ? (
+                            <div className="text-[10px] text-slate-500">
+                              duration: observed {expandedReport.observedDurationSec.toFixed(1)}s
+                              {expandedReport.configuredDurationSec ? ` / configured ${expandedReport.configuredDurationSec}s` : ''}
+                              {expandedReport.executionId ? ` · executionId=${expandedReport.executionId}` : ''}
+                            </div>
+                          ) : null}
+                          <ul className="divide-y divide-slate-100 border border-slate-200 rounded bg-white">
+                            {(expandedReport.results ?? []).map((c) => <CheckRow key={c.id} row={c} />)}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardBody>
+      </Card>
     </main>
   );
 }

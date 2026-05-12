@@ -15,7 +15,8 @@ import * as path from 'node:path';
 
 import type { Inventory } from '../inventory';
 import { loadInventory, uesimApiOptsForSystem } from '../inventory';
-import { API_CHECKS, type CheckDef } from './checks';
+import { ALL_CHECKS, type CheckDef } from './checks';
+import { tryLaunchBrowser } from './browser';
 import type { RunCtx } from './ctx';
 import type {
   CheckResult, FinalReport, RunOptions, RunRequest, RunStatusSnapshot,
@@ -87,7 +88,7 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
 
   // Build the planned check list (id -> filter) up front so the status
   // endpoint knows what to render even before checks start firing.
-  const planned = filterChecks(API_CHECKS, options, req.onlyCheckIds);
+  const planned = filterChecks(ALL_CHECKS, options, req.onlyCheckIds);
   const plannedIds = planned.map((c) => c.id);
   const liveStatus = new Map<string, { status: 'pending' | 'running' | 'pass' | 'fail' | 'skip'; result?: CheckResult }>();
   for (const c of planned) liveStatus.set(c.id, { status: 'pending' });
@@ -190,6 +191,35 @@ export function loadRun(runId: string): FinalReport | undefined {
 async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void> {
   const results: CheckResult[] = [];
 
+  // Browser launch is lazy: only fire it up if UI checks are planned. If the
+  // launch fails (no Chrome / no Edge / no bundled browser), UI checks will
+  // see ctx.browser=undefined and skip themselves with a clear reason —
+  // the run still proceeds with API-only checks.
+  const needsBrowser = planned.some((c) => c.requiresBrowser);
+  if (needsBrowser) {
+    const launch = await tryLaunchBrowser();
+    if ('browser' in launch) {
+      ar.ctx.browser = launch.browser;
+    } else {
+      // Stick the error onto every UI check's pending status as a skip
+      // reason — the loop below would do the same but doing it here makes
+      // the live status show the reason immediately.
+      for (const c of planned) {
+        if (c.requiresBrowser) {
+          ar.liveStatus.set(c.id, {
+            status: 'skip',
+            result: {
+              id: c.id, name: c.name, phase: c.phase, severity: c.severity, description: c.description,
+              status: 'skip',
+              skippedReason: launch.error,
+              ranAt: new Date().toISOString(),
+            },
+          });
+        }
+      }
+    }
+  }
+
   for (const c of planned) {
     if (ar.canceled) {
       ar.liveStatus.set(c.id, { status: 'skip' });
@@ -197,6 +227,13 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
         id: c.id, name: c.name, phase: c.phase, severity: c.severity, description: c.description,
         status: 'skip', skippedReason: 'run aborted', ranAt: new Date().toISOString(),
       });
+      continue;
+    }
+    // If we already marked this check skip during browser-launch failure,
+    // honour that and don't re-run.
+    const pre = ar.liveStatus.get(c.id);
+    if (pre?.status === 'skip' && pre.result) {
+      results.push(pre.result);
       continue;
     }
     ar.liveStatus.set(c.id, { status: 'running' });
@@ -214,6 +251,12 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
       ar.liveStatus.set(c.id, { status: 'fail', result: fail });
       results.push(fail);
     }
+  }
+
+  // Close the browser if we launched one.
+  if (ar.ctx.browser) {
+    try { await ar.ctx.browser.close(); } catch { /* swallow */ }
+    ar.ctx.browser = undefined;
   }
 
   // Verdict: critical fails → overall fail. Otherwise pass.
