@@ -224,7 +224,7 @@ export default function ValidatePage() {
   const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE);
   const [maxSimulators, setMaxSimulators] = useState<string>('');
   const [restore, setRestore] = useState<boolean>(false);
-  const [urlCheck, setUrlCheck] = useState<{ status: 'idle' | 'checking' | 'ok' | 'fail'; detail?: string }>({ status: 'idle' });
+  const [urlCheck, setUrlCheck] = useState<{ status: 'idle' | 'checking' | 'ok' | 'fail'; detail?: string; rewrittenTo?: string; rewriteNote?: string }>({ status: 'idle' });
 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ValidationResult | null>(null);
@@ -411,8 +411,16 @@ export default function ValidatePage() {
     try {
       const r = await fetch(`/api/build-probe?url=${encodeURIComponent(buildUrl.trim())}`);
       const j = await r.json();
-      if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
-      setUrlCheck({ status: 'ok', detail: `${j.status} · ${j.bytes ? (j.bytes / 1024 / 1024).toFixed(1) + ' MB' : 'reachable'}` });
+      if (!r.ok || !j.ok) {
+        setUrlCheck({ status: 'fail', detail: j.error || `HTTP ${r.status}`, rewrittenTo: j.rewrittenTo, rewriteNote: j.rewriteNote });
+        return;
+      }
+      setUrlCheck({
+        status: 'ok',
+        detail: `${j.status} · ${j.bytes ? (j.bytes / 1024 / 1024).toFixed(1) + ' MB' : 'reachable'}`,
+        rewrittenTo: j.rewrittenTo,
+        rewriteNote: j.rewriteNote,
+      });
     } catch (e: any) {
       setUrlCheck({ status: 'fail', detail: e?.message ?? String(e) });
     }
@@ -712,9 +720,28 @@ export default function ValidatePage() {
                         <div className="mt-1 text-[11px] text-red-600 flex items-center gap-1.5"><XCircle className="h-3 w-3" /> {urlCheck.detail}</div>
                       ) : null}
 
+                      {/* Share-URL auto-rewrite banner. Shown after a Test URL
+                          that exercised a SharePoint/OneDrive/Dropbox/GDrive link
+                          (success OR failure) — so the user understands which
+                          URL was actually probed and which one the VM will wget. */}
+                      {urlCheck.rewrittenTo ? (
+                        <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 p-3 text-[11px] text-sky-900 leading-relaxed flex gap-2">
+                          <CheckCircle2 className="h-4 w-4 mt-0.5 flex-none text-sky-600" />
+                          <div className="min-w-0">
+                            <div className="font-semibold">Share URL auto-rewritten for wget.</div>
+                            {urlCheck.rewriteNote ? <div className="mt-0.5">{urlCheck.rewriteNote}</div> : null}
+                            <div className="mt-1 font-mono text-[10px] break-all opacity-80">→ {urlCheck.rewrittenTo}</div>
+                            <div className="mt-1 opacity-80">The Simnovator VM will run wget against this rewritten URL with a Mozilla User-Agent.</div>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {/* Heads-up about share-URL requirements — shown only
+                          BEFORE the user clicks Test URL, so we don't double
+                          up with the rewrite banner above. */}
                       {(() => {
                         const u = buildUrl.trim().toLowerCase();
-                        if (!u) return null;
+                        if (!u || urlCheck.status !== 'idle') return null;
                         const matches = [
                           { test: /sharepoint\.com/, name: 'SharePoint' },
                           { test: /onedrive\.live\.com|1drv\.ms/, name: 'OneDrive' },
@@ -727,9 +754,9 @@ export default function ValidatePage() {
                           <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 leading-relaxed flex gap-2">
                             <AlertTriangle className="h-4 w-4 mt-0.5 flex-none" />
                             <div>
-                              <div className="font-semibold">{hit.name} share URLs don't work with <span className="font-mono">wget</span>.</div>
+                              <div className="font-semibold">{hit.name} share link detected — we'll auto-rewrite for wget.</div>
                               <div className="mt-0.5">
-                                {hit.name} share links serve an HTML viewer that authenticates via browser cookies, not a direct file. Switch to <span className="font-semibold">"File already on VM"</span> above and upload the .tar.gz to the VM via Cockpit Files first, or host it on a plain HTTP server reachable from the VM.
+                                {hit.name} link must be shared as <span className="font-semibold">"Anyone with the link"</span> (not "People in your org") so the VM can fetch it without a sign-in. Click <span className="font-semibold">Test URL</span> to verify.
                               </div>
                             </div>
                           </div>

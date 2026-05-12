@@ -21,6 +21,7 @@ import * as path from 'node:path';
 import { chromium, firefox, type Browser, type Page } from 'playwright';
 import type { Inventory, InventorySystem } from './inventory';
 import { getSystem, isSimnovatorTarget } from './inventory';
+import { rewriteShareUrl, wgetCommandFor, isShareUrl } from './shareUrls';
 
 // ───────────── Public types ─────────────
 
@@ -315,10 +316,20 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     dir = lastSlash >= 0 ? (lf.slice(0, lastSlash) || '/') : (req.workingDir?.trim() || '/tmp');
     dirName = fileName.replace(/\.tar\.gz$|\.tgz$/i, '');
   } else {
-    const parsed = nameFromUrl(req.buildUrl!);
-    fileName = parsed.fileName;
-    dirName  = parsed.dirName;
-    dir      = (req.workingDir?.trim() || '/tmp').replace(/\/+$/, '');
+    if (isShareUrl(req.buildUrl!)) {
+      // SharePoint / OneDrive / Dropbox / Drive URLs don't carry a usable
+      // filename in the path (just a document id). We download under a
+      // stable name and detect the actual extracted-dir name later from the
+      // tarball's table of contents.
+      fileName = 'simqa-share-build.tar.gz';
+      dirName  = '__detect_after_extract__';
+      dir      = (req.workingDir?.trim() || '/tmp').replace(/\/+$/, '');
+    } else {
+      const parsed = nameFromUrl(req.buildUrl!);
+      fileName = parsed.fileName;
+      dirName  = parsed.dirName;
+      dir      = (req.workingDir?.trim() || '/tmp').replace(/\/+$/, '');
+    }
   }
   const installLine = buildInstallCommand(req);
 
@@ -458,8 +469,14 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
       // crystal-clear message: the VM cannot route to that host.
       const tPre = Date.now();
       emit(nowEvent({ type: 'step', step: 'preflight', status: 'start', detail: req.buildUrl }));
-      const simpleProbeCmd =
-        `curl -ksI --max-time 10 --connect-timeout 5 ${shellQuote(req.buildUrl!)} -o /dev/null -w 'HTTP %{http_code} time=%{time_total}s\\n'`;
+      // For share-link URLs we need to (a) use the rewritten URL with
+      // download=1, (b) send a Mozilla UA, and (c) do a Range GET (some
+      // share hosts reject HEAD). For plain HTTP/S build hosts the original
+      // -I (HEAD) form is fine and is much cheaper.
+      const probeRew = rewriteShareUrl(req.buildUrl!);
+      const simpleProbeCmd = probeRew.isShareHost
+        ? `curl -ks --max-time 10 --connect-timeout 5 -A 'Mozilla/5.0' -r 0-0 ${shellQuote(probeRew.url)} -o /dev/null -w 'HTTP %{http_code} time=%{time_total}s\\n'`
+        : `curl -ksI --max-time 10 --connect-timeout 5 ${shellQuote(req.buildUrl!)} -o /dev/null -w 'HTTP %{http_code} time=%{time_total}s\\n'`;
       const probed = await runCommandInFrame(page, frame, simpleProbeCmd, 'preflight', emit, state, 30_000, ctx.isCanceled);
       if (!probed.ok) {
         const hint =
@@ -478,11 +495,20 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
       emit(nowEvent({ type: 'step', step: 'preflight', status: 'ok', durationMs: Date.now() - tPre }));
 
       // ── Fetch ──────────────────────────────────────────
-      const fetchCmd =
-        `mkdir -p ${shellQuote(dir)} && cd ${shellQuote(dir)} && ` +
-        `wget --no-check-certificate -c -q --show-progress ${shellQuote(req.buildUrl!)}`;
+      // For cloud-share URLs (SharePoint/OneDrive/Dropbox/Drive) rewrite to
+      // direct-download form and add the flags wget needs (Mozilla UA,
+      // --content-disposition so the real filename from the
+      // Content-Disposition header is honoured rather than the random URL
+      // path segment). Plain HTTP/S build hosts get the simple form.
+      const rew = rewriteShareUrl(req.buildUrl!);
+      const effectiveUrl = rew.url;
+      if (rew.rewritten) {
+        emit(nowEvent({ type: 'log', stream: 'info', line: `(URL rewritten for wget: ${effectiveUrl})` }));
+        if (rew.note) emit(nowEvent({ type: 'log', stream: 'info', line: `   ${rew.note}` }));
+      }
+      const fetchCmd = wgetCommandFor(effectiveUrl, dir, shellQuote);
       const tFetch = Date.now();
-      emit(nowEvent({ type: 'step', step: 'fetch', status: 'start', detail: req.buildUrl }));
+      emit(nowEvent({ type: 'step', step: 'fetch', status: 'start', detail: effectiveUrl }));
       const fetched = await runCommandInFrame(page, frame, fetchCmd, 'fetch', emit, state, 15 * 60_000, ctx.isCanceled);
       if (!fetched.ok) {
         await snap(page, 'fetch', 'failed');
@@ -522,6 +548,32 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     }
     await snap(page, 'extract', 'done');
     emit(nowEvent({ type: 'step', step: 'extract', status: 'ok', durationMs: Date.now() - tExtract }));
+
+    // ── Resolve dirName for share URLs ──────────────────
+    // For share URLs we didn't know the real extracted dir name up front
+    // (the URL has no usable filename). Probe the tarball's table of
+    // contents now — its top-level entry is the dir tar -zxvf just created.
+    if (dirName === '__detect_after_extract__') {
+      let captured: string | undefined;
+      const captureEmit = (e: InstallEvent) => {
+        emit(e);
+        if (e.type === 'log' && typeof e.line === 'string') {
+          const m = e.line.match(/__SIMQA_DETECT_DIR__=([^\s/]+)/);
+          if (m) captured = m[1];
+        }
+      };
+      const detectCmd = `cd ${shellQuote(dir)} && echo "__SIMQA_DETECT_DIR__=$(tar -tzf ${shellQuote(fileName)} | head -1 | cut -d/ -f1)"`;
+      await runCommandInFrame(page, frame, detectCmd, 'extract', captureEmit, state, 30_000, ctx.isCanceled);
+      if (!captured) {
+        const msg = 'could not determine extracted directory name from tarball — install cannot proceed';
+        emit(nowEvent({ type: 'log', stream: 'error', line: msg }));
+        emit(nowEvent({ type: 'step', step: 'extract', status: 'fail', detail: msg }));
+        emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
+        return { ok: false };
+      }
+      dirName = captured;
+      emit(nowEvent({ type: 'log', stream: 'info', line: `(extracted to ${dir}/${dirName})` }));
+    }
 
     // ── Install ────────────────────────────────────────
     const installCmd = `cd ${shellQuote(`${dir}/${dirName}`)} && ${installLine}`;
