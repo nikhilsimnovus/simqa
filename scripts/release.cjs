@@ -89,6 +89,19 @@ if (!fs.existsSync(path.join(relDir, 'INSTALL.md'))) {
 }
 ok('INSTALL.md present');
 
+// ── Stamp the version into SIMQA_VERSION.txt at the staged root. ──────────
+// src/lib/version.ts reads this at runtime; that way even if the user
+// renames the extracted dir off the qakabaap-<date>-<sha> pattern the
+// sidebar still shows the right version.
+const versionTxt = {
+  version: `${date}-${sha}`,
+  sha,
+  date,
+  builtAt: new Date().toISOString(),
+};
+fs.writeFileSync(path.join(relDir, 'SIMQA_VERSION.txt'), JSON.stringify(versionTxt, null, 2) + '\n');
+ok(`SIMQA_VERSION.txt written (${versionTxt.version})`);
+
 // Sanity: must not include inventory.yaml or data/ — those are user / runtime.
 const banned = ['inventory.yaml', 'data', '.next', 'node_modules', 'output'];
 for (const b of banned) {

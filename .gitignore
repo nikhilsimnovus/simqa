@@ -48,6 +48,11 @@ id_rsa
 id_rsa.*
 known_hosts
 
+# Version stamp written by scripts/release.cjs at tarball-pack time. Never
+# tracked — it's per-build, not source. Discovered at runtime by
+# src/lib/version.ts.
+SIMQA_VERSION.txt
+
 # ──────────────────────────────────────────────────────────────────────
 # Editor / OS junk
 # ──────────────────────────────────────────────────────────────────────

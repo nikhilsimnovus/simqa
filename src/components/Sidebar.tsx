@@ -72,17 +72,39 @@ function QaKaBaapLogo({ size = 32 }: { size?: number }) {
   );
 }
 
-export function Sidebar() {
+interface SidebarProps {
+  /** Build version of the running simqa, e.g. "20260512-d391445".
+   *  Passed from the server-rendered layout so the badge paints with
+   *  the first frame (no client fetch, no flicker). */
+  version?: string;
+  /** Where the version came from (env / version-file / cwd / git / fallback).
+   *  Surfaced on hover so a "the version doesn't match!" debug step can tell
+   *  whether the dev server is reading from the right place. */
+  versionSource?: string;
+}
+
+export function Sidebar({ version, versionSource }: SidebarProps = {}) {
   const pathname = usePathname() || '/';
   return (
     <aside className="hidden md:flex md:w-60 shrink-0 flex-col border-r border-slate-200 bg-white">
       <div className="h-14 flex items-center gap-2 px-4 border-b border-slate-200">
         <QaKaBaapLogo size={32} />
-        <div>
+        <div className="min-w-0">
           <div className="text-sm font-semibold tracking-tight text-slate-900">QA Ka BAAP</div>
           <div className="text-[10px] uppercase tracking-wider text-slate-500">Father of QA</div>
         </div>
       </div>
+      {/* Build version banner — sits right under the brand so users always
+          know which tarball is actually running. Critical for the "is my
+          customer-site install really up-to-date?" workflow. */}
+      {version ? (
+        <div
+          className="px-4 py-1.5 text-[10px] font-mono text-slate-500 bg-slate-50 border-b border-slate-100 truncate"
+          title={`build version (source: ${versionSource ?? 'unknown'})`}
+        >
+          build <span className="text-slate-700">{version}</span>
+        </div>
+      ) : null}
       <nav className="flex-1 p-3 space-y-1">
         {NAV.map(({ href, label, icon: Icon }) => {
           const active = href === '/' ? pathname === '/' : pathname.startsWith(href);
@@ -103,8 +125,9 @@ export function Sidebar() {
           );
         })}
       </nav>
-      <div className="p-3 border-t border-slate-200 text-[11px] text-slate-500">
-        v0.1.0
+      <div className="p-3 border-t border-slate-200 text-[11px] text-slate-500 flex items-center justify-between gap-2">
+        <span>v0.1.0</span>
+        {version ? <span className="font-mono text-[10px] text-slate-400 truncate" title={`source: ${versionSource ?? 'unknown'}`}>{version}</span> : null}
       </div>
     </aside>
   );
