@@ -229,6 +229,15 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
     }
   }
 
+  // Fail-fast gate: when ANY critical preflight check fails (e.g., simulator
+  // busy, system unreachable, testcase not found), there's no point firing
+  // the trigger — it'll just 409 / 404 / time out, eating ~40s of wall clock
+  // per cascade. We tag the cascade reason and skip everything downstream
+  // of preflight cleanly. This applies only when transitioning OUT of the
+  // preflight phase (so all preflight checks still run for full diagnostics).
+  let preflightCriticalFailed = false;
+  let cascadeReason: string | undefined;
+
   for (const c of planned) {
     if (ar.canceled) {
       ar.liveStatus.set(c.id, { status: 'skip' });
@@ -238,18 +247,35 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
       });
       continue;
     }
-    // If we already marked this check skip during browser-launch failure,
-    // honour that and don't re-run.
+    // Pre-skipped (e.g. browser launch failed earlier).
     const pre = ar.liveStatus.get(c.id);
     if (pre?.status === 'skip' && pre.result) {
       results.push(pre.result);
       continue;
     }
+    // Cascade-skip everything past preflight when a critical preflight failed.
+    if (preflightCriticalFailed && c.phase !== 'preflight') {
+      const skipResult: CheckResult = {
+        id: c.id, name: c.name, phase: c.phase, severity: c.severity, description: c.description,
+        status: 'skip',
+        skippedReason: `preflight critical check failed — ${cascadeReason ?? 'system not ready for this run'}`,
+        ranAt: new Date().toISOString(),
+      };
+      ar.liveStatus.set(c.id, { status: 'skip', result: skipResult });
+      results.push(skipResult);
+      continue;
+    }
+
     ar.liveStatus.set(c.id, { status: 'running' });
     try {
       const r = await c.run(ar.ctx);
       ar.liveStatus.set(c.id, { status: r.status, result: r });
       results.push(r);
+      // Latch the cascade flag the moment a critical preflight check fails.
+      if (c.phase === 'preflight' && c.severity === 'critical' && r.status === 'fail') {
+        preflightCriticalFailed = true;
+        if (!cascadeReason) cascadeReason = r.detail ?? `${c.id} failed`;
+      }
     } catch (e: any) {
       const fail: CheckResult = {
         id: c.id, name: c.name, phase: c.phase, severity: c.severity, description: c.description,
@@ -259,6 +285,10 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
       };
       ar.liveStatus.set(c.id, { status: 'fail', result: fail });
       results.push(fail);
+      if (c.phase === 'preflight' && c.severity === 'critical') {
+        preflightCriticalFailed = true;
+        if (!cascadeReason) cascadeReason = fail.detail;
+      }
     }
   }
 
@@ -268,17 +298,46 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
     ar.ctx.browser = undefined;
   }
 
-  // Verdict: critical fails → overall fail. Otherwise pass.
+  // Verdict:
+  //   • aborted             → ok=false ("aborted")
+  //   • any critical FAIL   → ok=false ("N critical check(s) failed")
+  //   • any critical SKIPPED (prerequisite missing, browser unavailable, etc.)
+  //                          → ok=false ("N critical check(s) skipped — incomplete validation")
+  //   • non-critical fails  → ok=true  but flagged ("N non-critical fail(s)")
+  //   • zero passes at all  → ok=false ("nothing ran" — covers the onlyCheckIds=[] edge)
+  //   • otherwise           → ok=true ("M of N checks passed")
+  const passed         = results.filter((r) => r.status === 'pass').length;
+  const failed         = results.filter((r) => r.status === 'fail').length;
+  const skipped        = results.filter((r) => r.status === 'skip').length;
   const criticalFailed = results.some((r) => r.status === 'fail' && r.severity === 'critical');
-  ar.ok = !criticalFailed && !ar.canceled;
+  const criticalSkipped = results.filter((r) => r.status === 'skip' && r.severity === 'critical');
+
   ar.finishedAt = new Date().toISOString();
-  const passed  = results.filter((r) => r.status === 'pass').length;
-  const failed  = results.filter((r) => r.status === 'fail').length;
-  const skipped = results.filter((r) => r.status === 'skip').length;
-  ar.finalDetail = ar.canceled ? 'aborted' :
-    criticalFailed ? `${results.filter((r) => r.status === 'fail' && r.severity === 'critical').length} critical check(s) failed` :
-    failed > 0     ? `${failed} non-critical check(s) failed` :
-                     `all ${passed} checks passed`;
+  if (ar.canceled) {
+    ar.ok = false;
+    ar.finalDetail = 'aborted';
+  } else if (criticalFailed) {
+    const n = results.filter((r) => r.status === 'fail' && r.severity === 'critical').length;
+    ar.ok = false;
+    ar.finalDetail = `${n} critical check(s) failed`;
+  } else if (criticalSkipped.length > 0 && passed === 0) {
+    ar.ok = false;
+    ar.finalDetail = `${criticalSkipped.length} critical check(s) skipped — validation incomplete (${criticalSkipped[0].skippedReason ?? 'no detail'})`;
+  } else if (passed === 0 && failed === 0 && skipped > 0) {
+    // Everything skipped, no failures. Common when onlyCheckIds points at
+    // checks whose preflight prerequisites passed but the targeted check
+    // wasn't reachable for some reason — treat as inconclusive.
+    ar.ok = false;
+    ar.finalDetail = `nothing ran successfully — ${skipped} skipped`;
+  } else if (failed > 0) {
+    ar.ok = true;  // non-critical fails don't fail the overall verdict
+    ar.finalDetail = `${passed} passed · ${failed} non-critical fail(s) · ${skipped} skipped`;
+  } else {
+    ar.ok = true;
+    ar.finalDetail = skipped > 0
+      ? `${passed} passed, ${skipped} skipped`
+      : `all ${passed} check(s) passed`;
+  }
 
   // Persist the report. The active-runs map gets cleared on the next
   // status call after a 30s grace period so the page has a chance to see
@@ -377,12 +436,25 @@ function newRunId(): string {
   return `run-${stamp}-${rand}`;
 }
 
+/** Checks that EVERY other check depends on. They populate ctx.token and
+ *  ctx.testcaseMetadata which the rest of the catalogue reads. When the
+ *  user picks onlyCheckIds for a re-run, we still need to run these or
+ *  every subsequent check fails with "no token". */
+const FOUNDATIONAL_PREFLIGHT_IDS = new Set([
+  'preflight-login',
+  'preflight-testcase-exists',
+]);
+
 function filterChecks(catalogue: CheckDef[], options: RunOptions, onlyIds?: string[]): CheckDef[] {
   let list = catalogue.slice();
   if (!options.apiChecks) list = list.filter((c) => c.requiresBrowser);
   if (!options.uiChecks)  list = list.filter((c) => !c.requiresBrowser);
   if (onlyIds && onlyIds.length > 0) {
-    const want = new Set(onlyIds);
+    // Foundational preflight always runs (login + testcase-fetch), so a
+    // re-run-failures from the page doesn't end up with every check
+    // skipping for missing token / metadata. We also keep these visible
+    // in the UI so the user sees they ran.
+    const want = new Set([...onlyIds, ...FOUNDATIONAL_PREFLIGHT_IDS]);
     list = list.filter((c) => want.has(c.id));
   }
   return list;

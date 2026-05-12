@@ -117,11 +117,21 @@ const preflightTestcaseExists: CheckDef = {
     ctx.testcaseName = r.body?.name ?? ctx.testcaseId;
     ctx.testcaseMetadata = r.body?.metadata;
 
-    // Try to extract duration. testDefinition shape varies — look for a
-    // top-level `duration` (seconds), or testDefinition.executionDuration,
-    // or testDefinition.testParameters.duration. Best-effort.
-    const td = r.body?.testDefinition ?? {};
+    // Extract configured duration. Priority order (canonical first):
+    //   1. metadata.lastExecution.testDuration / durationSeconds — the
+    //      authoritative field on Simnovator 4.x. Set when the testcase
+    //      has run at least once; reads the last actual duration as a
+    //      proxy for the expected run time.
+    //   2. testDefinition.settings.duration / executionDuration — present
+    //      on some test types (data-plane long-runners).
+    //   3. testDefinition top-level — older API shape.
+    const meta = r.body?.metadata?.lastExecution ?? {};
+    const td   = r.body?.testDefinition ?? {};
     const candidates = [
+      meta.testDuration,
+      meta.durationSeconds,
+      td.settings?.duration,
+      td.settings?.executionDuration,
       td.duration,
       td.executionDuration,
       td.testParameters?.duration,
@@ -133,7 +143,7 @@ const preflightTestcaseExists: CheckDef = {
       if (typeof n === 'number' && n > 0) { ctx.configuredDurationSec = n; break; }
     }
 
-    const durStr = ctx.configuredDurationSec ? ` configuredDuration=${ctx.configuredDurationSec}s` : ' (no duration found in testDefinition)';
+    const durStr = ctx.configuredDurationSec ? ` configuredDuration=${ctx.configuredDurationSec}s` : ' (no duration found — completion will use default 60s)';
     return makeResult(base, 'pass', `id=${ctx.testcaseId} name="${ctx.testcaseName}"${durStr}`, { durationMs: r.durationMs });
   },
 };
@@ -156,29 +166,82 @@ const preflightApiResponsive: CheckDef = {
 const preflightSimulatorsAvailable: CheckDef = {
   id: 'preflight-simulators-available',
   name: 'Required simulators are available',
-  description: 'Testcase simulator type matches an available entry in /v2/simulators.',
-  phase: 'preflight', severity: 'normal',
+  description: 'The testcase\'s simulator must be CONNECTED + AVAILABLE, AND no other simulator on the system can be BUSY (Simnovator enforces a system-wide mutex on test executions).',
+  phase: 'preflight', severity: 'critical',
   run: async (ctx) => {
-    const base = { id: 'preflight-simulators-available', name: 'Required simulators are available', phase: 'preflight' as Phase, severity: 'normal' as Severity, description: 'Testcase simulator type matches an available entry in /v2/simulators.' };
+    const base = { id: 'preflight-simulators-available', name: 'Required simulators are available', phase: 'preflight' as Phase, severity: 'critical' as Severity, description: 'The testcase\'s simulator must be CONNECTED + AVAILABLE, AND no other simulator on the system can be BUSY (Simnovator enforces a system-wide mutex on test executions).' };
     if (!ctx.token) return makeResult(base, 'skip', 'no token');
-    // Try to learn the testcase's preferred simulator from metadata; if the
-    // shape isn't there, fall back to a generic "any simulator must exist".
-    const wantType = ctx.testcaseMetadata?.lastExecution?.simulatorName
-      ?? ctx.testcaseMetadata?.simulatorType
-      ?? undefined;
     const r = await jsonFetch(`${apiBase(ctx.systemHost)}/simulators`, { headers: authHeaders(ctx) });
     if (r.status !== 200) return makeResult(base, 'fail', `simulators returned ${r.status}`, { durationMs: r.durationMs });
     const items: any[] = r.body?.items ?? r.body?.data ?? [];
     if (items.length === 0) return makeResult(base, 'fail', '0 simulators registered on this system', { durationMs: r.durationMs });
-    if (wantType) {
-      const match = items.find((s) => (s.name ?? '').toLowerCase().includes(String(wantType).toLowerCase()) || (s.type ?? '').toLowerCase().includes(String(wantType).toLowerCase()));
-      if (!match) {
-        return makeResult(base, 'fail', `simulator matching "${wantType}" not in list (have: ${items.map((s) => s.name).join(', ')})`, { durationMs: r.durationMs });
+
+    // Step 1 — system-wide busy detection. Even if the testcase's bound
+    // simulator is AVAILABLE, the Simnovator system rejects a new POST
+    // /executions with 409 when ANY simulator is currently running a test
+    // (observed empirically — 409 body: "Simulator already has an in-progress
+    // test: <name>"). Surface that exact state here so the user doesn't
+    // wait through trigger + 30s-of-poll just to learn the box is in use.
+    const busySims = items.filter((s) => (s.availability ?? '').toUpperCase() === 'BUSY');
+    if (busySims.length > 0) {
+      const busy = busySims[0];
+      // The /v2/simulators list endpoint doesn't include testCaseId or
+      // currentExecutionId — those are only on /v2/simulators/{id}/status.
+      // Fetch the per-sim status to surface what's actually blocking, so
+      // the user sees "SD-3607-3cell-mobility-disable_ (executionId=5e34...)"
+      // instead of a useless "(unknown testcase)".
+      let what = busy.testCaseId ?? busy.currentTestcaseId;
+      let exec = busy.currentExecutionId ?? busy.executionId;
+      if (!what || !exec) {
+        try {
+          const statusRes = await jsonFetch(`${apiBase(ctx.systemHost)}/simulators/${encodeURIComponent(busy.id)}/status`, { headers: authHeaders(ctx) });
+          if (statusRes.status === 200) {
+            what = what ?? statusRes.body?.testCaseId ?? statusRes.body?.currentTestcaseId;
+            exec = exec ?? statusRes.body?.currentExecutionId ?? statusRes.body?.executionId;
+          }
+        } catch { /* swallow; fall back to "unknown" */ }
       }
-      const ok = (match.availability ?? '').toLowerCase().includes('available') || (match.stability ?? '').toLowerCase().includes('stable');
-      return makeResult(base, 'pass', `found "${match.name}" (availability=${match.availability ?? '?'} stability=${match.stability ?? '?'})${ok ? '' : ' — but state is non-ideal'}`, { durationMs: r.durationMs });
+      return makeResult(base, 'fail',
+        `${busy.name} is BUSY running "${what ?? '(unknown testcase)'}"${exec ? ` (executionId=${exec})` : ''}. Simnovator enforces a system-wide execution mutex — wait for the current test to finish, then retry.`,
+        { durationMs: r.durationMs });
     }
-    return makeResult(base, 'pass', `${items.length} simulator(s) registered (no specific type in testcase metadata to match)`, { durationMs: r.durationMs });
+
+    // Step 2 — the testcase's preferred simulator (from its last execution
+    // metadata) must be present + CONNECTED + AVAILABLE + STABLE.
+    const wantSim = ctx.testcaseMetadata?.lastExecution?.simulatorName
+      ?? ctx.testcaseMetadata?.simulatorType
+      ?? undefined;
+    if (wantSim) {
+      const w = String(wantSim).toLowerCase();
+      const match = items.find((s) => (s.name ?? '').toLowerCase() === w || (s.name ?? '').toLowerCase().includes(w) || (s.type ?? '').toLowerCase().includes(w));
+      if (!match) {
+        return makeResult(base, 'fail',
+          `the testcase's last-used simulator "${wantSim}" is not registered (have: ${items.map((s) => s.name).join(', ')})`,
+          { durationMs: r.durationMs });
+      }
+      const conn = String(match.connectivity ?? '').toUpperCase();
+      const avail = String(match.availability ?? '').toUpperCase();
+      const stab  = String(match.stability ?? '').toUpperCase();
+      if (conn !== 'CONNECTED' || avail !== 'AVAILABLE' || stab !== 'STABLE') {
+        return makeResult(base, 'fail',
+          `"${match.name}" state is not ready: connectivity=${match.connectivity} availability=${match.availability} stability=${match.stability}`,
+          { durationMs: r.durationMs });
+      }
+      return makeResult(base, 'pass',
+        `"${match.name}" CONNECTED+AVAILABLE+STABLE${busySims.length === 0 ? ' (system idle, no other test running)' : ''}`,
+        { durationMs: r.durationMs });
+    }
+
+    // No specific sim in testcase metadata — just check at least one is ready.
+    const ready = items.filter((s) => String(s.connectivity).toUpperCase() === 'CONNECTED' && String(s.availability).toUpperCase() === 'AVAILABLE' && String(s.stability).toUpperCase() === 'STABLE');
+    if (ready.length === 0) {
+      return makeResult(base, 'fail',
+        `no simulator is CONNECTED+AVAILABLE+STABLE (have ${items.length} total)`,
+        { durationMs: r.durationMs });
+    }
+    return makeResult(base, 'pass',
+      `${ready.length} of ${items.length} simulator(s) are CONNECTED+AVAILABLE+STABLE: ${ready.map((s) => s.name).join(', ')}`,
+      { durationMs: r.durationMs });
   },
 };
 
