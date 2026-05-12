@@ -1,26 +1,38 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle, ShieldCheck, Beaker, MousePointerClick, Info, Layers, Wrench, Database,
+  LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle, ShieldCheck, Beaker, MousePointerClick, Info, Layers, Wrench, Database, Rocket,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
+// Primary navigation. Covers the 95% of installs where simqa is driving an
+// integrated Simnovator box via REST — no separate callbox/MME/IMS.
 const NAV = [
-  { href: '/',            label: 'Dashboard',       icon: LayoutDashboard },
-  { href: '/about',       label: 'About QA Ka BAAP',icon: Info },
-  { href: '/testcases',   label: 'Test Cases',      icon: FlaskConical },
-  { href: '/automation',  label: 'Automation',      icon: PlayCircle },
-  { href: '/validate',    label: 'Build Check',     icon: ShieldCheck },
-  { href: '/end-to-end',  label: 'End to End',      icon: Layers },
-  { href: '/api-tests',   label: 'API Tests',       icon: Beaker },
-  { href: '/ui-tests',    label: 'UI Tests',        icon: MousePointerClick },
-  { href: '/inventory',   label: 'Systems Mgmt',    icon: Server },
-  { href: '/tools',       label: 'Tools',           icon: Wrench },
-  { href: '/backup',      label: 'Backup',          icon: Database },
-  { href: '/runs',        label: 'Runs',            icon: History },
-  { href: '/settings',    label: 'Settings',        icon: Settings2 },
+  { href: '/',              label: 'Dashboard',       icon: LayoutDashboard },
+  { href: '/about',         label: 'About QA Ka BAAP',icon: Info },
+  { href: '/testcases',     label: 'Test Cases',      icon: FlaskConical },
+  { href: '/run-validate',  label: 'Run & Validate',  icon: Rocket },
+  { href: '/validate',      label: 'Build Check',     icon: ShieldCheck },
+  { href: '/api-tests',     label: 'API Tests',       icon: Beaker },
+  { href: '/ui-tests',      label: 'UI Tests',        icon: MousePointerClick },
+  { href: '/inventory',     label: 'Systems Mgmt',    icon: Server },
+  { href: '/tools',         label: 'Tools',           icon: Wrench },
+  { href: '/backup',        label: 'Backup',          icon: Database },
+  { href: '/runs',          label: 'Run History',     icon: History },
+  { href: '/settings',      label: 'Settings',        icon: Settings2 },
+];
+
+// Advanced surfaces — only useful when you have a distributed lab (separate
+// callbox / MME / IMS / AppServer boxes and want simqa to generate cfgs +
+// SSH-push them). Hidden under an "Advanced" collapsible so the customer-
+// style install isn't cluttered with surfaces that can't do anything
+// useful for them.
+const ADVANCED_NAV = [
+  { href: '/end-to-end',  label: 'Topology Setups', icon: Layers },
+  { href: '/automation',  label: 'Generate + Push', icon: PlayCircle },
 ];
 
 /**
@@ -85,6 +97,10 @@ interface SidebarProps {
 
 export function Sidebar({ version, versionSource }: SidebarProps = {}) {
   const pathname = usePathname() || '/';
+  // Auto-expand the Advanced section when the user is currently on one of
+  // its routes (so refreshing /end-to-end doesn't fold the link they're on).
+  const onAdvanced = ADVANCED_NAV.some((n) => pathname.startsWith(n.href));
+  const [advOpen, setAdvOpen] = useState<boolean>(onAdvanced);
   return (
     <aside className="hidden md:flex md:w-60 shrink-0 flex-col border-r border-slate-200 bg-white">
       <div className="h-14 flex items-center gap-2 px-4 border-b border-slate-200">
@@ -105,7 +121,7 @@ export function Sidebar({ version, versionSource }: SidebarProps = {}) {
           build <span className="text-slate-700">{version}</span>
         </div>
       ) : null}
-      <nav className="flex-1 p-3 space-y-1">
+      <nav className="flex-1 overflow-y-auto p-3 space-y-1">
         {NAV.map(({ href, label, icon: Icon }) => {
           const active = href === '/' ? pathname === '/' : pathname.startsWith(href);
           return (
@@ -124,6 +140,42 @@ export function Sidebar({ version, versionSource }: SidebarProps = {}) {
             </Link>
           );
         })}
+
+        {/* Advanced section — collapsible. Topology Setups + Generate + Push
+            live here because they're only useful when you have a distributed
+            lab. Hidden by default on customer installs that don't use them. */}
+        <div className="pt-3 mt-2 border-t border-slate-100">
+          <button
+            type="button"
+            onClick={() => setAdvOpen((v) => !v)}
+            className="w-full flex items-center justify-between gap-2 px-3 py-1 text-[10px] uppercase tracking-wider text-slate-400 hover:text-slate-600 transition-colors"
+          >
+            <span>Advanced</span>
+            <span className="text-slate-300">{advOpen ? '−' : '+'}</span>
+          </button>
+          {advOpen ? (
+            <div className="space-y-1 mt-1">
+              {ADVANCED_NAV.map(({ href, label, icon: Icon }) => {
+                const active = pathname.startsWith(href);
+                return (
+                  <Link
+                    key={href}
+                    href={href}
+                    className={cn(
+                      'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
+                      active
+                        ? 'bg-primary-50 text-primary-700 font-medium'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    )}
+                  >
+                    <Icon className="h-4 w-4" strokeWidth={2} />
+                    {label}
+                  </Link>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
       </nav>
       <div className="p-3 border-t border-slate-200 text-[11px] text-slate-500 flex items-center justify-between gap-2">
         <span>v0.1.0</span>

@@ -52,10 +52,20 @@ interface RoleDef {
   tone: 'orange' | 'sky' | 'violet' | 'amber' | 'emerald' | 'rose';
 }
 
+// Role requirements were redesigned 2026-05-12: only Simnovator stays
+// required. UESIM, Callbox, IMS, MME, AppServer are all optional now.
+//
+// Why: this form is the input to the SSH-deploy workflow (Automation page
+// generates gnb.cfg / mme.cfg locally and pushes to the bound systems).
+// Customer-style installs don't have a separate callbox / MME / etc. —
+// they just want to trigger testcases that already live on the Simnovator
+// box via REST (use the top-level Run & Validate page for that). For those
+// users, this whole page is optional. For the smaller distributed-lab
+// audience, they fill in whichever role-slots their topology actually has.
 const ROLES: readonly RoleDef[] = [
   { key: 'simnovator', label: 'Simnovator', icon: ShieldCheck, types: ['SIMNOVATOR'],          required: true,  shareable: false, tone: 'orange'  },
-  { key: 'uesim',      label: 'UESIM',      icon: Cpu,         types: ['SIMNOVATOR', 'UESIM'], required: true,  shareable: false, tone: 'sky'     },
-  { key: 'callbox',    label: 'Callbox',    icon: Server,      types: ['CALLBOX'],             required: true,  shareable: false, tone: 'violet'  },
+  { key: 'uesim',      label: 'UESIM',      icon: Cpu,         types: ['SIMNOVATOR', 'UESIM'], required: false, shareable: false, tone: 'sky'     },
+  { key: 'callbox',    label: 'Callbox',    icon: Server,      types: ['CALLBOX'],             required: false, shareable: false, tone: 'violet'  },
   { key: 'ims',        label: 'IMS',        icon: Globe,       types: ['IMS', 'CALLBOX'],      required: false, shareable: true,  tone: 'amber'   },
   { key: 'mme',        label: 'MME',        icon: Network,     types: ['MME', 'CALLBOX'],      required: false, shareable: true,  tone: 'emerald' },
   { key: 'appserver',  label: 'App server', icon: Database,    types: ['APPSERVER', 'CALLBOX'], required: false, shareable: true,  tone: 'rose'   },
@@ -184,10 +194,10 @@ export default function EndToEndPage() {
   return (
     <>
       <Header
-        title="End to End"
+        title="Topology Setups"
         subtitle={tab === 'setups'
-          ? 'QA Test Setups — bind systems together for a complete test topology'
-          : 'Run & validate — execute a testcase end-to-end and report every check that passed or failed'
+          ? 'Advanced — bind systems into a topology for the Generate + Push workflow. Most users want Run & Validate instead.'
+          : 'Run & validate — execute a testcase end-to-end (also available as a top-level sidebar entry)'
         }
         right={tab === 'setups' ? (
           <div className="flex items-center gap-2">
@@ -222,6 +232,23 @@ export default function EndToEndPage() {
           backgroundColor: 'rgb(249 250 251)',
         }}
       >
+        {/* Customer-style installs don't need this page. Make sure they know
+            before they fill out a multi-row form for nothing. */}
+        <Banner
+          tone="amber"
+          title="Topology setups are only for distributed labs"
+          text={
+            <span>
+              If your Simnovator box is integrated (testcases already on the
+              box, no separate Callbox / MME / IMS), skip this page and use{' '}
+              <Link className="underline hover:no-underline font-semibold" href="/run-validate">Run &amp; Validate</Link>{' '}
+              instead — REST-only execution, no topology required. This page
+              is only useful when simqa generates cfgs locally and SSH-pushes
+              them to a distributed lab.
+            </span>
+          }
+        />
+
         {/* Inventory sanity check */}
         {!hasMinimumSystems(doc.systems) ? (
           <Banner
@@ -229,7 +256,7 @@ export default function EndToEndPage() {
             title="Inventory looks light"
             text={
               <span>
-                You'll want at least one <span className="font-semibold">Simnovator</span> + one <span className="font-semibold">Callbox</span> in inventory before building a setup.
+                You'll want at least one <span className="font-semibold">Simnovator</span> system in inventory before building a topology setup.
                 {' '}<Link className="underline hover:no-underline font-medium" href="/inventory">Go to Inventory</Link>.
               </span>
             }
@@ -305,7 +332,11 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
 // ───────────── Subcomponents ─────────────
 
 function hasMinimumSystems(sys: InventorySystem[]): boolean {
-  return sys.some((s) => s.type === 'SIMNOVATOR') && sys.some((s) => s.type === 'CALLBOX');
+  // Only Simnovator is required now. Callbox / MME / IMS / AppServer are
+  // optional — most users (anyone running customer-style integrated
+  // Simnovator installs) won't have a separate callbox at all. They'll
+  // skip this page entirely and use /run-validate instead.
+  return sys.some((s) => s.type === 'SIMNOVATOR');
 }
 
 function Banner({ tone, title, text }: { tone: 'orange' | 'amber'; title: string; text: React.ReactNode }) {
