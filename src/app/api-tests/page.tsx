@@ -61,10 +61,20 @@ const CATEGORY_LABELS: Record<Category, string> = {
   'fuzz':         'Schema fuzz (malformed input)',
 };
 
+// Defaults: every category EXCEPT the three "advanced" ones at the bottom
+// (negative, mutating, fuzz). Those exercise error paths / mutate state /
+// throw malformed input — useful but noisy for a normal first-look run.
+// Users can opt-in via the Select all button or by ticking individually.
 const DEFAULT_CATEGORIES: Category[] = [
   'auth', 'version', 'users', 'admin-users', 'simulators',
   'system', 'tools', 'testcases', 'executions', 'statistics', 'logs',
-  'negative', 'fuzz',
+];
+
+// All categories, in display order — used by Select all.
+const ALL_CATEGORIES: Category[] = [
+  'auth', 'version', 'users', 'admin-users', 'simulators',
+  'system', 'tools', 'testcases', 'executions', 'statistics', 'logs',
+  'negative', 'mutating', 'fuzz',
 ];
 
 type StatusFilter = 'all' | 'failed' | 'passed' | 'skipped';
@@ -108,6 +118,8 @@ export default function ApiTestsPage() {
     next.has(c) ? next.delete(c) : next.add(c);
     setEnabled(next);
   }
+  const selectAll = () => setEnabled(new Set(ALL_CATEGORIES));
+  const clearAll  = () => setEnabled(new Set());
 
   async function run() {
     setBusy(true); setErr(null); setData(null); setExpanded(new Set());
@@ -263,7 +275,27 @@ export default function ApiTestsPage() {
             </CardBody>
           </Card>
           <Card>
-            <CardHeader><CardTitle>Categories</CardTitle></CardHeader>
+            <CardHeader>
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle>Categories</CardTitle>
+                <div className="flex gap-1">
+                  <button
+                    onClick={selectAll}
+                    className="text-[11px] px-2 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                    title="Enable every category (including the destructive / negative / fuzz ones at the bottom)"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    onClick={clearAll}
+                    className="text-[11px] px-2 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                    title="Uncheck every category"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            </CardHeader>
             <CardBody className="space-y-2">
               {(Object.entries(CATEGORY_LABELS) as Array<[Category, string]>).map(([c, label]) => (
                 <label key={c} className="flex items-center gap-2 text-sm">
