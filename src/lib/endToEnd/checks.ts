@@ -15,10 +15,11 @@
 //   optional — nice-to-have signal; failures rolled into the summary but
 //              don't drive the overall verdict.
 
+import * as fs from 'node:fs';
 import type { CheckResult, Phase, Severity } from './types';
 import type { RunCtx } from './ctx';
 import { pollUntil, sleep } from './poll';
-import { newCheckContext, snapshot, loginUI } from './browser';
+import { newCheckContext, loginUI } from './browser';
 
 // ───────────── Helpers ─────────────
 
@@ -528,7 +529,7 @@ const uiDuringExportButtons: CheckDef = {
           const tmp = `/tmp/export-${tab}-${Date.now()}.bin`;
           await download.saveAs(tmp).catch(() => null);
           let bytes = 0;
-          try { bytes = require('node:fs').statSync(tmp).size; } catch { bytes = 0; }
+          try { bytes = fs.statSync(tmp).size; } catch { bytes = 0; }
           if (bytes > 0) results.push({ tab, ok: true, bytes, detail: `${bytes} bytes` });
           else results.push({ tab, ok: false, bytes, detail: 'download empty' });
         } catch (e: any) {
