@@ -176,115 +176,119 @@ const preflightSimulatorsAvailable: CheckDef = {
     const items: any[] = r.body?.items ?? r.body?.data ?? [];
     if (items.length === 0) return makeResult(base, 'fail', '0 simulators registered on this system', { durationMs: r.durationMs });
 
-    // Step 1 — system-wide busy detection. Even if the testcase's bound
-    // simulator is AVAILABLE, the Simnovator system rejects a new POST
-    // /executions with 409 when ANY simulator is currently running a test
-    // (observed empirically — 409 body: "Simulator already has an in-progress
-    // test: <name>"). Surface that exact state here so the user doesn't
-    // wait through trigger + 30s-of-poll just to learn the box is in use.
-    const busySims = items.filter((s) => (s.availability ?? '').toUpperCase() === 'BUSY');
-    if (busySims.length > 0) {
-      const busy = busySims[0];
-      // The /v2/simulators list response is intentionally lightweight on
-      // this box — it does NOT include testCaseId / currentExecutionId,
-      // and per-sim /v2/simulators/{id}/status returns the IDENTICAL body
-      // (verified against 192.168.1.95 on 2026-05-12). The only endpoint
-      // that exposes runtime execution info is
-      //   GET /v2/testcases/executions/current/status?simulatorId={id}
-      // which we use here. There are two outcomes that matter:
-      //   • 200 → real active execution; body carries the testcase + eid.
-      //   • 404 "no active execution found for simulator" → the sim is
-      //     marked BUSY but the box has no execution registered. This is
-      //     a stale-availability state we've actually seen in the wild
-      //     (a previous run crashed without clearing the flag). Surfacing
-      //     it as "stale" instead of "running (unknown)" tells the user
-      //     to use POST /testcases/executions/current/stop to clear it,
-      //     not "wait for the test to finish" (there is no test).
-      const extractWhat = (o: any): string | undefined => {
-        if (!o || typeof o !== 'object') return undefined;
-        const direct = ['testCaseId', 'testcaseId', 'test_case_id',
-          'currentTestcaseId', 'currentTestCaseId', 'testcaseName',
-          'testCaseName', 'testName', 'name'];
-        for (const k of direct) {
-          const v = o[k];
-          if (typeof v === 'string' && v) return v;
+    // ── BUSY-flag handling ───────────────────────────────────────────────
+    // The /v2/simulators list returns availability=BUSY for two distinct
+    // states on the current box build:
+    //   (a) a real running execution — the system-wide mutex will reject
+    //       any new POST /executions with 409.
+    //   (b) a stale flag — the previous run terminated but the box never
+    //       reset the field. Tracked as SIM40-2064. On build 4.0.0_260427
+    //       there is NO API recovery: documented stop endpoints 404, PATCH
+    //       silently no-ops. The only recovery is a service restart.
+    //
+    // The runtime view at /v2/testcases/executions/current/status?simulatorId={id}
+    // distinguishes them: 200 → real execution; 404 with body
+    // {"code":"NOT_FOUND","message":"no active execution found for simulator"}
+    // → stale flag.
+    //
+    // Policy (decided 2026-05-13, in response to the customer DOS):
+    //   - If a BUSY sim turns out to be stale, treat it as effectively
+    //     AVAILABLE and don't block the run. Let the trigger step be the
+    //     real gate — the box may still 409, but if it does we'll get a
+    //     precise error from POST /executions, and if it doesn't we get
+    //     a successful run despite the stale flag. Either outcome is
+    //     better than blocking customers behind a flag we know lies.
+    //   - If a BUSY sim has a REAL execution, keep failing the preflight
+    //     so we don't fire a doomed trigger that costs ~30s.
+    //   - Always surface what we did via the result detail so the user
+    //     can see "overrode stale BUSY on X, Y, Z" or "real execution
+    //     blocking on sim X".
+    const extractWhat = (o: any): string | undefined => {
+      if (!o || typeof o !== 'object') return undefined;
+      const direct = ['testCaseId', 'testcaseId', 'test_case_id',
+        'currentTestcaseId', 'currentTestCaseId', 'testcaseName',
+        'testCaseName', 'testName', 'name'];
+      for (const k of direct) {
+        const v = o[k];
+        if (typeof v === 'string' && v) return v;
+      }
+      const wrappers = [o.testcase, o.testCase, o.currentExecution, o.execution];
+      for (const w of wrappers) {
+        if (w && typeof w === 'object') {
+          const inner = w.testCaseId ?? w.testcaseId ?? w.name ?? w.id;
+          if (typeof inner === 'string' && inner) return inner;
         }
-        const wrappers = [o.testcase, o.testCase, o.currentExecution, o.execution];
-        for (const w of wrappers) {
-          if (w && typeof w === 'object') {
-            const inner = w.testCaseId ?? w.testcaseId ?? w.name ?? w.id;
-            if (typeof inner === 'string' && inner) return inner;
-          }
+      }
+      return undefined;
+    };
+    const extractExec = (o: any): string | undefined => {
+      if (!o || typeof o !== 'object') return undefined;
+      const direct = ['executionId', 'execution_id', 'currentExecutionId', 'id', 'eid'];
+      for (const k of direct) {
+        const v = o[k];
+        if (typeof v === 'string' && v) return v;
+      }
+      const wrappers = [o.currentExecution, o.execution];
+      for (const w of wrappers) {
+        if (w && typeof w === 'object') {
+          const inner = w.executionId ?? w.id ?? w.eid;
+          if (typeof inner === 'string' && inner) return inner;
         }
-        return undefined;
-      };
-      const extractExec = (o: any): string | undefined => {
-        if (!o || typeof o !== 'object') return undefined;
-        const direct = ['executionId', 'execution_id', 'currentExecutionId', 'id', 'eid'];
-        for (const k of direct) {
-          const v = o[k];
-          if (typeof v === 'string' && v) return v;
-        }
-        const wrappers = [o.currentExecution, o.execution];
-        for (const w of wrappers) {
-          if (w && typeof w === 'object') {
-            const inner = w.executionId ?? w.id ?? w.eid;
-            if (typeof inner === 'string' && inner) return inner;
-          }
-        }
-        return undefined;
-      };
+      }
+      return undefined;
+    };
 
-      let what: string | undefined;
-      let exec: string | undefined;
-      let stale = false;
-      let rawKeys: string | undefined;
+    const busySims = items.filter((s) => (s.availability ?? '').toUpperCase() === 'BUSY');
+    // For each BUSY sim, classify as "stale" or "running" by querying the
+    // runtime endpoint. Probed serially to keep box load low; with the
+    // 2-3 BUSY sims we see in practice this is well under a second total.
+    const staleBusyIds: string[] = [];
+    const realBusy: Array<{ id: string; name: string; what?: string; exec?: string }> = [];
+    for (const b of busySims) {
       try {
         const cur = await jsonFetch(
-          `${apiBase(ctx.systemHost)}/testcases/executions/current/status?simulatorId=${encodeURIComponent(busy.id)}`,
+          `${apiBase(ctx.systemHost)}/testcases/executions/current/status?simulatorId=${encodeURIComponent(b.id)}`,
           { headers: authHeaders(ctx) },
         );
         if (cur.status === 200 && cur.body && typeof cur.body === 'object') {
-          what = extractWhat(cur.body);
-          exec = extractExec(cur.body);
-          if (!what && !exec) {
-            const keys = Object.keys(cur.body).slice(0, 30).join(', ');
-            rawKeys = keys.length > 240 ? keys.slice(0, 240) + '…' : keys;
-          }
+          realBusy.push({ id: b.id, name: b.name, what: extractWhat(cur.body), exec: extractExec(cur.body) });
         } else if (cur.status === 404) {
-          // The sim flag is stale — no execution actually registered.
-          stale = true;
+          staleBusyIds.push(b.id);
+        } else {
+          // Treat any other response (5xx, timeout) as REAL busy to be safe.
+          realBusy.push({ id: b.id, name: b.name });
         }
-      } catch { /* network blip; fall through to "unknown" */ }
-
-      if (stale) {
-        // Verified against 192.168.1.95 build 4.0.0_260427 on 2026-05-13:
-        // there is NO API endpoint on this box build that clears a stale
-        // availability flag. The documented `POST /v2/testcases/executions/
-        // current/stop?simulatorId={id}` returns 404 ("no active execution
-        // found for simulator") and so do all simulator-level reset/release/
-        // clear/availability variants probed in SIM40-2064. `PATCH /v2/
-        // simulators/{id}` lies — it returns 200 "Simulator updated
-        // successfully" while silently no-op'ing on every writeable field.
-        // The only working recovery is a box / execution-service restart.
-        // Don't hand the user a curl command we know won't work.
-        return makeResult(base, 'fail',
-          `${busy.name} (id=${busy.id}) is flagged BUSY on /v2/simulators but the box has NO active execution registered for it ` +
-          `(GET /v2/testcases/executions/current/status?simulatorId=${encodeURIComponent(busy.id)} returns 404). ` +
-          `This is a stale availability flag — a Simnovator box-side bug (tracked as SIM40-2064). ` +
-          `On the current box build there is NO API recovery: the documented stop endpoint also 404s, and PATCH silently no-ops. ` +
-          `Recovery requires restarting the Simnovator execution service (SSH + service restart, or box reboot). ` +
-          `Once SIM40-2064 ships a fix this preflight will pass without operator intervention.`,
-          { durationMs: r.durationMs });
+      } catch {
+        // Network blip — assume REAL busy.
+        realBusy.push({ id: b.id, name: b.name });
       }
-      const tail = rawKeys ? ` [debug: response keys = ${rawKeys}]` : '';
+    }
+
+    if (realBusy.length > 0) {
+      const r0 = realBusy[0];
       return makeResult(base, 'fail',
-        `${busy.name} is BUSY running "${what ?? '(unknown testcase)'}"${exec ? ` (executionId=${exec})` : ''}. Simnovator enforces a system-wide execution mutex — wait for the current test to finish, then retry.${tail}`,
+        `${r0.name} (id=${r0.id}) has a REAL execution registered — running "${r0.what ?? '(unknown testcase)'}"${r0.exec ? ` (executionId=${r0.exec})` : ''}. Simnovator enforces a system-wide execution mutex; wait for it to finish, then retry.` +
+        (realBusy.length > 1 ? ` ${realBusy.length - 1} other sim(s) also running.` : '') +
+        (staleBusyIds.length > 0 ? ` (Separately: ${staleBusyIds.length} stale-BUSY flag(s) on sim id(s) ${staleBusyIds.join(', ')} — see SIM40-2064 — overridden but not blocking.)` : ''),
         { durationMs: r.durationMs });
     }
 
+    // Build the effective-availability view: BUSY sims that turned out to
+    // be stale are now treated as AVAILABLE for the downstream checks.
+    const isStaleBusy = (id: string) => staleBusyIds.includes(id);
+    const effectiveAvailability = (s: any): string => {
+      const av = String(s.availability ?? '').toUpperCase();
+      if (av === 'BUSY' && isStaleBusy(String(s.id))) return 'AVAILABLE';
+      return av;
+    };
+    const staleNote = staleBusyIds.length > 0
+      ? ` (overrode stale BUSY flag on sim id(s) ${staleBusyIds.join(', ')} — no live execution per /testcases/executions/current/status; see SIM40-2064)`
+      : '';
+
     // Step 2 — the testcase's preferred simulator (from its last execution
-    // metadata) must be present + CONNECTED + AVAILABLE + STABLE.
+    // metadata) must be present + CONNECTED + AVAILABLE + STABLE (where
+    // AVAILABLE is the effective view above, so stale-BUSY counts as
+    // AVAILABLE).
     const wantSim = ctx.testcaseMetadata?.lastExecution?.simulatorName
       ?? ctx.testcaseMetadata?.simulatorType
       ?? undefined;
@@ -297,27 +301,28 @@ const preflightSimulatorsAvailable: CheckDef = {
           { durationMs: r.durationMs });
       }
       const conn = String(match.connectivity ?? '').toUpperCase();
-      const avail = String(match.availability ?? '').toUpperCase();
+      const avail = effectiveAvailability(match);
       const stab  = String(match.stability ?? '').toUpperCase();
       if (conn !== 'CONNECTED' || avail !== 'AVAILABLE' || stab !== 'STABLE') {
         return makeResult(base, 'fail',
-          `"${match.name}" state is not ready: connectivity=${match.connectivity} availability=${match.availability} stability=${match.stability}`,
+          `"${match.name}" state is not ready: connectivity=${match.connectivity} availability=${match.availability}${isStaleBusy(String(match.id)) ? ' (stale, ignored)' : ''} stability=${match.stability}`,
           { durationMs: r.durationMs });
       }
       return makeResult(base, 'pass',
-        `"${match.name}" CONNECTED+AVAILABLE+STABLE${busySims.length === 0 ? ' (system idle, no other test running)' : ''}`,
+        `"${match.name}" CONNECTED+AVAILABLE+STABLE${busySims.length === 0 ? ' (system idle, no other test running)' : ''}${staleNote}`,
         { durationMs: r.durationMs });
     }
 
-    // No specific sim in testcase metadata — just check at least one is ready.
-    const ready = items.filter((s) => String(s.connectivity).toUpperCase() === 'CONNECTED' && String(s.availability).toUpperCase() === 'AVAILABLE' && String(s.stability).toUpperCase() === 'STABLE');
+    // No specific sim in testcase metadata — just check at least one is ready
+    // (under the effective-availability view).
+    const ready = items.filter((s) => String(s.connectivity).toUpperCase() === 'CONNECTED' && effectiveAvailability(s) === 'AVAILABLE' && String(s.stability).toUpperCase() === 'STABLE');
     if (ready.length === 0) {
       return makeResult(base, 'fail',
         `no simulator is CONNECTED+AVAILABLE+STABLE (have ${items.length} total)`,
         { durationMs: r.durationMs });
     }
     return makeResult(base, 'pass',
-      `${ready.length} of ${items.length} simulator(s) are CONNECTED+AVAILABLE+STABLE: ${ready.map((s) => s.name).join(', ')}`,
+      `${ready.length} of ${items.length} simulator(s) are CONNECTED+AVAILABLE+STABLE: ${ready.map((s) => s.name).join(', ')}${staleNote}`,
       { durationMs: r.durationMs });
   },
 };
