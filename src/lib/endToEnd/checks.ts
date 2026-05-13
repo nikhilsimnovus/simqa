@@ -185,24 +185,87 @@ const preflightSimulatorsAvailable: CheckDef = {
     const busySims = items.filter((s) => (s.availability ?? '').toUpperCase() === 'BUSY');
     if (busySims.length > 0) {
       const busy = busySims[0];
-      // The /v2/simulators list endpoint doesn't include testCaseId or
-      // currentExecutionId — those are only on /v2/simulators/{id}/status.
-      // Fetch the per-sim status to surface what's actually blocking, so
-      // the user sees "SD-3607-3cell-mobility-disable_ (executionId=5e34...)"
-      // instead of a useless "(unknown testcase)".
-      let what = busy.testCaseId ?? busy.currentTestcaseId;
-      let exec = busy.currentExecutionId ?? busy.executionId;
-      if (!what || !exec) {
-        try {
-          const statusRes = await jsonFetch(`${apiBase(ctx.systemHost)}/simulators/${encodeURIComponent(busy.id)}/status`, { headers: authHeaders(ctx) });
-          if (statusRes.status === 200) {
-            what = what ?? statusRes.body?.testCaseId ?? statusRes.body?.currentTestcaseId;
-            exec = exec ?? statusRes.body?.currentExecutionId ?? statusRes.body?.executionId;
+      // The /v2/simulators list response is intentionally lightweight on
+      // this box — it does NOT include testCaseId / currentExecutionId,
+      // and per-sim /v2/simulators/{id}/status returns the IDENTICAL body
+      // (verified against 192.168.1.95 on 2026-05-12). The only endpoint
+      // that exposes runtime execution info is
+      //   GET /v2/testcases/executions/current/status?simulatorId={id}
+      // which we use here. There are two outcomes that matter:
+      //   • 200 → real active execution; body carries the testcase + eid.
+      //   • 404 "no active execution found for simulator" → the sim is
+      //     marked BUSY but the box has no execution registered. This is
+      //     a stale-availability state we've actually seen in the wild
+      //     (a previous run crashed without clearing the flag). Surfacing
+      //     it as "stale" instead of "running (unknown)" tells the user
+      //     to use POST /testcases/executions/current/stop to clear it,
+      //     not "wait for the test to finish" (there is no test).
+      const extractWhat = (o: any): string | undefined => {
+        if (!o || typeof o !== 'object') return undefined;
+        const direct = ['testCaseId', 'testcaseId', 'test_case_id',
+          'currentTestcaseId', 'currentTestCaseId', 'testcaseName',
+          'testCaseName', 'testName', 'name'];
+        for (const k of direct) {
+          const v = o[k];
+          if (typeof v === 'string' && v) return v;
+        }
+        const wrappers = [o.testcase, o.testCase, o.currentExecution, o.execution];
+        for (const w of wrappers) {
+          if (w && typeof w === 'object') {
+            const inner = w.testCaseId ?? w.testcaseId ?? w.name ?? w.id;
+            if (typeof inner === 'string' && inner) return inner;
           }
-        } catch { /* swallow; fall back to "unknown" */ }
+        }
+        return undefined;
+      };
+      const extractExec = (o: any): string | undefined => {
+        if (!o || typeof o !== 'object') return undefined;
+        const direct = ['executionId', 'execution_id', 'currentExecutionId', 'id', 'eid'];
+        for (const k of direct) {
+          const v = o[k];
+          if (typeof v === 'string' && v) return v;
+        }
+        const wrappers = [o.currentExecution, o.execution];
+        for (const w of wrappers) {
+          if (w && typeof w === 'object') {
+            const inner = w.executionId ?? w.id ?? w.eid;
+            if (typeof inner === 'string' && inner) return inner;
+          }
+        }
+        return undefined;
+      };
+
+      let what: string | undefined;
+      let exec: string | undefined;
+      let stale = false;
+      let rawKeys: string | undefined;
+      try {
+        const cur = await jsonFetch(
+          `${apiBase(ctx.systemHost)}/testcases/executions/current/status?simulatorId=${encodeURIComponent(busy.id)}`,
+          { headers: authHeaders(ctx) },
+        );
+        if (cur.status === 200 && cur.body && typeof cur.body === 'object') {
+          what = extractWhat(cur.body);
+          exec = extractExec(cur.body);
+          if (!what && !exec) {
+            const keys = Object.keys(cur.body).slice(0, 30).join(', ');
+            rawKeys = keys.length > 240 ? keys.slice(0, 240) + '…' : keys;
+          }
+        } else if (cur.status === 404) {
+          // The sim flag is stale — no execution actually registered.
+          stale = true;
+        }
+      } catch { /* network blip; fall through to "unknown" */ }
+
+      if (stale) {
+        return makeResult(base, 'fail',
+          `${busy.name} (id=${busy.id}) is flagged BUSY on the simulator list but the box has NO active execution registered for it — this is a stale availability flag (likely from a previous run that didn't clean up). ` +
+          `Clear it with POST /v2/testcases/executions/current/stop?simulatorId=${encodeURIComponent(busy.id)} (or use the box UI's "Stop" control), then retry.`,
+          { durationMs: r.durationMs });
       }
+      const tail = rawKeys ? ` [debug: response keys = ${rawKeys}]` : '';
       return makeResult(base, 'fail',
-        `${busy.name} is BUSY running "${what ?? '(unknown testcase)'}"${exec ? ` (executionId=${exec})` : ''}. Simnovator enforces a system-wide execution mutex — wait for the current test to finish, then retry.`,
+        `${busy.name} is BUSY running "${what ?? '(unknown testcase)'}"${exec ? ` (executionId=${exec})` : ''}. Simnovator enforces a system-wide execution mutex — wait for the current test to finish, then retry.${tail}`,
         { durationMs: r.durationMs });
     }
 
