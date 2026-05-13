@@ -258,9 +258,23 @@ const preflightSimulatorsAvailable: CheckDef = {
       } catch { /* network blip; fall through to "unknown" */ }
 
       if (stale) {
+        // Verified against 192.168.1.95 build 4.0.0_260427 on 2026-05-13:
+        // there is NO API endpoint on this box build that clears a stale
+        // availability flag. The documented `POST /v2/testcases/executions/
+        // current/stop?simulatorId={id}` returns 404 ("no active execution
+        // found for simulator") and so do all simulator-level reset/release/
+        // clear/availability variants probed in SIM40-2064. `PATCH /v2/
+        // simulators/{id}` lies — it returns 200 "Simulator updated
+        // successfully" while silently no-op'ing on every writeable field.
+        // The only working recovery is a box / execution-service restart.
+        // Don't hand the user a curl command we know won't work.
         return makeResult(base, 'fail',
-          `${busy.name} (id=${busy.id}) is flagged BUSY on the simulator list but the box has NO active execution registered for it — this is a stale availability flag (likely from a previous run that didn't clean up). ` +
-          `Clear it with POST /v2/testcases/executions/current/stop?simulatorId=${encodeURIComponent(busy.id)} (or use the box UI's "Stop" control), then retry.`,
+          `${busy.name} (id=${busy.id}) is flagged BUSY on /v2/simulators but the box has NO active execution registered for it ` +
+          `(GET /v2/testcases/executions/current/status?simulatorId=${encodeURIComponent(busy.id)} returns 404). ` +
+          `This is a stale availability flag — a Simnovator box-side bug (tracked as SIM40-2064). ` +
+          `On the current box build there is NO API recovery: the documented stop endpoint also 404s, and PATCH silently no-ops. ` +
+          `Recovery requires restarting the Simnovator execution service (SSH + service restart, or box reboot). ` +
+          `Once SIM40-2064 ships a fix this preflight will pass without operator intervention.`,
           { durationMs: r.durationMs });
       }
       const tail = rawKeys ? ` [debug: response keys = ${rawKeys}]` : '';

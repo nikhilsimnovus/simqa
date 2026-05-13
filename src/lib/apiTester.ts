@@ -389,6 +389,36 @@ function defs(): TestDef[] {
       return bad(base.id, base, r, `got ${r.status}`);
     },
   });
+  // Cross-check: the runtime-side view of a simulator's current execution.
+  // Used by the end-to-end preflight to distinguish a real running testcase
+  // from a stale BUSY flag (SIM40-2064). Two valid responses:
+  //   200 → simulator has a live execution; body carries testcase + eid.
+  //   404 with code=NOT_FOUND, message="no active execution found for
+  //        simulator" → simulator currently idle.
+  // Either response counts as a pass; the catalogue check is "does the
+  // endpoint exist and answer coherently". When SIM40-2064 ships its fix,
+  // a 404 here MUST coincide with availability=AVAILABLE in /simulators —
+  // that cross-endpoint invariant is verified by the end-to-end preflight,
+  // not by this catalogue check.
+  list.push({
+    id: 'executions-current-status', name: 'GET /testcases/executions/current/status?simulatorId={id}', category: 'simulators',
+    method: 'GET', endpoint: '/v2/testcases/executions/current/status', severity: 'normal',
+    run: async (c) => {
+      const base = { id: 'executions-current-status', category: 'simulators' as const, method: 'GET' as const, endpoint: '/v2/testcases/executions/current/status', severity: 'normal' as const };
+      if (!c.recentSimulatorId) return skip(base.id, base, 'no simulator id available (run simulators-list first)');
+      const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/current/status?simulatorId=${encodeURIComponent(c.recentSimulatorId)}`);
+      if (r.status === 200) return ok(base.id, base, r, 'simulator currently running an execution');
+      // Box returns application/json content type even on 404, so the
+      // diagnostic message lands in r.bodyJson.message (not r.bodyText —
+      // bodyText is only populated by the non-JSON branch of rawCall).
+      const msg = (r.bodyJson?.message as string | undefined) ?? r.bodyText ?? '';
+      if (r.status === 404 && /no active execution found/i.test(msg)) {
+        return ok(base.id, base, r, 'simulator idle (404 NOT_FOUND with expected NOT_FOUND body, contract-compliant)');
+      }
+      if (r.status === 400) return bad(base.id, base, r, `400 BAD_REQUEST — simulatorId rejected (likely a build that doesn't expose this endpoint)`);
+      return bad(base.id, base, r, `unexpected status ${r.status}${msg ? ` (message: ${msg.slice(0, 120)})` : ''}`);
+    },
+  });
 
   // ---------- SYSTEM ----------
   list.push({
