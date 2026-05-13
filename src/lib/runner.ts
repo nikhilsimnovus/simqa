@@ -99,7 +99,9 @@ export async function executeRun(inv: Inventory, req: RunRequest): Promise<RunRe
 
   // 1. Resolve UESIM API opts (from topology -> inventory, or inventory default).
   const profile = req.topologyId ? getProfile(inv, req.topologyId) : undefined;
-  const uesimSys = profile ? getSystem(inv, profile.uesim) : undefined;
+  // profile.uesim is optional as of 2026-05-12 — fall back to inventory
+  // default when the topology profile doesn't pin a UESIM box.
+  const uesimSys = profile?.uesim ? getSystem(inv, profile.uesim) : undefined;
   const apiOpts =
     (uesimSys && {
       host: uesimSys.host,

@@ -110,7 +110,11 @@ export interface TopologyProfile {
    * setups should always set this.
    */
   simnovator?: string;
-  uesim:     string;
+  // Was required pre-2026-05-12; now optional because customer-style
+  // integrated Simnovator installs have no separate UESIM box — the
+  // simnovator IS the UESIM. Keep the field for the distributed-lab
+  // users who do have one.
+  uesim?:    string;
   callbox?:  string;
   enb?:      string;
   gnb?:      string;

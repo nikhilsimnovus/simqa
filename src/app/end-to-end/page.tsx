@@ -23,7 +23,10 @@ interface TestSetup {
   id: string;
   name: string;
   simnovator?: string;
-  uesim: string;
+  // uesim/callbox/ims/mme/appserver are all optional as of the 2026-05-12
+  // redesign — customer-style integrated Simnovator installs don't have
+  // separate boxes for any of those roles. Only `simnovator` is required.
+  uesim?: string;
   callbox?: string;
   ims?: string;
   mme?: string;
@@ -136,9 +139,10 @@ export default function EndToEndPage() {
       id,
       name: `QA Test Setup ${doc.profiles.length + 1}`,
       simnovator: sn?.id,
-      uesim: ue?.id ?? '',
+      // All optional now — leave undefined if not present in inventory.
+      uesim: ue?.id,
       callbox: cb?.id,
-      // shareable roles default to "same as callbox"
+      // shareable roles default to "same as callbox" (undefined if no callbox)
       ims: cb?.id,
       mme: cb?.id,
       appserver: cb?.id,
@@ -158,9 +162,13 @@ export default function EndToEndPage() {
 
   async function saveDraft() {
     if (!draft) return;
+    // Only Simnovator is mandatory. UESIM / Callbox / IMS / MME / AppServer
+    // are all optional now — customer-style integrated installs skip them
+    // and just point at the Simnovator box. Don't block save on absent
+    // optional slots; the user has already seen the "Topology setups are
+    // only for distributed labs" banner.
     if (!draft.simnovator) { flash('err', 'Pick a Simnovator system'); return; }
-    if (!draft.uesim)      { flash('err', 'Pick a UESIM system'); return; }
-    if (!draft.callbox)    { flash('err', 'Pick a Callbox system'); return; }
+    if (!draft.name?.trim()) { flash('err', 'Give the setup a name'); return; }
 
     const isNew = !doc.profiles.some((p) => p.id === draft.id);
     const next: InventoryDoc = {
@@ -360,7 +368,7 @@ function Empty() {
       </div>
       <div className="text-sm font-medium text-slate-700">No QA test setups yet</div>
       <div className="mt-1 text-xs text-slate-500 max-w-md mx-auto">
-        Click <span className="font-medium">New setup</span> in the top-right to bind a Simnovator + UESIM + Callbox (and optional IMS / MME / App-server) into one named end-to-end topology.
+        Click <span className="font-medium">New setup</span> in the top-right to bind a Simnovator (and optional UESIM / Callbox / IMS / MME / App-server) into one named topology. Only Simnovator is required.
       </div>
     </div>
   );
