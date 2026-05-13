@@ -332,23 +332,31 @@ const preflightSimulatorsAvailable: CheckDef = {
 const triggerStart: CheckDef = {
   id: 'trigger-start-execution',
   name: 'POST /testcases/{id}/executions',
-  description: 'Start endpoint returns 2xx in under 5 seconds. This is the first state-mutating step.',
+  description: 'Start endpoint returns 2xx within 90 seconds. This is the first state-mutating step. Note: the Simnovator can take up to ~60s to come back with a 5xx (e.g. "Could not start LTE") — we wait so the failure surfaces as a real message, not "aborted".',
   phase: 'trigger', severity: 'critical',
   destructive: true,
   run: async (ctx) => {
-    const base = { id: 'trigger-start-execution', name: 'POST /testcases/{id}/executions', phase: 'trigger' as Phase, severity: 'critical' as Severity, description: 'Start endpoint returns 2xx in under 5 seconds. This is the first state-mutating step.' };
+    const base = { id: 'trigger-start-execution', name: 'POST /testcases/{id}/executions', phase: 'trigger' as Phase, severity: 'critical' as Severity, description: 'Start endpoint returns 2xx within 90 seconds. This is the first state-mutating step.' };
     if (!ctx.token) return makeResult(base, 'skip', 'no token');
     ctx.triggeredAt = Date.now();
+    // Bumped from 20s default to 90s on 2026-05-13. The Simnovator can take
+    // up to ~55s to return 500 "Could not start LTE" when the UESIM ue.cfg
+    // is unpatched (SDR rf_driver block on hardware with no /dev/sdr0) —
+    // we want to surface that error message rather than an unhelpful
+    // "This operation was aborted" client-side timeout.
     const r = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/${encodeURIComponent(ctx.testcaseId)}/executions`, {
       method: 'POST',
       headers: { ...authHeaders(ctx), 'Content-Type': 'application/json' },
       body: '{}',
-    });
+    }, 90_000);
     if (r.status !== 200 && r.status !== 201 && r.status !== 202) {
       return makeResult(base, 'fail', `start returned ${r.status}: ${r.raw.slice(0, 200)}`, { durationMs: r.durationMs });
     }
-    const slow = r.durationMs > 5000;
-    return makeResult(base, slow ? 'fail' : 'pass', `${r.status} in ${r.durationMs}ms${slow ? ' (slow, > 5s)' : ''}`, { durationMs: r.durationMs });
+    // We deliberately do NOT flag "slow > 5s" as fail anymore. A slow-but-
+    // successful trigger is fine and was masking real 5xx failures behind
+    // an "aborted" client-side timeout. Trigger duration still surfaces in
+    // the result detail so anyone watching can see it.
+    return makeResult(base, 'pass', `${r.status} in ${r.durationMs}ms${r.durationMs > 5000 ? ' (slow but accepted)' : ''}`, { durationMs: r.durationMs });
   },
 };
 

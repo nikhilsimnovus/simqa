@@ -141,21 +141,59 @@ export async function getStatus(s: InventorySystem): Promise<PatcherStatus> {
     const { script, log } = remotePaths(s);
 
     // Combined probe — one round-trip rather than five.
+    //
+    // pgrep -f gotcha: it matches the FULL command line, INCLUDING the
+    // very `sudo -S -p '' bash -lc "...pgrep ..."` pipeline that's
+    // running the probe itself. ANY pattern we put into pgrep also
+    // appears in our own bash -c argv → guaranteed false positives.
+    //
+    // Anchor on the actual watcher's invariant: `inotifywait` is a
+    // separate executable, not a shell builtin. Use `pidof inotifywait`
+    // which matches by executable basename only — our wrapping bash
+    // process is named "bash", not "inotifywait", so no self-match.
+    // If pidof finds a live inotifywait, the watcher is genuinely
+    // running. We then walk up to find the bash patch_ue_cfg.sh parent.
+    // Explicit BEGIN/END section markers (not '---' separators): the PID
+    // section is empty when no watcher is running, so a separator-only
+    // split sees stdout start with "---\nmeta\n---" with no leading
+    // newline before the first marker, which breaks /\n---\n/ entirely
+    // (and silently — all fields default to false).
     const probe = `
-      pgrep -fa ${shellQuote(REMOTE_SCRIPT_NAME)} 2>/dev/null | head -5
-      echo '---'
+      echo '==BEGIN-PIDS=='
+      INO_PIDS=$(pidof inotifywait 2>/dev/null || true)
+      for INO_PID in $INO_PIDS; do
+        # Only count inotifywait instances actually watching /root/ue/config.
+        if grep -aqF '/root/ue/config' /proc/$INO_PID/cmdline 2>/dev/null; then
+          PARENT=$(ps -o ppid= -p $INO_PID 2>/dev/null | tr -d ' ' || true)
+          if [ -n "$PARENT" ]; then ps -p "$PARENT" -o pid=,cmd= 2>/dev/null; fi
+          ps -p "$INO_PID" -o pid=,cmd= 2>/dev/null
+        fi
+      done
+      echo '==END-PIDS=='
+      echo '==BEGIN-META=='
       test -x ${shellQuote(script)} && echo SCRIPT_INSTALLED=yes || echo SCRIPT_INSTALLED=no
       command -v inotifywait >/dev/null && echo INOTIFY=yes || echo INOTIFY=no
       ls -1 ${REMOTE_BACKUP_GLOB} 2>/dev/null | wc -l | awk '{print "PATCH_COUNT="$1}'
-      echo '---'
+      echo '==END-META=='
+      echo '==BEGIN-LOG=='
       tail -n 20 ${shellQuote(log)} 2>/dev/null || true
+      echo '==END-LOG=='
     `;
     const r = await sudoExec(ssh, s, probe);
-    const [pidsRaw, metaRaw, logRaw = ''] = r.stdout.split(/\n---\n/);
+    const between = (begin: string, end: string): string => {
+      const i = r.stdout.indexOf(begin);
+      const j = r.stdout.indexOf(end);
+      if (i < 0 || j < 0 || j < i) return '';
+      return r.stdout.slice(i + begin.length, j).replace(/^\n/, '').replace(/\n$/, '');
+    };
+    const pidsRaw = between('==BEGIN-PIDS==', '==END-PIDS==');
+    const metaRaw = between('==BEGIN-META==', '==END-META==');
+    const logRaw  = between('==BEGIN-LOG==',  '==END-LOG==');
 
-    // pgrep output: lines like "12345 bash /home/sysadmin/patch_ue_cfg.sh"
+    // ps -p output: "  12345 inotifywait -m -q --format ..."
+    // Multiple PIDs (bash entry-point + inotifywait child) → all real.
     for (const line of (pidsRaw ?? '').split('\n')) {
-      const m = line.match(/^(\d+)\s/);
+      const m = line.match(/^\s*(\d+)\s/);
       if (m) {
         status.pids.push(Number(m[1]));
         status.running = true;
