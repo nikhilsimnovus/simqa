@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# patch_ue_cfg.sh — watch for /root/ue/config/ue.cfg and swap the SDR
-# rf_driver block with an #include of the IP loopback config (rf_driver/config.cfg).
+# patch_ue_cfg.sh — watch /root/ue/config/ue.cfg and rewrite the SDR
+# rf_driver block to the Amarisoft IP loopback driver, so lab UE-sim
+# boxes without SDR hardware can run tests end-to-end.
 #
-# Designed for lab UE-sim boxes that DO NOT have SDR hardware. App Manager
-# generates ue.cfg with an SDR-style rf_driver block on every test execution;
-# this watcher rewrites it in place before lteue opens it, so the test runs
-# against the Amarisoft IP loopback frontend instead of complaining about
-# missing /dev/sdr0.
+# Strategy: keep the IP rf_driver definition in a single, externally
+# maintained file (/root/ue/config/rf_driver/config.cfg), and on every
+# write to ue.cfg replace whatever rf_driver block App Manager wrote with
+# an `#include "rf_driver/config.cfg"` directive that the Amarisoft
+# parser expands at load time. That way the IP config has ONE source of
+# truth and this watcher only does deletion + one-line injection.
 #
 # Deployed + supervised by simqa's Tools page (/tools). Also runnable
 # standalone:
@@ -15,8 +17,19 @@
 # Stop:
 #   sudo pkill -f patch_ue_cfg.sh
 #
-# All edited cfgs are backed up alongside as ue.cfg.orig.<unix-ts> so you can
-# diff what App Manager produced vs what got handed to lteue.
+# History:
+#  - v3 (2026-05-13): drop the inline IP block experiment from v2 and go
+#    back to the include-based approach. v2's inline block was missing
+#    fields the real rf_driver/config.cfg provides (rf_ports etc.), so
+#    lteue still failed with "Could not start LTE" even after patching.
+#    The include path keeps rf_driver/config.cfg as the single source of
+#    truth — edit one file, all testcases pick up the change.
+#  - v2 (2026-05-13): handle JSON-style cfgs (App Manager 4.x writes
+#    "rf_driver": { ... } with quotes; the v1 regex expected bare-key
+#    style and silently no-op'd, leaving the SDR block in place); add an
+#    idempotency check so a re-fire on already-patched cfg skips the
+#    rewrite (was causing 90+ patches per test from an inotify feedback
+#    loop, each one logging close_write,close from our own write).
 
 set -euo pipefail
 
@@ -27,17 +40,32 @@ INCLUDE_LINE='#include "rf_driver/config.cfg"'
 command -v inotifywait >/dev/null || { echo "FATAL: inotifywait not installed (apt install -y inotify-tools)"; exit 1; }
 command -v python3     >/dev/null || { echo "FATAL: python3 not installed"; exit 1; }
 
-echo "[patch_ue_cfg] $(date -u +%FT%TZ)  start  watching $CFG"
+echo "[patch_ue_cfg] $(date -u +%FT%TZ)  start  watching $CFG (rf_driver source: $DIR/rf_driver/config.cfg)"
 
-# Watch the directory rather than the file: App Manager may atomically rename
-# (tmp + rename → ue.cfg), which would invalidate a file-level watch.
+# Watch the directory rather than the file: App Manager may atomically
+# rename (tmp + rename → ue.cfg), which would invalidate a file-level
+# watch.
 inotifywait -m -q --format '%e %f' -e close_write,moved_to "$DIR" |
 while read -r ev file; do
   [[ "$file" == "ue.cfg" ]] || continue
+
+  # Idempotency check (cheap — runs before we log/backup).
+  # Skip if the file already has the include AND no remaining SDR refs.
+  # This prevents the inotify feedback loop where each of our own writes
+  # fires another close_write event.
+  if grep -qF "$INCLUDE_LINE" "$CFG" 2>/dev/null \
+     && ! grep -q '"rf_driver"[[:space:]]*:' "$CFG" 2>/dev/null \
+     && ! grep -q 'dev0=/dev/sdr0' "$CFG" 2>/dev/null \
+     && ! grep -q '^[[:space:]]*"rx_gain"' "$CFG" 2>/dev/null \
+     && ! grep -q '^[[:space:]]*"tx_gain"' "$CFG" 2>/dev/null; then
+    # already patched — quietly do nothing
+    continue
+  fi
+
   echo "[patch_ue_cfg] $(date -u +%FT%TZ)  event=$ev  patching $CFG"
 
-  # Keep an .orig copy for diff / debug — sortable by timestamp.
-  cp -p "$CFG" "$CFG.orig.$(date +%s)" 2>/dev/null || true
+  # Snapshot what App Manager wrote for diff/debug.
+  cp -p "$CFG" "$CFG.orig.$(date +%s%N)" 2>/dev/null || true
 
   python3 - "$CFG" "$INCLUDE_LINE" <<'PY'
 import re, sys
@@ -46,42 +74,92 @@ path, include_line = sys.argv[1], sys.argv[2]
 with open(path) as f:
     src = f.read()
 
-# 1) Strip the SDR rf_driver block. The cfg uses Amarisoft's JSON-with-CPP
-#    syntax — rf_driver: { ... } can contain nested braces (rf_ports: [{ ... }]),
-#    so we do brace-balanced extraction rather than a naive regex.
-def strip_rf_driver(s):
-    m = re.search(r'rf_driver\s*:\s*\{', s)
-    if not m: return s, False
-    i = m.end() - 1   # position of the opening {
+# ── helpers ────────────────────────────────────────────────────────────
+def find_balanced(s, start_idx, open_ch, close_ch):
+    """Given index of an opening bracket char, return index AFTER the
+    matching close bracket. Handles nested brackets + quoted strings.
+    Returns -1 if not balanced."""
+    if start_idx >= len(s) or s[start_idx] != open_ch:
+        return -1
     depth = 0
-    j = i
+    i = start_idx
     in_str = False
-    while j < len(s):
-        c = s[j]
-        if c == '"' and (j == 0 or s[j-1] != '\\'):
+    while i < len(s):
+        c = s[i]
+        if c == '"' and (i == 0 or s[i-1] != '\\'):
             in_str = not in_str
         elif not in_str:
-            if c == '{': depth += 1
-            elif c == '}':
+            if c == open_ch:
+                depth += 1
+            elif c == close_ch:
                 depth -= 1
                 if depth == 0:
-                    # Eat trailing comma + whitespace
-                    k = j + 1
-                    while k < len(s) and s[k] in ' \t,': k += 1
-                    # Eat one trailing newline if present
-                    if k < len(s) and s[k] == '\n': k += 1
-                    return s[:m.start()] + include_line + '\n' + s[k:], True
-        j += 1
-    return s, False
+                    return i + 1
+        i += 1
+    return -1
 
-src, did_strip = strip_rf_driver(src)
-if not did_strip and include_line not in src:
-    # No existing rf_driver block and no include yet — prepend.
-    src = include_line + '\n' + src
+def strip_field(s, field_name, open_ch, close_ch):
+    """Strip the first occurrence of `field_name: {...}` or
+    `field_name: [...]`. Handles BOTH bare-key (rf_driver:) and
+    JSON-quoted-key ("rf_driver":) styles. Eats one trailing
+    comma+whitespace+newline so the surrounding cfg stays well-formed."""
+    # re.escape the open char — '[' opens a character class, '{' is a
+    # quantifier delimiter; naively concatenating with a backslash before
+    # them produced "unterminated character set" errors.
+    pattern = r'"?' + re.escape(field_name) + r'"?\s*:\s*' + re.escape(open_ch)
+    m = re.search(pattern, s)
+    if not m:
+        return s, False
+    end = find_balanced(s, m.end() - 1, open_ch, close_ch)
+    if end < 0:
+        return s, False
+    k = end
+    while k < len(s) and s[k] in ' \t,': k += 1
+    if k < len(s) and s[k] == '\n': k += 1
+    return s[:m.start()] + s[k:], True
 
-# 2) Strip top-level tx_gain: / rx_gain: lines (the include provides them).
-src = re.sub(r'^\s*tx_gain\s*:.*$\n?', '', src, flags=re.M)
-src = re.sub(r'^\s*rx_gain\s*:.*$\n?', '', src, flags=re.M)
+# ── strip the SDR rf_driver + tx_gain + rx_gain blocks ────────────────
+src, _ = strip_field(src, 'rf_driver', '{', '}')
+src, _ = strip_field(src, 'tx_gain',  '[', ']')
+src, _ = strip_field(src, 'rx_gain',  '[', ']')
+
+# ── inject the include directive INSIDE the top-level JSON object ─────
+#     (single source of truth: /root/ue/config/rf_driver/config.cfg on
+#     disk, externally maintained).
+#
+# CRITICAL: the include must land INSIDE the JSON `{ ... }`, not before
+# it. The Amarisoft `#include` directive is cpp-style — its content is
+# textually expanded at parse time. If we put the include OUTSIDE the
+# object, the expanded `rf_driver: { ... } tx_gain: ... rx_gain: ...`
+# ends up as bare top-level statements followed by a JSON object,
+# which lteue rejects with "expecting property name" at line 2 col 1.
+# Putting it RIGHT AFTER the `{` makes the expansion land as
+# additional bare-key members of the object — which lteue's parser
+# accepts (it's permissive about mixing quoted + bare keys).
+if include_line not in src:
+    # Find the first '{' that opens the top-level JSON object (skipping
+    # whitespace and C-style / line comments).
+    i = 0
+    while i < len(src):
+        c = src[i]
+        if c.isspace():
+            i += 1; continue
+        if c == '/' and i + 1 < len(src) and src[i+1] == '/':
+            nl = src.find('\n', i); i = nl + 1 if nl >= 0 else len(src); continue
+        if c == '/' and i + 1 < len(src) and src[i+1] == '*':
+            end = src.find('*/', i + 2); i = end + 2 if end >= 0 else len(src); continue
+        break
+    if i < len(src) and src[i] == '{':
+        # No trailing comma after the `#include` — cpp directives are
+        # line-based and any non-whitespace after the path is a syntax
+        # error ("extraneous characters after preprocessor command").
+        # The include file's content already ends each top-level field
+        # with a trailing comma, so separation from the next object
+        # member ("log_options": ...) is correct.
+        src = src[:i+1] + '\n  ' + include_line + '\n' + src[i+1:].lstrip('\n')
+    else:
+        # Fallback: bare-key cfg with no outer { } — original v1 behaviour.
+        src = include_line + '\n' + src
 
 with open(path, 'w') as f:
     f.write(src)

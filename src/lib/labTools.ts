@@ -255,14 +255,41 @@ export async function install(s: InventorySystem): Promise<OperationResult> {
     // 3) Start (no-op if already running). nohup + & detaches from the SSH
     //    session so the watcher survives the connection close. Stderr is
     //    merged into the log.
-    const already = await sudoExec(ssh, s, `pgrep -f ${shellQuote(REMOTE_SCRIPT_NAME)} >/dev/null && echo RUNNING || echo NOT_RUNNING`);
-    if (already.stdout.includes('NOT_RUNNING')) {
-      const start = await sudoExec(ssh, s, `nohup bash ${shellQuote(script)} > ${shellQuote(log)} 2>&1 & disown; sleep 0.5; pgrep -f ${shellQuote(REMOTE_SCRIPT_NAME)} | head -1`);
-      const pid = start.stdout.trim().split('\n').pop();
-      if (!pid || !/^\d+$/.test(pid)) {
-        return { ok: false, detail: 'watcher did not appear in pgrep after start — check log on the box', output: (start.stdout + '\n' + start.stderr).slice(-1200) };
+    //
+    // Don't use `pgrep -f patch_ue_cfg.sh` for the alive check — see the long
+    // note on the status probe above; it false-matches the wrapping bash -c
+    // shell that contains the pattern in its argv. Use the same pidof-based
+    // check as status: a live watcher always has an `inotifywait` process
+    // whose cmdline contains "/root/ue/config". If we don't find one, we
+    // (re)start. After start, we re-probe the same way to confirm.
+    const aliveCmd = `
+      INO_PIDS=$(pidof inotifywait 2>/dev/null || true)
+      for P in $INO_PIDS; do
+        if grep -aqF '/root/ue/config' /proc/$P/cmdline 2>/dev/null; then
+          echo "ALIVE_INO=$P"
+          exit 0
+        fi
+      done
+      echo DEAD
+    `;
+    const already = await sudoExec(ssh, s, aliveCmd);
+    const alreadyAlive = /ALIVE_INO=\d+/.test(already.stdout);
+    if (!alreadyAlive) {
+      // Launch the watcher. nohup + disown so it survives the SSH
+      // close; truncate the log so the user sees a clean trace.
+      await sudoExec(ssh, s, `: > ${shellQuote(log)}; nohup bash ${shellQuote(script)} > ${shellQuote(log)} 2>&1 & disown`);
+      // Give inotifywait a moment to spawn before we look for it.
+      await new Promise((res) => setTimeout(res, 700));
+      const verify = await sudoExec(ssh, s, aliveCmd);
+      const m = verify.stdout.match(/ALIVE_INO=(\d+)/);
+      if (!m) {
+        return {
+          ok: false,
+          detail: 'watcher did not appear as an inotifywait process within 700ms after start — check the log on the box',
+          output: (verify.stdout + '\n' + verify.stderr).slice(-1200),
+        };
       }
-      return { ok: true, detail: `installed + started, pid ${pid}` };
+      return { ok: true, detail: `installed + started, inotifywait pid ${m[1]}` };
     }
     return { ok: true, detail: 'already running — script file updated' };
   } catch (e: any) {
