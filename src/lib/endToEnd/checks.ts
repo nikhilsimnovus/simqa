@@ -417,21 +417,43 @@ const duringStatusRunning: CheckDef = {
   },
 };
 
+// Both during-* checks below use these helpers:
+//
+// Timeout scales with the testcase's configured duration. 60s was the
+// old hardcoded cap, which is too short for any testcase that takes
+// >30s to bring up a PDU session (essentially all real data-plane tests
+// on IP loopback). New cap: min(180s, configuredDuration / 3) with a
+// 60s floor so very short testcases still get a fair shot.
+function deriveDuringTimeoutMs(ctx: any): number {
+  const configured = ctx.configuredDurationSec ?? 60;
+  const scaled = Math.floor((configured * 1000) / 3);
+  return Math.max(60_000, Math.min(180_000, scaled));
+}
+
 const duringUeAttach: CheckDef = {
   id: 'during-ue-attach',
   name: 'At least one UE attaches',
-  description: 'UE summary shows ≥1 attached UE within 60s. Skipped if testcase has no UE.',
+  description: 'GET /v2/testcases/executions/{eid}/statistics/ues — data.totalUEs ≥ 1 within a duration-scaled window.',
   phase: 'during', severity: 'normal',
   run: async (ctx) => {
-    const base = { id: 'during-ue-attach', name: 'At least one UE attaches', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'UE summary shows ≥1 attached UE within 60s. Skipped if testcase has no UE.' };
+    const base = { id: 'during-ue-attach', name: 'At least one UE attaches', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'GET /v2/testcases/executions/{eid}/statistics/ues — data.totalUEs ≥ 1 within a duration-scaled window.' };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const timeoutMs = deriveDuringTimeoutMs(ctx);
     const r = await pollUntil(async () => {
       const now = Date.now();
-      const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/ue-summary?startTime=${now - 60000}&endTime=${now}`, { headers: authHeaders(ctx) });
+      // Endpoint is `/statistics/ues` (plural, no `-summary`). The
+      // `/ue-summary` path 404s on build 4.0.0_260427 (verified live
+      // 2026-05-14). Response shape: { code, message, data: { ue_data,
+      // totalUEs } }. Field names confirmed against 192.168.10.128.
+      const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/ues?startTime=${now - 60000}&endTime=${now}`, { headers: authHeaders(ctx) });
       if (f.status !== 200) return undefined;
-      // Response shape varies. Look for any UE count > 0.
+      // Prefer data.totalUEs (current shape). Keep fallbacks for older
+      // builds and unknown future ones.
       const candidates = [
+        f.body?.data?.totalUEs,
+        Array.isArray(f.body?.data?.ue_data) ? f.body.data.ue_data.length : undefined,
         f.body?.totalAttachedUEs,
+        f.body?.totalUEs,
         f.body?.attached,
         f.body?.summary?.attached,
         Array.isArray(f.body?.items) ? f.body.items.length : undefined,
@@ -440,8 +462,8 @@ const duringUeAttach: CheckDef = {
         if (typeof c === 'number' && c > 0) return c;
       }
       return undefined;
-    }, { intervalMs: 5000, timeoutMs: 60000, isCanceled: ctx.isCanceled });
-    if (!r.ok) return makeResult(base, 'fail', `no UE attached after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs });
+    }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
+    if (!r.ok) return makeResult(base, 'fail', `no UE attached after ${(r.elapsedMs / 1000).toFixed(1)}s (poll window ${(timeoutMs / 1000).toFixed(0)}s — scaled from configuredDuration)`, { durationMs: r.elapsedMs });
     return makeResult(base, 'pass', `${r.value} UE(s) attached after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs });
   },
 };
@@ -449,24 +471,31 @@ const duringUeAttach: CheckDef = {
 const duringThroughputFlowing: CheckDef = {
   id: 'during-throughput-flowing',
   name: 'Downlink throughput > 0',
-  description: 'Cell summary shows non-zero DL throughput within 60s. Skipped if not a data-plane test.',
+  description: 'GET /v2/testcases/executions/{eid}/statistics/cells — any cell with dl_throughput > 0 within a duration-scaled window.',
   phase: 'during', severity: 'normal',
   run: async (ctx) => {
-    const base = { id: 'during-throughput-flowing', name: 'Downlink throughput > 0', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'Cell summary shows non-zero DL throughput within 60s. Skipped if not a data-plane test.' };
+    const base = { id: 'during-throughput-flowing', name: 'Downlink throughput > 0', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'GET /v2/testcases/executions/{eid}/statistics/cells — any cell with dl_throughput > 0 within a duration-scaled window.' };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const timeoutMs = deriveDuringTimeoutMs(ctx);
     const r = await pollUntil(async () => {
       const now = Date.now();
-      const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/cells-summary?startTime=${now - 60000}&endTime=${now}`, { headers: authHeaders(ctx) });
+      // Endpoint is `/statistics/cells` (plural, no `-summary`). The
+      // `/cells-summary` path returns cell CONFIG (n_rb, pci, antennas),
+      // not throughput stats — surprising but verified live. Use the
+      // `/cells` endpoint instead. Response: { code, message, data: { cells } }.
+      const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/cells?startTime=${now - 60000}&endTime=${now}`, { headers: authHeaders(ctx) });
       if (f.status !== 200) return undefined;
-      // Look for any DL throughput > 0 across cells.
-      const cells = Array.isArray(f.body?.items) ? f.body.items : (Array.isArray(f.body) ? f.body : []);
+      const cells: any[] = Array.isArray(f.body?.data?.cells) ? f.body.data.cells
+        : Array.isArray(f.body?.cells) ? f.body.cells
+        : Array.isArray(f.body?.items) ? f.body.items
+        : Array.isArray(f.body) ? f.body : [];
       for (const c of cells) {
-        const dl = c.dlThroughput ?? c.dl_throughput ?? c.dl ?? c.downlinkThroughput;
+        const dl = c.dl_throughput ?? c.dlThroughput ?? c.dl ?? c.downlinkThroughput ?? c.throughput?.dl;
         if (typeof dl === 'number' && dl > 0) return dl;
       }
       return undefined;
-    }, { intervalMs: 5000, timeoutMs: 60000, isCanceled: ctx.isCanceled });
-    if (!r.ok) return makeResult(base, 'fail', `no DL throughput after ${(r.elapsedMs / 1000).toFixed(1)}s — testcase may not be data-plane, or PDU session never came up`, { durationMs: r.elapsedMs });
+    }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
+    if (!r.ok) return makeResult(base, 'fail', `no DL throughput after ${(r.elapsedMs / 1000).toFixed(1)}s (poll window ${(timeoutMs / 1000).toFixed(0)}s — scaled from configuredDuration) — testcase may not be data-plane, or PDU session never came up`, { durationMs: r.elapsedMs });
     return makeResult(base, 'pass', `DL=${r.value} bps after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs });
   },
 };

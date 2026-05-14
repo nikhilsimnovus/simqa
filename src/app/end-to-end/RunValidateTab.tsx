@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
 import {
   Play, Square, RefreshCw, Loader2, CheckCircle2, XCircle, Circle, AlertTriangle, Activity,
-  Server, FlaskConical, Search, History, RotateCcw, ChevronDown, ChevronRight,
+  Server, FlaskConical, Search, History, RotateCcw, ChevronDown, ChevronRight, Download,
 } from 'lucide-react';
 
 interface TestSystem { id: string; name: string; host: string; type: string }
@@ -121,6 +121,31 @@ export function RunValidateTab() {
       const j = await r.json();
       if (r.ok) setExpandedReport({ ...j, results: j.results ?? [] });
     } catch { /* swallow */ }
+  }
+
+  // Download the full run report as a JSON file. Fetches the canonical
+  // /api/end-to-end/runs/{id} response (same shape the expand-run viewer
+  // shows) and triggers a browser download via a Blob URL. The filename
+  // includes the runId so multiple downloads don't collide.
+  async function downloadRunReport(runId: string) {
+    try {
+      const r = await fetch(`/api/end-to-end/runs/${encodeURIComponent(runId)}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      const blob = new Blob([JSON.stringify(j, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${runId}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Defer revoke a moment so Chrome has time to start the download.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e: any) {
+      console.error('Download report failed:', e?.message ?? e);
+      alert(`Could not download report: ${e?.message ?? e}`);
+    }
   }
 
   // ── Load systems on mount ──
@@ -428,14 +453,26 @@ export function RunValidateTab() {
               </div>
             ) : null}
 
-            {/* Re-run failures action — only after a completed run with > 0 failures */}
-            {!status.running && (status.counts?.failed ?? 0) > 0 ? (
-              <div>
-                <Button onClick={rerunFailures} variant="secondary" size="sm">
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  <span className="ml-1.5">Re-run failed checks ({status.counts!.failed})</span>
-                </Button>
-                <span className="ml-2 text-[11px] text-slate-500">— skips the {(status.counts?.passed ?? 0)} passing check{(status.counts?.passed ?? 0) === 1 ? '' : 's'}</span>
+            {/* Action row — re-run failures and/or download the full report.
+                Both visible after a completed run; download is also useful
+                even when everything passed, for archival / handoff. */}
+            {!status.running ? (
+              <div className="flex flex-wrap items-center gap-3">
+                {(status.counts?.failed ?? 0) > 0 ? (
+                  <>
+                    <Button onClick={rerunFailures} variant="secondary" size="sm">
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      <span className="ml-1.5">Re-run failed checks ({status.counts!.failed})</span>
+                    </Button>
+                    <span className="text-[11px] text-slate-500">— skips the {(status.counts?.passed ?? 0)} passing check{(status.counts?.passed ?? 0) === 1 ? '' : 's'}</span>
+                  </>
+                ) : null}
+                {status.runId ? (
+                  <Button onClick={() => downloadRunReport(status.runId!)} variant="secondary" size="sm" title="Download the complete run report as JSON — every check, every detail, captured stats. Safe to paste into Jira or email to Dell.">
+                    <Download className="h-3.5 w-3.5" />
+                    <span className="ml-1.5">Download report</span>
+                  </Button>
+                ) : null}
               </div>
             ) : null}
 
