@@ -35,7 +35,18 @@ set -euo pipefail
 
 CFG=/root/ue/config/ue.cfg
 DIR=/root/ue/config
-INCLUDE_LINE='#include "rf_driver/config.cfg"'
+# Bare-key Amarisoft include directive (NOT cpp-style `#include`). The
+# cpp form is textually pasted by the preprocessor AND shifts the
+# parser's relative-path base into the included file's directory, which
+# breaks downstream relative paths in ue.cfg — e.g. `tun_setup_script:
+# "ue-ifup"` ends up resolving as `config/rf_driver/ue-ifup` instead of
+# `config/ue-ifup`, so lteue can't bring up the tun interface. The
+# bare-key `include "...",` form is a regular cfg object member with a
+# trailing comma; the parser merges the file's content as additional
+# members without touching the relative-path base. Reference: the
+# canonical Amarisoft cfg template, which uses this exact syntax inside
+# the top-level object.
+INCLUDE_LINE='include "rf_driver/config.cfg",'
 
 command -v inotifywait >/dev/null || { echo "FATAL: inotifywait not installed (apt install -y inotify-tools)"; exit 1; }
 command -v python3     >/dev/null || { echo "FATAL: python3 not installed"; exit 1; }
@@ -150,12 +161,10 @@ if include_line not in src:
             end = src.find('*/', i + 2); i = end + 2 if end >= 0 else len(src); continue
         break
     if i < len(src) and src[i] == '{':
-        # No trailing comma after the `#include` — cpp directives are
-        # line-based and any non-whitespace after the path is a syntax
-        # error ("extraneous characters after preprocessor command").
-        # The include file's content already ends each top-level field
-        # with a trailing comma, so separation from the next object
-        # member ("log_options": ...) is correct.
+        # `include "...",` already carries its own trailing comma — it's
+        # a regular object member that separates from the next property
+        # ("log_options": ...) via that comma. We only inject the literal
+        # line + a newline.
         src = src[:i+1] + '\n  ' + include_line + '\n' + src[i+1:].lstrip('\n')
     else:
         # Fallback: bare-key cfg with no outer { } — original v1 behaviour.
