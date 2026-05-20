@@ -1253,6 +1253,58 @@ function defs(): UiTestDef[] {
     },
   });
 
+  list.push({
+    id: 'ui-no-third-party-cdn', name: 'No third-party CDN requests (Google fonts, gstatic, etc.) on main pages',
+    description: 'Visits the main pages with a fresh network recorder and asserts no requests go to fonts.googleapis.com, fonts.gstatic.com, ajax.googleapis.com, csi.gstatic.com, or other Google CDN hosts. Closes SIM40-2040: offline customer installs must not leak browser identity or fail to load on no-internet networks.',
+    category: 'errors', severity: 'normal', needsAuth: true, longRunning: true,
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+      const targets = ['/', '/testcase', '/statistics', '/logs', '/users', '/tools'];
+      for (const t of targets) {
+        await page.goto(`http://${ctx.host}${t}`, { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(1500);
+      }
+      // The full list of third-party CDN host substrings we treat as "must
+      // not be requested from a customer-installed box". Edit cautiously
+      // — a customer install on a closed network would silently fail or
+      // show layout breakage if any of these are pulled at runtime.
+      const blockedHostFragments = [
+        'fonts.googleapis.com',     // Poppins, etc. — SIM40-2040
+        'fonts.gstatic.com',        // font binaries
+        'ajax.googleapis.com',      // jQuery / Google JS libraries CDN
+        'csi.gstatic.com',          // Google client-side instrumentation
+        'www.googletagmanager.com', // GTM
+        'www.google-analytics.com', // GA
+        'cdn.jsdelivr.net',         // generic third-party JS CDN
+        'unpkg.com',                // generic third-party JS CDN
+      ];
+      const offenders = bundle.getRequests().filter((r) =>
+        blockedHostFragments.some((h) => (r.url || '').includes(h)),
+      );
+      if (offenders.length === 0) {
+        return {
+          ok: true,
+          detail: `no third-party CDN requests across ${targets.length} pages`,
+          expected: 'box served all assets locally — safe for offline customer installs.',
+        };
+      }
+      // Group by host fragment so the message is readable when several
+      // assets load from the same CDN.
+      const byHost: Record<string, number> = {};
+      for (const o of offenders) {
+        const hit = blockedHostFragments.find((h) => (o.url || '').includes(h)) ?? 'unknown';
+        byHost[hit] = (byHost[hit] ?? 0) + 1;
+      }
+      const summary = Object.entries(byHost).map(([h, n]) => `${h} ×${n}`).join(', ');
+      const firstUrls = offenders.slice(0, 3).map((o) => o.url).join(' | ');
+      return {
+        ok: false,
+        detail: `${offenders.length} third-party CDN request(s): ${summary}. e.g. ${firstUrls}`,
+        expected: 'a customer-installed box must serve all UI assets locally. Loading Poppins (or any other resource) from Google CDN means (a) the page silently breaks on air-gapped networks, and (b) every page view leaks the user\'s IP + user-agent to Google. Bundle the fonts.',
+      };
+    },
+  });
+
   // ============== TESTCASE ACTIONS (deeper) ==============
 
   list.push({
