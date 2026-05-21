@@ -917,6 +917,88 @@ function defs(): TestDef[] {
     },
   });
 
+  // ---------- SIM40-2048: block duplicate-IP simulator on create + update ----------
+  // The fix: POST /v2/simulators and PATCH /v2/simulators/{id} must both
+  // reject an IP that's already in use by another simulator, with 4xx
+  // (suggested 409 CONFLICT). Previously: silent success → duplicate rows.
+  list.push({
+    id: 'sim40-2048-block-duplicate-simulator-ip',
+    name: 'SIM40-2048: POST /simulators with duplicate ipAddress is rejected with 4xx',
+    category: 'mutating', method: 'POST', endpoint: '/v2/simulators (duplicate-ip)', severity: 'normal', destructive: true,
+    run: async (c) => {
+      const base = { id: 'sim40-2048-block-duplicate-simulator-ip', category: 'mutating' as const, method: 'POST' as const, endpoint: '/v2/simulators (duplicate-ip)', severity: 'normal' as const, destructive: true };
+      const sharedIp = '10.255.255.253';
+      const name1 = `simqa-dup-a-${Date.now().toString(36)}`;
+      const name2 = `simqa-dup-b-${Date.now().toString(36)}`;
+      const create1 = await rawCall(c, 'POST', `${tBase(c.host)}/simulators`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ simulatorName: name1, ipAddress: sharedIp, type: 'UE' }),
+      });
+      if (create1.status !== 200 && create1.status !== 201) return bad(base.id, base, create1, `seed create returned ${create1.status} — cannot test duplicate-IP rejection without a baseline sim`);
+      const id1 = create1.bodyJson?.data?.id ?? create1.bodyJson?.id;
+      // Now attempt a second create with the SAME IP — must be rejected.
+      const create2 = await rawCall(c, 'POST', `${tBase(c.host)}/simulators`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ simulatorName: name2, ipAddress: sharedIp, type: 'UE' }),
+      });
+      // Cleanup the second one if it landed (unexpected), and the first.
+      const id2Maybe = create2.bodyJson?.data?.id ?? create2.bodyJson?.id;
+      if (id2Maybe) await rawCall(c, 'DELETE', `${tBase(c.host)}/simulators/${encodeURIComponent(id2Maybe)}`);
+      if (id1) await rawCall(c, 'DELETE', `${tBase(c.host)}/simulators/${encodeURIComponent(id1)}`);
+      const status = create2.status;
+      const isReject = status >= 400 && status < 500;
+      const detailMsg = `first-create=${create1.status} dup-create=${status} (${isReject ? 'rejected, as required' : 'ACCEPTED — duplicate-IP block missing'})`;
+      if (isReject) return ok(base.id, base, create2, detailMsg);
+      return bad(base.id, base, create2, detailMsg, 'a second POST with an already-used ipAddress must be rejected with 4xx (409 CONFLICT preferred).');
+    },
+  });
+
+  // ---------- SIM40-2049: DELETE /v2/simulators/{id} is the canonical endpoint ----------
+  // The fix: the simulator-delete API is now exclusively under /v2 (the
+  // /v1 path is gone). Verify that /v2 delete returns 200/204 on a real
+  // sim, and that calling /v1 returns 404 (i.e. the legacy route is gone).
+  list.push({
+    id: 'sim40-2049-delete-v2-simulators-canonical',
+    name: 'SIM40-2049: DELETE /v2/simulators/{id} works AND legacy /v1 path is gone',
+    category: 'mutating', method: 'DELETE', endpoint: '/v2/simulators/{id} (v1 vs v2)', severity: 'normal', destructive: true,
+    run: async (c) => {
+      const base = { id: 'sim40-2049-delete-v2-simulators-canonical', category: 'mutating' as const, method: 'DELETE' as const, endpoint: '/v2/simulators/{id} (v1 vs v2)', severity: 'normal' as const, destructive: true };
+      const name = `simqa-v2del-${Date.now().toString(36)}`;
+      const create = await rawCall(c, 'POST', `${tBase(c.host)}/simulators`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ simulatorName: name, ipAddress: '10.255.255.252', type: 'UE' }),
+      });
+      if (create.status !== 200 && create.status !== 201) return bad(base.id, base, create, `seed create returned ${create.status}`);
+      const id = create.bodyJson?.data?.id ?? create.bodyJson?.id;
+      if (!id) return bad(base.id, base, create, 'seed create succeeded but no id in response');
+
+      // 1) DELETE /v2/simulators/{id} should work.
+      const delV2 = await rawCall(c, 'DELETE', `${tBase(c.host)}/simulators/${encodeURIComponent(id)}`);
+      const v2Ok = delV2.status === 200 || delV2.status === 204;
+
+      // 2) Probe /v1/simulators/{id} — should be 404 (route removed).
+      // Recreate a temp sim for the v1 probe so we have a target id.
+      const create2 = await rawCall(c, 'POST', `${tBase(c.host)}/simulators`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ simulatorName: name + '-v1probe', ipAddress: '10.255.255.251', type: 'UE' }),
+      });
+      const id2 = create2.bodyJson?.data?.id ?? create2.bodyJson?.id;
+      let v1Status: number | undefined;
+      if (id2) {
+        // Replace `/v2/` with `/v1/` in the base URL.
+        const v1Url = `${tBase(c.host).replace('/v2', '/v1')}/simulators/${encodeURIComponent(id2)}`;
+        const delV1 = await rawCall(c, 'DELETE', v1Url);
+        v1Status = delV1.status;
+        // Cleanup id2 via v2.
+        await rawCall(c, 'DELETE', `${tBase(c.host)}/simulators/${encodeURIComponent(id2)}`);
+      }
+      const v1Gone = v1Status === undefined || v1Status === 404 || v1Status === 405;
+      const summary = `v2-delete=${delV2.status} v1-probe=${v1Status ?? 'skipped'} (${v2Ok && v1Gone ? 'v2 canonical, v1 gone' : 'unexpected'})`;
+      if (v2Ok && v1Gone) return ok(base.id, base, delV2, summary);
+      return bad(base.id, base, delV2, summary, 'DELETE /v2/simulators/{id} must return 2xx; /v1/simulators/{id} must be removed (404/405).');
+    },
+  });
+
   // ---------- TESTCASE IMPORT / ROUND-TRIP / VALIDATION ----------
   //
   // The /testcases/import wire format (confirmed by /testcases/export) is:

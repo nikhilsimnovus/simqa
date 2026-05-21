@@ -1486,6 +1486,324 @@ function defs(): UiTestDef[] {
     },
   });
 
+  // ============== Verifications of "In QA" tickets (SIM40-…) ==============
+  //
+  // Each test below corresponds 1:1 to a ticket Nikhil owns in QA on the
+  // Simnovator 4.0 board. Naming convention: `ui-sim40-<id>-<short>`. The
+  // intent is regression coverage — every fix gets a permanent test so a
+  // future build can't silently undo it. Each test is small and runs
+  // against the box UI through Playwright.
+
+  list.push({
+    id: 'ui-sim40-979-sort-toggle-visible-initially',
+    name: 'SIM40-979: Sort toggle visible on /testcase + /sampleTest column headers without a click',
+    description: 'Loads /testcase and /sampleTest with no user interaction and asserts at least one sortable column header carries a sort indicator (aria-sort, SVG icon, role=button, or any column-header SVG child). The original bug was that the indicator only appeared after the user clicked a header once.',
+    category: 'testcases', severity: 'normal', needsAuth: true,
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+      const findings: string[] = [];
+      for (const route of ['/testcase', '/sampleTest']) {
+        await page.goto(`http://${ctx.host}${route}`, { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(2500);
+        // Permissive: in a custom-DOM table the "sortable header" cue
+        // can be any of these — accept them all to avoid tying the test
+        // to one library.
+        const ariaSort       = await page.locator('th[aria-sort], [role="columnheader"][aria-sort]').count();
+        const muiSortLabel   = await page.locator('th .MuiTableSortLabel-root, [class*="SortLabel" i]').count();
+        const headerSvg      = await page.locator('th svg, [role="columnheader"] svg').count();
+        const headerButton   = await page.locator('th[role="button"], th button').count();
+        const sortableData   = await page.locator('th[data-sort], th[data-sortable], [data-testid*="sort" i]').count();
+        const found = ariaSort + muiSortLabel + headerSvg + headerButton + sortableData;
+        findings.push(`${route}: aria-sort=${ariaSort} mui-label=${muiSortLabel} header-svg=${headerSvg} header-btn=${headerButton} data-sort=${sortableData}`);
+        if (found === 0) {
+          return {
+            ok: false,
+            detail: `No sort indicator visible on ${route} before any click. ${findings.join(' | ')}`,
+            expected: 'every sortable column header should show a sort toggle (up/down chevron, aria-sort attribute, or MUI TableSortLabel) on first paint — without the user having to click the header once to make it appear.',
+          };
+        }
+      }
+      return {
+        ok: true,
+        detail: findings.join(' | '),
+        expected: 'sort indicator visible on column headers before any user click on both pages.',
+      };
+    },
+  });
+
+  list.push({
+    id: 'ui-sim40-2074-container-health-refresh-feedback',
+    name: 'SIM40-2074: Container Health refresh button shows feedback on click',
+    description: 'Navigates to /tools, opens Container Health, clicks the Refresh button and asserts the button reflects a click within ~500ms — disabled state, aria-busy, a spinner SVG inside the button, OR a status text change like "Refreshing…". The original bug was that the button gave no visual signal it was working.',
+    category: 'tools', severity: 'normal', needsAuth: true,
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+      await page.goto(`http://${ctx.host}/tools`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2500);
+      // Try to open the Container Health card. The card title can be in
+      // various casings depending on UI build; match permissively.
+      const card = page.getByText(/Container\s+Health/i).first();
+      if (!(await card.count())) {
+        return { ok: false, detail: 'no "Container Health" card visible on /tools', expected: 'the Tools page should expose a Container Health card.' };
+      }
+      await card.click({ trial: false }).catch(() => {});
+      await page.waitForTimeout(2000);
+      // Find a Refresh button anywhere on the now-open Container Health view.
+      const refresh = page.getByRole('button', { name: /Refresh/i }).first();
+      if (!(await refresh.count())) {
+        return { ok: false, detail: 'no Refresh button visible after opening Container Health', expected: 'a Refresh button should be visible inside the Container Health view.' };
+      }
+      // Capture button state, click, sample within ~500ms for feedback signals.
+      const beforeDisabled = await refresh.isDisabled().catch(() => false);
+      await refresh.click({ noWaitAfter: true }).catch(() => {});
+      let signals = 0;
+      const sampleAt = [80, 180, 320, 500];
+      for (const ms of sampleAt) {
+        await page.waitForTimeout(ms - (sampleAt[sampleAt.indexOf(ms) - 1] ?? 0));
+        const disabledNow = await refresh.isDisabled().catch(() => false);
+        const ariaBusy    = await refresh.getAttribute('aria-busy').catch(() => null);
+        const spinnerIn   = await refresh.locator('svg[class*="spin" i], svg[class*="loading" i], [class*="spinner" i], [role="progressbar"]').count().catch(() => 0);
+        const refreshingText = await page.getByText(/Refreshing|Loading/i).count().catch(() => 0);
+        if ((disabledNow && !beforeDisabled) || ariaBusy === 'true' || spinnerIn > 0 || refreshingText > 0) {
+          signals++;
+        }
+      }
+      if (signals === 0) {
+        return {
+          ok: false,
+          detail: 'no visible click-feedback within 500ms — button stayed enabled, no aria-busy, no spinner, no "Refreshing…" text.',
+          expected: 'Refresh button must signal it was clicked (disabled / aria-busy / spinner / status text) so the user knows the refresh fired.',
+        };
+      }
+      return {
+        ok: true,
+        detail: `feedback detected (signals=${signals}/${sampleAt.length})`,
+        expected: 'visible click-feedback on the Refresh button.',
+      };
+    },
+  });
+
+  list.push({
+    id: 'ui-sim40-2041-default-password-no-public-leak',
+    name: 'SIM40-2041: Default password not displayed publicly on login page',
+    description: 'Loads / and asserts the login page does NOT render the default password (admin / Admin@123 / any common default) in visible text. The Default Password Support work in SIM40-2041 must not regress to printing the default in the login UI for anyone visiting the box.',
+    category: 'auth', severity: 'normal',
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+      await page.goto(`http://${ctx.host}/`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2000);
+      const visibleText = (await page.locator('body').innerText().catch(() => '')) || '';
+      // Common defaults that absolutely must not be displayed to an
+      // unauthenticated visitor on the login page.
+      const leaks = [
+        { name: 'Admin@123', pattern: /Admin@?123/i },
+        { name: 'admin/admin pair', pattern: /username[:\s]+admin[\s\S]{0,40}password[:\s]+admin/i },
+        { name: 'password=', pattern: /password\s*[:=]\s*[A-Za-z0-9!@#$%^&*]{4,}/i },
+      ];
+      const found = leaks.filter((l) => l.pattern.test(visibleText));
+      if (found.length > 0) {
+        return {
+          ok: false,
+          detail: `login page leaks default credential text: ${found.map((f) => f.name).join(', ')}`,
+          expected: 'login page must not expose any default password in visible text to unauthenticated visitors.',
+        };
+      }
+      // Also assert the password input is present and type=password (sanity).
+      const pwInputs = await page.locator('input[type="password"]').count();
+      return {
+        ok: pwInputs > 0,
+        detail: pwInputs > 0 ? `no default-password leak detected; ${pwInputs} masked password input(s) on form` : 'no password input found on login page',
+        expected: 'login page renders a masked password input and does not leak the default password.',
+      };
+    },
+  });
+
+  list.push({
+    id: 'ui-sim40-2042-reset-password-affordance-present',
+    name: 'SIM40-2042: Reset Password affordance available on /users (or login flow)',
+    description: 'Confirms there is a discoverable Reset Password control somewhere in the authenticated UI. Looks on /users for a Reset Password button per row (admin-driven reset) and on the login page for a "Forgot password" link (self-serve). At least one path must be reachable.',
+    category: 'users', severity: 'normal', needsAuth: true,
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+      // 1) Try admin path: /users with Reset Password buttons.
+      await page.goto(`http://${ctx.host}/users`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2500);
+      const adminReset = await page.getByRole('button', { name: /Reset\s+Password/i }).count();
+      const adminText  = await page.getByText(/Reset\s+Password/i).count();
+      // 2) Try login-flow path: visit / and look for "Forgot password".
+      await page.goto(`http://${ctx.host}/`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(1500);
+      const forgot = await page.getByText(/Forgot\s+(your\s+)?Password/i).count();
+      const ok = (adminReset + adminText + forgot) > 0;
+      return {
+        ok,
+        detail: `admin-reset-btn=${adminReset} admin-reset-text=${adminText} forgot-link=${forgot}`,
+        expected: 'either an admin Reset Password control on /users or a "Forgot password" link on the login page.',
+      };
+    },
+  });
+
+  list.push({
+    id: 'ui-sim40-2068-user-change-own-password-affordance',
+    name: 'SIM40-2068: Logged-in user can find a "Change Password" / "Update Password" affordance',
+    description: 'Looks for a Change/Update Password control the current user can access — checks the top-right user menu, /users page, and any /profile or /account route. Catches the regression where the affordance is removed or hidden after the GUI rework.',
+    category: 'users', severity: 'normal', needsAuth: true,
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+      let signals = 0;
+      const findings: string[] = [];
+      for (const route of ['/users', '/profile', '/account', '/me']) {
+        await page.goto(`http://${ctx.host}${route}`, { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(1200);
+        const hits = await page.getByText(/Change\s+Password|Update\s+Password|My\s+Password/i).count();
+        findings.push(`${route}=${hits}`);
+        signals += hits;
+      }
+      // Also check the top-right user menu/avatar if present.
+      await page.goto(`http://${ctx.host}/testcase`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(1500);
+      const avatar = page.locator('[aria-label*="user" i], [aria-label*="account" i], [class*="avatar" i], [data-testid*="user-menu" i]').first();
+      if (await avatar.count()) {
+        await avatar.click({ trial: false }).catch(() => {});
+        await page.waitForTimeout(700);
+        const menuHits = await page.getByText(/Change\s+Password|Update\s+Password|My\s+Password/i).count();
+        findings.push(`user-menu=${menuHits}`);
+        signals += menuHits;
+      } else {
+        findings.push('user-menu=not-found');
+      }
+      return {
+        ok: signals > 0,
+        detail: findings.join(' '),
+        expected: 'a logged-in user must be able to find a Change/Update Password control — either on /users, /profile/account, or in their top-right user menu.',
+      };
+    },
+  });
+
+  list.push({
+    id: 'ui-sim40-2016-clone-and-delete-via-ui',
+    name: 'SIM40-2016 (UI side): clone a recently-executed testcase via import + delete the clone via UI',
+    description: 'End-to-end UI exercise of the create-clone-then-delete automation story the customer keeps asking for. (1) Picks the most-recently-executed real testcase via /testcases/search. (2) Exports it as a seed. (3) Re-imports it with a fresh Test_Id (the "clone"). (4) Reloads /testcase and locates the clone row. (5) Clicks Delete on that row. (6) Confirms the dialog. (7) Asserts the row is gone. Surfaces SIM40-2010 (silent import drop) and SIM40-1381 (delete from My Tests) in the same run if either is still failing.',
+    category: 'testcases', severity: 'critical', needsAuth: true, longRunning: true,
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+      // ─── Setup: pick a recent testcase + seed-export ─────────────────
+      // Use the box's API directly (login via stored token would be cleaner
+      // but we don't have it from inside the page context; do a fresh
+      // POST /v2/login).
+      const loginR = await page.request.post(`http://${ctx.host}/v2/login`, {
+        headers: { 'Content-Type': 'application/json' },
+        data: { username: ctx.username, password: ctx.password },
+      });
+      if (!loginR.ok()) return { ok: false, detail: `login: ${loginR.status()}`, expected: 'box login should succeed' };
+      const tok = ((await loginR.json()) as any).access_token;
+      const bearer = { Authorization: `Bearer ${tok}` };
+
+      // Pick a recently-executed testcase (one with metadata.lastExecution).
+      const searchR = await page.request.post(`http://${ctx.host}/v2/testcases/search`, {
+        headers: { ...bearer, 'Content-Type': 'application/json' },
+        data: { offset: 0, limit: 200 },
+      });
+      if (!searchR.ok()) return { ok: false, detail: `search: ${searchR.status()}`, expected: 'testcases search should succeed' };
+      const items = (((await searchR.json()) as any).items ?? []) as any[];
+      const seed = items.find((it) => it?.metadata?.lastExecution?.executionId) ?? items[0];
+      if (!seed) return { ok: false, detail: 'no testcases on the box to clone from', expected: 'box should have at least one testcase' };
+
+      // Export the seed as a pack.
+      const exportR = await page.request.post(`http://${ctx.host}/v2/testcases/export`, {
+        headers: { ...bearer, 'Content-Type': 'application/json' },
+        data: { testCaseIds: [seed.id], output: { type: 'json' } },
+      });
+      if (!exportR.ok()) return { ok: false, detail: `export: ${exportR.status()}`, expected: 'testcases export should succeed' };
+      const pack: any = await exportR.json();
+
+      // Tweak the pack's first testcase to a fresh Test_Id.
+      const cloneId = `qa-clone-${Date.now().toString(36)}`;
+      const tcArr = pack.test_case_details ?? pack.testCases ?? pack.testcases ?? [];
+      if (!tcArr.length) return { ok: false, detail: 'exported pack had no test_case_details', expected: 'export must produce a parseable pack with at least one record' };
+      tcArr[0].Test_Id = cloneId; tcArr[0].Test_Name = cloneId;
+
+      // Re-import as the clone. (multipart/form-data — same wire format as the existing API tester.)
+      const importR = await page.request.post(`http://${ctx.host}/v2/testcases/import`, {
+        headers: bearer,
+        multipart: { file: { name: 'pack.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(pack)) } },
+      });
+      const importStatus = importR.status();
+      const importBody: any = await importR.json().catch(() => null);
+      const importedIds: string[] = (importBody?.testCases ?? importBody?.imported ?? importBody?.test_case_details ?? [])
+        .map((x: any) => x?.id ?? x?.Test_Id ?? x?.testCaseId).filter(Boolean);
+
+      // ─── API-side verify: does the cloned testcase actually exist? ───
+      const apiVerify = await page.request.get(`http://${ctx.host}/v2/testcases/${encodeURIComponent(cloneId)}`, { headers: bearer });
+      const apiVerifyStatus = apiVerify.status();
+      // Try with trailing underscore convention too (SIM40-2015).
+      const apiVerifyUnderscore = await page.request.get(`http://${ctx.host}/v2/testcases/${encodeURIComponent(cloneId + '_')}`, { headers: bearer });
+      const apiVerifyUnderscoreStatus = apiVerifyUnderscore.status();
+
+      if (apiVerifyStatus !== 200 && apiVerifyUnderscoreStatus !== 200) {
+        return {
+          ok: false,
+          detail: `import returned ${importStatus} (importedIds=[${importedIds.join(',')}]) but GET /v2/testcases/${cloneId} returned ${apiVerifyStatus} and the trailing-underscore form returned ${apiVerifyUnderscoreStatus}. This is the SIM40-2010 silent-import-drop manifesting — the clone never actually landed, so we have nothing to delete via UI either.`,
+          expected: 'after a 200 import, GET /v2/testcases/<id> should return the cloned testcase. End-to-end clone+delete is blocked until SIM40-2010 is fixed.',
+        };
+      }
+      const realId = apiVerifyStatus === 200 ? cloneId : (cloneId + '_');
+
+      // ─── UI-side: find the clone row, delete it, verify it's gone ────
+      await page.goto(`http://${ctx.host}/testcase`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2500);
+      // Search to narrow the list to our clone.
+      const searchBox = page.getByPlaceholder(/Search/i).first();
+      if (await searchBox.count()) {
+        await searchBox.fill(cloneId);
+        await page.waitForTimeout(1500);
+      }
+      const cloneRow = page.locator(`tr:has-text("${cloneId}"), [role="row"]:has-text("${cloneId}")`).first();
+      const rowVisible = await cloneRow.count();
+      if (rowVisible === 0) {
+        return {
+          ok: false,
+          detail: `API said clone landed (status 200 on GET) but UI list does not show row matching "${cloneId}". UI listing may be cached, paginated, or the clone landed under a different id.`,
+          expected: 'after a successful import, the clone should appear in /testcase and be deletable via the UI.',
+        };
+      }
+
+      // Look for a delete affordance on/near the row.
+      const rowDeleteBtn = cloneRow.locator('button[aria-label*="delete" i], button:has-text("Delete"), [class*="delete" i] >> visible=true').first();
+      if (!(await rowDeleteBtn.count())) {
+        // Try opening a kebab/3-dot menu on the row.
+        const kebab = cloneRow.locator('button[aria-label*="more" i], button[aria-label*="actions" i], [class*="kebab" i]').first();
+        if (await kebab.count()) {
+          await kebab.click().catch(() => {});
+          await page.waitForTimeout(600);
+        }
+      }
+      const deleteBtn = page.getByRole('button', { name: /^Delete$/i }).first();
+      if (!(await deleteBtn.count())) {
+        return {
+          ok: false,
+          detail: `no Delete affordance for clone row "${cloneId}" — UI side is missing the delete action`,
+          expected: 'UI should expose a Delete action on each testcase row (and a confirm dialog).',
+        };
+      }
+      await deleteBtn.click().catch(() => {});
+      await page.waitForTimeout(800);
+      // Confirm the dialog.
+      const confirmBtn = page.getByRole('button', { name: /^(Confirm|Yes|Delete)$/i }).last();
+      if (await confirmBtn.count()) { await confirmBtn.click().catch(() => {}); }
+      await page.waitForTimeout(2500);
+
+      // Final API check — the clone should now be gone.
+      const apiGone = await page.request.get(`http://${ctx.host}/v2/testcases/${encodeURIComponent(realId)}`, { headers: bearer });
+      const goneStatus = apiGone.status();
+      return {
+        ok: goneStatus === 404,
+        detail: `clone-id=${cloneId} import=${importStatus} verify=${apiVerifyStatus}/${apiVerifyUnderscoreStatus} ui-row-found=yes after-ui-delete-GET=${goneStatus}`,
+        expected: 'after deleting the clone via the UI, GET /v2/testcases/<id> should return 404. If the GET still returns 200, the UI delete did not propagate; if both sides 404 but the row reappears on refresh, listing is cached.',
+      };
+    },
+  });
+
   // ============== STATS EXPORT (3) ==============
 
   const exportStatsTab = (id: string, tab: string, label: string): UiTestDef => ({
