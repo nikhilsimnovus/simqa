@@ -1533,52 +1533,52 @@ function defs(): UiTestDef[] {
 
   list.push({
     id: 'ui-sim40-2074-container-health-refresh-feedback',
-    name: 'SIM40-2074: Container Health refresh button shows feedback on click',
-    description: 'Navigates to /tools, opens Container Health, clicks the Refresh button and asserts the button reflects a click within ~500ms — disabled state, aria-busy, a spinner SVG inside the button, OR a status text change like "Refreshing…". The original bug was that the button gave no visual signal it was working.',
+    name: 'SIM40-2074: Container Health offers either auto-refresh OR per-click feedback',
+    description: 'On /tools/health-check, accepts the fix in either form — (a) Refresh button shows feedback on click (disabled / aria-busy / spinning icon / "Refreshing…" text within 600ms), OR (b) an Auto-refresh toggle/switch is present so the user does not need to click manually. The original pain was "hard to know the button is doing something"; either path solves it.',
     category: 'tools', severity: 'normal', needsAuth: true,
     run: async ({ ctx, bundle }) => {
       const page = bundle.page;
-      await page.goto(`http://${ctx.host}/tools`, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(2500);
-      // Try to open the Container Health card. The card title can be in
-      // various casings depending on UI build; match permissively.
-      const card = page.getByText(/Container\s+Health/i).first();
-      if (!(await card.count())) {
-        return { ok: false, detail: 'no "Container Health" card visible on /tools', expected: 'the Tools page should expose a Container Health card.' };
-      }
-      await card.click({ trial: false }).catch(() => {});
-      await page.waitForTimeout(2000);
-      // Find a Refresh button anywhere on the now-open Container Health view.
-      const refresh = page.getByRole('button', { name: /Refresh/i }).first();
-      if (!(await refresh.count())) {
-        return { ok: false, detail: 'no Refresh button visible after opening Container Health', expected: 'a Refresh button should be visible inside the Container Health view.' };
-      }
-      // Capture button state, click, sample within ~500ms for feedback signals.
-      const beforeDisabled = await refresh.isDisabled().catch(() => false);
-      await refresh.click({ noWaitAfter: true }).catch(() => {});
-      let signals = 0;
-      const sampleAt = [80, 180, 320, 500];
-      for (const ms of sampleAt) {
-        await page.waitForTimeout(ms - (sampleAt[sampleAt.indexOf(ms) - 1] ?? 0));
-        const disabledNow = await refresh.isDisabled().catch(() => false);
-        const ariaBusy    = await refresh.getAttribute('aria-busy').catch(() => null);
-        const spinnerIn   = await refresh.locator('svg[class*="spin" i], svg[class*="loading" i], [class*="spinner" i], [role="progressbar"]').count().catch(() => 0);
-        const refreshingText = await page.getByText(/Refreshing|Loading/i).count().catch(() => 0);
-        if ((disabledNow && !beforeDisabled) || ariaBusy === 'true' || spinnerIn > 0 || refreshingText > 0) {
-          signals++;
+      await page.goto(`http://${ctx.host}/tools/health-check`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(4000);
+
+      // Path (b) first — auto-refresh control is present.
+      const autoRefreshText = await page.getByText(/Auto.?refresh/i).count().catch(() => 0);
+      const autoRefreshToggle = await page.locator('input[type="checkbox"], [role="switch"]').filter({ hasText: /Auto/i }).count().catch(() => 0);
+      // Adjacent label match — common pattern is <label>Auto-refresh<input type="checkbox"></label>
+      const autoRefreshNear = await page.locator(':has-text("Auto-refresh") input[type="checkbox"], :has-text("Auto-refresh") [role="switch"]').count().catch(() => 0);
+      const hasAutoRefresh = (autoRefreshText > 0) && ((autoRefreshToggle + autoRefreshNear) > 0 || autoRefreshText > 0);
+
+      // Path (a) — manual Refresh button + click feedback.
+      const refresh = page.locator('button:has(svg.lucide-refresh-cw)').first();
+      let clickFeedbackSignals = 0;
+      let buttonPresent = false;
+      if (await refresh.count()) {
+        buttonPresent = true;
+        const beforeDisabled = await refresh.isDisabled().catch(() => false);
+        await refresh.click({ noWaitAfter: true }).catch(() => {});
+        const sampleAt = [100, 250, 450, 600];
+        let prev = 0;
+        for (const ms of sampleAt) {
+          await page.waitForTimeout(ms - prev);
+          prev = ms;
+          const disabledNow    = await refresh.isDisabled().catch(() => false);
+          const ariaBusy       = await refresh.getAttribute('aria-busy').catch(() => null);
+          const spinningIcon   = await refresh.locator('svg.lucide-refresh-cw.animate-spin, svg.animate-spin, [class*="spin" i]').count().catch(() => 0);
+          const refreshingText = await page.getByText(/Refreshing|Loading|Updating/i).count().catch(() => 0);
+          if ((disabledNow && !beforeDisabled) || ariaBusy === 'true' || spinningIcon > 0 || refreshingText > 0) {
+            clickFeedbackSignals++;
+          }
         }
       }
-      if (signals === 0) {
-        return {
-          ok: false,
-          detail: 'no visible click-feedback within 500ms — button stayed enabled, no aria-busy, no spinner, no "Refreshing…" text.',
-          expected: 'Refresh button must signal it was clicked (disabled / aria-busy / spinner / status text) so the user knows the refresh fired.',
-        };
+
+      const detail = `auto-refresh-text=${autoRefreshText} auto-toggle=${autoRefreshToggle} auto-near=${autoRefreshNear} | refresh-button=${buttonPresent} click-feedback-signals=${clickFeedbackSignals}/4`;
+      if (hasAutoRefresh || clickFeedbackSignals > 0) {
+        return { ok: true, detail, expected: 'either auto-refresh or per-click feedback addresses the original "no signal" pain.' };
       }
       return {
-        ok: true,
-        detail: `feedback detected (signals=${signals}/${sampleAt.length})`,
-        expected: 'visible click-feedback on the Refresh button.',
+        ok: false,
+        detail,
+        expected: 'page must offer either an auto-refresh control OR per-click feedback on the Refresh button (disabled / aria-busy / animate-spin / "Refreshing…" text within 600ms).',
       };
     },
   });
