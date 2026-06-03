@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle, ShieldCheck, Beaker, MousePointerClick, Info, Layers, Wrench, Database, Rocket,
+  LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle, ShieldCheck, Beaker, MousePointerClick, Info, Layers, Wrench, Database, Rocket, FileCheck2,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
@@ -17,6 +17,7 @@ const NAV = [
   { href: '/run-validate',  label: 'Run & Validate',  icon: Rocket },
   { href: '/validate',      label: 'Build Check',     icon: ShieldCheck },
   { href: '/api-tests',     label: 'API Tests',       icon: Beaker },
+  { href: '/config-fidelity', label: 'Config Fidelity', icon: FileCheck2 },
   { href: '/ui-tests',      label: 'UI Tests',        icon: MousePointerClick },
   { href: '/inventory',     label: 'Systems Mgmt',    icon: Server },
   { href: '/tools',         label: 'Tools',           icon: Wrench },
