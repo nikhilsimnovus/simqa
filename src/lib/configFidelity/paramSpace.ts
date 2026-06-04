@@ -289,7 +289,9 @@ function bandCase(r: BandRow, dataType: 'no_data' | 'udp' | 'tcp'): Case {
       : buildSubs({ rat: 'lte', ueCount: 1, networkSlicing: 'disable' } as Spec);
   const userPlane = buildUserPlane({ dataType: dt } as Spec);
   const powerCycle = buildPowerCycle();
-  const id = `band-${r.rat.toLowerCase()}-b${r.band}-${r.duplex.toLowerCase()}-${r.bwMhz}mhz`;
+  // Test-case names allow only [A-Za-z0-9_-]; bandwidths like 1.4/0.2 have a
+  // dot, so encode it as 'p' (1.4 -> 1p4mhz) to keep the name valid.
+  const id = `band-${r.rat.toLowerCase()}-b${r.band}-${r.duplex.toLowerCase()}-${String(r.bwMhz).replace('.', 'p')}mhz`;
   const settings = { settings: { loggingProfileName: 'rrc_debug', successCriteriaName: 'BLER Success', testCaseName: id, test_name: id } };
   const input = { cellConfig: cells.cellConfig, subsConfig: subscribers.subsConfig, userPlaneConfig: userPlane.userPlaneConfig, powerCycleConfig: powerCycle.powerCycleConfig, settings: settings.settings };
   const tags = [RAT_LABEL[r.rat], `band${r.band}`, r.duplex.toLowerCase(), 'band-sweep'];
