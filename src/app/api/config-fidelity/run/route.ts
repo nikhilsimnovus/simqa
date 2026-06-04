@@ -7,6 +7,6 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as CfRunRequest;
   const inv = loadInventory();
-  const r = startMatrixRun(inv, body ?? {});
+  const r = await startMatrixRun(inv, body ?? {});
   return NextResponse.json(r, { status: 'error' in r ? 400 : 200 });
 }

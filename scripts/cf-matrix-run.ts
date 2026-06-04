@@ -18,6 +18,7 @@ import * as path from 'path';
 import { loadInventory } from '../src/lib/inventory';
 import { generateMatrix, generateBandSweep } from '../src/lib/configFidelity/paramSpace';
 import type { BandRat } from '../src/lib/configFidelity/bandTable';
+import { fetchBaseConfig, generateVariationSweep } from '../src/lib/configFidelity/variationSweep';
 import { createTestCase, deleteTestCase, CreateError, type ApiOpts } from '../src/lib/configFidelity/testCreator';
 import { generateAndRetrieveUeCfg } from '../src/lib/configFidelity/ueCfg';
 import { validateConfig, detectConfigErrors } from '../src/lib/configFidelity/validate';
@@ -84,7 +85,11 @@ async function main() {
   try { simulatorId = (await listSimulators(api)).items?.[0]?.id; } catch {}
   let build: any; try { build = await getBoxVersion(api); } catch {}
 
-  const cases = buildMatrix();
+  // CF_VARIATION_OF=<testcaseId> → variation sweep: keep that case's base fixed,
+  // vary traffic / mobility / channel-model / loop. Otherwise band sweep / matrix.
+  const cases = process.env.CF_VARIATION_OF
+    ? generateVariationSweep({ base: await fetchBaseConfig(api, process.env.CF_VARIATION_OF), mode: process.env.CF_FULL ? 'full' : 'pairwise', cap: process.env.CF_CAP ? Number(process.env.CF_CAP) : undefined })
+    : buildMatrix();
   // Give every case a UNIQUE box name (settings finalises the name and the box
   // rejects duplicates across runs). input.settings is the same object ref as
   // the settings body, so this one mutation keeps the validator consistent.

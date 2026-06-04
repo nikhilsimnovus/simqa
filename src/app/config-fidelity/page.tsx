@@ -20,6 +20,7 @@ export default function ConfigFidelityPage() {
   const [slicing, setSlicing] = useState(false);
   const [bandSweep, setBandSweep] = useState(false);
   const [bandRats, setBandRats] = useState<Record<string, boolean>>({ NR: true, LTE: true, CATM: true, NBIOT: true });
+  const [variationOf, setVariationOf] = useState('');
   const [cap, setCap] = useState('5');
   const [preview, setPreview] = useState<{ count: number } | null>(null);
   const [report, setReport] = useState<Report | null>(null);
@@ -39,6 +40,9 @@ export default function ConfigFidelityPage() {
 
   function reqBody() {
     const base = { cap: cap ? Number(cap) : undefined, targetSystemId: target || undefined, ueSimSystemId: ueSim || undefined };
+    if (variationOf.trim()) {
+      return { ...base, variationOf: variationOf.trim(), mode };
+    }
     if (bandSweep) {
       return { ...base, bandSweep: true, bandRats: Object.keys(bandRats).filter((r) => bandRats[r]), bandDataType: 'no_data' };
     }
@@ -108,6 +112,9 @@ export default function ConfigFidelityPage() {
               <div className="pt-2 border-t">
                 <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={bandSweep} onChange={(e) => setBandSweep(e.target.checked)} /> Band sweep (every band)</label>
                 {bandSweep ? <div className="mt-1.5 pl-1">{['NR', 'LTE', 'CATM', 'NBIOT'].map((r) => <label key={r} className="inline-flex items-center gap-1 text-xs mr-3"><input type="checkbox" checked={bandRats[r]} onChange={(e) => setBandRats((s) => ({ ...s, [r]: e.target.checked }))} />{r}</label>)}<div className="text-xs text-slate-500 mt-1">one case per band from the vetted master table (real ARFCNs). Overrides RAT/mode above.</div></div> : null}
+              </div>
+              <div className="pt-2 border-t">
+                <Field label="Variation sweep — base test case ID" hint="keep this case's cells + subscribers fixed; vary traffic / mobility / channel-model / loop. Overrides the options above."><Input value={variationOf} onChange={(e) => setVariationOf(e.target.value)} placeholder="(paste a test case id to vary)" /></Field>
               </div>
               <Field label="Mode"><select className="w-full border rounded-md px-2 py-1.5 text-sm" value={mode} onChange={(e) => setMode(e.target.value as any)}><option value="pairwise">Pairwise (all-pairs)</option><option value="full">Full Cartesian</option></select></Field>
               <Field label="Cap (max cases)" hint="executions are sequential — keep small first"><Input value={cap} onChange={(e) => setCap(e.target.value)} /></Field>

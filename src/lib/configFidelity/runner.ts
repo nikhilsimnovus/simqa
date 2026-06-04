@@ -13,6 +13,7 @@ import { listSimulators } from '../uesimClient';
 import type { Case, CaseOutcome } from './types';
 import { generateMatrix, generateBandSweep, type MatrixRequest } from './paramSpace';
 import type { BandRat } from './bandTable';
+import { fetchBaseConfig, generateVariationSweep, type TrafficKind } from './variationSweep';
 import { createTestCase, deleteTestCase, CreateError, type ApiOpts } from './testCreator';
 import { generateAndRetrieveUeCfg } from './ueCfg';
 import { validateConfig, detectConfigErrors } from './validate';
@@ -28,6 +29,11 @@ export interface CfRunRequest extends MatrixRequest {
   bandSweep?: boolean;
   bandRats?: BandRat[];
   bandDataType?: 'no_data' | 'udp' | 'tcp';
+  /** Variation sweep: keep this base test case fixed, vary the rest. */
+  variationOf?: string;
+  traffic?: TrafficKind[];
+  fading?: string[];
+  tripTypes?: string[];
 }
 
 interface ActiveRun { report: MatrixReport; cases: Case[]; canceled: boolean; }
@@ -65,16 +71,26 @@ function resolveUeSim(inv: Inventory, req: CfRunRequest, apiSystemId: string): I
     ?? inv.systems.find((s) => isUesimLike(s) && s.username);
 }
 
-export function startMatrixRun(inv: Inventory, req: CfRunRequest): { runId: string } | { error: string } {
+export async function startMatrixRun(inv: Inventory, req: CfRunRequest): Promise<{ runId: string } | { error: string }> {
   const api = uesimApiOptsForSystem(inv, req.targetSystemId);
   if (!api) return { error: 'no Simnovator/UESIM system in inventory (set targetSystemId)' };
   const ueSim = resolveUeSim(inv, req, api.systemId);
   if (!ueSim) return { error: 'no UE-sim system with SSH credentials found (needed to read ue.cfg)' };
 
-  const cases = req.bandSweep
-    ? generateBandSweep({ rats: req.bandRats, dataType: req.bandDataType, cap: req.cap })
-    : generateMatrix(req);
-  if (cases.length === 0) return { error: 'matrix produced 0 cases (pick at least one RAT)' };
+  let cases;
+  if (req.variationOf) {
+    try {
+      const base = await fetchBaseConfig({ host: api.host, username: api.username, password: api.password }, req.variationOf);
+      cases = generateVariationSweep({ base, traffic: req.traffic, fading: req.fading, tripTypes: req.tripTypes, mode: req.mode, cap: req.cap });
+    } catch (e: any) {
+      return { error: `variation base fetch failed: ${e?.message ?? e}` };
+    }
+  } else if (req.bandSweep) {
+    cases = generateBandSweep({ rats: req.bandRats, dataType: req.bandDataType, cap: req.cap });
+  } else {
+    cases = generateMatrix(req);
+  }
+  if (cases.length === 0) return { error: 'matrix produced 0 cases (check selection / base test case)' };
 
   const runId = newRunId();
   // Unique per-run box names so the settings finaliser doesn't 400 on a name
