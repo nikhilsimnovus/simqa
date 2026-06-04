@@ -18,6 +18,8 @@ export default function ConfigFidelityPage() {
   const [rats, setRats] = useState<Record<Rat, boolean>>({ lte: true, 'nr-sa': false });
   const [mode, setMode] = useState<'pairwise' | 'full'>('pairwise');
   const [slicing, setSlicing] = useState(false);
+  const [bandSweep, setBandSweep] = useState(false);
+  const [bandRats, setBandRats] = useState<Record<string, boolean>>({ NR: true, LTE: true, CATM: true, NBIOT: true });
   const [cap, setCap] = useState('5');
   const [preview, setPreview] = useState<{ count: number } | null>(null);
   const [report, setReport] = useState<Report | null>(null);
@@ -36,12 +38,15 @@ export default function ConfigFidelityPage() {
   }, []);
 
   function reqBody() {
+    const base = { cap: cap ? Number(cap) : undefined, targetSystemId: target || undefined, ueSimSystemId: ueSim || undefined };
+    if (bandSweep) {
+      return { ...base, bandSweep: true, bandRats: Object.keys(bandRats).filter((r) => bandRats[r]), bandDataType: 'no_data' };
+    }
     return {
+      ...base,
       rats: (Object.keys(rats) as Rat[]).filter((r) => rats[r]),
-      mode, cap: cap ? Number(cap) : undefined,
+      mode,
       featureFlags: slicing ? ['networkSlicing'] : [],
-      targetSystemId: target || undefined,
-      ueSimSystemId: ueSim || undefined,
     };
   }
 
@@ -100,6 +105,10 @@ export default function ConfigFidelityPage() {
                 {(['lte', 'nr-sa'] as Rat[]).map((r) => <label key={r} className="flex items-center gap-2 text-sm py-0.5"><input type="checkbox" checked={rats[r]} onChange={(e) => setRats((s) => ({ ...s, [r]: e.target.checked }))} />{r.toUpperCase()}</label>)}
               </div>
               <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={slicing} onChange={(e) => setSlicing(e.target.checked)} /> Network Slicing (NR feature flag)</label>
+              <div className="pt-2 border-t">
+                <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={bandSweep} onChange={(e) => setBandSweep(e.target.checked)} /> Band sweep (every band)</label>
+                {bandSweep ? <div className="mt-1.5 pl-1">{['NR', 'LTE', 'CATM', 'NBIOT'].map((r) => <label key={r} className="inline-flex items-center gap-1 text-xs mr-3"><input type="checkbox" checked={bandRats[r]} onChange={(e) => setBandRats((s) => ({ ...s, [r]: e.target.checked }))} />{r}</label>)}<div className="text-xs text-slate-500 mt-1">one case per band from the vetted master table (real ARFCNs). Overrides RAT/mode above.</div></div> : null}
+              </div>
               <Field label="Mode"><select className="w-full border rounded-md px-2 py-1.5 text-sm" value={mode} onChange={(e) => setMode(e.target.value as any)}><option value="pairwise">Pairwise (all-pairs)</option><option value="full">Full Cartesian</option></select></Field>
               <Field label="Cap (max cases)" hint="executions are sequential — keep small first"><Input value={cap} onChange={(e) => setCap(e.target.value)} /></Field>
               <div className="flex gap-2"><Button variant="secondary" size="sm" onClick={doPreview}>Preview count</Button>{preview ? <span className="text-sm text-slate-600 self-center">{preview.count} case(s)</span> : null}</div>
