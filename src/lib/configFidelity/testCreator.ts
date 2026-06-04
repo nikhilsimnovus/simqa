@@ -13,15 +13,27 @@ import type { Case } from './types';
 export interface ApiOpts { host: string; username: string; password: string }
 
 async function call(opts: ApiOpts, method: 'POST' | 'DELETE', pathStr: string, body?: unknown): Promise<{ status: number; json: any; text: string }> {
-  const token = await ensureToken(opts.host, opts.username, opts.password);
-  const res = await fetch(`http://${opts.host}/v2${pathStr}`, {
-    method,
-    headers: { Authorization: `Bearer ${token}`, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text().catch(() => '');
-  let json: any; try { json = text ? JSON.parse(text) : undefined; } catch { /* keep text */ }
-  return { status: res.status, json, text };
+  let lastErr: any;
+  // Retry transient network failures ("fetch failed") once — the box/route can
+  // briefly drop a connection during a long batch run.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const token = await ensureToken(opts.host, opts.username, opts.password);
+      const res = await fetch(`http://${opts.host}/v2${pathStr}`, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(60_000),
+      });
+      const text = await res.text().catch(() => '');
+      let json: any; try { json = text ? JSON.parse(text) : undefined; } catch { /* keep text */ }
+      return { status: res.status, json, text };
+    } catch (e: any) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+  throw lastErr;
 }
 
 export class CreateError extends Error {

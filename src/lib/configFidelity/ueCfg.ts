@@ -5,7 +5,7 @@
 // never be mistaken for the current one, and we ALWAYS stop the execution in
 // finally (the box enforces a system-wide execution mutex).
 
-import { startExecution, stopExecution, getTestcase } from '../uesimClient';
+import { stopExecution, getTestcase, ensureToken } from '../uesimClient';
 import { readRemoteFile, readCommand, withSsh } from './ssh';
 import type { InventorySystem } from '../inventory';
 import type { ApiOpts } from './testCreator';
@@ -62,7 +62,18 @@ export async function generateAndRetrieveUeCfg(params: {
   //    HTTP connection ~120s, but ue.cfg is written to the UE-sim ~30s in. We
   //    poll for it and rely on the log_filename gate (below) for correctness,
   //    so we don't pay the full start latency on every case.
-  const startP = startExecution(api, testCaseId, {}).catch((e: any) => { signals.executionDetail = `start: ${e?.message ?? e}`; });
+  // The box holds the start connection open ~120s. We don't need its response
+  // (the box has already received + begun the execution by the time ue.cfg is
+  // written), so we make it abortable and free the socket in finally — without
+  // this, held-open start fetches pile up and exhaust the connection pool
+  // ("fetch failed") over a long run.
+  const startAbort = new AbortController();
+  const startP = (async () => {
+    const tok = await ensureToken(api.host, api.username, api.password);
+    await fetch(`http://${api.host}/v2/testcases/${encodeURIComponent(testCaseId)}/executions`, {
+      method: 'POST', headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' }, body: '{}', signal: startAbort.signal,
+    });
+  })().catch((e: any) => { if (e?.name !== 'AbortError') signals.executionDetail = `start: ${e?.message ?? e}`; });
   void startP;
 
   // 2. Poll until we have a ue.cfg that BELONGS to this case — its log_filename
@@ -91,7 +102,9 @@ export async function generateAndRetrieveUeCfg(params: {
       }
     }
   } finally {
-    // 3. ALWAYS stop (system-wide mutex) so the next case can start clean.
+    // 3. Free the held-open start socket, then ALWAYS stop the execution
+    //    (system-wide mutex) so the next case can start clean.
+    try { startAbort.abort(); } catch { /* ignore */ }
     await stopExecution(api, executionId ?? 'current', params.simulatorId).catch(() => {});
   }
 
