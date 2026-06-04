@@ -84,8 +84,16 @@ function buildSubs(spec: Spec) {
     cqi: 'auto', ri: 'auto', pmi: 'auto', preambleIndex: isNr ? 1 : 0,
     networkSlicing: spec.networkSlicing,
   };
-  if (isNr) { sub.startingSUPI = '001010123456001'; sub.nextSUPI = 1; sub.mncDigits = 2; sub.nrVoiceSupport = true; }
-  else { sub.startingIMSI = 1010123456789; sub.nextIMSI = 1; }
+  if (isNr) {
+    // SA subscriber: SUPI is a NUMBER (uint64); these fields are REQUIRED by
+    // the box validator (verified live — null on any of them -> 400).
+    sub.startingSUPI = 1010123456001; sub.nextSUPI = 1; sub.mncDigits = 2;
+    sub.VoNRSupport = true; sub.protectionScheme = 'null';
+    sub.publicKey = '00112233445566778899aabbccddeeff'; sub.publicKeyId = 0; sub.routingIndicator = 1111;
+    sub.access_control_classes = []; sub.uac_access_identities = [];
+  } else {
+    sub.startingIMSI = 1010123456789; sub.nextIMSI = 1;
+  }
   if (spec.networkSlicing === 'enable') sub.nssaiObject = [{ sd: 1, sst: 1 }];
   return { subsConfig: { subs: [sub] } };
 }

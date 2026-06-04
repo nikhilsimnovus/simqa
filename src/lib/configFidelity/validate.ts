@@ -85,13 +85,11 @@ export function detectConfigErrors(sig: RuntimeSignals): ConfigErrorFinding[] {
     }
   }
 
-  if (sig.logTail) {
-    for (const line of sig.logTail.split('\n')) {
-      if (CFG_ERROR_PATTERNS.some((re) => re.test(line))) {
-        out.push({ source: 'ots.log', message: line.trim().slice(0, 240) });
-      }
-    }
-  }
+  // NOTE: ots.log on the UE-sim is shared + persistent across executions, so
+  // tailing it flags stale CONFIG-error lines from *previous* runs (false
+  // positives). We therefore do NOT gate the verdict on the log; ue.cfg
+  // presence/parse + execution status are the authoritative config-error
+  // signals. The raw log tail is still captured in signals for triage.
 
   // De-dup.
   const seen = new Set<string>();

@@ -104,7 +104,12 @@ const cellsChecker: Checker = {
         return;
       }
       const cell = m.cell;
-      out.push(check({ ...B('band'), inputPath: `${path}.band`, ueCfgPath: `${up}.band` }, bandNum(c.band), cell.band));
+      // NR cells carry a numeric `band`; LTE cells do NOT — the band is implied
+      // by dl_earfcn (asserted separately below). Only check `band` when the
+      // generated cell actually has the field (NR) or the input is NR (NRARFCN).
+      if (cell.band !== undefined || c.NRARFCN) {
+        out.push(check({ ...B('band'), inputPath: `${path}.band`, ueCfgPath: `${up}.band` }, bandNum(c.band), cell.band));
+      }
       out.push(check({ ...B('bandwidth'), inputPath: `${path}.bandwidth`, ueCfgPath: `${up}.bandwidth` }, Number(c.bandwidth), cell.bandwidth));
       if (c.scs !== undefined)
         out.push(check({ ...B('scs'), inputPath: `${path}.scs`, ueCfgPath: `${up}.subcarrier_spacing` }, Number(c.scs), cell.subcarrier_spacing));

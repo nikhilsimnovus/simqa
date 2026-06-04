@@ -30,6 +30,14 @@ async function removeRemote(sys: InventorySystem, p: string): Promise<void> {
   await withSsh(sys, (ssh) => ssh.execCommand(`${sudo}rm -f '${p.replace(/'/g, "'\\''")}'`)).catch(() => {});
 }
 
+/** Remote mtime in epoch seconds (0 if absent). Used to detect a freshly
+ *  regenerated ue.cfg even when we lack write permission to delete the old one. */
+async function remoteMtime(sys: InventorySystem, p: string): Promise<number> {
+  const out = await readCommand(sys, `stat -c %Y '${p.replace(/'/g, "'\\''")}' 2>/dev/null`).catch(() => '');
+  const n = parseInt(out.trim(), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export async function generateAndRetrieveUeCfg(params: {
   api: ApiOpts;
   ueSimSystem: InventorySystem;
@@ -40,40 +48,49 @@ export async function generateAndRetrieveUeCfg(params: {
 }): Promise<GenerateResult> {
   const { api, ueSimSystem, testCaseId } = params;
   const cfgPath = params.ueCfgPath ?? UE_CFG_PATH_DEFAULT;
-  const timeout = params.pollTimeoutMs ?? 60_000;
+  const timeout = params.pollTimeoutMs ?? 90_000;
   const signals: RuntimeSignals = { ueCfgPresent: false };
   let executionId: string | undefined;
   let rawUeCfg: string | undefined;
 
-  // 0. Pre-clean stale cfg.
+  // 0. Best-effort delete + record the current mtime so we only accept a
+  //    FRESHLY regenerated ue.cfg (robust even without write perms to rm).
   await removeRemote(ueSimSystem, cfgPath);
+  const mtime0 = await remoteMtime(ueSimSystem, cfgPath);
 
-  // 1. Start execution.
-  try {
-    await startExecution(api, testCaseId, {});
-  } catch (e: any) {
-    signals.executionDetail = `start failed: ${e?.message ?? e}`;
-    return { signals };
-  }
+  // 1. Fire the execution start but DO NOT block on it. On this box `start`
+  //    is slow (~30s — it deploys the cfg to the UE-sim and launches lteue),
+  //    and ue.cfg is written DURING start, frequently before the HTTP call
+  //    returns. So we kick it off and detect the regenerated ue.cfg by mtime.
+  const startP = startExecution(api, testCaseId, {})
+    .catch((e: any) => { signals.executionDetail = `start: ${e?.message ?? e}`; });
 
-  // 2. Poll metadata + for the ue.cfg file to (re)appear.
+  // 2. Poll for ue.cfg to be (re)generated (mtime advances), plus a light
+  //    best-effort metadata read for execution id/status.
   const t0 = Date.now();
+  let metaTries = 0;
   try {
     while (Date.now() - t0 < timeout) {
-      await sleep(3000);
-      try {
-        const tc = await getTestcase(api, testCaseId);
-        const last: any = (tc.metadata as any)?.lastExecution;
-        if (last?.executionId) executionId = last.executionId;
-        if (last?.status) signals.executionStatus = last.status;
-        if (last?.result) signals.executionResult = last.result;
-        if (last?.execution_result_details || last?.statusDetail) signals.executionDetail = last.execution_result_details ?? last.statusDetail;
-      } catch { /* keep polling */ }
-      const raw = await readRemoteFile(ueSimSystem, cfgPath).catch(() => undefined);
-      if (raw && raw.trim()) { rawUeCfg = raw; break; }
+      await sleep(2500);
+      const mt = await remoteMtime(ueSimSystem, cfgPath).catch(() => 0);
+      if (mt > mtime0) {
+        const raw = await readRemoteFile(ueSimSystem, cfgPath).catch(() => undefined);
+        if (raw && raw.trim()) { rawUeCfg = raw; break; }
+      }
+      if (metaTries++ % 3 === 0) {
+        try {
+          const tc = await getTestcase(api, testCaseId);
+          const last: any = (tc.metadata as any)?.lastExecution;
+          if (last?.executionId) executionId = last.executionId;
+          if (last?.status) signals.executionStatus = last.status;
+          if (last?.result) signals.executionResult = last.result;
+          if (last?.execution_result_details || last?.statusDetail) signals.executionDetail = last.execution_result_details ?? last.statusDetail;
+        } catch { /* keep polling */ }
+      }
     }
   } finally {
-    // 3. ALWAYS stop (mutex). Prefer explicit eid, fall back to "current".
+    // 3. Let the start settle briefly, then ALWAYS stop (system-wide mutex).
+    await Promise.race([startP, sleep(2000)]);
     await stopExecution(api, executionId ?? 'current', params.simulatorId).catch(() => {});
   }
 

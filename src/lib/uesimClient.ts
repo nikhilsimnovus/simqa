@@ -49,10 +49,16 @@ interface ApiOpts {
   password: string;
 }
 
+// Bounded timeouts so no call can hang a long batch run. Execution start is
+// legitimately slow on some builds, so POST gets a generous cap.
+const GET_TIMEOUT_MS = 20_000;
+const POST_TIMEOUT_MS = 120_000;
+
 async function apiGet<T>(opts: ApiOpts, path: string): Promise<T> {
   const token = await ensureToken(opts.host, opts.username, opts.password);
   const res = await fetch(`http://${opts.host}/v2${path}`, {
     headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(GET_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`UESIM GET ${path}: ${res.status} ${await res.text().catch(() => '')}`);
   return (await res.json()) as T;
@@ -67,6 +73,7 @@ async function apiPost<T>(opts: ApiOpts, path: string, body?: unknown): Promise<
       'Content-Type': 'application/json',
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(POST_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`UESIM POST ${path}: ${res.status} ${await res.text().catch(() => '')}`);
   return (await res.json()) as T;
