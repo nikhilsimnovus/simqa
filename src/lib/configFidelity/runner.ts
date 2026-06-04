@@ -11,7 +11,8 @@ import { uesimApiOptsForSystem, isUesimLike } from '../inventory';
 import type { InventorySystem } from '../inventory';
 import { listSimulators } from '../uesimClient';
 import type { Case, CaseOutcome } from './types';
-import { generateMatrix, type MatrixRequest } from './paramSpace';
+import { generateMatrix, generateBandSweep, type MatrixRequest } from './paramSpace';
+import type { BandRat } from './bandTable';
 import { createTestCase, deleteTestCase, CreateError, type ApiOpts } from './testCreator';
 import { generateAndRetrieveUeCfg } from './ueCfg';
 import { validateConfig, detectConfigErrors } from './validate';
@@ -23,6 +24,10 @@ export interface CfRunRequest extends MatrixRequest {
   keepOnFail?: boolean;      // leave failing testcases on the box for triage
   baselineRunId?: string;    // compare against a prior run
   pollTimeoutMs?: number;
+  /** Band sweep: one case per band in the vetted master table (uses real ARFCNs). */
+  bandSweep?: boolean;
+  bandRats?: BandRat[];
+  bandDataType?: 'no_data' | 'udp' | 'tcp';
 }
 
 interface ActiveRun { report: MatrixReport; cases: Case[]; canceled: boolean; }
@@ -66,7 +71,9 @@ export function startMatrixRun(inv: Inventory, req: CfRunRequest): { runId: stri
   const ueSim = resolveUeSim(inv, req, api.systemId);
   if (!ueSim) return { error: 'no UE-sim system with SSH credentials found (needed to read ue.cfg)' };
 
-  const cases = generateMatrix(req);
+  const cases = req.bandSweep
+    ? generateBandSweep({ rats: req.bandRats, dataType: req.bandDataType, cap: req.cap })
+    : generateMatrix(req);
   if (cases.length === 0) return { error: 'matrix produced 0 cases (pick at least one RAT)' };
 
   const runId = newRunId();

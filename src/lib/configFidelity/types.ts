@@ -71,7 +71,7 @@ export type UeCfg = Record<string, any>;
 
 // ---------- Matrix / case model ----------
 
-export type Rat = 'lte' | 'nr-sa' | 'nsa' | 'nbiot' | 'multirat';
+export type Rat = 'lte' | 'nr-sa' | 'nsa' | 'nbiot' | 'multirat' | 'catm';
 
 /** One coverage case = a full input config plus metadata for the report. */
 export interface Case {

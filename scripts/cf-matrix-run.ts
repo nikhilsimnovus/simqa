@@ -16,7 +16,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { loadInventory } from '../src/lib/inventory';
-import { generateMatrix } from '../src/lib/configFidelity/paramSpace';
+import { generateMatrix, generateBandSweep } from '../src/lib/configFidelity/paramSpace';
+import type { BandRat } from '../src/lib/configFidelity/bandTable';
 import { createTestCase, deleteTestCase, CreateError, type ApiOpts } from '../src/lib/configFidelity/testCreator';
 import { generateAndRetrieveUeCfg } from '../src/lib/configFidelity/ueCfg';
 import { validateConfig, detectConfigErrors } from '../src/lib/configFidelity/validate';
@@ -33,6 +34,12 @@ function ts() { const d = new Date(); const p = (n: number) => String(n).padStar
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function buildMatrix(): Case[] {
+  // CF_BAND_SWEEP=1 → one case per band from the vetted master table.
+  if (process.env.CF_BAND_SWEEP) {
+    const rats = process.env.CF_BAND_RATS ? (process.env.CF_BAND_RATS.split(',') as BandRat[]) : undefined;
+    const cap = process.env.CF_CAP ? Number(process.env.CF_CAP) : undefined;
+    return generateBandSweep({ rats, dataType: (process.env.CF_BAND_DT as any) || 'no_data', cap });
+  }
   const nr = generateMatrix({ rats: ['nr-sa'], mode: 'full',
     bandwidths: [20, 40, 50, 60, 80, 100], antennas: [[1, 1], [2, 1], [2, 2], [4, 2]],
     ueCounts: [1, 2, 4, 8, 16, 32], dataTypes: ['no_data', 'udp', 'tcp'], featureFlags: ['networkSlicing'] });
@@ -152,7 +159,7 @@ async function main() {
     if (summary.counts.done % 3 === 0) { try { writeHtml(dir, csvPath, summary); } catch {} }
     console.log(`[cf] ${i}/${cases.length} ${c.id} -> ${verdict} (${honoured}✓/${mismatch}✗/${missing}gap, ${Math.round(dur / 1000)}s)${note ? ' :: ' + note.slice(0, 80) : ''}`);
 
-    await sleep(500); // small breather between executions
+    await sleep(2000); // settle: let the box finish teardown before the next create
   }
 
   summary.finishedAt = new Date().toISOString();
