@@ -204,15 +204,16 @@ const featureFlagChecker: Checker = {
     const list: any[] = Array.isArray(ue?.ue_list) ? ue.ue_list : [];
     const u0 = list[0];
     subs.slice(0, 1).forEach((s) => {
-      // Network slicing: enable → expect nssai/snssai on the UE; disable → absent.
+      // Network slicing is signaled via NAS/registration, not encoded as a
+      // static ue.cfg field on the UE-sim — so it is NOT validatable from
+      // ue.cfg. Surface it as informational (no-rule), never a pass/fail.
       if (s.networkSlicing !== undefined) {
-        const enabled = ci(s.networkSlicing) === 'enable';
-        const hasSlice = !!(u0 && (u0.nssai || u0.snssai || u0.slice || u0.s_nssai));
         out.push(res({
-          inputPath: 'subsConfig.subs[0].networkSlicing', ueCfgPath: 'ue_list[].nssai',
-          label: 'network slicing', feature: 'feature-flag', criticality: featureCriticality('networkSlicing'),
-          status: enabled === hasSlice ? 'honoured' : 'mismatch',
-          expected: enabled ? 'nssai present' : 'no nssai', actual: hasSlice ? 'nssai present' : 'no nssai',
+          inputPath: 'subsConfig.subs[0].networkSlicing', ueCfgPath: '(n/a)',
+          label: 'network slicing', feature: 'feature-flag', criticality: 'non-critical',
+          status: 'no-rule',
+          detail: 'slicing is NAS-signaled, not a static ue.cfg field — not validatable here',
+          expected: ci(s.networkSlicing), actual: 'n/a',
         }));
       }
       // Unified Access Control: access_control_classes / uac_access_identities present → expect on UE.

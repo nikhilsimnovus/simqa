@@ -38,9 +38,13 @@ const ANCHOR = {
   'nr-sa': { band: 'n78', duplex: 'TDD', scs: 30, NRARFCN: { dl: 632628, ssb: 629952, ul: 632628 }, cellType: '5g', ratType: 'sa' as const },
 };
 
+// Validity constraints baked into the defaults:
+//   • LTE UE-sim supports only ONE uplink antenna (antennas.ul MUST be 1) — the
+//     box 400s otherwise. DL can be 1/2/4 for MIMO.
+//   • NR-SA accepts ul 1 or 2.
 const DEFAULTS = {
-  lte: { bandwidths: [5, 10, 20], antennas: [[1, 1], [2, 2]] as Array<[number, number]>, ueCounts: [1, 2], dataTypes: ['no_data', 'udp'] as const },
-  'nr-sa': { bandwidths: [20, 50, 100], antennas: [[1, 1], [2, 1], [4, 2]] as Array<[number, number]>, ueCounts: [1, 2], dataTypes: ['no_data', 'udp'] as const },
+  lte: { bandwidths: [5, 10, 20], antennas: [[1, 1], [2, 1], [4, 1]] as Array<[number, number]>, ueCounts: [1, 2], dataTypes: ['no_data', 'udp'] as const },
+  'nr-sa': { bandwidths: [20, 50, 100], antennas: [[1, 1], [2, 1], [2, 2], [4, 2]] as Array<[number, number]>, ueCounts: [1, 2], dataTypes: ['no_data', 'udp'] as const },
 };
 
 const arr = (n: number, v: number) => Array.from({ length: n }, () => v);

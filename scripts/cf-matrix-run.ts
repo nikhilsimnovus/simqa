@@ -37,7 +37,7 @@ function buildMatrix(): Case[] {
     bandwidths: [20, 40, 50, 60, 80, 100], antennas: [[1, 1], [2, 1], [2, 2], [4, 2]],
     ueCounts: [1, 2, 4, 8, 16, 32], dataTypes: ['no_data', 'udp', 'tcp'], featureFlags: ['networkSlicing'] });
   const lte = generateMatrix({ rats: ['lte'], mode: 'full',
-    bandwidths: [5, 10, 15, 20], antennas: [[1, 1], [2, 2], [4, 4]],
+    bandwidths: [5, 10, 15, 20], antennas: [[1, 1], [2, 1], [4, 1]], // LTE: ul antenna must be 1
     ueCounts: [1, 2, 4, 8, 16, 32], dataTypes: ['no_data', 'udp', 'tcp'] });
   return [...nr, ...lte];
 }

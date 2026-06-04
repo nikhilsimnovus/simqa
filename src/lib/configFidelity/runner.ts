@@ -70,6 +70,14 @@ export function startMatrixRun(inv: Inventory, req: CfRunRequest): { runId: stri
   if (cases.length === 0) return { error: 'matrix produced 0 cases (pick at least one RAT)' };
 
   const runId = newRunId();
+  // Unique per-run box names so the settings finaliser doesn't 400 on a name
+  // that already exists from a previous run.
+  const stamp = runId.replace(/^cf-/, '');
+  for (const c of cases) {
+    const uniq = `${c.id}-${stamp}`;
+    const s = (c.settings as any)?.settings;
+    if (s) { s.testCaseName = uniq; s.test_name = uniq; }
+  }
   const report: MatrixReport = {
     runId, startedAt: new Date().toISOString(), status: 'running',
     targetSystemId: api.systemId, targetHost: api.host, ueSimSystemId: ueSim.id,
