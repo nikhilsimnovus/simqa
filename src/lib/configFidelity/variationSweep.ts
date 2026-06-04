@@ -82,7 +82,8 @@ function mobilityProfile(tripType: string, fadingType: string, mimo: string): an
 function powerCycleProfile(loopProfile: string, attachType: string, count: number): any {
   const p: any = { subscriberGroup: [0], loopProfile, attachType, attachRate: 1, attachDelay: 0, powerOnTime: 2000, powerOffTime: 10 };
   if (loopProfile === 'count') p.noOfPowerOnCycles = count;
-  if (loopProfile === 'time') p.totalTestDuration = 1000;
+  // For 'time', the box requires totalTestDuration >= powerOnTime + powerOffTime.
+  if (loopProfile === 'time') p.totalTestDuration = 5000;
   if (attachType === 'staggered') p.staggerTime = 0;
   return { powerCycleConfig: { profiles: [p] } };
 }
