@@ -30,12 +30,11 @@ async function removeRemote(sys: InventorySystem, p: string): Promise<void> {
   await withSsh(sys, (ssh) => ssh.execCommand(`${sudo}rm -f '${p.replace(/'/g, "'\\''")}'`)).catch(() => {});
 }
 
-/** Remote mtime in epoch seconds (0 if absent). Used to detect a freshly
- *  regenerated ue.cfg even when we lack write permission to delete the old one. */
-async function remoteMtime(sys: InventorySystem, p: string): Promise<number> {
-  const out = await readCommand(sys, `stat -c %Y '${p.replace(/'/g, "'\\''")}' 2>/dev/null`).catch(() => '');
-  const n = parseInt(out.trim(), 10);
-  return Number.isFinite(n) ? n : 0;
+/** Extract the testcase name encoded in ue.cfg's log_filename (/tmp/<name>.log). */
+function ueCfgLogName(raw: string): string | undefined {
+  const m = raw.match(/"log_filename"\s*:\s*"([^"]+)"/);
+  if (!m) return undefined;
+  return m[1].split('/').pop()?.replace(/\.log$/, '');
 }
 
 export async function generateAndRetrieveUeCfg(params: {
@@ -45,6 +44,10 @@ export async function generateAndRetrieveUeCfg(params: {
   simulatorId?: string;
   ueCfgPath?: string;
   pollTimeoutMs?: number;
+  /** Unique testcase name we set in settings. We ONLY accept a ue.cfg whose
+   *  log_filename matches this — guarantees we read THIS case's cfg, not a
+   *  previous case's late-written one (executions overlap otherwise). */
+  expectedName?: string;
 }): Promise<GenerateResult> {
   const { api, ueSimSystem, testCaseId } = params;
   const cfgPath = params.ueCfgPath ?? UE_CFG_PATH_DEFAULT;
@@ -53,30 +56,29 @@ export async function generateAndRetrieveUeCfg(params: {
   let executionId: string | undefined;
   let rawUeCfg: string | undefined;
 
-  // 0. Best-effort delete + record the current mtime so we only accept a
-  //    FRESHLY regenerated ue.cfg (robust even without write perms to rm).
   await removeRemote(ueSimSystem, cfgPath);
-  const mtime0 = await remoteMtime(ueSimSystem, cfgPath);
 
-  // 1. Fire the execution start but DO NOT block on it. On this box `start`
-  //    is slow (~30s — it deploys the cfg to the UE-sim and launches lteue),
-  //    and ue.cfg is written DURING start, frequently before the HTTP call
-  //    returns. So we kick it off and detect the regenerated ue.cfg by mtime.
-  const startP = startExecution(api, testCaseId, {})
-    .catch((e: any) => { signals.executionDetail = `start: ${e?.message ?? e}`; });
+  // 1. Fire the execution start WITHOUT blocking. On this box `start` holds the
+  //    HTTP connection ~120s, but ue.cfg is written to the UE-sim ~30s in. We
+  //    poll for it and rely on the log_filename gate (below) for correctness,
+  //    so we don't pay the full start latency on every case.
+  const startP = startExecution(api, testCaseId, {}).catch((e: any) => { signals.executionDetail = `start: ${e?.message ?? e}`; });
+  void startP;
 
-  // 2. Poll for ue.cfg to be (re)generated (mtime advances), plus a light
-  //    best-effort metadata read for execution id/status.
+  // 2. Poll until we have a ue.cfg that BELONGS to this case — its log_filename
+  //    must match this case's unique name. This is what prevents accepting a
+  //    previous case's late-written cfg (executions overlap otherwise).
   const t0 = Date.now();
   let metaTries = 0;
   try {
     while (Date.now() - t0 < timeout) {
-      await sleep(2500);
-      const mt = await remoteMtime(ueSimSystem, cfgPath).catch(() => 0);
-      if (mt > mtime0) {
-        const raw = await readRemoteFile(ueSimSystem, cfgPath).catch(() => undefined);
-        if (raw && raw.trim()) { rawUeCfg = raw; break; }
+      const raw = await readRemoteFile(ueSimSystem, cfgPath).catch(() => undefined);
+      if (raw && raw.trim()) {
+        const name = ueCfgLogName(raw);
+        if (!params.expectedName || name === params.expectedName) { rawUeCfg = raw; break; }
+        // else: stale/previous case's cfg — keep waiting for ours.
       }
+      await sleep(2500);
       if (metaTries++ % 3 === 0) {
         try {
           const tc = await getTestcase(api, testCaseId);
@@ -89,8 +91,7 @@ export async function generateAndRetrieveUeCfg(params: {
       }
     }
   } finally {
-    // 3. Let the start settle briefly, then ALWAYS stop (system-wide mutex).
-    await Promise.race([startP, sleep(2000)]);
+    // 3. ALWAYS stop (system-wide mutex) so the next case can start clean.
     await stopExecution(api, executionId ?? 'current', params.simulatorId).catch(() => {});
   }
 

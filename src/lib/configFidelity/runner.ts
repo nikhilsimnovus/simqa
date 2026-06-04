@@ -134,7 +134,7 @@ async function runOneCase(api: ApiOpts, ueSim: InventorySystem, simulatorId: str
 
     // 2. Execute + retrieve ue.cfg.
     outcome.phase = 'executing';
-    const gen = await generateAndRetrieveUeCfg({ api, ueSimSystem: ueSim, testCaseId, simulatorId, pollTimeoutMs: req.pollTimeoutMs });
+    const gen = await generateAndRetrieveUeCfg({ api, ueSimSystem: ueSim, testCaseId, simulatorId, pollTimeoutMs: req.pollTimeoutMs, expectedName: (c.settings as any)?.settings?.testCaseName });
     outcome.executionId = gen.executionId;
 
     // 3. Config errors + fidelity.

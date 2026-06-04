@@ -107,7 +107,7 @@ async function main() {
     try {
       const created = await createTestCase(api, c);
       testCaseId = created.testCaseId; boxId = testCaseId;
-      const gen = await generateAndRetrieveUeCfg({ api, ueSimSystem: ueSim as any, testCaseId, simulatorId, pollTimeoutMs: POLL_TIMEOUT_MS });
+      const gen = await generateAndRetrieveUeCfg({ api, ueSimSystem: ueSim as any, testCaseId, simulatorId, pollTimeoutMs: POLL_TIMEOUT_MS, expectedName: c.settings?.settings?.testCaseName });
       rawUeCfg = gen.rawUeCfg;
       const cfgErrs = detectConfigErrors(gen.signals);
       cfgErrCount = cfgErrs.length;
