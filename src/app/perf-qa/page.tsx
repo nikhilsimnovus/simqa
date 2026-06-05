@@ -83,18 +83,29 @@ export default function PerfQaPage() {
 
       <div className="flex-1 px-6 pt-3 pb-6 min-h-0 relative">
         {/* Minimal corner toolbar — only the actions, no status chatter.
-            The Deploy build link fetches a fresh tarball from the server-side
-            API (rebuilt on every click against perf-qa/ in the repo). The
-            tarball includes scripts/install.sh which the customer runs as
-            root to auto-install prereqs + service. */}
+            Two Deploy build buttons:
+              · Slim (~85 KB): default — source + installer, no browsers.
+                For re-installs / updates where the Playwright cache is
+                already on the host.
+              · + browsers (~267 MB): opt-in — same plus pre-staged
+                Chromium for offline customer installs. Needs the simqa
+                host to have run perf-qa/scripts/fetch-vendor.sh first. */}
         <div className="absolute top-3 right-9 z-10 flex items-center gap-1 bg-white/85 backdrop-blur rounded-md border border-slate-200 shadow-sm px-1 py-0.5">
           <a
             href="/api/perf-qa/deploy-build"
             download
             className="inline-flex items-center gap-1 text-xs text-primary-700 hover:bg-primary-50 px-2 py-1 rounded font-medium"
-            title="Download a deployable tarball for any customer site (port 8080, auto-installer included)"
+            title="Download deployable tarball (slim, ~85 KB) — for updates / re-installs where Playwright is already set up on the target"
           >
             <Package className="h-3.5 w-3.5" /> Deploy build
+          </a>
+          <a
+            href="/api/perf-qa/deploy-build?vendor=1"
+            download
+            className="inline-flex items-center gap-1 text-xs text-slate-600 hover:text-primary-700 hover:bg-primary-50 px-2 py-1 rounded"
+            title="Download deployable tarball with bundled Playwright Chromium (~267 MB) — for first-time installs on hosts that can't reach cdn.playwright.dev (corporate SSL proxy)"
+          >
+            <Package className="h-3.5 w-3.5" /> + browsers
           </a>
           <span className="w-px h-4 bg-slate-200 mx-1" />
           <Button size="sm" variant="ghost" onClick={() => setIframeKey(k => k + 1)} title="Reload the embedded UI">

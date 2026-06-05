@@ -39,11 +39,19 @@ const PACKAGED_FILES = [
 export const dynamic = 'force-dynamic';   // Always rebuild, never cache.
 export const runtime = 'nodejs';          // child_process needs Node runtime.
 
-export async function GET() {
+export async function GET(req: Request) {
   // Resolve perf-qa/ relative to the simqa repo root. process.cwd() is the
   // Next.js project root (next.config.mjs is alongside it).
   const repoRoot = process.cwd();
   const perfQaDir = path.join(repoRoot, 'perf-qa');
+
+  // ?vendor=1 — opt in to bundling the ~267 MB Playwright Chromium cache.
+  // Default (no flag) ships a slim tarball (~85 KB) suitable for re-installs,
+  // updates, or hosts where the Playwright cache already exists.
+  const url = new URL(req.url);
+  const wantVendor = ['1', 'true', 'yes'].includes(
+    (url.searchParams.get('vendor') || '').toLowerCase(),
+  );
 
   // Sanity: confirm perf-qa/ exists + the headline file is there. Without
   // this a misconfigured install would silently return a 0-byte tarball.
@@ -71,39 +79,53 @@ export async function GET() {
     );
   }
 
-  // Pre-staged Playwright browsers (~150 MB) live at perf-qa/vendor/
-  // playwright-browsers/. Auto-include them if present — the customer's
-  // install.sh will copy them into the perfqa user's Playwright cache so
-  // the browser download never happens at the customer site.
-  // Populated locally by:  bash perf-qa/scripts/fetch-vendor.sh
+  // Pre-staged Playwright browsers (~267 MB compressed) live at
+  // perf-qa/vendor/playwright-browsers/. Only included when caller explicitly
+  // asks via ?vendor=1 — the install.sh will then copy them into the perfqa
+  // user's Playwright cache so the browser download never happens at the
+  // customer site. Populated locally by:
+  //   bash perf-qa/scripts/fetch-vendor.sh
   const vendorDir = path.join(perfQaDir, 'vendor', 'playwright-browsers');
   let vendorBytes = 0;
   let vendorPresent = false;
-  try {
-    const s = await fs.stat(vendorDir);
-    vendorPresent = s.isDirectory();
-    if (vendorPresent) {
-      // Sum size for the X-Vendor-Bytes response header so the UI can show
-      // "Tarball includes 152 MB of pre-staged browsers" or similar.
-      async function dirSize(p: string): Promise<number> {
-        const entries = await fs.readdir(p, { withFileTypes: true });
-        let total = 0;
-        for (const e of entries) {
-          const ep = path.join(p, e.name);
-          if (e.isDirectory()) total += await dirSize(ep);
-          else if (e.isFile()) total += (await fs.stat(ep)).size;
+  if (wantVendor) {
+    try {
+      const s = await fs.stat(vendorDir);
+      vendorPresent = s.isDirectory();
+      if (vendorPresent) {
+        // Sum size for the X-Vendor-Bytes response header so the UI can show
+        // "Tarball includes 152 MB of pre-staged browsers" or similar.
+        async function dirSize(p: string): Promise<number> {
+          const entries = await fs.readdir(p, { withFileTypes: true });
+          let total = 0;
+          for (const e of entries) {
+            const ep = path.join(p, e.name);
+            if (e.isDirectory()) total += await dirSize(ep);
+            else if (e.isFile()) total += (await fs.stat(ep)).size;
+          }
+          return total;
         }
-        return total;
+        vendorBytes = await dirSize(vendorDir);
       }
-      vendorBytes = await dirSize(vendorDir);
+    } catch {
+      vendorPresent = false;
     }
-  } catch {
-    vendorPresent = false;
+    if (!vendorPresent) {
+      // Caller asked for browsers but they're not staged. Refuse with a clear
+      // 503 so the UI can show "run fetch-vendor.sh on this host first".
+      return NextResponse.json(
+        {
+          error: 'vendor browsers not staged on this host',
+          fix: 'run: bash perf-qa/scripts/fetch-vendor.sh',
+          vendorDir,
+        },
+        { status: 503 },
+      );
+    }
   }
 
-  // Spawn tar with --transform so paths inside the archive start with
-  // "perf-qa/" — that's what install.sh expects when the customer cds
-  // into the unpacked dir.
+  // Tar targets: the whitelisted source files, plus the vendor dir if the
+  // caller asked for it. Paths are POSIX-style inside the archive.
   const tarTargets: string[] = [
     ...PACKAGED_FILES.map((f) => path.posix.join('perf-qa', f)),
   ];
@@ -138,7 +160,11 @@ export async function GET() {
     .replace(/[-:]/g, '')
     .replace(/\..+/, '')
     .replace('T', '_');
-  const filename = `perf-qa-deploy-${ts}.tar.gz`;
+  // Filename calls out browsers when bundled so the customer can tell
+  // which tarball they got from the name alone.
+  const filename = vendorPresent
+    ? `perf-qa-deploy-with-browsers-${ts}.tar.gz`
+    : `perf-qa-deploy-${ts}.tar.gz`;
 
   return new Response(webStream, {
     headers: {
