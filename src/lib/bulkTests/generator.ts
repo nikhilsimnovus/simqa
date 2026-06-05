@@ -67,6 +67,9 @@ export function expandSlices(nr: BandInfoMap, lte: BandInfoMap): BulkTestCaseSpe
     const ratMap = (slice.rat === 'LTE' || slice.rat === 'NB-IoT') ? lte : nr;
     let added = 0;
     const cap = slice.maxVariants ?? Infinity;
+    // For LTE/NB-IoT, the scs dimension doesn't apply — fall through with
+    // a single sentinel undefined so the outer loops still iterate once.
+    const scsValues: ReadonlyArray<number | undefined> = (slice.scs && slice.scs.length > 0) ? slice.scs : [undefined];
 
     outer: for (const band of slice.bands) {
       const bi = ratMap[band];
@@ -78,28 +81,42 @@ export function expandSlices(nr: BandInfoMap, lte: BandInfoMap): BulkTestCaseSpe
 
       for (const bw of slice.bandwidths) {
         if (!supportedBws.has(bw) && !supportedBws.has(Math.floor(bw))) continue;
-        for (const ueCount of slice.ueCounts) {
-          for (const [dlAnt, ulAnt] of slice.antennas) {
-            for (const dataType of slice.dataTypes) {
-              added += 1;
-              const id = specToId(slice.rat, band, bw, ueCount, { dl: dlAnt, ul: ulAnt }, dataType, added);
-              out.push({
-                id,
-                name: id,                                  // name == id for easy lookup
-                rat: slice.rat,
-                band,
-                bandwidth: bw,
-                duplexMode: bi.mode,
-                earfcnDl: bi.dlFreqRange.centreArfcn,
-                earfcnUl: slice.rat === 'LTE' || slice.rat === 'NB-IoT' ? bi.ulFreqRange.centreArfcn : undefined,
-                nrarfcnSsb: slice.rat === 'NR-SA' || slice.rat === 'NR-NSA' ? bi.dlFreqRange.centreArfcn : undefined,
-                scs: slice.rat === 'NR-SA' || slice.rat === 'NR-NSA' ? (bi.scs?.[0] ?? 30) : undefined,
-                ueCount,
-                antennas: { dl: dlAnt, ul: ulAnt },
-                dataType,
-                category: categoryOf(slice.rat),
-              });
-              if (added >= cap) break outer;
+        for (const scs of scsValues) {
+          for (const ueCount of slice.ueCounts) {
+            for (const [dlAnt, ulAnt] of slice.antennas) {
+              for (const dataType of slice.dataTypes) {
+                for (const mobility of slice.mobility) {
+                  for (const fading of slice.fading) {
+                    added += 1;
+                    const id = specToId(
+                      slice.rat, band, bw, ueCount,
+                      { dl: dlAnt, ul: ulAnt },
+                      dataType, mobility, fading, scs,
+                      added,
+                    );
+                    const isNr = slice.rat === 'NR-SA' || slice.rat === 'NR-NSA';
+                    out.push({
+                      id,
+                      name: id,
+                      rat: slice.rat,
+                      band,
+                      bandwidth: bw,
+                      duplexMode: bi.mode,
+                      earfcnDl: bi.dlFreqRange.centreArfcn,
+                      earfcnUl: !isNr ? bi.ulFreqRange.centreArfcn : undefined,
+                      nrarfcnSsb: isNr ? bi.dlFreqRange.centreArfcn : undefined,
+                      scs: isNr ? (scs ?? bi.scs?.[0] ?? 30) : undefined,
+                      ueCount,
+                      antennas: { dl: dlAnt, ul: ulAnt },
+                      dataType,
+                      mobility,
+                      fading,
+                      category: categoryOf(slice.rat),
+                    });
+                    if (added >= cap) break outer;
+                  }
+                }
+              }
             }
           }
         }
@@ -307,7 +324,10 @@ function buildUserPlaneBody(spec: BulkTestCaseSpec) {
       },
     };
   }
-  const direction = spec.dataType === 'iperf-dl' ? 'downlink' : 'both';
+  const direction =
+    spec.dataType === 'iperf-dl' ? 'downlink' :
+    spec.dataType === 'iperf-ul' ? 'uplink' :
+    'both';
   return {
     userPlaneConfig: {
       profiles: [{
@@ -349,21 +369,25 @@ function buildPowerCycleBody() {
   };
 }
 
-function buildMobilityBody() {
+function buildMobilityBody(spec: BulkTestCaseSpec) {
+  // tripType: 'stationary' → speed 0, no motion; 'roundTrip' → moves back
+  // and forth across the configured distance. fadingType maps directly to
+  // the box's accepted channel models (awgn/tdla30/tdlb100/epa5/eva70).
+  const isStationary = spec.mobility === 'stationary';
   return {
     mobilityConfig: {
       profiles: [{
         subscriberGroup: [0],
-        tripType: 'roundTrip',
+        tripType: isStationary ? 'stationary' : 'roundTrip',
         loopProfile: 'time',
         startDelay: 5,
         duration: 380,
         waitTime: 0,
         uePosition: [0, 0],
-        speed: 1,
+        speed: isStationary ? 0 : 1,
         direction: 0,
-        distance: 50,
-        fadingProfile: { fadingType: 'awgn', frequencyDoppler: 70, mimoCorrelation: 'low' },
+        distance: isStationary ? 0 : 50,
+        fadingProfile: { fadingType: spec.fading, frequencyDoppler: 70, mimoCorrelation: 'low' },
         noiseSpectralDensity: -174,
       }],
     },
@@ -416,16 +440,38 @@ export interface GenerationProgress {
   aborted?: boolean;
 }
 
+/** Per-testcase dimension summary — surfaced in both the manifest's
+ *  `created[]` and downstream report rendering so consumers don't have
+ *  to re-parse the name to get back to band/bw/ueCount/etc. */
+export interface CreatedTestcase {
+  id: string;
+  name: string;
+  boxId: string;
+  rat: RAT;
+  category: string;
+  band: string;
+  bandwidth: number;
+  duplexMode: 'FDD' | 'TDD';
+  ueCount: number;
+  antennas: { dl: number; ul: number };
+  dataType: string;
+  mobility: string;
+  fading: string;
+  scs?: number;
+}
+
 export interface GenerationResult {
   startedAt: string;
   finishedAt: string;
   targetHost: string;
+  /** Simnovator build version captured at generation time (best-effort). */
+  buildVersion?: string;
   total: number;
   passed: number;
   failed: number;
   skipped: number;
   /** Created testcases (one entry per success). */
-  created: Array<{ id: string; name: string; boxId: string; rat: RAT; category: string }>;
+  created: CreatedTestcase[];
   /** Variants we tried but failed at some lifecycle step. */
   failures: Array<{ id: string; name: string; step: string; status: number; message: string }>;
   /** Variants we skipped because a same-name testcase already existed. */
@@ -457,6 +503,20 @@ export async function generateBulkTestcases(
     fetchBandInfo(opts.host, token, 'NR'),
     fetchBandInfo(opts.host, token, 'LTE'),
   ]);
+
+  // 2b. Stamp the report with the box's build version. Best-effort —
+  // /v2/version is the only endpoint that returns it; if it's missing the
+  // result just has buildVersion=undefined.
+  let buildVersion: string | undefined;
+  try {
+    const vR = await fetch(`http://${opts.host}/v2/version`, { headers: { Authorization: `Bearer ${token}` } });
+    if (vR.ok) {
+      const vJ: any = await vR.json();
+      const v = vJ?.simnovator?.version;
+      const b = vJ?.simnovator?.build;
+      buildVersion = v && b ? `${v} (${b})` : (v ?? undefined);
+    }
+  } catch { /* keep undefined */ }
 
   // 3. Materialise variants.
   let variants = expandSlices(nrBands, lteBands);
@@ -515,7 +575,7 @@ export async function generateBulkTestcases(
         ['subscribers', () => POST(`/v2/tests/${encodeURIComponent(boxId)}/subscribers`, buildSubscribersBody(v))],
         ['user-plane',  () => POST(`/v2/tests/${encodeURIComponent(boxId)}/user-plane`,  buildUserPlaneBody(v))],
         ['power-cycle', () => POST(`/v2/tests/${encodeURIComponent(boxId)}/power-cycle`, buildPowerCycleBody())],
-        ['mobility',    () => POST(`/v2/tests/${encodeURIComponent(boxId)}/mobility`,    buildMobilityBody())],
+        ['mobility',    () => POST(`/v2/tests/${encodeURIComponent(boxId)}/mobility`,    buildMobilityBody(v))],
       ];
       let failedStep: string | null = null;
       let failedStatus = 0;
@@ -550,7 +610,12 @@ export async function generateBulkTestcases(
       // Tag for cleanup.
       await PUT(`/v2/testcases/${encodeURIComponent(boxId)}`, { user_tags: [BULK_TAG, v.category] }).catch(() => {});
 
-      created.push({ id: v.id, name: v.name, boxId, rat: v.rat, category: v.category });
+      created.push({
+        id: v.id, name: v.name, boxId, rat: v.rat, category: v.category,
+        band: v.band, bandwidth: v.bandwidth, duplexMode: v.duplexMode,
+        ueCount: v.ueCount, antennas: v.antennas, dataType: v.dataType,
+        mobility: v.mobility, fading: v.fading, scs: v.scs,
+      });
       progress.passed++; progress.done++;
     } catch (e: any) {
       // Best-effort cleanup of orphan if we created one.
@@ -568,6 +633,7 @@ export async function generateBulkTestcases(
   return {
     startedAt, finishedAt,
     targetHost: opts.host,
+    buildVersion,
     total: variants.length,
     passed: created.length,
     failed: failures.length,

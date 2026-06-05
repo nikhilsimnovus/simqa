@@ -1,17 +1,23 @@
-// Dimension definitions for the 500+ bulk-testcase generator.
+// Dimension definitions for the bulk-testcase generator.
 //
-// Goal: programmatically author 500+ valid, varied testcases on the box via
-// the REST create-lifecycle (POST /v2/tests/cells → subscribers → user-plane
-// → power-cycle → mobility → settings), then validate every one of them via
-// the API and a sampled subset via the UI.
+// Goal: programmatically author 1500+ valid, varied testcases on the box
+// via the REST create-lifecycle (POST /v2/tests/cells → subscribers →
+// user-plane → power-cycle → mobility → settings), then validate every
+// one of them via the API (with fidelity round-trip) and a sampled subset
+// via the UI.
 //
 // Each entry here describes one combinatorial slice of the (RAT × band ×
-// bandwidth × duplex × UE-count × traffic) space. At generation time we
-// fetch band-info from the live box, intersect each spec with the actual
-// band/duplex/bandwidth combos the box supports, then materialise variants
-// as concrete `BulkTestCaseSpec` objects.
+// bandwidth × duplex × UE-count × traffic × mobility × fading × scs)
+// space. At generation time we fetch band-info from the live box,
+// intersect each spec with the actual band/duplex/bandwidth combos the
+// box supports, then materialise variants as concrete `BulkTestCaseSpec`
+// objects.
 
 export type RAT = 'LTE' | 'NR-SA' | 'NR-NSA' | 'NB-IoT';
+
+export type DataType = 'no_data' | 'iperf-both' | 'iperf-dl' | 'iperf-ul';
+export type Mobility = 'stationary' | 'roundTrip';
+export type Fading = 'awgn' | 'tdla30' | 'tdlb100' | 'epa5' | 'eva70';
 
 /** A single "slice" of the matrix — covers a band-set within one RAT plus
  *  the variation knobs to multiply against it. */
@@ -27,41 +33,49 @@ export interface MatrixSlice {
   ueCounts: readonly number[];
   /** Antenna config DL×UL to vary. Each entry is `[dl, ul]`. */
   antennas: ReadonlyArray<readonly [number, number]>;
-  /** User-plane traffic variant. `no_data` = no PDU traffic; `iperf-both` =
-   *  iperf bidirectional; `iperf-dl` = DL-only iperf. The generator maps
-   *  these to box-valid `dataType`/`dataDirection` pairs. */
-  dataTypes: readonly ('no_data' | 'iperf-both' | 'iperf-dl')[];
+  /** User-plane data direction. */
+  dataTypes: readonly DataType[];
+  /** Mobility profiles to exercise. */
+  mobility: readonly Mobility[];
+  /** Channel/fading models to exercise (varies the mobility.fadingProfile). */
+  fading: readonly Fading[];
+  /** Only used for NR — sub-carrier spacings in kHz. Empty for LTE. */
+  scs?: readonly number[];
   /** Soft cap so a single slice can't dominate the total. */
   maxVariants?: number;
 }
 
-// Defaults aimed at ~500 total variants once intersected with what the box
-// actually supports. Tweak the per-slice numbers if a real lab returns a
-// narrower set.
+// Aimed at ~1500 total variants once intersected with what the box
+// actually supports.
 export const SLICES: readonly MatrixSlice[] = [
   // LTE — broadest coverage by far (most common deployment scenario).
-  // LTE on this box requires ul antenna == 1, so the only ant variants are
-  // 1×1, 2×1, 4×1. Matrix:
-  //   12 bands × 4 bw × 4 ue × 3 ant × 3 traffic = 1728 raw, capped at 480.
+  // 10 bands × 4 bw × 3 ue × 2 ant × 4 traffic × 2 mob × 2 fade = 3840 raw,
+  // but capped at 1000 (deterministic truncation in expandSlices).
   {
     rat: 'LTE',
-    bands: ['1', '2', '3', '5', '7', '8', '13', '20', '25', '28', '41', '66'],
+    bands: ['1', '2', '3', '5', '7', '8', '13', '20', '28', '41'],
     bandwidths: [5, 10, 15, 20],
-    ueCounts: [1, 2, 4, 8],
-    antennas: [[1, 1], [2, 1], [4, 1]],
-    dataTypes: ['no_data', 'iperf-both', 'iperf-dl'],
-    maxVariants: 480,
+    ueCounts: [1, 2, 4],
+    antennas: [[1, 1], [2, 2]],
+    dataTypes: ['no_data', 'iperf-both', 'iperf-dl', 'iperf-ul'],
+    mobility: ['stationary', 'roundTrip'],
+    fading: ['awgn', 'tdla30'],
+    maxVariants: 1000,
   },
-  // NR-SA — narrower but still meaningful coverage.
-  // 8 bands × 3 bw × 3 ue × 2 ant × 2 traffic = 288 raw, capped at 60.
+  // NR-SA — wide spread.
+  // 7 bands × 3 bw × 2 scs × 2 ue × 2 ant × 4 traffic × 2 mob × 2 fade = 5376
+  // raw, capped at 480.
   {
     rat: 'NR-SA',
-    bands: ['n2', 'n7', 'n28', 'n41', 'n66', 'n77', 'n78', 'n79'],
+    bands: ['n2', 'n7', 'n28', 'n41', 'n66', 'n77', 'n78'],
     bandwidths: [20, 40, 100],
-    ueCounts: [1, 4, 16],
+    scs: [15, 30],
+    ueCounts: [1, 4],
     antennas: [[2, 2], [4, 2]],
-    dataTypes: ['no_data', 'iperf-dl'],
-    maxVariants: 60,
+    dataTypes: ['no_data', 'iperf-both', 'iperf-dl', 'iperf-ul'],
+    mobility: ['stationary', 'roundTrip'],
+    fading: ['awgn', 'tdla30'],
+    maxVariants: 480,
   },
   // NR-NSA is intentionally omitted from the bulk generator: the box
   // requires NSA testcases to declare at least 2 cells (LTE anchor + NR
@@ -69,7 +83,9 @@ export const SLICES: readonly MatrixSlice[] = [
   // shape. The NR-NSA category exists in spec.ts's RAT enum so consumers
   // can still target it explicitly, but no auto-generated variants are
   // emitted today.
+
   // NB-IoT — tiny but covers the IoT path.
+  // 2 bands × 1 bw × 2 ue × 1 ant × 1 traffic = 4.
   {
     rat: 'NB-IoT',
     bands: ['8', '20'],
@@ -77,6 +93,8 @@ export const SLICES: readonly MatrixSlice[] = [
     ueCounts: [1, 2],
     antennas: [[1, 1]],
     dataTypes: ['no_data'],
+    mobility: ['stationary'],
+    fading: ['awgn'],
     maxVariants: 4,
   },
 ];
@@ -99,7 +117,9 @@ export interface BulkTestCaseSpec {
   scs?: number;               // NR only
   ueCount: number;
   antennas: { dl: number; ul: number };
-  dataType: 'no_data' | 'iperf-both' | 'iperf-dl';
+  dataType: DataType;
+  mobility: Mobility;
+  fading: Fading;
   /** Slice/RAT for grouped reporting. */
   category: 'bulk-lte' | 'bulk-nr-sa' | 'bulk-nr-nsa' | 'bulk-nbiot';
 }
@@ -119,10 +139,42 @@ export function categoryOf(rat: RAT): BulkTestCaseSpec['category'] {
   }
 }
 
-/** Stable id-shaped name from a spec (lowercase, hyphen-safe). */
-export function specToId(rat: RAT, band: string, bw: number, ueCount: number, antennas: { dl: number; ul: number }, dataType: string, seq: number): string {
+/** Stable id-shaped name from a spec (lowercase, hyphen-safe). Includes
+ *  new dimensions (mobility, fading) so the name remains unique under the
+ *  larger matrix. */
+export function specToId(
+  rat: RAT,
+  band: string,
+  bw: number,
+  ueCount: number,
+  antennas: { dl: number; ul: number },
+  dataType: string,
+  mobility: string,
+  fading: string,
+  scs: number | undefined,
+  seq: number,
+): string {
   const ratSlug = rat.toLowerCase().replace(/[^a-z0-9]+/g, '');
   const bandSlug = band.toLowerCase().replace(/[^a-z0-9]+/g, '');
-  const seqStr = String(seq).padStart(3, '0');
-  return `${BULK_NAME_PREFIX}-${ratSlug}-${bandSlug}-bw${bw}-ue${ueCount}-ant${antennas.dl}x${antennas.ul}-${dataType}-${seqStr}`;
+  const mobSlug = mobility === 'stationary' ? 'stat' : 'mob';
+  const fadeSlug = fading.toLowerCase();
+  const scsSlug = scs ? `-scs${scs}` : '';
+  const seqStr = String(seq).padStart(4, '0');
+  return `${BULK_NAME_PREFIX}-${ratSlug}-${bandSlug}-bw${bw}${scsSlug}-ue${ueCount}-ant${antennas.dl}x${antennas.ul}-${dataType}-${mobSlug}-${fadeSlug}-${seqStr}`;
+}
+
+/** Friendly column-ready summary for a spec (used by report tables). */
+export function describeSpec(s: BulkTestCaseSpec): Record<string, string | number> {
+  return {
+    rat: s.rat,
+    band: s.band,
+    bandwidth: s.bandwidth,
+    duplex: s.duplexMode,
+    ueCount: s.ueCount,
+    antennas: `${s.antennas.dl}x${s.antennas.ul}`,
+    traffic: s.dataType,
+    mobility: s.mobility,
+    fading: s.fading,
+    scs: s.scs ?? '',
+  };
 }

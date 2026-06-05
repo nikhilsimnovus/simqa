@@ -31,7 +31,14 @@ interface Progress {
   aborted?: boolean;
 }
 
-interface Created { id: string; name: string; boxId: string; rat: string; category: string }
+interface Created {
+  id: string; name: string; boxId: string; rat: string; category: string;
+  // Enriched dimension fields surfaced via the manifest so the grid can
+  // show them without re-parsing the name.
+  band?: string; bandwidth?: number; duplexMode?: string;
+  ueCount?: number; antennas?: { dl: number; ul: number };
+  dataType?: string; mobility?: string; fading?: string; scs?: number;
+}
 interface FailureRow { id: string; name: string; step: string; status: number; message: string }
 interface SkipRow { id: string; name: string; reason: string }
 
@@ -39,6 +46,7 @@ interface GenResult {
   startedAt: string;
   finishedAt: string;
   targetHost: string;
+  buildVersion?: string;
   total: number; passed: number; failed: number; skipped: number;
   created: Created[];
   failures: FailureRow[];
@@ -169,6 +177,34 @@ export default function BulkTestsPage() {
   const filteredResults = (valResult?.results ?? []).filter(r => catFilter === 'all' || r.category === catFilter);
   const categories = Array.from(new Set((valResult?.results ?? []).map(r => r.category))).sort();
 
+  // Index the manifest's `created` array by id so we can join dimension
+  // columns onto the validation grid without an extra fetch.
+  const createdById = new Map((genResult?.created ?? []).map(c => [c.id, c] as const));
+
+  // Per-category roll-up shown in the summary card.
+  const tally = (() => {
+    const out: Record<string, { gen: number; pass: number; fail: number; fidelity: number }> = {};
+    for (const c of genResult?.created ?? []) {
+      out[c.category] = out[c.category] ?? { gen: 0, pass: 0, fail: 0, fidelity: 0 };
+      out[c.category].gen += 1;
+    }
+    for (const r of valResult?.results ?? []) {
+      const e = out[r.category] ?? (out[r.category] = { gen: 0, pass: 0, fail: 0, fidelity: 0 });
+      if (r.ok) e.pass += 1; else e.fail += 1;
+      const fSt = r.steps.find(s => s.step === 'fidelity');
+      if (fSt && fSt.ok) e.fidelity += 1;
+    }
+    return Object.entries(out).sort(([a], [b]) => a.localeCompare(b));
+  })();
+
+  const buildSlug = (genResult?.buildVersion ?? '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
+  const reportHref = buildSlug ? `/api/bulk-tests/report?slug=v${buildSlug}` : '';
+
+  const refreshReport = async () => {
+    try { await fetch('/api/bulk-tests/report', { method: 'POST' }); }
+    catch { /* not fatal */ }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="max-w-7xl mx-auto px-6 py-8">
@@ -215,6 +251,81 @@ export default function BulkTestsPage() {
           </div>
           {error && <div className="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>}
         </section>
+
+        {/* Build summary + report download */}
+        {(genResult || valResult) && (
+          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+            <div className="flex flex-wrap items-start gap-6">
+              <div className="flex-1 min-w-[300px]">
+                <h2 className="text-base font-semibold text-slate-900 mb-2">Build Report</h2>
+                <div className="text-sm text-slate-700">
+                  <span className="text-slate-500">Simnovator build:</span>{' '}
+                  <code className="font-mono text-[12px] bg-slate-100 px-1.5 py-0.5 rounded">{genResult?.buildVersion ?? 'unknown'}</code>
+                </div>
+                <div className="text-sm text-slate-700 mt-1">
+                  <span className="text-slate-500">Target:</span> {genResult?.targetHost ?? '-'}
+                  &nbsp;·&nbsp;
+                  <span className="text-slate-500">Authored:</span> {genResult?.created?.length ?? 0}
+                  {valResult && (<>
+                    &nbsp;·&nbsp;
+                    <span className="text-slate-500">Validated:</span> {valResult.total} ({valResult.passed} pass / {valResult.failed} fail)
+                  </>)}
+                </div>
+                <div className="mt-3 flex gap-2 flex-wrap text-sm">
+                  <button
+                    onClick={async () => { await refreshReport(); if (reportHref) window.open(reportHref + '&format=html', '_blank'); }}
+                    disabled={!reportHref}
+                    className="rounded-md bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white px-3 py-1.5"
+                  >
+                    Open HTML
+                  </button>
+                  <button
+                    onClick={async () => { await refreshReport(); if (reportHref) window.open(reportHref + '&format=md', '_blank'); }}
+                    disabled={!reportHref}
+                    className="rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-50 px-3 py-1.5"
+                  >
+                    Markdown
+                  </button>
+                  <button
+                    onClick={async () => { await refreshReport(); if (reportHref) window.open(reportHref + '&format=json', '_blank'); }}
+                    disabled={!reportHref}
+                    className="rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-50 px-3 py-1.5"
+                  >
+                    JSON
+                  </button>
+                  <span className="text-xs text-slate-500 self-center ml-2">
+                    Per-build artifact under <code className="font-mono">dist/build-reports/v{buildSlug || '…'}/</code>
+                  </span>
+                </div>
+              </div>
+              {tally.length > 0 && (
+                <div className="flex-1 min-w-[320px]">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Categories</h3>
+                  <table className="text-xs min-w-full border border-slate-200 rounded-md overflow-hidden">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr><th className="text-left px-3 py-1.5">Category</th>
+                          <th className="text-right px-3 py-1.5">Authored</th>
+                          <th className="text-right px-3 py-1.5">Pass</th>
+                          <th className="text-right px-3 py-1.5">Fail</th>
+                          <th className="text-right px-3 py-1.5">Fidelity</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {tally.map(([cat, c]) => (
+                        <tr key={cat}>
+                          <td className="px-3 py-1.5 font-mono text-[11px]">{cat}</td>
+                          <td className="px-3 py-1.5 text-right">{c.gen}</td>
+                          <td className="px-3 py-1.5 text-right text-emerald-700">{c.pass}</td>
+                          <td className="px-3 py-1.5 text-right text-red-700">{c.fail}</td>
+                          <td className="px-3 py-1.5 text-right">{c.fidelity}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* Generation progress */}
         {genProgress && (
@@ -273,20 +384,29 @@ export default function BulkTestsPage() {
                       <tr>
                         <th className="text-left px-3 py-2 font-medium">#</th>
                         <th className="text-left px-3 py-2 font-medium">Name</th>
-                        <th className="text-left px-3 py-2 font-medium">Category</th>
-                        <th className="text-center px-3 py-2 font-medium">GET</th>
-                        <th className="text-center px-3 py-2 font-medium">Search</th>
-                        <th className="text-center px-3 py-2 font-medium">Export</th>
-                        <th className="text-center px-3 py-2 font-medium">Import</th>
-                        <th className="text-center px-3 py-2 font-medium">Del clone</th>
-                        <th className="text-center px-3 py-2 font-medium">Verify gone</th>
-                        <th className="text-center px-3 py-2 font-medium">Original</th>
-                        <th className="text-right px-3 py-2 font-medium">ms</th>
-                        <th className="text-center px-3 py-2 font-medium">Verdict</th>
+                        <th className="text-left px-2 py-2 font-medium">RAT</th>
+                        <th className="text-left px-2 py-2 font-medium">Band</th>
+                        <th className="text-right px-2 py-2 font-medium">BW</th>
+                        <th className="text-right px-2 py-2 font-medium">UEs</th>
+                        <th className="text-left px-2 py-2 font-medium">Ant</th>
+                        <th className="text-left px-2 py-2 font-medium">Traffic</th>
+                        <th className="text-left px-2 py-2 font-medium">Mob</th>
+                        <th className="text-left px-2 py-2 font-medium">Fade</th>
+                        <th className="text-center px-2 py-2 font-medium">GET</th>
+                        <th className="text-center px-2 py-2 font-medium">Search</th>
+                        <th className="text-center px-2 py-2 font-medium">Export</th>
+                        <th className="text-center px-2 py-2 font-medium">Import</th>
+                        <th className="text-center px-2 py-2 font-medium" title="deep-equal testDefinition after export → import round-trip">Fidelity</th>
+                        <th className="text-center px-2 py-2 font-medium">Del clone</th>
+                        <th className="text-center px-2 py-2 font-medium">Gone</th>
+                        <th className="text-center px-2 py-2 font-medium">Original</th>
+                        <th className="text-right px-2 py-2 font-medium">ms</th>
+                        <th className="text-center px-2 py-2 font-medium">Verdict</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {filteredResults.map((r, i) => {
+                        const c = createdById.get(r.id);
                         const stepCell = (name: string) => {
                           const s = r.steps.find(x => x.step === name);
                           if (!s) return <td className="text-center px-2 py-1.5 text-slate-300">—</td>;
@@ -296,16 +416,24 @@ export default function BulkTestsPage() {
                           <tr key={r.id}>
                             <td className="px-3 py-1.5 text-slate-500">{i + 1}</td>
                             <td className="px-3 py-1.5 font-mono text-[11px]">{r.name}</td>
-                            <td className="px-3 py-1.5">{r.category}</td>
+                            <td className="px-2 py-1.5">{c?.rat ?? r.category.replace('bulk-', '')}</td>
+                            <td className="px-2 py-1.5">{c?.band ?? '-'}</td>
+                            <td className="px-2 py-1.5 text-right">{c?.bandwidth ?? '-'}</td>
+                            <td className="px-2 py-1.5 text-right">{c?.ueCount ?? '-'}</td>
+                            <td className="px-2 py-1.5">{c?.antennas ? `${c.antennas.dl}x${c.antennas.ul}` : '-'}</td>
+                            <td className="px-2 py-1.5">{c?.dataType ?? '-'}</td>
+                            <td className="px-2 py-1.5">{c?.mobility ?? '-'}</td>
+                            <td className="px-2 py-1.5">{c?.fading ?? '-'}</td>
                             {stepCell('get')}
                             {stepCell('search')}
                             {stepCell('export')}
                             {stepCell('import')}
+                            {stepCell('fidelity')}
                             {stepCell('delete-clone')}
                             {stepCell('verify-clone-gone')}
                             {stepCell('verify-original')}
-                            <td className="px-3 py-1.5 text-right font-mono text-slate-500">{r.durationMs}</td>
-                            <td className={`px-3 py-1.5 text-center font-semibold ${r.ok ? 'text-emerald-700' : 'text-red-700'}`}>{r.ok ? 'PASS' : 'FAIL'}</td>
+                            <td className="px-2 py-1.5 text-right font-mono text-slate-500">{r.durationMs}</td>
+                            <td className={`px-2 py-1.5 text-center font-semibold ${r.ok ? 'text-emerald-700' : 'text-red-700'}`}>{r.ok ? 'PASS' : 'FAIL'}</td>
                           </tr>
                         );
                       })}

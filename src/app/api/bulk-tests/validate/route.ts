@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
 import { validateBulkTestcases } from '@/lib/bulkTests/validator';
 import { getState, readManifest, writeValidationSummary } from '@/lib/bulkTests/state';
+import { writeBuildReport } from '@/lib/bulkTests/reportBuilder';
 import type { UesimApiOpts } from '@/lib/bulkTests/types';
 
 export const dynamic = 'force-dynamic';
@@ -57,6 +58,10 @@ export async function POST(req: Request) {
       );
       state.validation.result = summary;
       writeValidationSummary(summary);
+      // Emit the per-build report (HTML + MD + JSON) so QA has a
+      // shareable artifact for this Simnovator build. Joins the
+      // generation manifest with the just-finished validation results.
+      try { writeBuildReport({ generation: result, validation: summary }); } catch (e) { /* don't fail the run if the report fails */ }
     } catch (e: any) {
       state.validation.result = {
         startedAt: state.validation.progress?.startedAt ?? new Date().toISOString(),
