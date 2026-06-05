@@ -1,0 +1,108 @@
+# =============================================================================
+# setup.conf  --  input for collect_perf_data.sh
+#
+# Defaults below are pre-filled for the QA rack server [AMD-64] setup
+# (ref: Confluence "Engineering Team : Setup Details"). Adjust per run.
+#
+# SECRETS: passwords use the env-override pattern  ${VAR:-default}. The QA
+# default is filled in so it works out-of-box, but you can override without
+# editing this file, e.g.:   export SIM_API_PASS=...; export CALLBOX_PASS=...
+# Anything blank or pointing at a missing path is skipped (not an error).
+# =============================================================================
+
+# ---- Test case -------------------------------------------------------------
+# REST pulls are scoped to ONE execution (iterationId). Resolution order:
+#   1. ITERATION_ID set            -> use it directly
+#   2. TEST_CASE_NAME="LAST_RUN"   -> auto-discover via footer endpoint
+#      or TEST_CASE_NAME=""           (same as LAST_RUN)
+#   3. TEST_CASE_NAME="<name>"     -> look up by name, take latest run
+TEST_CASE_NAME="LAST_RUN"               # "" or "LAST_RUN" => last-executed testcase
+ITERATION_ID=""                         # optional: pin to a specific run UUID
+
+# ---- Output ----------------------------------------------------------------
+OUTPUT_DIR="/tmp/perf_collect"
+COLLECTION_LABEL="qa_perftest"
+
+# ---- What to collect (1 = yes, 0 = no) -------------------------------------
+COLLECT_UE=1
+COLLECT_SIMNOVATOR=1
+COLLECT_CALLBOX=1
+COLLECT_APP_SERVER=1
+COLLECT_REST_API=1                      # pull test-case data via Simnovator REST API
+
+# ---- UE side (QA UE server 192.168.1.34, 64-core) --------------------------
+# Set UE_HOST to SSH out for UE-side data when this script runs on a different
+# host (e.g. .36). Leave blank to collect from localhost.
+UE_HOST="192.168.1.34"                  # blank if running ON the UE host
+UE_USER="sysadmin"
+UE_SSH_PORT="22"
+UE_PASS=""                              # blank = key-based SSH (QA uses ~/.ssh/id_ed25519)
+UE_CFG_PATH="/root/ue/config/ue.cfg"
+WORKLOAD_AFFINITY_JSON="/home/sysadmin/UE-simnovus/workload_affinity.json"
+NUMA_CONFIG_PATH=""
+UESIM_LOG_DIR="/var/log/lte /root/ue"   # space-separated dirs are supported
+UESIM_LOG_MAX_MB=200
+PERF_PROC_NAMES="app-manager lteue iperf3"
+
+# ---- iperf logs (collected from the UE host after the REST section so we
+#      know the test's time window). Default path is the Simnovator app-
+#      manager's iperf log dir, which keeps per-run timestamped subdirs.
+COLLECT_IPERF=1
+IPERF_LOG_DIR="/root/simnovator-app-manager/web/iperf/logs"
+IPERF_MAX_SUBDIRS=10                    # cap on subdirs to grab in one shot
+
+# ---- Simnovator (QA 4.0 Simnovator 192.168.1.95) ---------------------------
+# Set SIMNOVATOR_HOST to SSH out when this script runs elsewhere (e.g. .36).
+# Containers in 4.0 run rootless under podman as the sysadmin user.
+SIMNOVATOR_HOST="192.168.1.95"          # blank if running ON the Simnovator host
+SIMNOVATOR_USER="sysadmin"
+SIMNOVATOR_SSH_PORT="22"
+SIMNOVATOR_PASS=""                      # blank = key-based SSH
+CONTAINER_ENGINE=""                     # "" auto-detect (prefers podman) | podman | docker
+SIMNOVATOR_CONTAINERS=""                # blank = all running containers
+DOCKER_LOG_TAIL=20000
+# Beszel container monitoring (historical CPU/mem/net/disk time-series).
+# Credentials per Confluence "Beszel Monitoring Tool" (page 1058897921);
+# the dev user can see most QA systems out-of-the-box.
+BESZEL_HUB_URL="http://192.168.0.16:8090"
+BESZEL_USER="${BESZEL_USER:-viewer@email.com}"   # read-only user; can view all QA systems
+BESZEL_PASS=""
+BESZEL_CHART_RANGE="1h"                 # 1h | 12h | 24h | 1w | 30d (Beszel preset)
+BESZEL_PYTHON="/home/sysadmin/perf-qa-ui/venv/bin/python"   # venv with playwright
+BESZEL_SCREENSHOT_SCRIPT=""             # blank => auto-discover next to this script
+BESZEL_EXPORT_CMD=""                    # optional CLI fallback (deprecated)
+
+# ---- Simnovator REST API (QA 4.0 Simnovator GUI admin/admin) ---------------
+# Verified against build 4.0.0_260527 (May 2026). API root is /v2 (Keycloak-
+# backed JWT auth). Endpoint paths are baked into the script — the caller
+# only sets credentials below; ITERATION_ID resolution is automatic.
+SIM_API_BASE="http://192.168.1.95"      # 4.0 Simnovator GUI/back-end host
+SIM_API_USER="admin"
+SIM_API_PASS=""   # QA GUI default; override via env for shared use
+SIM_API_LOGIN_PATH="/v2/login"          # POST {username,password} -> {access_token}
+SIM_API_STATS_BUDGET="1000"             # sample budget for global statistics
+# GUI screenshots (Global / Cell / UE Statistics + Logs) — needs same Playwright
+# venv as Beszel. Re-uses BESZEL_PYTHON unless SIM_PYTHON is set explicitly.
+SIM_PYTHON=""                           # blank => use BESZEL_PYTHON
+SIM_SCREENSHOT_PAGES="global,cell,ue,logs"
+SIM_TESTCASE_STATUS="Completed"         # part of GUI URLs; usually "Completed" for finished runs
+
+# ---- Callbox (QA callbox 192.168.1.107, password auth) ---------------------
+# /root/enb and /root/mme are stable symlinks the Amarisoft tooling maintains
+# pointing at the current build; their config dirs hold symlinks to the active
+# scenario. Always cat through the stable path so we get the live config.
+ENB_CFG_PATH="/root/enb/config/enb.cfg"
+MME_CFG_PATH="/root/mme/config/mme.cfg"
+IMS_CFG_PATH="/root/mme/config/ims.cfg"
+CALLBOX_HOST="192.168.1.107"            # blank => skip the entire callbox section
+CALLBOX_USER="sysadmin"
+CALLBOX_SSH_PORT="22"
+CALLBOX_PASS=""   # callbox uses password; needs sshpass installed
+AMARISOFT_WS_CMD=""                     # blank => auto via ws.js for `t`,`ue`,`cell` (SDR temp)
+
+# ---- App server (QA app-server VM 192.168.1.109, private key) --------------
+APP_SERVER_HOST="192.168.1.109"         # blank if running ON the app-server
+APP_SERVER_USER="sysadmin"
+APP_SERVER_SSH_PORT="22"
+APP_SERVER_PASS=""                      # blank = key-based SSH (QA uses private key here)
+IPERF_TARGET=""                         # optional host:port reachability check

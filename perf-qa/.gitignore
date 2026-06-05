@@ -1,0 +1,16 @@
+# Live config + creds — never commit. Copy from the .example next to each.
+setup.conf
+ui/profiles.json
+
+# Local Python venv if anyone runs the Flask UI from their laptop
+venv/
+__pycache__/
+*.pyc
+
+# Vendored headless-browser bundles that don't belong in source control
+# (kept locally on the deploy host alongside the Playwright install)
+ui/beszel-app.js
+ui/sim-app.js
+
+# Bundle output — collected diagnostics from each run
+/tmp/

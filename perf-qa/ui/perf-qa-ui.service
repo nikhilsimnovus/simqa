@@ -1,0 +1,27 @@
+[Unit]
+Description=perf-qa collector UI (Flask)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sysadmin
+Group=sysadmin
+WorkingDirectory=/home/sysadmin/perf-qa-ui
+# Rootless podman needs HOME, USER, and XDG_RUNTIME_DIR or its calls fail
+# with "newuidmap: executable file not found" / "default OCI runtime not found".
+Environment=HOME=/home/sysadmin
+Environment=USER=sysadmin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PERFQA_SCRIPT_DIR=/home/sysadmin/perf-qa
+Environment=PERFQA_BUNDLE_ROOT=/tmp/perf_collect
+Environment=PERFQA_PORT=4000
+ExecStart=/home/sysadmin/perf-qa-ui/venv/bin/python /home/sysadmin/perf-qa-ui/app.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
