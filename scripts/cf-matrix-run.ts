@@ -87,9 +87,14 @@ async function main() {
 
   // CF_VARIATION_OF=<testcaseId> → variation sweep: keep that case's base fixed,
   // vary traffic / mobility / channel-model / loop. Otherwise band sweep / matrix.
-  const cases = process.env.CF_VARIATION_OF
+  let cases = process.env.CF_VARIATION_OF
     ? generateVariationSweep({ base: await fetchBaseConfig(api, process.env.CF_VARIATION_OF), mode: process.env.CF_FULL ? 'full' : 'pairwise', cap: process.env.CF_CAP ? Number(process.env.CF_CAP) : undefined })
     : buildMatrix();
+  // CF_BANDS=<id1,id2,...> → run only those case IDs (targeted re-run of failures).
+  if (process.env.CF_BANDS) {
+    const want = new Set(process.env.CF_BANDS.split(',').map((s) => s.trim()).filter(Boolean));
+    cases = cases.filter((c) => want.has(c.id));
+  }
   // Give every case a UNIQUE box name (settings finalises the name and the box
   // rejects duplicates across runs). input.settings is the same object ref as
   // the settings body, so this one mutation keeps the validator consistent.

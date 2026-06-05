@@ -243,9 +243,14 @@ function bandCells(r: BandRow) {
     const NRARFCN: any = r.duplex === 'TDD'
       ? { dl: r.dlArfcn, ssb: r.ssbArfcn, ul: r.dlArfcn }
       : { dl: r.dlArfcn, ssb: r.ssbArfcn };
+    // n79 @ SCS 30 requires bandwidth ≥ 20 MHz (box rejects 15) — clamp up.
+    const nrBw = r.band === 79 && r.bwMhz < 20 ? 20 : r.bwMhz;
     const cell: any = {
       cellType: '5g', syncId: 0, duplexMode: r.duplex, band: `n${r.band}`, NRARFCN,
-      scs: r.scsKhz, ssbScs: r.ssbScsKhz, bandwidth: String(r.bwMhz), prach: 0,
+      scs: r.scsKhz, ssbScs: r.ssbScsKhz, bandwidth: String(nrBw),
+      // Some NR bands (n5/n8/n25/n50/n66/n70/n71) REQUIRE an explicit bandwidthType;
+      // the rest default it. Always send 'symmetric' (DL bw = UL bw) for consistency.
+      bandwidthType: 'symmetric', prach: 0,
       antennas: { dl: 1, ul: 1 }, rfCard: 0, rxToTxLatency: 4, txGain: [80], rxGain: [0],
       globalTimingAdvance: -1, NTN: false, mobility: mobObj,
     };
@@ -254,7 +259,9 @@ function bandCells(r: BandRow) {
   // LTE / CATM / NBIOT → 4g cell
   const isNb = r.rat === 'NBIOT';
   const bw = isNb ? '1.4' : String(LTE_BW_OK.has(r.bwMhz) ? r.bwMhz : 5);
-  const ul = r.duplex === 'FDD' ? r.dlArfcn + 18000 : r.dlArfcn;
+  // LTE band 66 has a non-standard UL plan: the box accepts only UL EARFCN 131972
+  // (the band-66 UL base), not dl+18000. Override UL for that band (LTE/CATM/NB-IoT).
+  const ul = String(r.band) === '66' ? 131972 : (r.duplex === 'FDD' ? r.dlArfcn + 18000 : r.dlArfcn);
   const ratType = isNb ? 'nbiot' : 'smartphone';
   const cell: any = {
     cellType: '4g', syncId: 0, duplexMode: r.duplex, band: String(r.band), EARFCN: { dl: r.dlArfcn, ul },
