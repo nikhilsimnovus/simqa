@@ -91,6 +91,21 @@ export async function validateBulkTestcases(
   const token = await login(opts);
   const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
+  // Cache the full box catalog ONCE for the search-replacement step. The
+  // box's POST /v2/testcases/search ignores its filter body completely and
+  // caps at 50 results (product bugs P5 + P8), so we can't ask it
+  // "does name X exist?" — we have to list everything and check client-side.
+  const catalogByName = new Map<string, string>();
+  try {
+    const catR = await fetch(`http://${opts.host}/v2/testcases?limit=1000`, { headers: { Authorization: H.Authorization } });
+    if (catR.ok) {
+      const data: any = await catR.json();
+      for (const it of (data.items ?? data.data ?? [])) {
+        if (it?.name && it?.id) catalogByName.set(String(it.name).toLowerCase(), String(it.id));
+      }
+    }
+  } catch { /* fall through — search step will just fail */ }
+
   const progress: ValidationProgress = { startedAt, total: manifest.length, done: 0, passed: 0, failed: 0 };
   const results: ValidationResult[] = [];
 
@@ -115,26 +130,25 @@ export async function validateBulkTestcases(
       if (!okStep) failed = true;
     }
 
-    // Step 2: search by name
+    // Step 2: search by name — via cached catalog (the box's POST search is
+    // broken: it caps at 50 results AND ignores the `name` filter; see P5/P8).
     if (!failed) {
-      const t = await timed(async () => {
-        const r = await fetch(`http://${opts.host}/v2/testcases/search`, {
-          method: 'POST', headers: H, body: JSON.stringify({ name: m.name, offset: 0, limit: 5 }),
-        });
-        const j: any = await r.json().catch(() => ({}));
-        const items: any[] = j.items ?? j.data ?? [];
-        return { status: r.status, found: items.some(it => it?.id === m.boxId) };
-      });
-      steps.push({ step: 'search', ok: t.found, status: t.status, durationMs: t.durationMs, detail: t.found ? 'found in search' : `not found (status=${t.status})` });
-      if (!t.found) failed = true;
+      const s = Date.now();
+      const cachedId = catalogByName.get(m.name.toLowerCase());
+      const found = !!cachedId && cachedId === m.boxId;
+      steps.push({ step: 'search', ok: found, status: 200, durationMs: Date.now() - s, detail: found ? 'found in cached catalog' : (cachedId ? `name matched but id=${cachedId} != expected ${m.boxId}` : 'name not in cached catalog (>1000 items in box?)') });
+      if (!found) failed = true;
     }
 
-    // Step 3: export
+    // Step 3: export. Body shape on 4.0.0_260602 is { testCaseIds: [id] };
+    // sending { ids: [id] } makes the box HANG for ~8s (no quick 4xx) — a
+    // product bug worth filing separately, but for the validator we just
+    // use the working shape.
     let exportPack: any = null;
     if (!failed) {
       const t = await timed(async () => {
         const r = await fetch(`http://${opts.host}/v2/testcases/export`, {
-          method: 'POST', headers: H, body: JSON.stringify({ ids: [m.boxId] }),
+          method: 'POST', headers: H, body: JSON.stringify({ testCaseIds: [m.boxId] }),
         });
         const text = await r.text();
         let j: any = null;
@@ -147,12 +161,21 @@ export async function validateBulkTestcases(
       else failed = true;
     }
 
-    // Step 4: re-import
+    // Step 4: re-import. POST /v2/testcases/import expects a multipart form
+    // with a `file` field containing the pack JSON — NOT a JSON body. The
+    // box returns 400 "Failed to get file from request" otherwise. (Worth
+    // an API-spec note since `/export` returns the body inline, so
+    // export-then-import-the-same-bytes is asymmetric.)
     let cloneBoxId = '';
     if (!failed && exportPack) {
       const t = await timed(async () => {
+        const form = new FormData();
+        const blob = new Blob([JSON.stringify(exportPack)], { type: 'application/json' });
+        form.append('file', blob, `bulk-clone-${m.id}.json`);
         const r = await fetch(`http://${opts.host}/v2/testcases/import`, {
-          method: 'POST', headers: H, body: JSON.stringify(exportPack),
+          method: 'POST',
+          headers: { Authorization: H.Authorization },  // omit Content-Type so fetch sets the multipart boundary
+          body: form,
         });
         const j: any = await r.json().catch(() => ({}));
         const newIds: string[] = (j.testCases ?? j.imported ?? j.test_case_details ?? []).map((x: any) => x?.id ?? x?.Test_Id ?? x?.testCaseId).filter(Boolean);

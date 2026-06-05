@@ -115,7 +115,15 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
   if (spec.rat === 'LTE' || spec.rat === 'NB-IoT') {
     return {
       cellConfig: {
-        master: { product: 'UE-SIM', carrierAggregation: false, channelSim: false, pdcchDecodeOpt: true, pdcchDecodeOptThreshold: 0.1, ratType: 'smartphone', turboIteration: 14 },
+        master: {
+          product: 'UE-SIM',
+          carrierAggregation: false,
+          channelSim: false,
+          pdcchDecodeOpt: true,
+          pdcchDecodeOptThreshold: 0.1,
+          ratType: 'smartphone',
+          turboIteration: 14,
+        },
         cells: [{
           cellType: '4g',
           syncId: 0,
@@ -135,10 +143,21 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
       },
     };
   }
-  // NR-SA / NR-NSA
+  // NR-SA / NR-NSA — master config DIFFERS from LTE on this build:
+  //   - ratType is 'sa' or 'nsa' (NOT 'smartphone' — that's an LTE knob)
+  //   - ldpcIteration replaces turboIteration
+  //   - pdcchDecodeOpt defaults false in shipped NR templates
+  // Cell-level keys also differ (NRARFCN + scs + ratTypeP).
   return {
     cellConfig: {
-      master: { product: 'UE-SIM', carrierAggregation: false, channelSim: false, pdcchDecodeOpt: true, pdcchDecodeOptThreshold: 0.1, ratType: 'smartphone', turboIteration: 14 },
+      master: {
+        product: 'UE-SIM',
+        carrierAggregation: false,
+        channelSim: false,
+        ldpcIteration: 5,
+        pdcchDecodeOpt: false,
+        ratType: spec.rat === 'NR-SA' ? 'sa' : 'nsa',
+      },
       cells: [{
         cellType: '5g',
         syncId: 0,
@@ -154,9 +173,9 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
         carrierAggregationP: false,
         channelSimP: false,
         NTN: false,
+        asymmetricApplicable: false,
         txGain: Array(spec.antennas.ul).fill(80),
         rxGain: Array(spec.antennas.dl).fill(20),
-        mobility: { antennaType: 'isotropic', position: [4, 3], referencePower: -25, ulAttenuation: 60 },
       }],
     },
   };
@@ -378,13 +397,12 @@ export async function generateBulkTestcases(
   let variants = expandSlices(nrBands, lteBands);
   if (limit && limit > 0) variants = variants.slice(0, limit);
 
-  // 4. Pre-load existing names so we can skip duplicates cheaply.
+  // 4. Pre-load existing names so we can skip duplicates cheaply. POST
+  // /testcases/search caps at 50 on this build, so we use the GET form.
   const existingByName = new Set<string>();
   try {
-    const sR = await fetch(`http://${opts.host}/v2/testcases/search`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ offset: 0, limit: 5000 }),
+    const sR = await fetch(`http://${opts.host}/v2/testcases?limit=1000`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
     if (sR.ok) {
       const data: any = await sR.json();
@@ -506,11 +524,12 @@ export async function cleanupBulkTestcases(opts: UesimApiOpts): Promise<{ delete
 
   const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
-  // List all, filter by user_tags or name prefix.
-  const sR = await fetch(`http://${opts.host}/v2/testcases/search`, {
-    method: 'POST', headers: H, body: JSON.stringify({ offset: 0, limit: 5000 }),
-  });
-  if (!sR.ok) throw new Error(`search: ${sR.status}`);
+  // List all. Use GET /v2/testcases?limit=1000 since:
+  //   - POST /testcases/search caps at 50 regardless of `limit` (product bug P5)
+  //   - Pagination via ?offset= returns 0 once offset>0 (product bug P6)
+  // GET with limit=1000 reliably returns all rows up to ~1000.
+  const sR = await fetch(`http://${opts.host}/v2/testcases?limit=1000`, { headers: H });
+  if (!sR.ok) throw new Error(`list: ${sR.status}`);
   const data: any = await sR.json();
   const items: any[] = data.items ?? data.data ?? [];
   const targets = items.filter(it => {
