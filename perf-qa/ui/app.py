@@ -29,7 +29,7 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 # OneClick UI version. Bump on every push to oneclick repo so customers
 # can confirm the Update button actually applied — the new number shows
 # up in the topbar after the page reloads.
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/opt/perf-qa"))
 SCRIPT = SCRIPT_DIR / "collect_perf_data.sh"
