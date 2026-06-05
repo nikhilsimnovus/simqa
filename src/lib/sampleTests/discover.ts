@@ -46,9 +46,12 @@ export async function discoverSamples(inv: Inventory, systemId: string): Promise
   const lj: any = await lr.json();
   const token = lj.access_token ?? lj.token;
 
-  // Pull a wide page of testcases — the catalogue typically has <2000 rows
-  // and we want to do all 19 name-lookups against ONE list rather than 19
-  // separate /search calls.
+  // Pull the box catalogue from both endpoints:
+  //   /testcases/search       → user-authored testcases (POST)
+  //   /testcases?tags=sample  → system-shipped sample testcases (GET)
+  // Both feed the same lookup map. (Discovery used to miss the sample set
+  // entirely because /search only returns user-authored entries; see Chrome
+  // QA finding C2 / catalog rewrite for context.)
   const sr = await fetch(`http://${target.host}/v2/testcases/search`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -56,7 +59,18 @@ export async function discoverSamples(inv: Inventory, systemId: string): Promise
   });
   if (!sr.ok) return { ok: false, error: `testcases search: ${sr.status}`, systemId, systemHost: target.host, results: [] };
   const sj: any = await sr.json();
-  const items: any[] = sj.items ?? sj.data ?? [];
+  const items: any[] = [...(sj.items ?? sj.data ?? [])];
+
+  // Also pull sample-tagged.
+  const tr = await fetch(`http://${target.host}/v2/testcases?limit=1000&tags=sample`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (tr.ok) {
+    const tj: any = await tr.json();
+    for (const it of (tj.items ?? tj.data ?? [])) {
+      if (!items.find(x => x?.id === it?.id)) items.push(it);
+    }
+  }
 
   // Build a quick lookup map by lowercased name + id.
   const byKey = new Map<string, any>();

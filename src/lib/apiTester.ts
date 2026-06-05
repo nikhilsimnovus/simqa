@@ -18,10 +18,10 @@ export type ApiTestCategory =
   | 'system' | 'tools' | 'testcases' | 'test-creator' | 'executions' | 'statistics'
   | 'logs' | 'jobs' | 'negative' | 'mutating' | 'fuzz'
   // Sample-test matrix categories — generated from src/lib/sampleTests/matrix.ts.
-  // Three parallel categories so report dashboards can render per-domain
-  // pass/fail bars at a glance (and so users can run "just NTN" or "just
-  // multi-user" in isolation).
-  | 'sample-foundational' | 'sample-ntn-features' | 'sample-multi-user-64ue';
+  // RAT-based grouping (matches the box's actually-shipped sample tests; see
+  // dist/overnight/bug-report.md → C2 for why we use RAT instead of the
+  // wiki's narrative grouping).
+  | 'sample-sa' | 'sample-lte' | 'sample-nsa' | 'sample-nbiot';
 
 export type ApiTestSeverity = 'critical' | 'normal' | 'optional';
 
@@ -1595,14 +1595,30 @@ function defs(): TestDef[] {
 /** Lazy-load the testcase catalog once per sweep and cache on the ctx. */
 async function ensureTestcaseCatalog(c: RunCtx): Promise<Array<{ id: string; name: string }>> {
   if (c.testcaseCatalog) return c.testcaseCatalog;
-  const r = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/search`, {
+  // Pull both user testcases (via search) AND sample-tagged testcases (which
+  // the box exposes via a separate `?tags=sample` filter — confirmed during
+  // the Chrome QA walk). Otherwise sample-matrix variants always SKIP because
+  // the catalog only sees user-authored entries.
+  const seen = new Map<string, { id: string; name: string }>();
+  const userR = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/search`, {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ offset: 0, limit: 5000 }),
   });
-  const items: any[] = r.bodyJson?.items ?? r.bodyJson?.data ?? [];
-  c.testcaseCatalog = items
-    .filter((x: any) => x && typeof x === 'object')
-    .map((x: any) => ({ id: String(x.id ?? ''), name: String(x.name ?? '') }));
+  const userItems: any[] = userR.bodyJson?.items ?? userR.bodyJson?.data ?? [];
+  for (const x of userItems) {
+    if (!x || typeof x !== 'object') continue;
+    const id = String(x.id ?? ''); if (!id) continue;
+    seen.set(id, { id, name: String(x.name ?? '') });
+  }
+  // Sample-tagged testcases (system_tags=["sample"]) — separate listing.
+  const sampleR = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=1000&tags=sample`);
+  const sampleItems: any[] = sampleR.bodyJson?.items ?? sampleR.bodyJson?.data ?? [];
+  for (const x of sampleItems) {
+    if (!x || typeof x !== 'object') continue;
+    const id = String(x.id ?? ''); if (!id) continue;
+    if (!seen.has(id)) seen.set(id, { id, name: String(x.name ?? '') });
+  }
+  c.testcaseCatalog = [...seen.values()];
   return c.testcaseCatalog;
 }
 
@@ -1617,11 +1633,13 @@ function buildSampleMatrixEntries(): TestDef[] {
   const matrix = generateMatrix();
   const out: TestDef[] = [];
   for (const v of matrix) {
-    const category: ApiTestCategory = v.category === 'foundational'
-      ? 'sample-foundational'
-      : v.category === 'ntn-features'
-      ? 'sample-ntn-features'
-      : 'sample-multi-user-64ue';
+    const category: ApiTestCategory = v.category === 'sa'
+      ? 'sample-sa'
+      : v.category === 'lte'
+      ? 'sample-lte'
+      : v.category === 'nsa'
+      ? 'sample-nsa'
+      : 'sample-nbiot';
     out.push({
       id: v.id,
       name: v.name,
@@ -1634,16 +1652,17 @@ function buildSampleMatrixEntries(): TestDef[] {
       run: async (c) => {
         const base = { id: v.id, category, method: 'POST' as const, endpoint: '/v2/testcases/{id}/executions', severity: 'normal' as const, destructive: true };
         const catalog = await ensureTestcaseCatalog(c);
-        // Match permissively: exact name (case-insensitive), exact id, or
-        // id starting with the base name (handles owner-suffix workarounds).
+        // Match strictly by the catalog's on-box id first (post-Chrome-QA we
+        // know each sample testcase's exact id ends in `_` per SIM40-2015).
+        // Fall back to name match for older builds that don't yet expose the
+        // canonical id.
+        const wantId   = v.baseId.toLowerCase();
         const wantName = v.baseName.toLowerCase();
         const hit = catalog.find((t) =>
-          (t.name || '').toLowerCase() === wantName ||
-          (t.id   || '').toLowerCase() === wantName ||
-          (t.id   || '').toLowerCase() === wantName + '_' ||
-          (t.id   || '').toLowerCase().startsWith(wantName.replace(/-/g, '').slice(0, 24)),
+          (t.id   || '').toLowerCase() === wantId ||
+          (t.name || '').toLowerCase() === wantName,
         );
-        if (!hit) return skip(base.id, base, `base testcase "${v.baseName}" not yet authored on box (owner: ${v.owner})`);
+        if (!hit) return skip(base.id, base, `base testcase "${v.baseName}" (id=${v.baseId}) not yet authored on box (owner: ${v.owner})`);
 
         // Don't fire if the box is already busy — leaves other people's runs alone.
         const sims = await rawCall(c, 'GET', `${tBase(c.host)}/simulators`);

@@ -1,20 +1,22 @@
-// Matrix expansion of the 19-item SAMPLE_TESTS plan into the full
-// combinatorial variation set that gives us GA-level coverage.
+// Matrix expansion of the 17-item SAMPLE_TESTS plan into the full
+// combinatorial variation set that gives us GA-level coverage on the
+// box's actually-shipped sample testcases.
 //
-// The wiki page is the BASE — each entry there is one scenario shape. For
-// every base, we want to validate it across the dimensions that actually
-// affect behaviour for *that* scenario: RAT bands, traffic profiles, UE
-// counts, mobility, channel models, power-cycle modes, etc.
+// Each base entry (see catalog.ts) is one scenario shape. For every base
+// we want to validate it across the dimensions that actually affect
+// behaviour for *that* scenario: bands, traffic profiles, UE counts,
+// channel models, etc.
 //
-// Cross-multiplying every dimension across every base would produce
+// All 17 base scenarios are already 64-UE multi-user, so `ueCount` is not
+// a primary dimension here (we don't compress 64 → 1). Instead the main
+// variations are band (within each RAT), channel model, mobility profile,
+// and (for the dual-traffic items) the relative load split.
+//
+// Cross-multiplying every dimension across every base would explode into
 // thousands of cases; instead each base declares only the dimensions that
-// matter for it. A latency-ping case varies by band + UE count; a CA peak-DL
-// case varies by band + bandwidth + direction; an inter-RAT HO case varies
-// by direction (5G→4G vs 4G→5G) and by background traffic.
-//
-// The output is a flat list of `MatrixTest` entries — each one becomes a
-// single row in the API + UI verification reports, with category metadata
-// for the dashboard breakdown.
+// matter for it, and `maxVariants` caps each one. Output is a flat list of
+// `MatrixTest` rows — each becomes a row in the API + UI verification
+// reports, with category metadata for the dashboard breakdown.
 
 import { SAMPLE_TESTS, type SampleCategory, type SampleTestEntry, CATEGORY_LABELS, CATEGORY_ORDER } from './catalog';
 
@@ -32,103 +34,114 @@ export const BANDS = {
   'NTN':    ['ntn-leo', 'ntn-geo'],
 } as const;
 
-export const TRAFFIC_PROFILES = ['ping', 'iperf-udp', 'iperf-tcp', 'ftp', 'http', 'vonr', 'volte', 'vinr', 'web-mix'] as const;
-export const DIRECTIONS       = ['dl', 'ul', 'dl+ul'] as const;
-export const UE_COUNTS        = [1, 4, 16, 64, 256] as const;
-export const MOBILITY_PROFILES= ['stationary', 'ping-pong', 'round-trip'] as const;
-export const CHANNEL_MODELS   = ['awgn', 'tdla30', 'tdlb100', 'epa', 'eva'] as const;
-export const POWER_CYCLE_MODES= ['bursty', 'edrx', 'psm'] as const;
-export const HO_MODES         = ['intra-cell', 'intra-gnb', 'inter-gnb', 'inter-rat'] as const;
+export const TRAFFIC_PROFILES  = ['ping', 'iperf-udp', 'iperf-tcp', 'ftp', 'http', 'vonr', 'volte', 'vinr', 'web-mix'] as const;
+export const DIRECTIONS        = ['dl', 'ul', 'dl+ul'] as const;
+export const MOBILITY_PROFILES = ['stationary', 'ping-pong', 'round-trip'] as const;
+export const CHANNEL_MODELS    = ['awgn', 'tdla30', 'tdlb100', 'epa', 'eva'] as const;
+export const HO_MODES          = ['intra-cell', 'intra-gnb', 'inter-gnb', 'inter-rat'] as const;
+export const LOAD_PROFILES     = ['light', 'medium', 'heavy'] as const;
 
 // ─── Per-base variation specs ─────────────────────────────────────────────
 //
-// For each of the 19 base testcases, declare which dimensions vary and the
+// For each of the 17 base testcases, declare which dimensions vary and the
 // values to cover. Missing dimensions = "doesn't vary for this scenario".
 //
-// Keep the per-base output bounded: a base with bands=5, ueCount=2,
-// direction=3 produces 30 variants. Aim to keep each base ≤ 20–30 variants
-// so the total is roughly 200–300 matrix entries (still walkable in a
-// reasonable sweep, granular enough for diagnostics).
+// Keep the per-base output bounded so the total stays roughly 80–150 matrix
+// entries — granular enough for real signal, light enough for a single
+// CI-pipeline sweep.
 
 export interface VariationSpec {
-  bands?:        readonly string[];
-  traffic?:      readonly string[];
-  direction?:    readonly string[];
-  ueCount?:      readonly number[];
-  mobility?:     readonly string[];
-  channel?:      readonly string[];
-  powerCycle?:   readonly string[];
-  hoMode?:       readonly string[];
-  /** Optional max cap on variants for this base. Default 40 (cross-product
-   *  is truncated deterministically). */
-  maxVariants?:  number;
+  bands?:      readonly string[];
+  traffic?:    readonly string[];
+  direction?: readonly string[];
+  mobility?:   readonly string[];
+  channel?:    readonly string[];
+  hoMode?:     readonly string[];
+  load?:       readonly string[];
+  /** Optional max cap on variants for this base. Default 24. */
+  maxVariants?: number;
 }
 
-// Curated dimension picks per base. Order is the same as the wiki page.
+// Curated dimension picks per base. Order matches catalog.ts.
+// item numbers reference catalog.ts SAMPLE_TESTS items.
 const VARIATIONS_BY_ITEM: Record<number, VariationSpec> = {
-  // ── Foundational (1–8) ──────────────────────────────────────────────
-  1:  { bands: BANDS['NR-SA'],          ueCount: [1, 4],         channel: ['awgn', 'tdla30']                },   // Latency-Ping
-  2:  { bands: BANDS['NR-SA'],          direction: DIRECTIONS,   ueCount: [1, 4]                            },   // iPerf-UDP DL+UL
-  3:  { bands: BANDS['NR-SA'],          direction: DIRECTIONS,   ueCount: [1, 4]                            },   // iPerf-TCP advanced
-  4:  { bands: ['n78', 'n41'],          traffic: ['ftp', 'http', 'web-mix']                                 },   // Web-FTP-HTTP
-  5:  { bands: ['n78'],                 traffic: ['vonr', 'vinr'],     ueCount: [1, 4]                      },   // ViNR-VoNR
-  6:  { bands: BANDS['NR-NSA'],         ueCount: [1, 4]                                                     },   // NR-NSA-ENDC
-  7:  { bands: BANDS['LTE'],            traffic: ['volte'],            ueCount: [1, 4]                      },   // VoLTE-Latency
-  8:  { bands: BANDS['LTE']                                                                                  },   // LTE-MultiCell-4x1
+  // ── NR SA (items 1–9) ───────────────────────────────────────────────────
+  1:  { bands: BANDS['NR-SA'],          channel: ['awgn', 'tdla30'] },                              // SA AttDetach 4x2
+  2:  { bands: BANDS['NR-SA'],          hoMode: ['intra-gnb', 'inter-gnb'], channel: ['awgn'] },    // SA HO 4x2
+  3:  { bands: BANDS['NR-SA'],          load: LOAD_PROFILES,                channel: ['awgn'] },    // SA TCP DL 4x2
+  4:  { bands: BANDS['NR-SA'],          direction: DIRECTIONS,              channel: ['awgn'] },    // SA UDP 2x2
+  5:  { bands: BANDS['NR-SA'],          direction: DIRECTIONS,              channel: ['awgn'] },    // SA UDP 4x2
+  6:  { bands: ['n78', 'n41', 'n7'],    load: LOAD_PROFILES },                                       // SA UDP_DL + TCP_DL 4x2
+  7:  { bands: ['n78', 'n41'],          load: LOAD_PROFILES },                                       // SA UDP_DL + VoNR 4x2
+  8:  { bands: ['n78', 'n41', 'n7'],    channel: ['awgn', 'tdla30'] },                              // SA VoNR IMSI 4x2
+  9:  { bands: ['n78', 'n41'],          mobility: MOBILITY_PROFILES },                              // SA VoNR Telephon 4x2
 
-  // ── NTN & Features (9–13) ───────────────────────────────────────────
-  9:  { bands: ['ntn-geo'],             ueCount: [1, 4],         powerCycle: ['edrx', 'psm']                },   // NBIoT-NTN-GEO
-  10: { bands: ['ntn-leo'],             ueCount: [1, 4]                                                     },   // NR-SA-NTN-LEO
-  11: { bands: ['n78'],                 ueCount: [1, 4, 16]                                                 },   // NetworkSlicing
-  12: { bands: ['n78'],                 ueCount: [4, 16, 64]                                                },   // UAC-Congestion
-  13: { bands: ['nbiot-b8'],            powerCycle: POWER_CYCLE_MODES                                       },   // RedCap coexistence
+  // ── LTE (items 10–15) ───────────────────────────────────────────────────
+  10: { bands: BANDS['LTE'],            channel: ['epa', 'eva'] },                                  // LTE AttDetach 4x1
+  11: { bands: BANDS['LTE'],            hoMode: ['intra-gnb', 'inter-gnb'], channel: ['epa'] },     // LTE HO 4x1
+  12: { bands: BANDS['LTE'],            load: LOAD_PROFILES },                                       // LTE TCP DL 4x1
+  13: { bands: BANDS['LTE'],            direction: DIRECTIONS },                                     // LTE UDP 4x1
+  14: { bands: ['b3', 'b7', 'b41'],     load: LOAD_PROFILES },                                       // LTE UDP_DL + TCP_DL 4x1
+  15: { bands: ['b3', 'b7'],            channel: ['epa', 'eva'] },                                  // LTE VoLTE IMSI 4x1
 
-  // ── Multi-User 64 UEs (14–19) ───────────────────────────────────────
-  14: { bands: ['n78', 'n41'],          ueCount: [64]                                                       },   // AttachBurst-64UE
-  15: { bands: ['n78', 'n41'],          direction: ['dl', 'dl+ul'], ueCount: [64]                           },   // CA-PeakDL-iPerf
-  16: { bands: ['n78', 'b3'],           traffic: ['vonr', 'volte', 'http', 'ftp'], ueCount: [64]            },   // Mixed-LTE-NR
-  17: { bands: ['n78'],                 mobility: MOBILITY_PROFILES,  ueCount: [64]                         },   // Mobility-PingPong
-  18: { bands: ['n78', 'b3'],           hoMode: ['inter-rat'],        ueCount: [64]                         },   // InterRAT-HO 5G↔4G
-  19: { bands: ['n78'],                 channel: CHANNEL_MODELS,      ueCount: [64]                         },   // ChannelModel near/mid/far
+  // ── NR NSA (item 16) ────────────────────────────────────────────────────
+  16: { bands: BANDS['NR-NSA'],         direction: DIRECTIONS,              channel: ['awgn'] },    // NSA UDP 2x1
+
+  // ── NB-IoT (item 17) ────────────────────────────────────────────────────
+  17: { bands: BANDS['NB-IoT'],         channel: ['awgn', 'tdla30'] },                              // NB-IoT standalone ping
 };
 
 // ─── Variant generation ───────────────────────────────────────────────────
 
 export interface MatrixTest {
-  /** Stable id, e.g. "matrix-sample-1-band-n78-ueCount-1-channel-awgn". */
+  /** Stable id, e.g. "matrix-sample-1-band-n78-channel-awgn". */
   id: string;
   /** Display name combining base name + the dimension values. */
   name: string;
-  /** Source category (Foundational / NTN-Features / Multi-User 64UE). */
+  /** Source category (sa / lte / nsa / nbiot). */
   category: SampleCategory;
-  /** The base item this expansion came from (1–19). */
+  /** The base item this expansion came from (1–17). */
   baseItem: number;
-  /** Canonical base name from the wiki page. */
+  /** Canonical base id from the box (with the trailing underscore). */
+  baseId: string;
+  /** Canonical base name. */
   baseName: string;
   /** Owner of the base (carries through for accountability). */
   owner: string;
   /** Concrete parameter values for this variant. */
   params: {
-    band?: string;
-    traffic?: string;
+    band?:      string;
+    traffic?:   string;
     direction?: string;
-    ueCount?: number;
-    mobility?: string;
-    channel?: string;
-    powerCycle?: string;
-    hoMode?: string;
+    mobility?:  string;
+    channel?:   string;
+    hoMode?:    string;
+    load?:      string;
   };
 }
 
+// Map spec key (plural / dimension name) → params key (singular / value name).
+// Without this, `bands: ['n78', ...]` lands as `params.bands = 'n78'` and
+// the shortLabel/report code that reads `params.band` sees undefined.
+const SPEC_TO_PARAM_KEY: Record<string, string> = {
+  bands:     'band',
+  traffic:   'traffic',
+  direction: 'direction',
+  mobility:  'mobility',
+  channel:   'channel',
+  hoMode:    'hoMode',
+  load:      'load',
+};
+
 /** Deterministic cross-product, truncated to maxVariants. */
 function crossProduct(spec: VariationSpec, maxVariants: number): Array<Record<string, any>> {
-  // Build the list of (key, values[]) pairs; ignore undefined dimensions.
   const dims: Array<{ key: string; values: readonly any[] }> = [];
   for (const [k, v] of Object.entries(spec as Record<string, unknown>)) {
     if (k === 'maxVariants' || !v) continue;
     const arr = v as readonly any[];
     if (!Array.isArray(arr) || arr.length === 0) continue;
-    dims.push({ key: k, values: arr });
+    const paramKey = SPEC_TO_PARAM_KEY[k] ?? k;
+    dims.push({ key: paramKey, values: arr });
   }
   if (dims.length === 0) return [{}];
   // Cross-product (iterative to keep memory predictable).
@@ -150,14 +163,13 @@ function crossProduct(spec: VariationSpec, maxVariants: number): Array<Record<st
 
 function shortLabel(params: MatrixTest['params']): string {
   const bits: string[] = [];
-  if (params.band)       bits.push(params.band);
-  if (params.traffic)    bits.push(params.traffic);
-  if (params.direction)  bits.push(params.direction);
-  if (params.ueCount)    bits.push(`${params.ueCount}ue`);
-  if (params.mobility)   bits.push(params.mobility);
-  if (params.channel)    bits.push(params.channel);
-  if (params.powerCycle) bits.push(params.powerCycle);
-  if (params.hoMode)     bits.push(params.hoMode);
+  if (params.band)      bits.push(params.band);
+  if (params.traffic)   bits.push(params.traffic);
+  if (params.direction) bits.push(params.direction);
+  if (params.mobility)  bits.push(params.mobility);
+  if (params.channel)   bits.push(params.channel);
+  if (params.hoMode)    bits.push(params.hoMode);
+  if (params.load)      bits.push(params.load);
   return bits.join('-') || 'default';
 }
 
@@ -165,7 +177,7 @@ export function generateMatrix(): MatrixTest[] {
   const out: MatrixTest[] = [];
   for (const base of SAMPLE_TESTS) {
     const spec = VARIATIONS_BY_ITEM[base.item];
-    const max = spec?.maxVariants ?? 40;
+    const max = spec?.maxVariants ?? 24;
     const variants = crossProduct(spec ?? {}, max);
     for (const params of variants) {
       const label = shortLabel(params);
@@ -174,6 +186,7 @@ export function generateMatrix(): MatrixTest[] {
         name: `${base.name} [${label}]`,
         category: base.category,
         baseItem: base.item,
+        baseId: base.id,
         baseName: base.name,
         owner: base.owner,
         params,
@@ -187,9 +200,10 @@ export function generateMatrix(): MatrixTest[] {
  *  per-category aggregates without duplicating the logic. */
 export function groupMatrixByCategory(matrix: MatrixTest[]): Record<SampleCategory, MatrixTest[]> {
   const out: Record<SampleCategory, MatrixTest[]> = {
-    'foundational':    [],
-    'ntn-features':    [],
-    'multi-user-64ue': [],
+    'sa':    [],
+    'lte':   [],
+    'nsa':   [],
+    'nbiot': [],
   };
   for (const m of matrix) out[m.category].push(m);
   return out;
@@ -211,7 +225,7 @@ export { CATEGORY_LABELS, CATEGORY_ORDER, type SampleTestEntry };
 /** Quick stat for the test-plan dashboard (without running anything). */
 export function matrixStats() {
   const m = generateMatrix();
-  const byCat: Record<SampleCategory, number> = { 'foundational': 0, 'ntn-features': 0, 'multi-user-64ue': 0 };
+  const byCat: Record<SampleCategory, number> = { 'sa': 0, 'lte': 0, 'nsa': 0, 'nbiot': 0 };
   for (const x of m) byCat[x.category] += 1;
   return { total: m.length, byCategory: byCat };
 }
