@@ -1,0 +1,96 @@
+rat,band,duplex,bw_mhz,scs_khz,ssb_scs_khz,dl_arfcn_or_earfcn,dl_freq_mhz,ssb_arfcn,ssb_gscn,ssb_freq_mhz,status,notes,cfg_snippet
+NR,1,FDD,5,15,15,428040,2140.2,427950,5349,2139.75,ok,,"band: 1\ndl_nr_arfcn: 428040\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 427950\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,2,FDD,5,15,15,392040,1960.2,391950,4899,1959.75,ok,,"band: 2\ndl_nr_arfcn: 392040\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 391950\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,3,FDD,5,15,15,368520,1842.6,368430,4605,1842.15,ok,,"band: 3\ndl_nr_arfcn: 368520\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 368430\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,5,FDD,5,15,15,176280,881.4,176190,2202,880.95,ok,,"band: 5\ndl_nr_arfcn: 176280\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 176190\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,7,FDD,5,15,15,531000,2655,530910,6636,2654.55,ok,,"band: 7\ndl_nr_arfcn: 531000\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 530910\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,8,FDD,5,15,15,188520,942.6,188430,2355,942.15,ok,,"band: 8\ndl_nr_arfcn: 188520\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 188430\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,12,FDD,5,15,15,147540,737.7,147630,1845,738.15,ok,,"band: 12\ndl_nr_arfcn: 147540\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 147630\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,13,FDD,5,15,15,150180,750.9,150270,1878,751.35,ok,,"band: 13\ndl_nr_arfcn: 150180\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 150270\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,14,FDD,5,15,15,152580,762.9,152670,1908,763.35,ok,,"band: 14\ndl_nr_arfcn: 152580\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 152670\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,18,FDD,5,15,15,173520,867.6,173550,2169,867.75,ok,,"band: 18\ndl_nr_arfcn: 173520\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 173550\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,20,FDD,5,15,15,161220,806.1,161310,2016,806.55,ok,,"band: 20\ndl_nr_arfcn: 161220\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 161310\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,25,FDD,5,15,15,392520,1962.6,392430,4905,1962.15,ok,,"band: 25\ndl_nr_arfcn: 392520\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 392430\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,26,FDD,5,15,15,175320,876.6,175230,2190,876.15,ok,,"band: 26\ndl_nr_arfcn: 175320\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 175230\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,28,FDD,5,15,15,156120,780.6,156030,1950,780.15,ok,,"band: 28\ndl_nr_arfcn: 156120\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 156030\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,30,FDD,5,15,15,471000,2355,470910,5886,2354.55,ok,,"band: 30\ndl_nr_arfcn: 471000\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 470910\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,34,TDD,5,15,15,403500,2017.5,403470,5043,2017.35,ok,,"band: 34\ndl_nr_arfcn: 403500\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 403470\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 10,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 3,\n    dl_symbols: 10,\n    ul_slots: 1,\n    ul_symbols: 2,\n  },\n}"
+NR,38,TDD,5,15,15,519000,2595,518910,6486,2594.55,ok,,"band: 38\ndl_nr_arfcn: 519000\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 518910\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 10,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 3,\n    dl_symbols: 10,\n    ul_slots: 1,\n    ul_symbols: 2,\n  },\n}"
+NR,39,TDD,5,15,15,379980,1899.9,379950,4749,1899.75,ok,,"band: 39\ndl_nr_arfcn: 379980\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 379950\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 10,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 3,\n    dl_symbols: 10,\n    ul_slots: 1,\n    ul_symbols: 2,\n  },\n}"
+NR,40,TDD,10,30,30,470040,2350.2,469950,5874,2349.75,ok,,"band: 40\ndl_nr_arfcn: 470040\nsubcarrier_spacing: 30\nssb_subcarrier_spacing: 30\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 469950\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 20,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 7,\n    dl_symbols: 6,\n    ul_slots: 2,\n    ul_symbols: 4,\n  },\n}"
+NR,41,TDD,10,30,30,518604,2593.02,518670,6483,2593.35,ok,,"band: 41\ndl_nr_arfcn: 518604\nsubcarrier_spacing: 30\nssb_subcarrier_spacing: 30\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 518670\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 20,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 7,\n    dl_symbols: 6,\n    ul_slots: 2,\n    ul_symbols: 4,\n  },\n}"
+NR,48,TDD,10,30,30,641666,3624.99,641664,7933,3624.96,ok,,"band: 48\ndl_nr_arfcn: 641666\nsubcarrier_spacing: 30\nssb_subcarrier_spacing: 30\nssb_pos_bitmap: ""10000000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 641664\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 20,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 7,\n    dl_symbols: 6,\n    ul_slots: 2,\n    ul_symbols: 4,\n  },\n}"
+NR,50,TDD,10,30,30,294900,1474.5,294990,3687,1474.95,ok,,"band: 50\ndl_nr_arfcn: 294900\nsubcarrier_spacing: 30\nssb_subcarrier_spacing: 30\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 294990\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 20,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 7,\n    dl_symbols: 6,\n    ul_slots: 2,\n    ul_symbols: 4,\n  },\n}"
+NR,53,TDD,5,15,15,497880,2489.4,497790,6222,2488.95,ok,,"band: 53\ndl_nr_arfcn: 497880\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 497790\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 10,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 3,\n    dl_symbols: 10,\n    ul_slots: 1,\n    ul_symbols: 2,\n  },\n}"
+NR,65,FDD,5,15,15,431040,2155.2,431070,5388,2155.35,ok,,"band: 65\ndl_nr_arfcn: 431040\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 431070\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,66,FDD,5,15,15,429000,2145,428910,5361,2144.55,ok,,"band: 66\ndl_nr_arfcn: 429000\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 428910\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,70,FDD,5,15,15,400500,2002.5,400590,5007,2002.95,ok,,"band: 70\ndl_nr_arfcn: 400500\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 400590\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,71,FDD,5,15,15,126900,634.5,126990,1587,634.95,ok,,"band: 71\ndl_nr_arfcn: 126900\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 126990\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,74,FDD,5,15,15,299280,1496.4,299310,3741,1496.55,ok,,"band: 74\ndl_nr_arfcn: 299280\nsubcarrier_spacing: 15\nssb_subcarrier_spacing: 15\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 299310\nprach: {\n  prach_config_index: 16,\n  msg1_subcarrier_spacing: 15,\n  ra_response_window: 10,\n}"
+NR,77,TDD,10,30,30,650000,3750,650016,8020,3750.24,ok,,"band: 77\ndl_nr_arfcn: 650000\nsubcarrier_spacing: 30\nssb_subcarrier_spacing: 30\nssb_pos_bitmap: ""10000000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 650016\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 20,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 7,\n    dl_symbols: 6,\n    ul_slots: 2,\n    ul_symbols: 4,\n  },\n}"
+NR,78,TDD,10,30,30,636668,3550.02,636672,7881,3550.08,ok,,"band: 78\ndl_nr_arfcn: 636668\nsubcarrier_spacing: 30\nssb_subcarrier_spacing: 30\nssb_pos_bitmap: ""10000000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 636672\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 20,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 7,\n    dl_symbols: 6,\n    ul_slots: 2,\n    ul_symbols: 4,\n  },\n}"
+NR,79,TDD,15,30,30,732832,4992.48,732672,8881,4990.08,ok,,"band: 79\ndl_nr_arfcn: 732832\nsubcarrier_spacing: 30\nssb_subcarrier_spacing: 30\nssb_pos_bitmap: ""10000000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 732672\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 20,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 7,\n    dl_symbols: 6,\n    ul_slots: 2,\n    ul_symbols: 4,\n  },\n}"
+NR,90,TDD,10,30,30,518604,2593.02,518670,6483,2593.35,ok,,"band: 90\ndl_nr_arfcn: 518604\nsubcarrier_spacing: 30\nssb_subcarrier_spacing: 30\nssb_pos_bitmap: ""1000""\ndmrs_type_a_pos: 2\nssb_nr_arfcn: 518670\nprach: {\n  prach_config_index: 160,\n  msg1_subcarrier_spacing: 30,\n  ra_response_window: 20,\n}\ntdd_ul_dl_config: {\n  pattern1: {\n    period: 5,\n    dl_slots: 7,\n    dl_symbols: 6,\n    ul_slots: 2,\n    ul_symbols: 4,\n  },\n}"
+LTE,1,FDD,5,15,15,25,2112.5,25,,2112.5,ok,,band: 1\ndl_earfcn: 25\nn_rb_dl: 25
+LTE,2,FDD,1.4,15,15,607,1930.7,607,,1930.7,ok,,band: 2\ndl_earfcn: 607\nn_rb_dl: 6
+LTE,3,FDD,1.4,15,15,1207,1805.7,1207,,1805.7,ok,,band: 3\ndl_earfcn: 1207\nn_rb_dl: 6
+LTE,4,FDD,1.4,15,15,1957,2110.7,1957,,2110.7,ok,,band: 4\ndl_earfcn: 1957\nn_rb_dl: 6
+LTE,5,FDD,1.4,15,15,2407,869.7,2407,,869.7,ok,,band: 5\ndl_earfcn: 2407\nn_rb_dl: 6
+LTE,7,FDD,5,15,15,2775,2622.5,2775,,2622.5,ok,,band: 7\ndl_earfcn: 2775\nn_rb_dl: 25
+LTE,8,FDD,1.4,15,15,3457,925.7,3457,,925.7,ok,,band: 8\ndl_earfcn: 3457\nn_rb_dl: 6
+LTE,12,FDD,1.4,15,15,5017,729.7,5017,,729.7,ok,,band: 12\ndl_earfcn: 5017\nn_rb_dl: 6
+LTE,13,FDD,5,15,15,5205,748.5,5205,,748.5,ok,,band: 13\ndl_earfcn: 5205\nn_rb_dl: 25
+LTE,14,FDD,5,15,15,5305,760.5,5305,,760.5,ok,,band: 14\ndl_earfcn: 5305\nn_rb_dl: 25
+LTE,17,FDD,5,15,15,5755,736.5,5755,,736.5,ok,,band: 17\ndl_earfcn: 5755\nn_rb_dl: 25
+LTE,18,FDD,5,15,15,5875,862.5,5875,,862.5,ok,,band: 18\ndl_earfcn: 5875\nn_rb_dl: 25
+LTE,19,FDD,5,15,15,6025,877.5,6025,,877.5,ok,,band: 19\ndl_earfcn: 6025\nn_rb_dl: 25
+LTE,20,FDD,5,15,15,6175,793.5,6175,,793.5,ok,,band: 20\ndl_earfcn: 6175\nn_rb_dl: 25
+LTE,25,FDD,1.4,15,15,8047,1930.7,8047,,1930.7,ok,,band: 25\ndl_earfcn: 8047\nn_rb_dl: 6
+LTE,26,FDD,1.4,15,15,8697,859.7,8697,,859.7,ok,,band: 26\ndl_earfcn: 8697\nn_rb_dl: 6
+LTE,28,FDD,3,15,15,9225,759.5,9225,,759.5,ok,,band: 28\ndl_earfcn: 9225\nn_rb_dl: 15
+LTE,30,FDD,5,15,15,9795,2352.5,9795,,2352.5,ok,,band: 30\ndl_earfcn: 9795\nn_rb_dl: 25
+LTE,34,TDD,5,15,15,36225,2012.5,36225,,2012.5,ok,,band: 34\ndl_earfcn: 36225\nn_rb_dl: 25\nuldl_config: 2\nsp_config: 7
+LTE,38,TDD,5,15,15,37775,2572.5,37775,,2572.5,ok,,band: 38\ndl_earfcn: 37775\nn_rb_dl: 25\nuldl_config: 2\nsp_config: 7
+LTE,39,TDD,5,15,15,38275,1882.5,38275,,1882.5,ok,,band: 39\ndl_earfcn: 38275\nn_rb_dl: 25\nuldl_config: 2\nsp_config: 7
+LTE,40,TDD,5,15,15,38675,2302.5,38675,,2302.5,ok,,band: 40\ndl_earfcn: 38675\nn_rb_dl: 25\nuldl_config: 2\nsp_config: 7
+LTE,41,TDD,5,15,15,39675,2498.5,39675,,2498.5,ok,,band: 41\ndl_earfcn: 39675\nn_rb_dl: 25\nuldl_config: 2\nsp_config: 7
+LTE,42,TDD,5,15,15,41615,3402.5,41615,,3402.5,ok,,band: 42\ndl_earfcn: 41615\nn_rb_dl: 25\nuldl_config: 2\nsp_config: 7
+LTE,43,TDD,5,15,15,43615,3602.5,43615,,3602.5,ok,,band: 43\ndl_earfcn: 43615\nn_rb_dl: 25\nuldl_config: 2\nsp_config: 7
+LTE,48,TDD,5,15,15,55265,3552.5,55265,,3552.5,ok,,band: 48\ndl_earfcn: 55265\nn_rb_dl: 25\nuldl_config: 2\nsp_config: 7
+LTE,66,FDD,1.4,15,15,66443,2110.7,66443,,2110.7,ok,,band: 66\ndl_earfcn: 66443\nn_rb_dl: 6
+LTE,71,FDD,5,15,15,68611,619.5,68611,,619.5,ok,,band: 71\ndl_earfcn: 68611\nn_rb_dl: 25
+CATM,1,FDD,5,15,15,25,2112.5,25,,2112.5,ok,,band: 1\ndl_earfcn: 25\nn_rb_dl: 25
+CATM,2,FDD,1.4,15,15,607,1930.7,607,,1930.7,ok,,band: 2\ndl_earfcn: 607\nn_rb_dl: 6
+CATM,3,FDD,1.4,15,15,1207,1805.7,1207,,1805.7,ok,,band: 3\ndl_earfcn: 1207\nn_rb_dl: 6
+CATM,4,FDD,1.4,15,15,1957,2110.7,1957,,2110.7,ok,,band: 4\ndl_earfcn: 1957\nn_rb_dl: 6
+CATM,5,FDD,1.4,15,15,2407,869.7,2407,,869.7,ok,,band: 5\ndl_earfcn: 2407\nn_rb_dl: 6
+CATM,7,FDD,5,15,15,2775,2622.5,2775,,2622.5,ok,,band: 7\ndl_earfcn: 2775\nn_rb_dl: 25
+CATM,8,FDD,1.4,15,15,3457,925.7,3457,,925.7,ok,,band: 8\ndl_earfcn: 3457\nn_rb_dl: 6
+CATM,12,FDD,1.4,15,15,5017,729.7,5017,,729.7,ok,,band: 12\ndl_earfcn: 5017\nn_rb_dl: 6
+CATM,13,FDD,5,15,15,5205,748.5,5205,,748.5,ok,,band: 13\ndl_earfcn: 5205\nn_rb_dl: 25
+CATM,14,FDD,5,15,15,5305,760.5,5305,,760.5,ok,,band: 14\ndl_earfcn: 5305\nn_rb_dl: 25
+CATM,18,FDD,5,15,15,5875,862.5,5875,,862.5,ok,,band: 18\ndl_earfcn: 5875\nn_rb_dl: 25
+CATM,19,FDD,5,15,15,6025,877.5,6025,,877.5,ok,,band: 19\ndl_earfcn: 6025\nn_rb_dl: 25
+CATM,20,FDD,5,15,15,6175,793.5,6175,,793.5,ok,,band: 20\ndl_earfcn: 6175\nn_rb_dl: 25
+CATM,25,FDD,1.4,15,15,8047,1930.7,8047,,1930.7,ok,,band: 25\ndl_earfcn: 8047\nn_rb_dl: 6
+CATM,26,FDD,1.4,15,15,8697,859.7,8697,,859.7,ok,,band: 26\ndl_earfcn: 8697\nn_rb_dl: 6
+CATM,28,FDD,3,15,15,9225,759.5,9225,,759.5,ok,,band: 28\ndl_earfcn: 9225\nn_rb_dl: 15
+CATM,66,FDD,1.4,15,15,66443,2110.7,66443,,2110.7,ok,,band: 66\ndl_earfcn: 66443\nn_rb_dl: 6
+CATM,71,FDD,5,15,15,68611,619.5,68611,,619.5,ok,,band: 71\ndl_earfcn: 68611\nn_rb_dl: 25
+NBIOT,1,FDD,0.2,15,15,300,2140,300,,2140,ok,,"dl_earfcn: 300\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,2,FDD,0.2,15,15,900,1960,900,,1960,ok,,"dl_earfcn: 900\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,3,FDD,0.2,15,15,1575,1842.5,1575,,1842.5,ok,,"dl_earfcn: 1575\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,5,FDD,0.2,15,15,2525,881.5,2525,,881.5,ok,,"dl_earfcn: 2525\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,8,FDD,0.2,15,15,3625,942.5,3625,,942.5,ok,,"dl_earfcn: 3625\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,12,FDD,0.2,15,15,5095,737.5,5095,,737.5,ok,,"dl_earfcn: 5095\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,13,FDD,0.2,15,15,5230,751,5230,,751,ok,,"dl_earfcn: 5230\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,14,FDD,0.2,15,15,5330,763,5330,,763,ok,,"dl_earfcn: 5330\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,18,FDD,0.2,15,15,5925,867.5,5925,,867.5,ok,,"dl_earfcn: 5925\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,19,FDD,0.2,15,15,6075,882.5,6075,,882.5,ok,,"dl_earfcn: 6075\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,20,FDD,0.2,15,15,6300,806,6300,,806,ok,,"dl_earfcn: 6300\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,25,FDD,0.2,15,15,8365,1962.5,8365,,1962.5,ok,,"dl_earfcn: 8365\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,26,FDD,0.2,15,15,8865,876.5,8865,,876.5,ok,,"dl_earfcn: 8865\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,28,FDD,0.2,15,15,9435,780.5,9435,,780.5,ok,,"dl_earfcn: 9435\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,41,TDD,0.2,15,15,40620,2593,40620,,2593,ok,,"dl_earfcn: 40620\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,66,FDD,0.2,15,15,66786,2145,66786,,2145,ok,,"dl_earfcn: 66786\noperation_mode: ""standalone""\nn_id_ncell: 37"
+NBIOT,71,FDD,0.2,15,15,68761,634.5,68761,,634.5,ok,,"dl_earfcn: 68761\noperation_mode: ""standalone""\nn_id_ncell: 37"

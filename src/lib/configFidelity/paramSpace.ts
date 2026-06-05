@@ -8,6 +8,7 @@
 // once a vetted ARFCN table exists.
 
 import type { Case, Rat } from './types';
+import { BAND_TABLE, type BandRow, type BandRat } from './bandTable';
 
 // ---------- dimension model ----------
 
@@ -225,6 +226,86 @@ export function generateMatrix(req: MatrixRequest): Case[] {
   const seen = new Set<string>();
   const uniq = out.filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true)));
   return req.cap ? uniq.slice(0, req.cap) : uniq;
+}
+
+// ---------- band sweep ----------
+// One case per (rat, band) from the vetted master table, using its real
+// ARFCN/SCS/duplex so creates are accepted. Body rules verified live:
+//   • NR FDD: omit NRARFCN.ul (box derives it); NR TDD: ul = dl
+//   • LTE/CATM: bandwidth clamped to {3,5,10,15,20}; FDD ul=dl+18000, TDD ul=dl
+//   • NBIoT: ratType=nbiot, bandwidth "1.4"
+//   • CATM = an LTE cell (CAT-M is a subscriber category, not a cell ratType)
+const LTE_BW_OK = new Set([3, 5, 10, 15, 20]);
+const mobObj = { antennaType: 'isotropic', position: [4, 3], referencePower: -25, ulAttenuation: 60 };
+
+function bandCells(r: BandRow) {
+  if (r.rat === 'NR') {
+    const NRARFCN: any = r.duplex === 'TDD'
+      ? { dl: r.dlArfcn, ssb: r.ssbArfcn, ul: r.dlArfcn }
+      : { dl: r.dlArfcn, ssb: r.ssbArfcn };
+    const cell: any = {
+      cellType: '5g', syncId: 0, duplexMode: r.duplex, band: `n${r.band}`, NRARFCN,
+      scs: r.scsKhz, ssbScs: r.ssbScsKhz, bandwidth: String(r.bwMhz), prach: 0,
+      antennas: { dl: 1, ul: 1 }, rfCard: 0, rxToTxLatency: 4, txGain: [80], rxGain: [0],
+      globalTimingAdvance: -1, NTN: false, mobility: mobObj,
+    };
+    return { cellConfig: { master: { product: 'UE-SIM', ratType: 'sa', carrierAggregation: false, channelSim: false, pdcchDecodeOpt: true, pdcchDecodeOptThreshold: 0.1, ldpcIteration: 12 }, cells: [cell] } };
+  }
+  // LTE / CATM / NBIOT → 4g cell
+  const isNb = r.rat === 'NBIOT';
+  const bw = isNb ? '1.4' : String(LTE_BW_OK.has(r.bwMhz) ? r.bwMhz : 5);
+  const ul = r.duplex === 'FDD' ? r.dlArfcn + 18000 : r.dlArfcn;
+  const ratType = isNb ? 'nbiot' : 'smartphone';
+  const cell: any = {
+    cellType: '4g', syncId: 0, duplexMode: r.duplex, band: String(r.band), EARFCN: { dl: r.dlArfcn, ul },
+    bandwidth: bw, prach: 0, antennas: { dl: 1, ul: 1 }, rfCard: 0, rxToTxLatency: 4, txGain: [70], rxGain: [0],
+    globalTimingAdvance: -1, mobility: mobObj,
+  };
+  return { cellConfig: { master: { product: 'UE-SIM', ratType, carrierAggregation: false, channelSim: false, pdcchDecodeOpt: true, pdcchDecodeOptThreshold: 0.1, turboIteration: 14 }, cells: [cell] } };
+}
+
+function bandNbiotSubs() {
+  return { subsConfig: { subs: [{
+    ueCount: 1, servingCell: 0, startingIMSI: 1010123456789, nextIMSI: 1,
+    algorithm: 'milenage', sharedKey: '00112233445566778899aabbccddeeff', op: '000102030405060708090A0B0C0D0E0F',
+    resLength: 8, securityContext: true, asRelease: 13, redCap: false,
+    ueCategoryType: 'combined', ueCategory: 'nb1', multiTone: true, multiCarrier: true, twoHarq: false,
+    attachType: 'normal', ueInitiatedEvents: 'rrc', eventsInLoop: false, triggerTime: [10],
+    pdnType: 'ipv4', defaultApn: '', preambleIndex: 0, CIOTOpt: true, halfDuplex: true,
+    cipherAlgorithm: ['eea0', 'eea1', 'eea2'], integrityAlgorithm: ['eia0', 'eia1', 'eia2'], cqi: 'auto', ri: 'auto', pmi: 'auto',
+  }] } };
+}
+
+const RAT_LABEL: Record<BandRat, Rat> = { NR: 'nr-sa', LTE: 'lte', CATM: 'catm', NBIOT: 'nbiot' };
+
+function bandCase(r: BandRow, dataType: 'no_data' | 'udp' | 'tcp'): Case {
+  const cells = bandCells(r);
+  // NB-IoT carries no iperf data plane in this sweep.
+  const dt = r.rat === 'NBIOT' ? 'no_data' : dataType;
+  const subscribers = r.rat === 'NR'
+    ? buildSubs({ rat: 'nr-sa', ueCount: 1, networkSlicing: 'disable' } as Spec)
+    : r.rat === 'NBIOT'
+      ? bandNbiotSubs()
+      : buildSubs({ rat: 'lte', ueCount: 1, networkSlicing: 'disable' } as Spec);
+  const userPlane = buildUserPlane({ dataType: dt } as Spec);
+  const powerCycle = buildPowerCycle();
+  // Test-case names allow only [A-Za-z0-9_-]; bandwidths like 1.4/0.2 have a
+  // dot, so encode it as 'p' (1.4 -> 1p4mhz) to keep the name valid.
+  const id = `band-${r.rat.toLowerCase()}-b${r.band}-${r.duplex.toLowerCase()}-${String(r.bwMhz).replace('.', 'p')}mhz`;
+  const settings = { settings: { loggingProfileName: 'rrc_debug', successCriteriaName: 'BLER Success', testCaseName: id, test_name: id } };
+  const input = { cellConfig: cells.cellConfig, subsConfig: subscribers.subsConfig, userPlaneConfig: userPlane.userPlaneConfig, powerCycleConfig: powerCycle.powerCycleConfig, settings: settings.settings };
+  const tags = [RAT_LABEL[r.rat], `band${r.band}`, r.duplex.toLowerCase(), 'band-sweep'];
+  return { id, rat: RAT_LABEL[r.rat], description: `${r.rat} band ${r.band} ${r.duplex} ${r.bwMhz}MHz`, cells, subscribers, userPlane, powerCycle, settings, input, tags };
+}
+
+export interface BandSweepRequest { rats?: BandRat[]; dataType?: 'no_data' | 'udp' | 'tcp'; cap?: number }
+
+/** One test case per band in the vetted master table. */
+export function generateBandSweep(req: BandSweepRequest = {}): Case[] {
+  const want = new Set(req.rats ?? ['NR', 'LTE', 'CATM', 'NBIOT']);
+  const dt = req.dataType ?? 'no_data';
+  const out = BAND_TABLE.filter((r) => want.has(r.rat)).map((r) => bandCase(r, dt));
+  return req.cap ? out.slice(0, req.cap) : out;
 }
 
 export const _internals = { pairwise, cartesian, buildCase };
