@@ -1,13 +1,13 @@
 # =============================================================================
 # setup.conf  --  input for collect_perf_data.sh
 #
-# Defaults below are pre-filled for the QA rack server [AMD-64] setup
-# (ref: Confluence "Engineering Team : Setup Details"). Adjust per run.
+# Copy to setup.conf and fill in the placeholders for your rack.
 #
-# SECRETS: passwords use the env-override pattern  ${VAR:-default}. The QA
-# default is filled in so it works out-of-box, but you can override without
-# editing this file, e.g.:   export SIM_API_PASS=...; export CALLBOX_PASS=...
-# Anything blank or pointing at a missing path is skipped (not an error).
+# Conventions:
+#   - Anything that says <something> below MUST be filled in.
+#   - Blank value or pointing at a missing path is skipped (not an error).
+#   - SECRETS use ${VAR:-default} so they can be overridden by env without
+#     editing this file.  Example:   export CALLBOX_PASS=...; ...
 # =============================================================================
 
 # ---- Test case -------------------------------------------------------------
@@ -20,89 +20,86 @@ TEST_CASE_NAME="LAST_RUN"               # "" or "LAST_RUN" => last-executed test
 ITERATION_ID=""                         # optional: pin to a specific run UUID
 
 # ---- Output ----------------------------------------------------------------
-OUTPUT_DIR="/tmp/perf_collect"
-COLLECTION_LABEL="qa_perftest"
+OUTPUT_DIR="/var/lib/perf-qa/bundles"
+COLLECTION_LABEL="perfqa"
 
 # ---- What to collect (1 = yes, 0 = no) -------------------------------------
 COLLECT_UE=1
 COLLECT_SIMNOVATOR=1
 COLLECT_CALLBOX=1
 COLLECT_APP_SERVER=1
-COLLECT_REST_API=1                      # pull test-case data via Simnovator REST API
+COLLECT_REST_API=1
+COLLECT_HEAT=1
+COLLECT_IPERF=1
+COLLECT_ANALYZE=1
 
-# ---- UE side (QA UE server 192.168.1.34, 64-core) --------------------------
-# Set UE_HOST to SSH out for UE-side data when this script runs on a different
-# host (e.g. .36). Leave blank to collect from localhost.
-UE_HOST="192.168.1.34"                  # blank if running ON the UE host
-UE_USER="sysadmin"
+# ---- UE side --------------------------------------------------------------
+# Set UE_HOST to SSH out from this collector to the UE-sim box. Leave blank
+# if the collector script itself runs ON the UE host.
+UE_HOST=""                              # e.g. 10.0.0.34
+UE_USER=""                              # e.g. sysadmin
 UE_SSH_PORT="22"
-UE_PASS=""                              # blank = key-based SSH (QA uses ~/.ssh/id_ed25519)
+UE_PASS=""                              # blank = SSH key auth
 UE_CFG_PATH="/root/ue/config/ue.cfg"
-WORKLOAD_AFFINITY_JSON="/home/sysadmin/UE-simnovus/workload_affinity.json"
+WORKLOAD_AFFINITY_JSON=""               # e.g. /home/<user>/UE-simnovus/workload_affinity.json
 NUMA_CONFIG_PATH=""
 UESIM_LOG_DIR="/var/log/lte /root/ue"   # space-separated dirs are supported
 UESIM_LOG_MAX_MB=200
 PERF_PROC_NAMES="app-manager lteue iperf3"
 
-# ---- iperf logs (collected from the UE host after the REST section so we
-#      know the test's time window). Default path is the Simnovator app-
-#      manager's iperf log dir, which keeps per-run timestamped subdirs.
-COLLECT_IPERF=1
+# ---- iperf logs (collected from the UE host after the REST section) -------
 IPERF_LOG_DIR="/root/simnovator-app-manager/web/iperf/logs"
-IPERF_MAX_SUBDIRS=10                    # cap on subdirs to grab in one shot
+IPERF_MAX_SUBDIRS=10
 
-# ---- Simnovator (QA 4.0 Simnovator 192.168.1.95) ---------------------------
-# Set SIMNOVATOR_HOST to SSH out when this script runs elsewhere (e.g. .36).
-# Containers in 4.0 run rootless under podman as the sysadmin user.
-SIMNOVATOR_HOST="192.168.1.95"          # blank if running ON the Simnovator host
-SIMNOVATOR_USER="sysadmin"
+# ---- Simnovator host ------------------------------------------------------
+# Containers run rootless under podman as the configured SSH user.
+SIMNOVATOR_HOST=""                      # e.g. 10.0.0.95
+SIMNOVATOR_USER=""                      # e.g. sysadmin
 SIMNOVATOR_SSH_PORT="22"
-SIMNOVATOR_PASS=""                      # blank = key-based SSH
-CONTAINER_ENGINE=""                     # "" auto-detect (prefers podman) | podman | docker
+SIMNOVATOR_PASS=""                      # blank = SSH key auth
+CONTAINER_ENGINE=""                     # "" auto-detect (prefers podman)
 SIMNOVATOR_CONTAINERS=""                # blank = all running containers
 DOCKER_LOG_TAIL=20000
-# Beszel container monitoring (historical CPU/mem/net/disk time-series).
-# Credentials per Confluence "Beszel Monitoring Tool" (page 1058897921);
-# the dev user can see most QA systems out-of-the-box.
-BESZEL_HUB_URL="http://192.168.0.16:8090"
-BESZEL_USER="${BESZEL_USER:-}"          # set to your Beszel read-only viewer account
-BESZEL_PASS=""
-BESZEL_CHART_RANGE="1h"                 # 1h | 12h | 24h | 1w | 30d (Beszel preset)
-BESZEL_PYTHON="/home/sysadmin/perf-qa-ui/venv/bin/python"   # venv with playwright
-BESZEL_SCREENSHOT_SCRIPT=""             # blank => auto-discover next to this script
+
+# ---- Beszel container monitoring ------------------------------------------
+# Optional. Provide a read-only viewer account. Leave BESZEL_HUB_URL blank
+# to skip Beszel screenshots entirely.
+BESZEL_HUB_URL=""                       # e.g. http://10.0.0.16:8090
+BESZEL_USER="${BESZEL_USER:-}"
+BESZEL_PASS="${BESZEL_PASS:-}"
+BESZEL_CHART_RANGE="1h"                 # 1h | 12h | 24h | 1w | 30d
+BESZEL_PYTHON="/opt/perf-qa-ui/venv/bin/python"   # venv with playwright
+BESZEL_SCREENSHOT_SCRIPT=""             # blank => auto-discover next to collect_perf_data.sh
 BESZEL_EXPORT_CMD=""                    # optional CLI fallback (deprecated)
 
-# ---- Simnovator REST API (QA 4.0 Simnovator GUI admin/admin) ---------------
-# Verified against build 4.0.0_260527 (May 2026). API root is /v2 (Keycloak-
-# backed JWT auth). Endpoint paths are baked into the script — the caller
-# only sets credentials below; ITERATION_ID resolution is automatic.
-SIM_API_BASE="http://192.168.1.95"      # 4.0 Simnovator GUI/back-end host
-SIM_API_USER="admin"
-SIM_API_PASS=""   # QA GUI default; override via env for shared use
-SIM_API_LOGIN_PATH="/v2/login"          # POST {username,password} -> {access_token}
-SIM_API_STATS_BUDGET="1000"             # sample budget for global statistics
-# GUI screenshots (Global / Cell / UE Statistics + Logs) — needs same Playwright
-# venv as Beszel. Re-uses BESZEL_PYTHON unless SIM_PYTHON is set explicitly.
+# ---- Simnovator REST API --------------------------------------------------
+# Used to discover the running testcase, pull statistics + logs export ZIP
+# + import-ready testcase JSON.
+SIM_API_BASE=""                         # e.g. http://10.0.0.95
+SIM_API_USER=""                         # Simnovator GUI/API admin
+SIM_API_PASS="${SIM_API_PASS:-}"
+SIM_API_LOGIN_PATH="/v2/login"
+SIM_API_STATS_BUDGET="1000"
+# GUI screenshots (Global / Cell / UE Statistics + Logs).
 SIM_PYTHON=""                           # blank => use BESZEL_PYTHON
-SIM_SCREENSHOT_PAGES="global,cell,ue,logs"
-SIM_TESTCASE_STATUS="Completed"         # part of GUI URLs; usually "Completed" for finished runs
+SIM_SCREENSHOT_PAGES="global,cell,ue,logs,health-check"
+SIM_TESTCASE_STATUS="Completed"         # part of GUI URLs
 
-# ---- Callbox (QA callbox 192.168.1.107, password auth) ---------------------
-# /root/enb and /root/mme are stable symlinks the Amarisoft tooling maintains
-# pointing at the current build; their config dirs hold symlinks to the active
-# scenario. Always cat through the stable path so we get the live config.
+# ---- Callbox --------------------------------------------------------------
+# Amarisoft callboxes typically use password auth; install sshpass on this
+# host so the collector can drive ssh. Leave CALLBOX_HOST blank to skip.
 ENB_CFG_PATH="/root/enb/config/enb.cfg"
 MME_CFG_PATH="/root/mme/config/mme.cfg"
 IMS_CFG_PATH="/root/mme/config/ims.cfg"
-CALLBOX_HOST="192.168.1.107"            # blank => skip the entire callbox section
-CALLBOX_USER="sysadmin"
+CALLBOX_HOST=""                         # e.g. 10.0.0.107
+CALLBOX_USER=""                         # e.g. sysadmin
 CALLBOX_SSH_PORT="22"
-CALLBOX_PASS=""   # callbox uses password; needs sshpass installed
-AMARISOFT_WS_CMD=""                     # blank => auto via ws.js for `t`,`ue`,`cell` (SDR temp)
+CALLBOX_PASS="${CALLBOX_PASS:-}"
+AMARISOFT_WS_CMD=""                     # blank => auto via ws.js
 
-# ---- App server (QA app-server VM 192.168.1.109, private key) --------------
-APP_SERVER_HOST="192.168.1.109"         # blank if running ON the app-server
-APP_SERVER_USER="sysadmin"
+# ---- App server -----------------------------------------------------------
+APP_SERVER_HOST=""                      # e.g. 10.0.0.109 (blank = skip)
+APP_SERVER_USER=""                      # e.g. sysadmin
 APP_SERVER_SSH_PORT="22"
-APP_SERVER_PASS=""                      # blank = key-based SSH (QA uses private key here)
+APP_SERVER_PASS=""                      # blank = SSH key auth
 IPERF_TARGET=""                         # optional host:port reachability check

@@ -5,19 +5,24 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=sysadmin
-Group=sysadmin
-WorkingDirectory=/home/sysadmin/perf-qa-ui
-# Rootless podman needs HOME, USER, and XDG_RUNTIME_DIR or its calls fail
-# with "newuidmap: executable file not found" / "default OCI runtime not found".
-Environment=HOME=/home/sysadmin
-Environment=USER=sysadmin
-Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Adjust User/Group + the path env vars for the install. The defaults below
+# assume the install layout described in perf-qa/INSTALL.md:
+#   /opt/perf-qa        — collector scripts (bash + python analyzers + setup.conf)
+#   /opt/perf-qa-ui     — Flask UI (this app.py + its venv)
+#   /var/lib/perf-qa/bundles — written bundles
+User=perfqa
+Group=perfqa
+WorkingDirectory=/opt/perf-qa-ui
+# Rootless podman on the Simnovator host needs HOME / USER / XDG_RUNTIME_DIR
+# in the SSH session (these are for the LOCAL service user, just so its own
+# tooling like Playwright finds a sensible $HOME).
+Environment=HOME=/var/lib/perfqa
+Environment=USER=perfqa
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=PERFQA_SCRIPT_DIR=/home/sysadmin/perf-qa
-Environment=PERFQA_BUNDLE_ROOT=/tmp/perf_collect
-Environment=PERFQA_PORT=4000
-ExecStart=/home/sysadmin/perf-qa-ui/venv/bin/python /home/sysadmin/perf-qa-ui/app.py
+Environment=PERFQA_SCRIPT_DIR=/opt/perf-qa
+Environment=PERFQA_BUNDLE_ROOT=/var/lib/perf-qa/bundles
+Environment=PERFQA_PORT=8080
+ExecStart=/opt/perf-qa-ui/venv/bin/python /opt/perf-qa-ui/app.py
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal

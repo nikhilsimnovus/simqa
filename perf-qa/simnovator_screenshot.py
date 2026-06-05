@@ -142,7 +142,7 @@ def login_and_capture(args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--base", required=True, help="Simnovator GUI base URL, e.g. http://192.168.1.95")
+    ap.add_argument("--base", required=True, help="Simnovator GUI base URL, e.g. http://<simnovator-host>")
     ap.add_argument("--user", required=True)
     ap.add_argument("--password", required=True)
     ap.add_argument("--iteration-id", required=True)

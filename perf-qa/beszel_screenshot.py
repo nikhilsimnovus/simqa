@@ -97,7 +97,7 @@ def capture(hub: str, system_id: str, token: str, user_record: dict,
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--hub", required=True, help="Beszel hub URL, e.g. http://192.168.0.16:8090")
+    ap.add_argument("--hub", required=True, help="Beszel hub URL, e.g. http://<beszel-host>:8090")
     ap.add_argument("--user", required=True, help="Beszel login email")
     ap.add_argument("--password", required=True, help="Beszel login password")
     ap.add_argument("--match-host", required=True,

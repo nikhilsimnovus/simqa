@@ -26,11 +26,11 @@ from pathlib import Path
 
 from flask import Flask, abort, jsonify, redirect, render_template_string, request, send_file, Response
 
-SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/home/sysadmin/perf-qa"))
+SCRIPT_DIR = Path(os.environ.get("PERFQA_SCRIPT_DIR", "/opt/perf-qa"))
 SCRIPT = SCRIPT_DIR / "collect_perf_data.sh"
 SETUP_CONF = SCRIPT_DIR / "setup.conf"
-BUNDLE_ROOT = Path(os.environ.get("PERFQA_BUNDLE_ROOT", "/tmp/perf_collect"))
-PORT = int(os.environ.get("PERFQA_PORT", "4000"))
+BUNDLE_ROOT = Path(os.environ.get("PERFQA_BUNDLE_ROOT", "/var/lib/perf-qa/bundles"))
+PORT = int(os.environ.get("PERFQA_PORT", "8080"))
 
 UI_DIR = Path(__file__).resolve().parent  # for serving logo/favicon shipped next to app.py
 app = Flask(__name__)
@@ -138,7 +138,7 @@ def _run_job(job_id: str, env_overrides: dict) -> None:
 def _default_beszel_url() -> str:
     """Beszel hub URL for the topbar link. Pulled from the active QA profile."""
     profiles = load_profiles()
-    for name in ("QA_System", *profiles):  # prefer QA_System, then any other
+    for name in ("Lab", "QA_System", *profiles):  # prefer canonical name, then any other
         if name in profiles:
             url = profiles[name].get("defaults", {}).get("BESZEL_HUB_URL", "").strip()
             if url:
@@ -157,7 +157,11 @@ def index():
         beszel_url=_default_beszel_url(),
         # First-load default profile if localStorage has nothing; the page's
         # JS will override with localStorage if set.
-        default_profile="QA_System" if "QA_System" in profiles else (next(iter(profiles)) if profiles else ""),
+        # Pick a sensible first-load default; the page's JS will then honour
+        # localStorage if the user has already chosen a different profile.
+        default_profile=("Lab" if "Lab" in profiles
+                         else "QA_System" if "QA_System" in profiles
+                         else (next(iter(profiles)) if profiles else "")),
     )
 
 
@@ -202,31 +206,36 @@ def save_profiles_dict(profiles: dict) -> None:
 
 # Initial seed used the first time profiles.json doesn't exist. Once on disk,
 # this dict isn't consulted — the JSON file is the source of truth.
+#
+# All host IPs and credentials are intentionally BLANK in this seed — the
+# operator fills them in on first run via the Setup tab. Product paths
+# (ue.cfg / enb.cfg / mme.cfg / ims.cfg / iperf log dir) are Simnovator
+# stock locations and stay as defaults.
 _INITIAL_PROFILES = {
-    "QA_System": {
-        "label": "QA System (AMD-64 rack)",
+    "Lab": {
+        "label": "Lab (default profile)",
         "defaults": {
-            "UE_HOST":          "192.168.1.34",
-            "SIMNOVATOR_HOST":  "192.168.1.95",
-            "CALLBOX_HOST":     "192.168.1.107",
-            "APP_SERVER_HOST":  "192.168.1.109",
-            "BESZEL_HUB_URL":   "http://192.168.0.16:8090",
+            "UE_HOST":          "",   # e.g. 10.0.0.34
+            "SIMNOVATOR_HOST":  "",   # e.g. 10.0.0.95
+            "CALLBOX_HOST":     "",   # e.g. 10.0.0.107
+            "APP_SERVER_HOST":  "",   # e.g. 10.0.0.109
+            "BESZEL_HUB_URL":   "",   # e.g. http://10.0.0.16:8090 (blank = skip Beszel)
         },
-        # SIM_API_BASE auto-derives from SIMNOVATOR_HOST below; everything
+        # SIM_API_BASE auto-derives from SIMNOVATOR_HOST at runtime; everything
         # else listed here is written verbatim to setup.conf.
         "fixed": {
             "TEST_CASE_NAME":          "LAST_RUN",
             "ITERATION_ID":            "",
-            "OUTPUT_DIR":              "/tmp/perf_collect",
-            "COLLECTION_LABEL":        "qa_perftest",
+            "OUTPUT_DIR":              "/var/lib/perf-qa/bundles",
+            "COLLECTION_LABEL":        "perfqa",
             "COLLECT_HEAT":            "1",
             "COLLECT_ANALYZE":         "1",
 
-            "UE_USER":                 "sysadmin",
+            "UE_USER":                 "",   # e.g. sysadmin
             "UE_SSH_PORT":             "22",
-            "UE_PASS":                 "",
+            "UE_PASS":                 "",   # blank = SSH key auth
             "UE_CFG_PATH":             "/root/ue/config/ue.cfg",
-            "WORKLOAD_AFFINITY_JSON":  "/home/sysadmin/UE-simnovus/workload_affinity.json",
+            "WORKLOAD_AFFINITY_JSON":  "",   # e.g. /home/<user>/UE-simnovus/workload_affinity.json
             "UESIM_LOG_DIR":           "/var/log/lte /root/ue",
             "UESIM_LOG_MAX_MB":        "200",
             "PERF_PROC_NAMES":         "app-manager lteue iperf3",
@@ -234,56 +243,45 @@ _INITIAL_PROFILES = {
             "IPERF_LOG_DIR":           "/root/simnovator-app-manager/web/iperf/logs",
             "IPERF_MAX_SUBDIRS":       "10",
 
-            "SIMNOVATOR_USER":         "sysadmin",
+            "SIMNOVATOR_USER":         "",   # e.g. sysadmin
             "SIMNOVATOR_SSH_PORT":     "22",
-            "SIMNOVATOR_PASS":         "",
-            "CONTAINER_ENGINE":        "",
-            "SIMNOVATOR_CONTAINERS":   "",
+            "SIMNOVATOR_PASS":         "",   # blank = SSH key auth
+            "CONTAINER_ENGINE":        "",   # blank = auto (prefers podman)
+            "SIMNOVATOR_CONTAINERS":   "",   # blank = all running
             "DOCKER_LOG_TAIL":         "20000",
 
-            "SIM_API_USER":            "",   # fill in via Setup tab on first run
-            "SIM_API_PASS":            "",   # fill in via Setup tab on first run
+            "SIM_API_USER":            "",   # Simnovator GUI/API admin
+            "SIM_API_PASS":            "",
             "SIM_API_LOGIN_PATH":      "/v2/login",
             "SIM_API_STATS_BUDGET":    "1000",
             "SIM_SCREENSHOT_PAGES":    "global,cell,ue,logs,health-check",
             "SIM_TESTCASE_STATUS":     "Completed",
 
-            "BESZEL_USER":             "",   # fill in via Setup tab on first run
-            "BESZEL_PASS":             "",   # fill in via Setup tab on first run
+            "BESZEL_USER":             "",   # Beszel read-only viewer account
+            "BESZEL_PASS":             "",
             "BESZEL_CHART_RANGE":      "1h",
-            "BESZEL_PYTHON":           "/home/sysadmin/perf-qa-ui/venv/bin/python",
+            "BESZEL_PYTHON":           "/opt/perf-qa-ui/venv/bin/python",
 
-            "CALLBOX_USER":            "",   # fill in via Setup tab on first run
+            "CALLBOX_USER":            "",   # e.g. sysadmin
             "CALLBOX_SSH_PORT":        "22",
-            "CALLBOX_PASS":            "",   # fill in via Setup tab on first run
+            "CALLBOX_PASS":            "",   # callbox typically uses password auth (Amarisoft)
             "ENB_CFG_PATH":            "/root/enb/config/enb.cfg",
             "MME_CFG_PATH":            "/root/mme/config/mme.cfg",
             "IMS_CFG_PATH":            "/root/mme/config/ims.cfg",
-            "AMARISOFT_WS_CMD":        "",
+            "AMARISOFT_WS_CMD":        "",   # blank = auto via ws.js for `t`,`ue`,`cell`
 
-            "APP_SERVER_USER":         "sysadmin",
+            "APP_SERVER_USER":         "",   # e.g. sysadmin
             "APP_SERVER_SSH_PORT":     "22",
-            "APP_SERVER_PASS":         "",
-            "IPERF_TARGET":            "",
+            "APP_SERVER_PASS":         "",   # blank = SSH key auth
+            "IPERF_TARGET":            "",   # optional host:port reachability check
         },
-    },
-    "Dev_System": {
-        "label": "Dev System (Dev rack)",
-        "defaults": {
-            "UE_HOST":          "",                   # no dedicated dev UE
-            "SIMNOVATOR_HOST":  "192.168.1.91",       # Dev-Simnovator-91
-            "CALLBOX_HOST":     "",
-            "APP_SERVER_HOST":  "",
-            "BESZEL_HUB_URL":   "http://192.168.0.16:8090",
-        },
-        # Same fixed creds/paths as QA — same lab.
-        "fixed": None,  # filled at runtime from QA_System
     },
 }
-# Inherit fixed values from QA_System for any profile that doesn't define them.
+# Inherit fixed values from the primary profile for any profile that doesn't
+# define them (forward-compat with multi-profile setups added later).
 for _p in _INITIAL_PROFILES.values():
     if _p.get("fixed") is None:
-        _p["fixed"] = _INITIAL_PROFILES["QA_System"]["fixed"]
+        _p["fixed"] = next(iter(_INITIAL_PROFILES.values()))["fixed"]
 
 # Form schema: only the fields the user actually fills in (IPs + test case).
 # Everything else comes from the selected profile.
@@ -323,16 +321,16 @@ SETUP_SCHEMA = [  # kept for backward-compat with the textarea editor; unused ot
         ("COLLECT_IPERF",       "iperf logs",               "checkbox", ""),
     ]),
     ("Output", [
-        ("OUTPUT_DIR",          "Output directory",         "text",     "/tmp/perf_collect"),
-        ("COLLECTION_LABEL",    "Bundle label",             "text",     "qa_perftest"),
+        ("OUTPUT_DIR",          "Output directory",         "text",     "/var/lib/perf-qa/bundles"),
+        ("COLLECTION_LABEL",    "Bundle label",             "text",     "perfqa"),
     ]),
     ("UE host (SSH out)", [
-        ("UE_HOST",             "UE host IP",               "text",     "192.168.1.34 (blank = run locally)"),
-        ("UE_USER",             "SSH user",                 "text",     "sysadmin"),
+        ("UE_HOST",             "UE host IP",               "text",     "blank = run locally"),
+        ("UE_USER",             "SSH user",                 "text",     ""),
         ("UE_SSH_PORT",         "SSH port",                 "text",     "22"),
         ("UE_PASS",             "SSH password",             "password", "blank = key-based"),
         ("UE_CFG_PATH",         "ue.cfg path",              "text",     "/root/ue/config/ue.cfg"),
-        ("WORKLOAD_AFFINITY_JSON","workload_affinity.json path","text", "/home/sysadmin/UE-simnovus/workload_affinity.json"),
+        ("WORKLOAD_AFFINITY_JSON","workload_affinity.json path","text", ""),
         ("UESIM_LOG_DIR",       "UESIM log dirs (space-sep)","text",    "/var/log/lte /root/ue"),
         ("UESIM_LOG_MAX_MB",    "Per-file size cap (MB)",   "text",     "200"),
         ("PERF_PROC_NAMES",     "Perf processes (space-sep)","text",    "app-manager lteue iperf3"),
@@ -342,8 +340,8 @@ SETUP_SCHEMA = [  # kept for backward-compat with the textarea editor; unused ot
         ("IPERF_MAX_SUBDIRS",   "Max per-run subdirs to grab", "text",  "10"),
     ]),
     ("Simnovator host (SSH out)", [
-        ("SIMNOVATOR_HOST",     "Simnovator host IP",       "text",     "192.168.1.95 (blank = local)"),
-        ("SIMNOVATOR_USER",     "SSH user",                 "text",     "sysadmin"),
+        ("SIMNOVATOR_HOST",     "Simnovator host IP",       "text",     "blank = run locally"),
+        ("SIMNOVATOR_USER",     "SSH user",                 "text",     ""),
         ("SIMNOVATOR_SSH_PORT", "SSH port",                 "text",     "22"),
         ("SIMNOVATOR_PASS",     "SSH password",             "password", "blank = key-based"),
         ("CONTAINER_ENGINE",    "Container engine",         "text",     "blank = auto (prefers podman)"),
@@ -351,32 +349,32 @@ SETUP_SCHEMA = [  # kept for backward-compat with the textarea editor; unused ot
         ("DOCKER_LOG_TAIL",     "Per-container log tail",   "text",     "20000"),
     ]),
     ("Simnovator REST API", [
-        ("SIM_API_BASE",        "Simnovator GUI base URL",  "text",     "http://192.168.1.95"),
-        ("SIM_API_USER",        "API user",                 "text",     "admin"),
-        ("SIM_API_PASS",        "API password",             "password", "admin"),
+        ("SIM_API_BASE",        "Simnovator GUI base URL",  "text",     "http://<simnovator-host>"),
+        ("SIM_API_USER",        "API user",                 "text",     ""),
+        ("SIM_API_PASS",        "API password",             "password", ""),
         ("SIM_API_LOGIN_PATH",  "Login path",               "text",     "/v2/login"),
         ("SIM_API_STATS_BUDGET","Stats sample budget",      "text",     "1000"),
         ("SIM_SCREENSHOT_PAGES","GUI screenshot pages",     "text",     "global,cell,ue,logs"),
         ("SIM_TESTCASE_STATUS", "Testcase status in URL",   "text",     "Completed"),
     ]),
     ("Beszel", [
-        ("BESZEL_HUB_URL",      "Beszel hub URL",           "text",     "http://192.168.0.16:8090"),
-        ("BESZEL_USER",         "Beszel user",              "text",     "user@example.com"),
+        ("BESZEL_HUB_URL",      "Beszel hub URL",           "text",     "http://<beszel-host>:8090 (blank = skip)"),
+        ("BESZEL_USER",         "Beszel user",              "text",     ""),
         ("BESZEL_PASS",         "Beszel password",          "password", ""),
         ("BESZEL_CHART_RANGE",  "Chart range",              "select:1h,12h,24h,1w,30d", ""),
-        ("BESZEL_PYTHON",       "Playwright venv python",   "text",     "/home/sysadmin/perf-qa-ui/venv/bin/python"),
+        ("BESZEL_PYTHON",       "Playwright venv python",   "text",     "/opt/perf-qa-ui/venv/bin/python"),
     ]),
     ("Callbox (over SSH)", [
-        ("CALLBOX_HOST",        "Callbox host IP",          "text",     "192.168.1.107"),
-        ("CALLBOX_USER",        "SSH user",                 "text",     "sysadmin"),
+        ("CALLBOX_HOST",        "Callbox host IP",          "text",     "blank = skip callbox section"),
+        ("CALLBOX_USER",        "SSH user",                 "text",     ""),
         ("CALLBOX_SSH_PORT",    "SSH port",                 "text",     "22"),
         ("CALLBOX_PASS",        "SSH password",             "password", ""),
-        ("ENB_CFG_PATH",        "enb.cfg path",             "text",     "/root/lteenb-linux-2026-03-13/config/enb.cfg"),
+        ("ENB_CFG_PATH",        "enb.cfg path",             "text",     "/root/enb/config/enb.cfg"),
         ("AMARISOFT_WS_CMD",    "Override amari ws cmd",    "text",     "blank = auto via ws.js"),
     ]),
     ("App server (over SSH)", [
-        ("APP_SERVER_HOST",     "App-server host IP",       "text",     "192.168.1.109"),
-        ("APP_SERVER_USER",     "SSH user",                 "text",     "sysadmin"),
+        ("APP_SERVER_HOST",     "App-server host IP",       "text",     "blank = skip app-server section"),
+        ("APP_SERVER_USER",     "SSH user",                 "text",     ""),
         ("APP_SERVER_SSH_PORT", "SSH port",                 "text",     "22"),
         ("APP_SERVER_PASS",     "SSH password",             "password", "blank = key-based"),
         ("IPERF_TARGET",        "iperf reachability target","text",     "host:port (optional)"),
@@ -560,7 +558,10 @@ def _write_setup_from_profile(profile_name: str, form: dict) -> tuple[bool, str]
 
 @app.route("/setup", methods=["POST"])
 def setup_save():
-    profile = (request.form.get("_profile") or "").strip() or "QA_System"
+    # Fall back to the first profile if the form didn't say which to use.
+    _profiles = load_profiles()
+    _default_profile = "Lab" if "Lab" in _profiles else (next(iter(_profiles), "") if _profiles else "")
+    profile = (request.form.get("_profile") or "").strip() or _default_profile
     ok, msg = _write_setup_from_profile(profile, request.form)
     if ok:
         return jsonify({"ok": True, "message": msg}), 200
@@ -579,11 +580,13 @@ def api_testcases():
     """List Simnovator test cases for the Collector's datalist suggestion.
 
     Proxies the GUI's `/v2/testcases/list` after a quick JWT auth. Reads
-    creds from a query param `?profile=<name>` (defaults to QA_System) so the
-    UI's dropdown can populate from the same profile the user is about to run.
+    creds from a query param `?profile=<name>`; falls back to the canonical
+    first profile so the UI's dropdown can populate from the same profile
+    the user is about to run.
     """
-    profile = request.args.get("profile", "QA_System")
     profiles = load_profiles()
+    _fallback = "Lab" if "Lab" in profiles else (next(iter(profiles), "") if profiles else "")
+    profile = request.args.get("profile") or _fallback
     if profile not in profiles:
         return jsonify({"items": [], "error": f"unknown profile: {profile}"}), 404
     fixed = profiles[profile].get("fixed", {})
