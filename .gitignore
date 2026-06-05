@@ -73,3 +73,8 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 *.log
+
+# config-fidelity local artifacts
+diag/
+dist/
+data/cf-report/
