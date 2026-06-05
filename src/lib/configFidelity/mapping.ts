@@ -65,7 +65,7 @@ function expectedGroupTypes(ratType: string | undefined): string[] {
     case 'sa': return ['nr'];
     case 'nsa': return ['lte', 'nr'];
     case 'smartphone': return ['lte'];
-    case 'nbiot': return ['lte']; // NB-IoT rides an LTE group on this product
+    case 'nbiot': return ['nbiot']; // NB-IoT cell group reports its own 'nbiot' group_type (verified live on 192.168.10.202)
     case 'multirat': return ['nr', 'lte'];
     default: return [];
   }
@@ -184,7 +184,21 @@ const subscriberChecker: Checker = {
       const B = (field: string, label: string, crit: Criticality = 'normal') => ({ inputPath: `${path}.${field}`, ueCfgPath: `ue_list[].${label}`, label, feature: 'subscriber', criticality: crit });
       if (s.algorithm !== undefined) out.push(check({ ...B('algorithm', 'sim_algo', 'critical') }, ci(s.algorithm), ci(u.sim_algo), { eq: (a, b) => a === b }));
       if (s.asRelease !== undefined) out.push(check({ ...B('asRelease', 'as_release') }, Number(s.asRelease), u.as_release));
-      if (s.ueCategory !== undefined) out.push(check({ ...B('ueCategory', 'ue_category') }, ci(s.ueCategory), ci(u.ue_category)));
+      if (s.ueCategory !== undefined) {
+        const cat = ci(s.ueCategory);
+        if (cat.startsWith('nb')) {
+          // NB-IoT: the box encodes the category as an Amarisoft numeric code
+          // (Cat-NB1 -> -2), not the 'nbN' string. Compare against the verified
+          // mapping; surface any unmapped NB-IoT category as a coverage gap
+          // (no-rule) rather than a false mismatch — never guess the encoding.
+          const NBIOT_UE_CATEGORY: Record<string, string> = { nb1: '-2' }; // verified live on 192.168.10.202
+          const exp = NBIOT_UE_CATEGORY[cat];
+          if (exp !== undefined) out.push(check({ ...B('ueCategory', 'ue_category') }, exp, ci(u.ue_category)));
+          else out.push(res({ ...B('ueCategory', 'ue_category'), status: 'no-rule', expected: cat, actual: ci(u.ue_category), detail: `NB-IoT ue_category "${cat}" encoding not yet mapped (box uses an Amarisoft numeric code)` }));
+        } else {
+          out.push(check({ ...B('ueCategory', 'ue_category') }, ci(s.ueCategory), ci(u.ue_category)));
+        }
+      }
       if (s.pdnType !== undefined) out.push(check({ ...B('pdnType', 'attach_pdn_type') }, ci(s.pdnType), ci(u.attach_pdn_type)));
       if (s.powerControl !== undefined) out.push(check({ ...B('powerControl', 'power_control_enabled') }, !!s.powerControl, !!u.power_control_enabled));
       if (s.imeisv) out.push(check({ ...B('imeisv', 'imeisv') }, String(s.imeisv), String(u.imeisv)));
