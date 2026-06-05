@@ -95,17 +95,17 @@ export default function PerfQaPage() {
             href="/api/perf-qa/deploy-build"
             download
             className="inline-flex items-center gap-1 text-xs text-primary-700 hover:bg-primary-50 px-2 py-1 rounded font-medium"
-            title="Download deployable tarball (slim, ~85 KB) — for updates / re-installs where Playwright is already set up on the target"
+            title="~90 KB. For customers that ALREADY have perf-qa installed — re-running install.sh detects existing Chromium and skips the download."
           >
-            <Package className="h-3.5 w-3.5" /> Deploy build
+            <Package className="h-3.5 w-3.5" /> Update
           </a>
           <a
             href="/api/perf-qa/deploy-build?vendor=1"
             download
             className="inline-flex items-center gap-1 text-xs text-slate-600 hover:text-primary-700 hover:bg-primary-50 px-2 py-1 rounded"
-            title="Download deployable tarball with bundled Playwright Chromium (~267 MB) — for first-time installs on hosts that can't reach cdn.playwright.dev (corporate SSL proxy)"
+            title="~267 MB. For FIRST-TIME installs at a new customer site — includes bundled Playwright Chromium so the install never reaches out for the browser download."
           >
-            <Package className="h-3.5 w-3.5" /> + browsers
+            <Package className="h-3.5 w-3.5" /> Fresh install
           </a>
           <span className="w-px h-4 bg-slate-200 mx-1" />
           <Button size="sm" variant="ghost" onClick={() => setIframeKey(k => k + 1)} title="Reload the embedded UI">

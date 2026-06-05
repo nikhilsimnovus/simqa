@@ -160,11 +160,12 @@ export async function GET(req: Request) {
     .replace(/[-:]/g, '')
     .replace(/\..+/, '')
     .replace('T', '_');
-  // Filename calls out browsers when bundled so the customer can tell
-  // which tarball they got from the name alone.
+  // Filename calls out which flavor so the customer can tell from the
+  // name alone — "fresh-install" carries Chromium, "update" is slim and
+  // assumes the target already has perf-qa installed.
   const filename = vendorPresent
-    ? `perf-qa-deploy-with-browsers-${ts}.tar.gz`
-    : `perf-qa-deploy-${ts}.tar.gz`;
+    ? `perf-qa-fresh-install-${ts}.tar.gz`
+    : `perf-qa-update-${ts}.tar.gz`;
 
   return new Response(webStream, {
     headers: {
