@@ -19,8 +19,11 @@
 import type { UesimApiOpts } from './types';
 import {
   SLICES,
+  slicesFor,
   type BulkTestCaseSpec,
   type RAT,
+  type SweepSize,
+  type MatrixSlice,
   BULK_NAME_PREFIX,
   BULK_TAG,
   categoryOf,
@@ -60,10 +63,10 @@ async function fetchBandInfo(host: string, token: string, rat: 'NR' | 'LTE'): Pr
 
 // ─── Slice expansion ──────────────────────────────────────────────────────
 
-export function expandSlices(nr: BandInfoMap, lte: BandInfoMap): BulkTestCaseSpec[] {
+export function expandSlices(nr: BandInfoMap, lte: BandInfoMap, slices: readonly MatrixSlice[] = SLICES): BulkTestCaseSpec[] {
   const out: BulkTestCaseSpec[] = [];
 
-  for (const slice of SLICES) {
+  for (const slice of slices) {
     const ratMap = (slice.rat === 'LTE' || slice.rat === 'NB-IoT') ? lte : nr;
     let added = 0;
     const cap = slice.maxVariants ?? Infinity;
@@ -193,7 +196,8 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
             globalTimingAdvance: -1,
             mobility: { antennaType: 'isotropic', position: [4, 3], referencePower: -25, ulAttenuation: 60 },
           },
-          // Cell 1 — NR secondary (SCell)
+          // Cell 1 — NR secondary (SCell). rfCard: 1 because the box
+          // rejects two cells on the same RF card slot.
           {
             cellType: '5g',
             syncId: 1,
@@ -203,7 +207,7 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
             bandwidth: String(spec.bandwidth),
             prach: 0,
             antennas: { dl: spec.antennas.dl, ul: spec.antennas.ul },
-            rfCard: 0,
+            rfCard: 1,
             scs: spec.scs ?? 30,
             ssbScs: spec.scs ?? 30,
             ratTypeP: 'nsa',
@@ -306,7 +310,9 @@ function buildSubscribersBody(spec: BulkTestCaseSpec) {
       pmi: 'auto',
       preambleIndex: 0,
       mncDigits: 2,
-      VoNRSupport: false,
+      // VoNR / VoLTE testcases need the IMS-voice path enabled on the
+      // subscriber, so the SIP register goes through.
+      VoNRSupport: spec.dataType === 'vonr',
       protectionScheme: 'null',
       publicKeyId: 0,
       routingIndicator: 1111,
@@ -322,6 +328,9 @@ function buildSubscribersBody(spec: BulkTestCaseSpec) {
       external_sim: false,
       access_control_classes: [],
       uac_access_identities: [],
+      // NSA validator is stricter and rejects missing defaultNssai. Empty
+      // array means "use the network's default S-NSSAI". Safe for SA too.
+      defaultNssai: [],
     });
     return {
       subsConfig: {
@@ -390,12 +399,58 @@ function iperfProfile(group: number, direction: 'uplink' | 'downlink' | 'both', 
   };
 }
 
+/** VoLTE / VoNR — IMS-signalled voice. Body shape sampled from the
+ *  shipped SA-VONR-256 testcase on 4.0.0_260602. The box uses the
+ *  SAME dataType "volte" for both LTE and NR voice — what makes it
+ *  VoNR is `ratTypeP: "sa"`, not a separate dataType. */
+function voiceProfile(ratTypeP: 'sa' | 'nsa' | 'lte', subsLen: number) {
+  return {
+    subscriberGroup: [0],
+    dataType: 'volte',                              // box rejects 'vonr' as not-a-valid-option
+    apnName: 'ims',
+    attachTypeSIP: true,
+    authentication: 'HTTP-Digest',
+    callDuration: 500,
+    callSetupDelay: 5,
+    codec: 'AMR-WB',
+    dataLoop: false,
+    mtuSize: 1500,
+    networkSlicingP: false,
+    password: 'sim',
+    pcscfIpAddress: '192.168.4.1',
+    pdnType: 'ipv4',
+    pdnTypeNonIp: false,
+    precondition: true,
+    ratTypeP: ratTypeP === 'lte' ? undefined : ratTypeP,
+    realm: 'ims.mnc001.mcc001.3gppnetwork.org',
+    registrationExpiry: 3600,
+    registrationOnly: false,
+    sessionDuration: 600,
+    startDelay: 5,
+    subsLen,
+    uniquePassword: false,
+    userName: 'ims.mnc001.mcc001.3gppnetwork.org',
+    videoCodec: 'NONE',
+  };
+}
+
 function buildUserPlaneBody(spec: BulkTestCaseSpec) {
   // Box-valid dataTypes (learned from existing testcases on 4.0.0_260602):
   //   'no_data' — no PDU traffic, used for attach-detach style cases
   //   'iperf'   — bidirectional or single-direction throughput
+  //   'volte'   — IMS voice. Same shape for LTE and NR; distinguish with
+  //               ratTypeP ('sa' for VoNR).
   // Plus our generator's `mix-*` combos which produce 2-profile bodies
   // bound to 2 distinct subscriber groups (see buildSubscribersBody).
+
+  // VoLTE / VoNR — full IMS voice profile, ratTypeP carries the RAT.
+  if (spec.dataType === 'volte') {
+    return { userPlaneConfig: { profiles: [voiceProfile('lte', spec.ueCount)] } };
+  }
+  if (spec.dataType === 'vonr') {
+    return { userPlaneConfig: { profiles: [voiceProfile('sa', spec.ueCount)] } };
+  }
+
   if (spec.dataType === 'no_data') {
     return {
       userPlaneConfig: {
@@ -594,6 +649,7 @@ export async function generateBulkTestcases(
   onProgress?: (p: GenerationProgress) => void,
   signal?: AbortSignal,
   limit?: number,
+  sweep: SweepSize = 'complete',
 ): Promise<GenerationResult> {
   const startedAt = new Date().toISOString();
 
@@ -628,7 +684,7 @@ export async function generateBulkTestcases(
   } catch { /* keep undefined */ }
 
   // 3. Materialise variants.
-  let variants = expandSlices(nrBands, lteBands);
+  let variants = expandSlices(nrBands, lteBands, slicesFor(sweep));
   if (limit && limit > 0) variants = variants.slice(0, limit);
 
   // 4. Pre-load existing names so we can skip duplicates cheaply. POST

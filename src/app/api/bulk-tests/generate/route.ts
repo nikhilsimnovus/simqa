@@ -9,8 +9,10 @@
 import { NextResponse } from 'next/server';
 import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
 import { generateBulkTestcases } from '@/lib/bulkTests/generator';
+import { executeBulkTestcases } from '@/lib/bulkTests/executor';
 import { getState, writeManifest } from '@/lib/bulkTests/state';
 import type { UesimApiOpts } from '@/lib/bulkTests/types';
+import type { SweepSize } from '@/lib/bulkTests/spec';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 1800;   // up to 30 min for ~500 creates
@@ -20,6 +22,12 @@ export async function POST(req: Request) {
   try { body = await req.json(); } catch { /* empty */ }
   const systemId: string = body.systemId ?? 'sys-6';
   const limit: number | undefined = typeof body.limit === 'number' && body.limit > 0 ? body.limit : undefined;
+  const sweep: SweepSize = body.sweep === 'quick' || body.sweep === 'moderate' ? body.sweep : 'complete';
+  // When true, after generation finishes we kick off the executor over
+  // the just-created testcases (sample-bounded for safety).
+  const alsoExecute: boolean = !!body.alsoExecute;
+  const uesimSystemId: string = body.uesimSystemId ?? 'sys-7';
+  const execSampleSize: number | undefined = typeof body.execSampleSize === 'number' && body.execSampleSize > 0 ? body.execSampleSize : undefined;
 
   const inv = loadInventory();
   const apiOpts = uesimApiOptsForSystem(inv, systemId);
@@ -48,9 +56,36 @@ export async function POST(req: Request) {
         (p) => { state.generation.progress = p; },
         handle.abort.signal,
         limit,
+        sweep,
       );
       state.generation.result = result;
       writeManifest(result);
+
+      // If the caller asked for the combined generate+execute flow, kick
+      // the executor off now over the just-created manifest. We always
+      // sample to keep the run bounded — full executes of 500+ cases
+      // would take many hours given the box's system-wide exec mutex.
+      if (alsoExecute && result.created.length > 0) {
+        const execHandle = { abort: new AbortController() };
+        state.execution = {
+          handle: execHandle,
+          progress: { startedAt: new Date().toISOString(), total: Math.min(execSampleSize ?? result.created.length, result.created.length), done: 0, passed: 0, failed: 0 },
+        };
+        try {
+          const execSummary = await executeBulkTestcases(inv, {
+            simnovatorSystemId: systemId,
+            uesimSystemId,
+            manifest: result.created,
+            sampleSize: execSampleSize,
+            buildVersion: result.buildVersion,
+            signal: execHandle.abort.signal,
+            onProgress: (p) => { state.execution!.progress = p; },
+          });
+          state.execution!.result = execSummary;
+        } finally {
+          if (state.execution?.progress) state.execution.progress.finishedAt = new Date().toISOString();
+        }
+      }
     } catch (e: any) {
       const startedAt = state.generation.progress?.startedAt ?? new Date().toISOString();
       state.generation.result = {
@@ -66,5 +101,5 @@ export async function POST(req: Request) {
     }
   })();
 
-  return NextResponse.json({ ok: true, systemId, host: opts.host, limit: limit ?? null });
+  return NextResponse.json({ ok: true, systemId, host: opts.host, sweep, limit: limit ?? null, alsoExecute });
 }

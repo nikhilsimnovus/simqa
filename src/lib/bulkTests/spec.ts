@@ -1,25 +1,29 @@
 // Dimension definitions for the bulk-testcase generator.
 //
-// Goal: programmatically author 1500+ valid, varied testcases on the box
-// via the REST create-lifecycle (POST /v2/tests/cells → subscribers →
-// user-plane → power-cycle → mobility → settings), then validate every
-// one of them via the API (with fidelity round-trip) and a sampled subset
-// via the UI.
+// The generator can run at three different scales — pick one based on
+// how much time / box bandwidth you have:
 //
-// Each entry here describes one combinatorial slice of the (RAT × band ×
-// bandwidth × duplex × UE-count × traffic × mobility × fading × scs)
-// space. At generation time we fetch band-info from the live box,
-// intersect each spec with the actual band/duplex/bandwidth combos the
-// box supports, then materialise variants as concrete `BulkTestCaseSpec`
-// objects.
+//   QUICK    ~40 testcases   — one of every feature/RAT/traffic family,
+//                              good for a 5-minute smoke that proves
+//                              every code path on the box is reachable.
+//   MODERATE ~200 testcases  — broader coverage across bands/bandwidths
+//                              without exhausting every combo.
+//   COMPLETE ~1700 testcases — full Cartesian sweep, the "every band ×
+//                              every bw × every traffic …" matrix.
+//
+// All three share the same dimension primitives below — only the slice
+// caps and band lists differ.
 
 export type RAT = 'LTE' | 'NR-SA' | 'NR-NSA' | 'NB-IoT';
 
 export type DataType =
   | 'no_data'
   | 'iperf-both' | 'iperf-dl' | 'iperf-ul'
-  // Mixed traffic — subscriber group 0 gets the first profile, group 1 the
-  // second. Generates a 2-profile userPlaneConfig + 2-row subsConfig.
+  // VoLTE / VoNR — IMS-signalled voice calls. LTE uses the volte dataType
+  // body, NR-SA uses the same body with ratTypeP='sa'.
+  | 'volte' | 'vonr'
+  // Mixed traffic — subscriber group 0 gets the first profile, group 1
+  // the second. Generates a 2-profile userPlaneConfig + 2-row subsConfig.
   | 'mix-iperf-dl+ul'   // group 0 = DL iperf, group 1 = UL iperf
   | 'mix-iperf+no_data' // group 0 = bidir iperf, group 1 = attach-only
   | 'mix-iperf+tcp';    // group 0 = UDP iperf, group 1 = TCP iperf
@@ -33,25 +37,18 @@ export type FadingLTE = 'awgn' | 'epa5' | 'eva70' | 'etu70';
 export type FadingNR  = 'awgn' | 'tdla30' | 'tdlb100' | 'tdlc300';
 export type Fading = FadingLTE | FadingNR;
 
+export type SweepSize = 'quick' | 'moderate' | 'complete';
+
 /** A single "slice" of the matrix — covers a band-set within one RAT plus
  *  the variation knobs to multiply against it. */
 export interface MatrixSlice {
-  /** RAT family for this slice (drives cellType + ARFCN naming + sims). */
   rat: RAT;
-  /** Bands to include from this RAT (must exist in the box's band-info). */
   bands: readonly string[];
-  /** Bandwidths to attempt — at generation time we intersect with the
-   *  band's allowed bandwidths from the box's band-info. */
   bandwidths: readonly number[];
-  /** Subscriber counts to vary. */
   ueCounts: readonly number[];
-  /** Antenna config DL×UL to vary. Each entry is `[dl, ul]`. */
   antennas: ReadonlyArray<readonly [number, number]>;
-  /** User-plane data direction. */
   dataTypes: readonly DataType[];
-  /** Mobility profiles to exercise. */
   mobility: readonly Mobility[];
-  /** Channel/fading models to exercise (varies the mobility.fadingProfile). */
   fading: readonly Fading[];
   /** Only used for NR — sub-carrier spacings in kHz. Empty for LTE. */
   scs?: readonly number[];
@@ -59,14 +56,104 @@ export interface MatrixSlice {
   maxVariants?: number;
 }
 
-// Aimed at ~1500 total variants once intersected with what the box
-// actually supports.
-export const SLICES: readonly MatrixSlice[] = [
-  // LTE — broadest coverage by far (most common deployment scenario).
-  // Per 3GPP 36.101 Annex B the LTE channel models are EPA / EVA / ETU.
-  // NOTE: LTE rejects antennas.ul > 1 (the box validator says
-  // "antennas/ul: value must be '1' for LTE profile 0"). DL can vary;
-  // UL is fixed at 1.
+// ─── QUICK sweep — one of every feature, ~40 testcases ───────────────────
+//
+// Every entry below is intentionally narrow: one or two bands, one bw,
+// one ueCount, one antennas, one mobility, one fading. The point is
+// coverage breadth (every traffic type + every RAT + voice + mix-traffic
+// + NSA), not depth.
+
+const QUICK_SLICES: readonly MatrixSlice[] = [
+  // LTE smoke — single-traffic, all four directions
+  { rat: 'LTE', bands: ['3'], bandwidths: [10], ueCounts: [2], antennas: [[2, 1]],
+    dataTypes: ['no_data', 'iperf-both', 'iperf-dl', 'iperf-ul'],
+    mobility: ['stationary'], fading: ['awgn'], maxVariants: 4 },
+  // LTE voice (VoLTE)
+  { rat: 'LTE', bands: ['3'], bandwidths: [10], ueCounts: [1], antennas: [[2, 1]],
+    dataTypes: ['volte'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 1 },
+  // LTE mix-traffic — one of each combo
+  { rat: 'LTE', bands: ['3'], bandwidths: [10], ueCounts: [2], antennas: [[2, 1]],
+    dataTypes: ['mix-iperf-dl+ul', 'mix-iperf+no_data', 'mix-iperf+tcp'],
+    mobility: ['stationary'], fading: ['awgn'], maxVariants: 3 },
+  // LTE fading coverage — one per LTE channel model
+  { rat: 'LTE', bands: ['3'], bandwidths: [10], ueCounts: [2], antennas: [[2, 1]],
+    dataTypes: ['iperf-both'], mobility: ['stationary'], fading: ['epa5', 'eva70', 'etu70'],
+    maxVariants: 3 },
+  // LTE mobility — one stationary + one roundTrip
+  { rat: 'LTE', bands: ['3'], bandwidths: [10], ueCounts: [2], antennas: [[2, 1]],
+    dataTypes: ['no_data'], mobility: ['roundTrip'], fading: ['awgn'], maxVariants: 1 },
+
+  // NR-SA smoke — single-traffic, all four directions
+  { rat: 'NR-SA', bands: ['n78'], bandwidths: [100], scs: [30], ueCounts: [2], antennas: [[2, 2]],
+    dataTypes: ['no_data', 'iperf-both', 'iperf-dl', 'iperf-ul'],
+    mobility: ['stationary'], fading: ['awgn'], maxVariants: 4 },
+  // NR-SA voice (VoNR)
+  { rat: 'NR-SA', bands: ['n78'], bandwidths: [100], scs: [30], ueCounts: [1], antennas: [[2, 2]],
+    dataTypes: ['vonr'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 1 },
+  // NR-SA mix-traffic
+  { rat: 'NR-SA', bands: ['n78'], bandwidths: [100], scs: [30], ueCounts: [2], antennas: [[2, 2]],
+    dataTypes: ['mix-iperf-dl+ul', 'mix-iperf+no_data', 'mix-iperf+tcp'],
+    mobility: ['stationary'], fading: ['awgn'], maxVariants: 3 },
+  // NR-SA fading coverage
+  { rat: 'NR-SA', bands: ['n78'], bandwidths: [100], scs: [30], ueCounts: [2], antennas: [[2, 2]],
+    dataTypes: ['iperf-both'], mobility: ['stationary'], fading: ['tdla30', 'tdlb100', 'tdlc300'],
+    maxVariants: 3 },
+  // NR-SA SCS coverage — both 15 and 30 kHz
+  { rat: 'NR-SA', bands: ['n78'], bandwidths: [20], scs: [15, 30], ueCounts: [1], antennas: [[2, 2]],
+    dataTypes: ['no_data'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 2 },
+  // NR-SA mobility
+  { rat: 'NR-SA', bands: ['n78'], bandwidths: [100], scs: [30], ueCounts: [2], antennas: [[2, 2]],
+    dataTypes: ['no_data'], mobility: ['roundTrip'], fading: ['awgn'], maxVariants: 1 },
+
+  // NR-NSA (EN-DC) — LTE anchor + NR secondary
+  { rat: 'NR-NSA', bands: ['n78'], bandwidths: [100], scs: [30], ueCounts: [1], antennas: [[2, 2]],
+    dataTypes: ['no_data', 'iperf-both'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 2 },
+
+  // NB-IoT smoke
+  { rat: 'NB-IoT', bands: ['8'], bandwidths: [5], ueCounts: [1], antennas: [[1, 1]],
+    dataTypes: ['no_data'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 1 },
+];
+
+// ─── MODERATE sweep — ~200 testcases ─────────────────────────────────────
+//
+// Broader bandwidth × band × ue-count × traffic coverage but only one
+// mobility/fading combination per cell. Good middle-ground for a full
+// QA cycle without burning hours.
+
+const MODERATE_SLICES: readonly MatrixSlice[] = [
+  // LTE: 5 bands × 3 bw × 2 ue × 1 ant × 4 traffic × 1 mob × 1 fade = 120
+  { rat: 'LTE', bands: ['1', '3', '7', '13', '41'], bandwidths: [5, 10, 20],
+    ueCounts: [1, 2], antennas: [[2, 1]],
+    dataTypes: ['no_data', 'iperf-both', 'iperf-dl', 'iperf-ul'],
+    mobility: ['stationary'], fading: ['awgn'], maxVariants: 120 },
+  // LTE voice + mix coverage (small)
+  { rat: 'LTE', bands: ['3', '7'], bandwidths: [10], ueCounts: [2], antennas: [[2, 1]],
+    dataTypes: ['volte', 'mix-iperf-dl+ul', 'mix-iperf+tcp'],
+    mobility: ['stationary'], fading: ['awgn'], maxVariants: 6 },
+  // NR-SA: 4 bands × 3 bw × 2 ue × 1 scs × 1 ant × 4 traffic = 96 → cap 60
+  { rat: 'NR-SA', bands: ['n7', 'n41', 'n66', 'n78'], bandwidths: [20, 40, 100],
+    scs: [30], ueCounts: [1, 4], antennas: [[2, 2]],
+    dataTypes: ['no_data', 'iperf-both', 'iperf-dl', 'iperf-ul'],
+    mobility: ['stationary'], fading: ['awgn'], maxVariants: 60 },
+  // NR-SA voice + mix
+  { rat: 'NR-SA', bands: ['n78'], bandwidths: [100], scs: [30], ueCounts: [2], antennas: [[2, 2]],
+    dataTypes: ['vonr', 'mix-iperf-dl+ul', 'mix-iperf+tcp'],
+    mobility: ['stationary'], fading: ['awgn'], maxVariants: 3 },
+  // NR-NSA
+  { rat: 'NR-NSA', bands: ['n41', 'n78'], bandwidths: [40, 100], scs: [30],
+    ueCounts: [1], antennas: [[2, 2]], dataTypes: ['no_data', 'iperf-both'],
+    mobility: ['stationary'], fading: ['awgn'], maxVariants: 8 },
+  // NB-IoT
+  { rat: 'NB-IoT', bands: ['8', '20'], bandwidths: [5], ueCounts: [1, 2], antennas: [[1, 1]],
+    dataTypes: ['no_data'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 4 },
+];
+
+// ─── COMPLETE sweep — full Cartesian, ~1700 testcases ────────────────────
+
+const COMPLETE_SLICES: readonly MatrixSlice[] = [
+  // LTE — broadest coverage. Per 36.101 Annex B the LTE channel models
+  // are EPA / EVA / ETU. LTE rejects antennas.ul > 1 ("antennas/ul:
+  // value must be '1' for LTE profile 0"); DL can vary.
   {
     rat: 'LTE',
     bands: ['1', '2', '3', '5', '7', '8', '13', '20', '28', '41'],
@@ -78,22 +165,16 @@ export const SLICES: readonly MatrixSlice[] = [
     fading: ['awgn', 'epa5', 'eva70'],
     maxVariants: 1000,
   },
-  // LTE mix-traffic slice — exercises multi-subscriber-group testcases
-  // (DL+UL split, iperf+no_data, UDP+TCP). Narrower band set since the
-  // important dimension here is the traffic combo, not the radio config.
+  // LTE voice + mix-traffic
   {
-    rat: 'LTE',
-    bands: ['1', '3', '7'],
-    bandwidths: [10, 20],
-    ueCounts: [2, 4],          // need ≥2 UE per group
-    antennas: [[2, 1]],
-    dataTypes: ['mix-iperf-dl+ul', 'mix-iperf+no_data', 'mix-iperf+tcp'],
-    mobility: ['stationary'],
-    fading: ['awgn', 'epa5'],
-    maxVariants: 72,
+    rat: 'LTE', bands: ['1', '3', '7'], bandwidths: [10, 20],
+    ueCounts: [2, 4], antennas: [[2, 1]],
+    dataTypes: ['volte', 'mix-iperf-dl+ul', 'mix-iperf+no_data', 'mix-iperf+tcp'],
+    mobility: ['stationary'], fading: ['awgn', 'epa5'],
+    maxVariants: 96,
   },
-  // NR-SA — per 3GPP 38.101-4 Annex G the NR channel models are TDLA / TDLB
-  // / TDLC / TDLD / TDLE.
+  // NR-SA — wide spread. Per 38.101-4 Annex G NR channel models are TDLA/
+  // TDLB/TDLC/TDLD/TDLE.
   {
     rat: 'NR-SA',
     bands: ['n2', 'n7', 'n28', 'n41', 'n66', 'n77', 'n78'],
@@ -106,71 +187,59 @@ export const SLICES: readonly MatrixSlice[] = [
     fading: ['awgn', 'tdla30', 'tdlb100'],
     maxVariants: 600,
   },
-  // NR-SA mix-traffic slice.
+  // NR-SA voice + mix-traffic
   {
-    rat: 'NR-SA',
-    bands: ['n41', 'n78'],
-    bandwidths: [40, 100],
-    scs: [30],
-    ueCounts: [2, 4],
-    antennas: [[2, 2]],
-    dataTypes: ['mix-iperf-dl+ul', 'mix-iperf+no_data', 'mix-iperf+tcp'],
-    mobility: ['stationary'],
-    fading: ['awgn', 'tdla30'],
-    maxVariants: 48,
+    rat: 'NR-SA', bands: ['n41', 'n78'], bandwidths: [40, 100], scs: [30],
+    ueCounts: [2, 4], antennas: [[2, 2]],
+    dataTypes: ['vonr', 'mix-iperf-dl+ul', 'mix-iperf+no_data', 'mix-iperf+tcp'],
+    mobility: ['stationary'], fading: ['awgn', 'tdla30'],
+    maxVariants: 64,
   },
-  // NR-NSA — EN-DC anchor on LTE + secondary NR carrier. Generated as a
-  // 2-cell test (LTE primary band + NR secondary band). The cellTypeP
-  // chain in the subscriber config gets `nsa` so the UE attaches via the
-  // LTE PCell first then adds the NR SCell.
+  // NR-NSA (EN-DC)
   {
-    rat: 'NR-NSA',
-    bands: ['n41', 'n78'],     // the NR secondary's band (LTE anchor is fixed below)
-    bandwidths: [40, 100],
-    scs: [30],
-    ueCounts: [1, 2],
-    antennas: [[2, 2]],
-    dataTypes: ['no_data', 'iperf-both'],
-    mobility: ['stationary'],
-    fading: ['awgn', 'tdla30'],
-    maxVariants: 32,
+    rat: 'NR-NSA', bands: ['n41', 'n78'], bandwidths: [40, 100], scs: [30],
+    ueCounts: [1, 2], antennas: [[2, 2]],
+    dataTypes: ['no_data', 'iperf-both'], mobility: ['stationary'],
+    fading: ['awgn', 'tdla30'], maxVariants: 32,
   },
-  // NB-IoT — narrow-band IoT path.
+  // NB-IoT
   {
-    rat: 'NB-IoT',
-    bands: ['8', '20'],
-    bandwidths: [5],
-    ueCounts: [1, 2],
-    antennas: [[1, 1]],
-    dataTypes: ['no_data'],
-    mobility: ['stationary'],
-    fading: ['awgn'],
-    maxVariants: 4,
+    rat: 'NB-IoT', bands: ['8', '20'], bandwidths: [5], ueCounts: [1, 2],
+    antennas: [[1, 1]], dataTypes: ['no_data'], mobility: ['stationary'],
+    fading: ['awgn'], maxVariants: 4,
   },
 ];
 
-/** Concrete variant ready to feed the create-lifecycle. Generated by
- *  `expandSlices()` after intersecting with live band-info. */
+/** Returns the slice set for the requested sweep tier. */
+export function slicesFor(size: SweepSize): readonly MatrixSlice[] {
+  switch (size) {
+    case 'quick':    return QUICK_SLICES;
+    case 'moderate': return MODERATE_SLICES;
+    case 'complete': return COMPLETE_SLICES;
+  }
+}
+
+/** Backwards-compat — the old default. Consumers that don't pass a tier
+ *  get the full sweep. */
+export const SLICES: readonly MatrixSlice[] = COMPLETE_SLICES;
+
+/** Concrete variant ready to feed the create-lifecycle. */
 export interface BulkTestCaseSpec {
-  /** Deterministic id like "bulk-lte-3-bw20-ue2-ant2x2-dl_ul-001". */
   id: string;
-  /** Human-readable name pushed to the box (used as the test-case name). */
   name: string;
   rat: RAT;
   band: string;
   bandwidth: number;
   duplexMode: 'FDD' | 'TDD';
-  /** EARFCN (LTE) or NRARFCN (NR) values from band-info. */
   earfcnDl: number;
-  earfcnUl?: number;          // LTE only
-  nrarfcnSsb?: number;        // NR only
-  scs?: number;               // NR only
+  earfcnUl?: number;
+  nrarfcnSsb?: number;
+  scs?: number;
   ueCount: number;
   antennas: { dl: number; ul: number };
   dataType: DataType;
   mobility: Mobility;
   fading: Fading;
-  /** Slice/RAT for grouped reporting. */
   category: 'bulk-lte' | 'bulk-nr-sa' | 'bulk-nr-nsa' | 'bulk-nbiot';
 }
 
@@ -189,9 +258,10 @@ export function categoryOf(rat: RAT): BulkTestCaseSpec['category'] {
   }
 }
 
-/** Stable id-shaped name from a spec (lowercase, hyphen-safe). Includes
- *  new dimensions (mobility, fading) so the name remains unique under the
- *  larger matrix. */
+/** Stable id-shaped name from a spec (lowercase, hyphen-safe). The box
+ *  rejects testcase names containing characters outside
+ *  [A-Za-z0-9_-] — so the dataType slug also goes through the same
+ *  sanitiser (e.g. "mix-iperf-dl+ul" → "mix-iperf-dl-ul"). */
 export function specToId(
   rat: RAT,
   band: string,
@@ -204,13 +274,15 @@ export function specToId(
   scs: number | undefined,
   seq: number,
 ): string {
-  const ratSlug = rat.toLowerCase().replace(/[^a-z0-9]+/g, '');
-  const bandSlug = band.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+  const ratSlug = slug(rat);
+  const bandSlug = slug(band);
+  const dataSlug = slug(dataType);
   const mobSlug = mobility === 'stationary' ? 'stat' : 'mob';
-  const fadeSlug = fading.toLowerCase();
+  const fadeSlug = slug(fading);
   const scsSlug = scs ? `-scs${scs}` : '';
   const seqStr = String(seq).padStart(4, '0');
-  return `${BULK_NAME_PREFIX}-${ratSlug}-${bandSlug}-bw${bw}${scsSlug}-ue${ueCount}-ant${antennas.dl}x${antennas.ul}-${dataType}-${mobSlug}-${fadeSlug}-${seqStr}`;
+  return `${BULK_NAME_PREFIX}-${ratSlug}-${bandSlug}-bw${bw}${scsSlug}-ue${ueCount}-ant${antennas.dl}x${antennas.ul}-${dataSlug}-${mobSlug}-${fadeSlug}-${seqStr}`;
 }
 
 /** Friendly column-ready summary for a spec (used by report tables). */

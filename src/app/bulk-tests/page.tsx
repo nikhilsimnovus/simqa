@@ -69,6 +69,8 @@ export default function BulkTestsPage() {
   const [systems, setSystems] = useState<SystemSummary[]>([]);
   const [systemId, setSystemId] = useState<string>('sys-6');
   const [limit, setLimit] = useState<number>(0);   // 0 = full matrix
+  const [sweep, setSweep] = useState<'quick' | 'moderate' | 'complete'>('quick');
+  const [alsoExecute, setAlsoExecute] = useState<boolean>(false);
   const [genProgress, setGenProgress] = useState<Progress | null>(null);
   const [genResult, setGenResult] = useState<GenResult | null>(null);
   const [valProgress, setValProgress] = useState<Progress | null>(null);
@@ -128,7 +130,14 @@ export default function BulkTestsPage() {
     try {
       const r = await fetch('/api/bulk-tests/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ systemId, limit: limit > 0 ? limit : undefined }),
+        body: JSON.stringify({
+          systemId,
+          sweep,
+          limit: limit > 0 ? limit : undefined,
+          alsoExecute,
+          uesimSystemId: 'sys-7',
+          execSampleSize: alsoExecute ? execSampleSize : undefined,
+        }),
       });
       const d = await r.json();
       if (!r.ok || !d.ok) setError(d?.error ?? `generate returned ${r.status}`);
@@ -253,8 +262,20 @@ export default function BulkTestsPage() {
               </select>
             </label>
             <label className="flex flex-col">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Limit (0 = full matrix)</span>
-              <input type="number" min={0} className="border border-slate-300 rounded-md px-3 py-2 text-sm w-[120px]" value={limit} onChange={e => setLimit(Number(e.target.value) || 0)} />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Sweep</span>
+              <select className="border border-slate-300 rounded-md px-3 py-2 text-sm min-w-[200px]" value={sweep} onChange={e => setSweep(e.target.value as 'quick' | 'moderate' | 'complete')}>
+                <option value="quick">Quick — ~40 tests (every feature once)</option>
+                <option value="moderate">Moderate — ~200 tests (broad bands × traffic)</option>
+                <option value="complete">Complete — ~1700 tests (full Cartesian)</option>
+              </select>
+            </label>
+            <label className="flex flex-col">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Limit (0 = sweep default)</span>
+              <input type="number" min={0} className="border border-slate-300 rounded-md px-3 py-2 text-sm w-[110px]" value={limit} onChange={e => setLimit(Number(e.target.value) || 0)} />
+            </label>
+            <label className="flex items-center gap-2 text-sm self-end pb-2 cursor-pointer">
+              <input type="checkbox" checked={alsoExecute} onChange={e => setAlsoExecute(e.target.checked)} className="rounded" />
+              <span>Also execute (run each testcase + capture ue.cfg)</span>
             </label>
             <div className="flex gap-2 ml-auto">
               <button onClick={startGenerate} disabled={!!busy || genRunning} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
