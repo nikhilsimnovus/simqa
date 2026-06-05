@@ -31,28 +31,40 @@ import { createTestCase, deleteTestCase, CreateError } from '../../configFidelit
 import { generateAndRetrieveUeCfg } from '../../configFidelity/ueCfg';
 import { validateConfig, detectConfigErrors } from '../../configFidelity/validate';
 
-// Resolve the box REST target + the SSH-capable UE-sim host from inventory,
-// exactly like configFidelity/runner.ts does. ctx.host selects which box the
-// UI Tests run is targeting; the UE-sim is whichever inventory system carries
-// SSH credentials (needed to read /root/ue/config/ue.cfg).
-function resolveTargets(ctxHost: string): { api: ApiOpts; ueSim: InventorySystem } | { error: string } {
+// Config-fidelity is a property of a SPECIFIC (Simnovator API box, SSH-reachable
+// UE-sim that receives its ue.cfg) PAIR — not an arbitrary host. The single
+// UI-Tests `target` can't express that pairing, so these tests PIN to the
+// designated CF systems (same convention as scripts/cf-matrix-run.ts:
+// CF_API_SYSTEM / CF_UESIM_SYSTEM, defaulting to simnovator-202 + uesim-101),
+// INDEPENDENT of the UI-Tests target. Without this, picking a target with no
+// SSH creds (e.g. .95) routed ue.cfg retrieval to the wrong box and timed out
+// every case at the framework's 60s cap.
+const CF_API_SYSTEM = process.env.CF_API_SYSTEM ?? 'simnovator-202';
+const CF_UESIM_SYSTEM = process.env.CF_UESIM_SYSTEM ?? 'uesim-101';
+
+function resolveTargets(): { api: ApiOpts; ueSim: InventorySystem; note: string } | { error: string } {
   const inv = loadInventory();
-  const box = inv.systems.find((s) => s.host === ctxHost && isUesimLike(s)) ?? inv.systems.find(isUesimLike);
-  const opts = uesimApiOptsForSystem(inv, box?.id);
-  if (!opts) return { error: 'no Simnovator/UESIM REST target in inventory.yaml' };
-  const ueSim = inv.systems.find((s) => isUesimLike(s) && !!s.username) ?? inv.systems.find((s) => !!s.username);
-  if (!ueSim) return { error: 'no UE-sim system with SSH credentials in inventory.yaml (needed to read ue.cfg)' };
-  return { api: { host: opts.host, username: opts.username, password: opts.password }, ueSim };
+  // API box: the designated CF Simnovator if present, else first UESIM-like.
+  const apiOpts = uesimApiOptsForSystem(inv, inv.systems.some((s) => s.id === CF_API_SYSTEM) ? CF_API_SYSTEM : undefined);
+  if (!apiOpts) return { error: 'no Simnovator/UESIM REST target in inventory.yaml' };
+  // SSH UE-sim that receives this box's ue.cfg: the designated CF UE-sim (must
+  // carry SSH creds), else the first SSH-capable UE-sim.
+  const ueSim = inv.systems.find((s) => s.id === CF_UESIM_SYSTEM && !!s.username)
+    ?? inv.systems.find((s) => isUesimLike(s) && !!s.username);
+  if (!ueSim) return { error: `no SSH-reachable UE-sim in inventory.yaml (need "${CF_UESIM_SYSTEM}" or another UESIM with SSH creds to read /root/ue/config/ue.cfg)` };
+  return { api: { host: apiOpts.host, username: apiOpts.username, password: apiOpts.password }, ueSim, note: `API=${apiOpts.host} SSH=${ueSim.host}` };
 }
 
 type RunResult = { ok: boolean; detail: string; expected?: string };
 
 // create -> execute -> retrieve ue.cfg -> validate -> cleanup. Mirrors
 // runner.ts:runOneCase (minus the report bookkeeping / artifact writing).
-async function runCase(ctxHost: string, c: Case): Promise<RunResult> {
-  const t = resolveTargets(ctxHost);
-  if ('error' in t) return { ok: false, detail: t.error, expected: 'inventory has a Simnovator REST target + an SSH-capable UE-sim' };
-  const { api, ueSim } = t;
+// Runs against the pinned CF pairing (see resolveTargets), not the UI-Tests
+// target, so it can't be misrouted.
+async function runCase(c: Case): Promise<RunResult> {
+  const t = resolveTargets();
+  if ('error' in t) return { ok: false, detail: `config-fidelity setup unavailable — ${t.error}`, expected: 'inventory has the designated CF Simnovator + an SSH-reachable UE-sim (e.g. simnovator-202 + uesim-101)' };
+  const { api, ueSim, note } = t;
 
   // Unique box name so the settings finaliser doesn't 400 on a name that
   // already exists (from a previous run or the parallel cf campaign). Same
@@ -66,12 +78,15 @@ async function runCase(ctxHost: string, c: Case): Promise<RunResult> {
     const created = await createTestCase(api, c);
     testCaseId = created.testCaseId;
 
-    const gen = await generateAndRetrieveUeCfg({ api, ueSimSystem: ueSim, testCaseId, expectedName: uniq });
+    // Cap the poll well under the framework's 60s per-test timeout so a missing
+    // ue.cfg yields a clear, fast failure (naming the SSH host) instead of an
+    // opaque "timed out after 60000ms".
+    const gen = await generateAndRetrieveUeCfg({ api, ueSimSystem: ueSim, testCaseId, expectedName: uniq, pollTimeoutMs: 45_000 });
     const configErrors = detectConfigErrors(gen.signals);
 
     if (!gen.ueCfg) {
       const ce = configErrors.length ? ' · ' + configErrors.map((e) => e.message).join('; ') : '';
-      return { ok: false, detail: `no ue.cfg retrieved${ce}`, expected: 'box writes a ue.cfg at execution start; SSH retrieval returns it' };
+      return { ok: false, detail: `[${note}] no ue.cfg retrieved from ${ueSim.host} within 45s${ce}`, expected: `box writes a ue.cfg at execution start; SSH retrieval from the paired UE-sim (${ueSim.host}) returns it — check the API/UE-sim pairing` };
     }
 
     const v = validateConfig(c.input, gen.ueCfg);
@@ -85,12 +100,12 @@ async function runCase(ctxHost: string, c: Case): Promise<RunResult> {
       : '';
     return {
       ok,
-      detail: `${v.counts.honoured}✓ ${v.counts.mismatch}✗ ${v.counts.missing}gap (${v.counts.noRule} no-rule)${cfgErr}${badStr}`,
+      detail: `[${note}] ${v.counts.honoured}✓ ${v.counts.mismatch}✗ ${v.counts.missing}gap (${v.counts.noRule} no-rule)${cfgErr}${badStr}`,
       expected: 'every configured JSON parameter is honoured in the generated ue.cfg (0 mismatch, 0 critical-missing, no config errors)',
     };
   } catch (e: any) {
-    if (e instanceof CreateError) return { ok: false, detail: `box refused the config: ${e.message}`, expected: 'box accepts the generated /tests/* config sections' };
-    return { ok: false, detail: e?.message ?? String(e), expected: 'create → execute → retrieve → validate completes without error' };
+    if (e instanceof CreateError) return { ok: false, detail: `[${note}] box refused the config: ${e.message}`, expected: 'box accepts the generated /tests/* config sections' };
+    return { ok: false, detail: `[${note}] ${e?.message ?? String(e)}`, expected: 'create → execute → retrieve → validate completes without error' };
   } finally {
     // Auto-clean (matches runner behaviour) so the box returns to baseline.
     if (testCaseId) await deleteTestCase(api, testCaseId).catch(() => {});
@@ -116,9 +131,9 @@ function bandHonourTests(): UiTestDef[] {
       needsAuth: false,
       longRunning: true,
       destructive: true,
-      run: async ({ ctx }) => {
+      run: async () => {
         if (!c) return { ok: false, detail: `bandTable.ts produced no ${rat} band`, expected: `at least one ${rat} band in the vetted master table` };
-        return runCase(ctx.host, c);
+        return runCase(c);
       },
     };
   });
@@ -162,7 +177,7 @@ function variationTests(): UiTestDef[] {
     needsAuth: false,
     longRunning: true,
     destructive: true,
-    run: async ({ ctx }) => {
+    run: async () => {
       const base = variationBase();
       if (!base) return { ok: false, detail: 'could not synthesize an NR-SA base config', expected: 'generateMatrix produces an nr-sa case' };
       const c = generateVariationSweep({
@@ -175,7 +190,7 @@ function variationTests(): UiTestDef[] {
         cap: 1,
       })[0];
       if (!c) return { ok: false, detail: `no variation case generated for ${d.label}`, expected: 'generateVariationSweep yields a case for the requested dimension' };
-      return runCase(ctx.host, c);
+      return runCase(c);
     },
   }));
 }
