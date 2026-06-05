@@ -15,8 +15,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { uesimApiOptsFromInventory, uesimApiOptsForSystem, type Inventory } from './inventory';
 import { bandValidationTests } from './ui-tests/tests/band-validation';
+import { configFidelityTests } from './ui-tests/tests/config-fidelity';
 
-export type UiTestCategory = 'auth' | 'navigation' | 'testcases' | 'stats' | 'logs' | 'simulators' | 'users' | 'tools' | 'security' | 'errors' | 'patterns' | 'lifecycle' | 'perf' | 'compat' | 'field-band';
+export type UiTestCategory = 'auth' | 'navigation' | 'testcases' | 'stats' | 'logs' | 'simulators' | 'users' | 'tools' | 'security' | 'errors' | 'patterns' | 'lifecycle' | 'perf' | 'compat' | 'field-band' | 'config-fidelity';
 export type UiTestSeverity = 'critical' | 'normal' | 'optional';
 
 export interface UiRequestRecord {
@@ -117,7 +118,7 @@ export interface UiTesterResponse {
   diff?: UiBaselineDiff;
 }
 
-const DEFAULT_CATEGORIES: UiTestCategory[] = ['auth', 'navigation', 'testcases', 'stats', 'logs', 'simulators', 'users', 'tools', 'security', 'errors', 'patterns', 'lifecycle', 'perf', 'compat', 'field-band'];
+const DEFAULT_CATEGORIES: UiTestCategory[] = ['auth', 'navigation', 'testcases', 'stats', 'logs', 'simulators', 'users', 'tools', 'security', 'errors', 'patterns', 'lifecycle', 'perf', 'compat', 'field-band', 'config-fidelity'];
 
 interface UiCtx {
   browser: Browser;
@@ -4396,6 +4397,7 @@ function defs(): UiTestDef[] {
   // Add a new file under src/lib/ui-tests/tests/<field>.ts and import here.
   // ============================================================
   list.push(...(bandValidationTests() as unknown as UiTestDef[]));
+  list.push(...(configFidelityTests() as unknown as UiTestDef[]));
 
   // ============================================================
   // EXCLUSION LIST — tests that produced false positives during full-suite
