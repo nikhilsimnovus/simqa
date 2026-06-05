@@ -12,5 +12,11 @@ __pycache__/
 ui/beszel-app.js
 ui/sim-app.js
 
+# Pre-staged Playwright Chromium for offline customer installs (~150 MB).
+# Populate via:  bash perf-qa/scripts/fetch-vendor.sh
+# The /api/perf-qa/deploy-build route auto-includes this dir if present so
+# customers don't need outbound HTTPS to download browsers.
+vendor/
+
 # Bundle output — collected diagnostics from each run
 /tmp/

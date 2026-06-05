@@ -154,14 +154,30 @@ log "Installing Flask + Playwright into venv (pip)"
 pip_install --upgrade pip
 pip_install --upgrade flask playwright
 
-# Playwright browsers — only install if not already present (~150 MB download).
-# Playwright uses Node's HTTPS stack, which honours NODE_EXTRA_CA_CERTS for
-# the customer's enterprise CA bundle. SSL_CERT_FILE / SSL_CERT_DIR are the
-# OpenSSL equivalents (some Playwright versions respect them).
+# Playwright browsers — install order (each step skipped if the previous
+# already put a chromium-* dir into the cache):
+#   (a) Use vendored browsers shipped IN the tarball (perf-qa/vendor/
+#       playwright-browsers/) — zero network needed at the customer site.
+#   (b) Skip entirely if SKIP_PLAYWRIGHT=1 — Beszel + Simnovator GUI
+#       screenshots disabled; everything else still works.
+#   (c) Fall through to `playwright install chromium` over HTTPS (needs
+#       outbound to cdn.playwright.dev — fails if a TLS-inspecting proxy
+#       intercepts unless NODE_EXTRA_CA_CERTS points at the corp bundle).
 PW_BROWSERS="${PERFQA_HOME}/.cache/ms-playwright"
-# Auto-discover a custom CA bundle the customer may have set up. If they've
-# pointed pip at one via PIP_CERT, plumb the same path through to Playwright.
+VENDOR_BROWSERS="${SRC_ROOT}/vendor/playwright-browsers"
+# Plumb a customer-supplied CA bundle through to Playwright (Node HTTPS).
 PW_CA_BUNDLE="${NODE_EXTRA_CA_CERTS:-${SSL_CERT_FILE:-${PIP_CERT:-}}}"
+
+# (a) Vendored browsers shipped inside the tarball — preferred path.
+if [[ -d "${VENDOR_BROWSERS}/chromium-"* ]] && ! [[ -d "${PW_BROWSERS}/chromium-"* ]]; then
+    log "Installing pre-staged Playwright browsers from ${VENDOR_BROWSERS}"
+    sudo -u "${SERVICE_USER}" mkdir -p "${PW_BROWSERS}"
+    # Copy preserving owner-writable perms; -a keeps symlinks + executables.
+    sudo cp -a "${VENDOR_BROWSERS}"/* "${PW_BROWSERS}/"
+    sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${PW_BROWSERS}"
+    log "Vendored: $(du -sh "${PW_BROWSERS}" | cut -f1) under ${PW_BROWSERS}"
+fi
+
 if [[ -d "${PW_BROWSERS}/chromium-"* ]]; then
     log "Playwright Chromium already present in ${PW_BROWSERS}"
 elif [[ "${SKIP_PLAYWRIGHT:-0}" == "1" ]]; then
@@ -178,15 +194,19 @@ else
         warn "Common cause: corporate SSL-inspecting proxy."
         warn "Fix: export NODE_EXTRA_CA_CERTS=/path/to/corp-ca-bundle.crt before re-running."
         warn "Or: re-run with SKIP_PLAYWRIGHT=1 to skip browser install (GUI screenshots disabled)."
-        warn "Or: pre-stage browsers manually at ${PW_BROWSERS}/chromium-<version>/"
+        warn "Or: ask the simqa operator to pre-stage browsers (Deploy build tarball will then"
+        warn "    include them) — they run:  bash perf-qa/scripts/fetch-vendor.sh"
         fail "playwright install chromium failed (see message above)"
     fi
-    # Install OS libs needed by headless Chromium (apt only — RPM ships them).
-    if [[ "${PKG}" == "apt" ]]; then
-        log "Installing headless-Chromium OS libs via playwright install-deps"
-        "${UI_INSTALL_DIR}/venv/bin/playwright" install-deps chromium || \
-            warn "playwright install-deps failed; some libs may be missing"
-    fi
+fi
+
+# Install OS libs needed by headless Chromium (apt only — RPM ships them).
+# Runs whenever browsers are present, even if they were pre-staged — the
+# system libs are separate from the browser binary.
+if [[ -d "${PW_BROWSERS}/chromium-"* && "${PKG}" == "apt" ]]; then
+    log "Installing headless-Chromium OS libs via playwright install-deps"
+    "${UI_INSTALL_DIR}/venv/bin/playwright" install-deps chromium || \
+        warn "playwright install-deps failed; some libs may be missing"
 fi
 
 # ---- 5) systemd unit -------------------------------------------------------

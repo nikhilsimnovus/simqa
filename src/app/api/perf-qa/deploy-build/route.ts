@@ -71,14 +71,50 @@ export async function GET() {
     );
   }
 
+  // Pre-staged Playwright browsers (~150 MB) live at perf-qa/vendor/
+  // playwright-browsers/. Auto-include them if present — the customer's
+  // install.sh will copy them into the perfqa user's Playwright cache so
+  // the browser download never happens at the customer site.
+  // Populated locally by:  bash perf-qa/scripts/fetch-vendor.sh
+  const vendorDir = path.join(perfQaDir, 'vendor', 'playwright-browsers');
+  let vendorBytes = 0;
+  let vendorPresent = false;
+  try {
+    const s = await fs.stat(vendorDir);
+    vendorPresent = s.isDirectory();
+    if (vendorPresent) {
+      // Sum size for the X-Vendor-Bytes response header so the UI can show
+      // "Tarball includes 152 MB of pre-staged browsers" or similar.
+      async function dirSize(p: string): Promise<number> {
+        const entries = await fs.readdir(p, { withFileTypes: true });
+        let total = 0;
+        for (const e of entries) {
+          const ep = path.join(p, e.name);
+          if (e.isDirectory()) total += await dirSize(ep);
+          else if (e.isFile()) total += (await fs.stat(ep)).size;
+        }
+        return total;
+      }
+      vendorBytes = await dirSize(vendorDir);
+    }
+  } catch {
+    vendorPresent = false;
+  }
+
   // Spawn tar with --transform so paths inside the archive start with
   // "perf-qa/" — that's what install.sh expects when the customer cds
   // into the unpacked dir.
+  const tarTargets: string[] = [
+    ...PACKAGED_FILES.map((f) => path.posix.join('perf-qa', f)),
+  ];
+  if (vendorPresent) {
+    tarTargets.push('perf-qa/vendor/playwright-browsers');
+  }
   const tarArgs = [
     'czf', '-',
     '-C', repoRoot,
     '--owner=0', '--group=0',  // reproducible — no user from the build host
-    ...PACKAGED_FILES.map((f) => path.posix.join('perf-qa', f)),
+    ...tarTargets,
   ];
 
   const tar = spawn('tar', tarArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -111,6 +147,11 @@ export async function GET() {
       // The tarball is streamed before we know its full size — explicitly
       // disable any intermediate caching so we always re-run the build.
       'Cache-Control': 'no-store, max-age=0',
+      // Surface whether Playwright browsers are bundled. The Perf QA page
+      // reads these via a HEAD on this endpoint to show the user a hint
+      // like "Bundled (152 MB)" or "Not bundled — run fetch-vendor.sh".
+      'X-Vendor-Browsers': vendorPresent ? 'bundled' : 'missing',
+      'X-Vendor-Bytes': String(vendorBytes),
     },
   });
 }

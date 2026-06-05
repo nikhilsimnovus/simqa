@@ -20,7 +20,7 @@ The installer:
 2. **Installs prereqs**: bash, python3, ssh, sshpass, curl, jq, zip, tar, unzip.
 3. **Creates** the `perfqa` system user + dirs under `/opt/` and `/var/lib/`.
 4. **Copies** all scripts + Flask UI into the FHS layout below.
-5. **Builds** the Python venv with Flask + Playwright (downloads headless Chromium, ~150 MB, one-shot).
+5. **Builds** the Python venv with Flask + Playwright. **Chromium is pre-staged inside the tarball** (under `vendor/playwright-browsers/`), so no outbound HTTPS for browsers — the installer just copies the binary into place. If for some reason the tarball was built without the vendored browsers, falls back to a normal `playwright install chromium` download (which needs `NODE_EXTRA_CA_CERTS` set on corp networks — see Troubleshooting).
 6. **Generates** the systemd unit pointing at port 8080.
 7. **Starts** the service.
 
