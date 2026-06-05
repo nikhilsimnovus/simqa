@@ -2029,12 +2029,19 @@ async function runHandler(e){
       setStatus(`<span class="badge ${code}">${code === 'ok' ? 'done' : 'exit '+m.returncode}</span> ${badges}`);
       progressFinalize(c);
 
-      // Step transitions on completion. If the run never crossed into the
-      // analyze section, mark collect as failed (script exited mid-flight).
+      // Step transitions on completion. We DON'T just trust the script's
+      // exit code — collect_perf_data.sh marks individual failures with
+      // `mark FAILED ...` and continues, so it can finish with exit 0 even
+      // when every host was unreachable. Reflect the actual mix:
+      //   - any FAILED rows in the counts → step is 'fail' (red)
+      //   - script exited non-zero → step is 'fail' (red)
+      //   - clean → step is 'done' (green)
+      const anyFail = (c.FAILED || 0) > 0;
+      const collectVerdict = (code === 'ok' && !anyFail) ? 'done' : 'fail';
       const collectStep = document.querySelector('.step[data-step="collect"]');
       const analyzeStep = document.querySelector('.step[data-step="analyze"]');
       if (collectStep.dataset.state === 'active') {
-        setStepState('collect', code === 'ok' ? 'done' : 'fail');
+        setStepState('collect', collectVerdict);
       }
       if (analyzeStep.dataset.state === 'active') {
         setStepState('analyze', code === 'ok' ? 'done' : 'fail',
@@ -2251,19 +2258,27 @@ details pre{margin:10px 0 0;padding:12px;background:#0f1117;color:#e2e8f0;border
     <div id="ssh-key-status" class="ssh-status">loading…</div>
     <div class="grid" style="margin-top:12px">
       <div class="field">
-        <label>Upload private key<span class="ph">drop the file you'd normally put in ~/.ssh/ — written with mode 0600</span></label>
+        <label>Upload as file<span class="ph">pick the file you'd normally put in ~/.ssh/ — written with mode 0600</span></label>
         <div style="display:flex;gap:8px;align-items:center">
           <input id="ssh-key-file" type="file" accept=".pem,.key,id_*" style="flex:1">
-          <button class="btn" type="button" onclick="uploadSshKey()">Upload</button>
         </div>
       </div>
       <div class="field">
-        <label>Manage<span class="ph">replace by uploading again · delete when no longer needed</span></label>
+        <label>Manage<span class="ph">replace by submitting again · delete when no longer needed</span></label>
         <div style="display:flex;gap:8px;align-items:center">
           <button class="btn btn-secondary" type="button" onclick="copySshPubkey()" id="ssh-pub-copy" style="display:none">Copy public key</button>
           <button class="btn btn-secondary danger" type="button" onclick="deleteSshKey()" id="ssh-key-del" style="display:none">Delete</button>
         </div>
       </div>
+    </div>
+    <div class="field" style="margin-top:10px">
+      <label>Or paste private-key text<span class="ph">starts with -----BEGIN ... PRIVATE KEY-----; passphrase-protected keys not supported</span></label>
+      <textarea id="ssh-key-text" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;b3BlbnNzaC1rZXktdjEAAAAA...&#10;-----END OPENSSH PRIVATE KEY-----"
+                style="width:100%;font:11.5px ui-monospace,Consolas,monospace;padding:8px;border:1px solid var(--bd);border-radius:6px;resize:vertical"></textarea>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+      <button class="btn" type="button" onclick="uploadSshKey()">Save key</button>
+      <span class="hint" style="color:var(--mut);font-size:12px">Uses whichever is filled in — paste wins if both</span>
     </div>
     <details id="ssh-pub-details" style="display:none;margin-top:10px">
       <summary>Public key — copy into <code>~/.ssh/authorized_keys</code> on each rack host</summary>
@@ -2493,26 +2508,47 @@ async function refreshSshKey(){
 }
 
 async function uploadSshKey(){
-  const f = document.getElementById('ssh-key-file').files[0];
-  if (!f) { flash('err', 'Pick a private key file first'); return; }
-  if (f.size > 32*1024) {
-    flash('err', 'File looks too large for an SSH key (' + f.size + ' bytes)');
+  // Prefer pasted text if both are filled — common case is "I copied it
+  // from my password manager so the file picker doesn't help".
+  const pasted = document.getElementById('ssh-key-text').value.trim();
+  const f      = document.getElementById('ssh-key-file').files[0];
+  if (!pasted && !f) {
+    flash('err', 'Paste the key text or pick a file first');
     return;
   }
   const fd = new FormData();
-  fd.append('key', f);
+  if (pasted) {
+    // Quick client-side sanity check so the user gets immediate feedback
+    // instead of a round-trip rejection.
+    if (!/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(pasted)) {
+      flash('err', 'Pasted text does not look like a PEM private key');
+      return;
+    }
+    // Ship as a Blob so the backend's request.files.get('key') works the
+    // same as the file-upload path — single endpoint, no special case.
+    const blob = new Blob([pasted + (pasted.endsWith('\n') ? '' : '\n')],
+                          {type:'application/x-pem-file'});
+    fd.append('key', blob, 'pasted-key.pem');
+  } else {
+    if (f.size > 32*1024) {
+      flash('err', 'File looks too large for an SSH key (' + f.size + ' bytes)');
+      return;
+    }
+    fd.append('key', f);
+  }
   try {
     const r = await fetch('/api/ssh-key', {method:'POST', body:fd});
     const d = await r.json();
     if (d.ok) {
-      flash('ok', d.message || 'key uploaded');
+      flash('ok', d.message || 'key saved');
       document.getElementById('ssh-key-file').value = '';
+      document.getElementById('ssh-key-text').value = '';
       await refreshSshKey();
     } else {
-      flash('err', d.error || 'upload failed');
+      flash('err', d.error || 'save failed');
     }
   } catch (e) {
-    flash('err', 'upload failed: ' + e.message);
+    flash('err', 'save failed: ' + e.message);
   }
 }
 
