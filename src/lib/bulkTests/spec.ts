@@ -63,16 +63,12 @@ export const SLICES: readonly MatrixSlice[] = [
     dataTypes: ['no_data', 'iperf-dl'],
     maxVariants: 60,
   },
-  // NR-NSA — small targeted set.
-  {
-    rat: 'NR-NSA',
-    bands: ['n7', 'n41', 'n78'],
-    bandwidths: [20, 40, 100],
-    ueCounts: [1, 4],
-    antennas: [[2, 2]],
-    dataTypes: ['no_data'],
-    maxVariants: 18,
-  },
+  // NR-NSA is intentionally omitted from the bulk generator: the box
+  // requires NSA testcases to declare at least 2 cells (LTE anchor + NR
+  // secondary for EN-DC), which falls outside this single-cell generator's
+  // shape. The NR-NSA category exists in spec.ts's RAT enum so consumers
+  // can still target it explicitly, but no auto-generated variants are
+  // emitted today.
   // NB-IoT — tiny but covers the IoT path.
   {
     rat: 'NB-IoT',

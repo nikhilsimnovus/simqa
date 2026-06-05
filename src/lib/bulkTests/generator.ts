@@ -169,6 +169,7 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
         antennas: { dl: spec.antennas.dl, ul: spec.antennas.ul },
         rfCard: 0,
         scs: spec.scs ?? 30,
+        ssbScs: spec.scs ?? 30,                  // box requires explicit ssbScs (separate from carrier scs)
         ratTypeP: spec.rat === 'NR-SA' ? 'sa' : 'nsa',
         carrierAggregationP: false,
         channelSimP: false,
@@ -188,6 +189,70 @@ function buildSubscribersBody(spec: BulkTestCaseSpec) {
   let h = 0;
   for (let i = 0; i < spec.id.length; i++) h = (h * 31 + spec.id.charCodeAt(i)) | 0;
   const imsiSeed = 1010100000000 + (Math.abs(h) % 1000000) * 100;
+
+  const isNr = spec.rat === 'NR-SA' || spec.rat === 'NR-NSA';
+
+  if (isNr) {
+    // NR-SA subscribers schema (sampled from an existing on-box testcase):
+    //   - SUPI fields, NOT IMSI (startingSUPI / nextSUPI)
+    //   - nea/nia algos, NOT eea/eia
+    //   - asRelease is uint8 integer in {15,16,17}
+    //   - protectionScheme literal "null" (NOT "null-scheme")
+    //   - algorithm "xor" (the box-shipped NR templates use xor by default;
+    //     milenage requires op which the NR schema doesn't carry)
+    //   - many NR-only required fields: NTNP, BLEROverrideValue, cellTypeP,
+    //     cellsLen, duplexModeP, ratTypeP, networkSlicing, publicKeyId,
+    //     routingIndicator, mncDigits, VoNRSupport, external_sim,
+    //     incrementSharedKey, access_control_classes, uac_access_identities
+    return {
+      subsConfig: {
+        subs: [{
+          ueCount: spec.ueCount,
+          servingCell: 0,
+          startingSUPI: imsiSeed,
+          nextSUPI: 1,
+          algorithm: 'xor',
+          sharedKey: '00112233445566778899aabbccddeeff',
+          incrementSharedKey: 0,
+          resLength: 8,
+          securityContext: true,
+          asRelease: 15,
+          ueCategoryType: 'combined',
+          ueCategory: 'nr',
+          imeisv: '4085780000000102',
+          powerControl: false,
+          attachType: 'normal',
+          ueInitiatedEvents: 'none',
+          pdnType: 'ipv4',
+          cipherAlgorithm: ['nea0', 'nea1', 'nea2'],
+          integrityAlgorithm: ['nia0', 'nia1', 'nia2'],
+          cqi: 'auto',
+          ri: 'auto',
+          pmi: 'auto',
+          preambleIndex: 0,
+          mncDigits: 2,
+          VoNRSupport: false,
+          protectionScheme: 'null',
+          publicKeyId: 0,
+          routingIndicator: 1111,
+          networkSlicing: 'disable',
+          ratTypeP: spec.rat === 'NR-SA' ? 'sa' : 'nsa',
+          cellTypeP: '5g',
+          cellsLen: 1,
+          carrierAggregationP: false,
+          channelSimP: false,
+          duplexModeP: spec.duplexMode,
+          NTNP: false,
+          BLEROverrideValue: 0,
+          external_sim: false,
+          access_control_classes: [],
+          uac_access_identities: [],
+        }],
+      },
+    };
+  }
+
+  // LTE / NB-IoT subscriber schema (eea/eia + integer asRelease + IMSI).
   return {
     subsConfig: {
       subs: [{
