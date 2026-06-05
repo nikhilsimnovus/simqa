@@ -54,7 +54,23 @@ export function manifestFile(): string {
 
 export function writeManifest(result: GenerationResult): void {
   fs.mkdirSync(manifestDir(), { recursive: true });
-  fs.writeFileSync(manifestFile(), JSON.stringify(result, null, 2));
+  // If this run created nothing (e.g. all variants were skipped because they
+  // already exist on the box) AND a prior manifest is on disk, merge the new
+  // result's metadata onto the prior `created` list instead of clobbering it.
+  // Otherwise re-clicking Generate when the lab is already populated would
+  // leave the Validate buttons greyed out — bad UX, since the testcases ARE
+  // still on the box.
+  const existing = readManifest();
+  if (result.created.length === 0 && existing && existing.created.length > 0) {
+    const merged: GenerationResult = {
+      ...result,
+      created: existing.created,
+      passed: existing.created.length,
+    };
+    fs.writeFileSync(manifestFile(), JSON.stringify(merged, null, 2));
+  } else {
+    fs.writeFileSync(manifestFile(), JSON.stringify(result, null, 2));
+  }
   STATE.manifestPath = manifestFile();
 }
 

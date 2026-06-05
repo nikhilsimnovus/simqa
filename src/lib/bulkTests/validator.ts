@@ -15,7 +15,7 @@
 import type { UesimApiOpts } from './types';
 
 export type ValidationStepName =
-  | 'get' | 'search' | 'export' | 'import' | 'delete-clone' | 'verify-clone-gone' | 'verify-original';
+  | 'get' | 'search' | 'export' | 'import' | 'fidelity' | 'delete-clone' | 'verify-clone-gone' | 'verify-original';
 
 export interface ValidationStep {
   step: ValidationStepName;
@@ -187,7 +187,35 @@ export async function validateBulkTestcases(
       else failed = true;
     }
 
-    // Step 5: delete clone
+    // Step 5: fidelity — fetch BOTH the original and the just-imported clone
+    // and deep-compare their testDefinition. This is the strong fidelity
+    // assertion: it proves the box's export → import round-trip preserves
+    // every field of the testcase config, so what an integrator sends is
+    // exactly what they get back. (Names will differ since the box appends
+    // "_copy" on import — we compare testDefinition only, not the wrapper.)
+    if (!failed && cloneBoxId) {
+      const t = await timed(async () => {
+        const [origR, cloneR] = await Promise.all([
+          fetch(`http://${opts.host}/v2/testcases/${encodeURIComponent(m.boxId)}`, { headers: H }),
+          fetch(`http://${opts.host}/v2/testcases/${encodeURIComponent(cloneBoxId)}`, { headers: H }),
+        ]);
+        if (!origR.ok || !cloneR.ok) {
+          return { status: origR.ok ? cloneR.status : origR.status, diff: `GET failed: orig=${origR.status} clone=${cloneR.status}` };
+        }
+        const orig: any = await origR.json();
+        const clone: any = await cloneR.json();
+        const diff = diffTestDefinition(orig?.testDefinition, clone?.testDefinition);
+        return { status: 200, diff };
+      });
+      const okStep = t.status === 200 && t.diff === '';
+      steps.push({
+        step: 'fidelity', ok: okStep, status: t.status, durationMs: t.durationMs,
+        detail: okStep ? 'testDefinition deep-equal after export → import round-trip' : `mismatch: ${t.diff.slice(0, 220)}`,
+      });
+      if (!okStep) failed = true;
+    }
+
+    // Step 6: delete clone
     if (!failed && cloneBoxId) {
       const t = await timed(async () => {
         const r = await fetch(`http://${opts.host}/v2/testcases/${encodeURIComponent(cloneBoxId)}`, { method: 'DELETE', headers: H });
@@ -198,7 +226,7 @@ export async function validateBulkTestcases(
       if (!okStep) failed = true;
     }
 
-    // Step 6: verify clone gone
+    // Step 7: verify clone gone
     if (!failed && cloneBoxId) {
       const t = await timed(async () => {
         const r = await fetch(`http://${opts.host}/v2/testcases/${encodeURIComponent(cloneBoxId)}`, { headers: H });
@@ -209,7 +237,7 @@ export async function validateBulkTestcases(
       if (!okStep) failed = true;
     }
 
-    // Step 7: verify original untouched
+    // Step 8: verify original untouched
     if (!failed) {
       const t = await timed(async () => {
         const r = await fetch(`http://${opts.host}/v2/testcases/${encodeURIComponent(m.boxId)}`, { headers: H });
@@ -243,4 +271,50 @@ export async function validateBulkTestcases(
     failed: results.filter(r => !r.ok).length,
     results,
   };
+}
+
+// ─── Fidelity diff helper ────────────────────────────────────────────────
+//
+// Stringify-then-compare both objects after stripping fields that are
+// EXPECTED to differ between the original and its imported clone:
+//   - any `name` field (the box appends "_copy" on import)
+//   - any UUID-shaped `id` field (box assigns a fresh id to the clone)
+//   - top-level `metadata` block (createdOn / lastModifiedOn / lastExecutedOn
+//     are box-side timestamps that the clone has to differ on)
+// Returns '' when the two are deep-equal under that mask, or a short
+// human-readable diff string otherwise.
+
+function stripVolatileForFidelity(input: any): any {
+  if (input === null || typeof input !== 'object') return input;
+  if (Array.isArray(input)) return input.map(stripVolatileForFidelity);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (k === 'name' || k === 'metadata') continue;
+    if (k === 'id' && typeof v === 'string' && /^[0-9a-f-]{30,}$/i.test(v)) continue;
+    out[k] = stripVolatileForFidelity(v);
+  }
+  return out;
+}
+
+function diffTestDefinition(orig: any, clone: any): string {
+  if (!orig || !clone) return `one side missing: orig=${!!orig} clone=${!!clone}`;
+  const a = JSON.stringify(stripVolatileForFidelity(orig));
+  const b = JSON.stringify(stripVolatileForFidelity(clone));
+  if (a === b) return '';
+  // Find first diverging key path for a useful one-line summary.
+  for (const k of Object.keys(orig)) {
+    const av = JSON.stringify(stripVolatileForFidelity((orig as any)[k]));
+    const bv = JSON.stringify(stripVolatileForFidelity((clone as any)[k]));
+    if (av !== bv) {
+      // Trim very long values to keep the detail readable.
+      const at = av.length > 80 ? av.slice(0, 80) + '…' : av;
+      const bt = bv.length > 80 ? bv.slice(0, 80) + '…' : bv;
+      return `${k}: orig=${at} | clone=${bt}`;
+    }
+  }
+  // Diff is in a key clone has but orig doesn't, or vice versa.
+  const aKeys = Object.keys(orig).sort().join(',');
+  const bKeys = Object.keys(clone).sort().join(',');
+  if (aKeys !== bKeys) return `key sets differ: orig=[${aKeys}] clone=[${bKeys}]`;
+  return 'deep-equal failed but per-key scan was equal (escape-only difference?)';
 }
