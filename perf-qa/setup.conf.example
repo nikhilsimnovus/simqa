@@ -65,7 +65,7 @@ DOCKER_LOG_TAIL=20000
 # Credentials per Confluence "Beszel Monitoring Tool" (page 1058897921);
 # the dev user can see most QA systems out-of-the-box.
 BESZEL_HUB_URL="http://192.168.0.16:8090"
-BESZEL_USER="${BESZEL_USER:-viewer@email.com}"   # read-only user; can view all QA systems
+BESZEL_USER="${BESZEL_USER:-}"          # set to your Beszel read-only viewer account
 BESZEL_PASS=""
 BESZEL_CHART_RANGE="1h"                 # 1h | 12h | 24h | 1w | 30d (Beszel preset)
 BESZEL_PYTHON="/home/sysadmin/perf-qa-ui/venv/bin/python"   # venv with playwright
