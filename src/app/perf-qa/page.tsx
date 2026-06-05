@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Header } from '@/components/Header';
 import { Card, CardBody, Badge, Button } from '@/components/ui';
-import { ExternalLink, RefreshCw, AlertTriangle } from 'lucide-react';
+import { ExternalLink, RefreshCw, AlertTriangle, Package } from 'lucide-react';
 
 // Perf QA tab — embeds the standalone Flask UI that runs the perf-data
 // collector on the QA collector host. The source for that Flask app + the
@@ -55,30 +55,14 @@ export default function PerfQaPage() {
         subtitle="One-click diagnostics for a perf-test run — collector + analyzer + bundle inspector"
       />
 
-      <div className="px-6 pt-4 pb-3 flex items-center gap-3 flex-wrap">
-        <Badge tone={reachable === 'ok' ? 'success' : reachable === 'down' ? 'danger' : 'default'}>
-          {reachable === 'ok' ? '● collector reachable'
-            : reachable === 'down' ? '● collector unreachable'
-            : '○ checking…'}
-        </Badge>
-        <span className="text-xs text-slate-500 font-mono">{url}</span>
-        <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant="ghost" onClick={() => setIframeKey(k => k + 1)}>
-            <RefreshCw className="h-4 w-4" /> Reload
-          </Button>
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-xs text-primary-700 hover:underline"
-          >
-            Open in new tab <ExternalLink className="h-3.5 w-3.5" />
-          </a>
-        </div>
-      </div>
-
+      {/* The status banner used to always show "● collector reachable" +
+          the URL. When the iframe is rendering normally that's just noise —
+          the iframe IS the proof. Show the banner ONLY when the collector
+          is unreachable (with a useful error). When everything's fine we
+          keep just a tiny corner action so Reload + Open-in-new-tab stay
+          one click away. */}
       {reachable === 'down' && (
-        <div className="px-6 pb-3">
+        <div className="px-6 pt-4 pb-3">
           <Card>
             <CardBody>
               <div className="flex items-start gap-3 text-sm">
@@ -97,7 +81,35 @@ export default function PerfQaPage() {
         </div>
       )}
 
-      <div className="flex-1 px-6 pb-6 min-h-0">
+      <div className="flex-1 px-6 pt-3 pb-6 min-h-0 relative">
+        {/* Minimal corner toolbar — only the actions, no status chatter.
+            The Deploy build link fetches a fresh tarball from the server-side
+            API (rebuilt on every click against perf-qa/ in the repo). The
+            tarball includes scripts/install.sh which the customer runs as
+            root to auto-install prereqs + service. */}
+        <div className="absolute top-3 right-9 z-10 flex items-center gap-1 bg-white/85 backdrop-blur rounded-md border border-slate-200 shadow-sm px-1 py-0.5">
+          <a
+            href="/api/perf-qa/deploy-build"
+            download
+            className="inline-flex items-center gap-1 text-xs text-primary-700 hover:bg-primary-50 px-2 py-1 rounded font-medium"
+            title="Download a deployable tarball for any customer site (port 8080, auto-installer included)"
+          >
+            <Package className="h-3.5 w-3.5" /> Deploy build
+          </a>
+          <span className="w-px h-4 bg-slate-200 mx-1" />
+          <Button size="sm" variant="ghost" onClick={() => setIframeKey(k => k + 1)} title="Reload the embedded UI">
+            <RefreshCw className="h-3.5 w-3.5" />
+          </Button>
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-xs text-slate-600 hover:text-primary-700 px-2 py-1 rounded"
+            title="Open the Flask UI in a new tab"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
         <Card className="h-full overflow-hidden">
           <iframe
             key={iframeKey}
