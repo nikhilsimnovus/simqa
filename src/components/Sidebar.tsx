@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle,
   ShieldCheck, Beaker, MousePointerClick, Info, Layers, Wrench, Database,
-  Rocket, FileCheck2, Activity, ChevronDown, ChevronRight,
+  Rocket, FileCheck2, Activity, ChevronDown, ChevronRight, Boxes,
   PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -41,6 +41,7 @@ const SECTIONS: NavSection[] = [
     items: [
       { href: '/api-tests',       label: 'API Tests',       icon: Beaker },
       { href: '/ui-tests',        label: 'UI Tests',        icon: MousePointerClick },
+      { href: '/bulk-tests',      label: 'Bulk Tests',      icon: Boxes },
       { href: '/config-fidelity', label: 'Config Fidelity', icon: FileCheck2 },
       { href: '/validate',        label: 'Build Check',     icon: ShieldCheck },
       { href: '/perf-qa',         label: 'Perf QA',         icon: Activity },
