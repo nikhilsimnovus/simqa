@@ -10,8 +10,8 @@ interface TestSystem { id: string; name: string; host: string; type: string; ven
 
 type Category =
   | 'auth' | 'version' | 'users' | 'admin-users' | 'simulators'
-  | 'system' | 'tools' | 'testcases' | 'executions' | 'statistics'
-  | 'logs' | 'negative' | 'mutating' | 'fuzz';
+  | 'system' | 'tools' | 'testcases' | 'test-creator' | 'executions' | 'statistics'
+  | 'logs' | 'jobs' | 'negative' | 'mutating' | 'fuzz';
 
 interface RequestEvidence  { method: string; url: string; headers: Record<string,string>; body?: string }
 interface ResponseEvidence { status: number; statusText?: string; headers: Record<string,string>; body?: string; bodyTruncated?: boolean; contentType?: string; durationMs: number }
@@ -53,9 +53,11 @@ const CATEGORY_LABELS: Record<Category, string> = {
   'system':       'System',
   'tools':        'Tools (band-info, satellite)',
   'testcases':    'Test cases',
+  'test-creator': 'Test creator (/tests/*)',
   'executions':   'Executions',
   'statistics':   'Statistics',
   'logs':         'Logs',
+  'jobs':         'Async jobs',
   'negative':     'Negative tests (401/404/400)',
   'mutating':     'Mutating (create/update/delete)',
   'fuzz':         'Schema fuzz (malformed input)',
@@ -67,13 +69,13 @@ const CATEGORY_LABELS: Record<Category, string> = {
 // Users can opt-in via the Select all button or by ticking individually.
 const DEFAULT_CATEGORIES: Category[] = [
   'auth', 'version', 'users', 'admin-users', 'simulators',
-  'system', 'tools', 'testcases', 'executions', 'statistics', 'logs',
+  'system', 'tools', 'testcases', 'test-creator', 'executions', 'statistics', 'logs', 'jobs',
 ];
 
 // All categories, in display order — used by Select all.
 const ALL_CATEGORIES: Category[] = [
   'auth', 'version', 'users', 'admin-users', 'simulators',
-  'system', 'tools', 'testcases', 'executions', 'statistics', 'logs',
+  'system', 'tools', 'testcases', 'test-creator', 'executions', 'statistics', 'logs', 'jobs',
   'negative', 'mutating', 'fuzz',
 ];
 

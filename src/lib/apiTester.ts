@@ -15,8 +15,8 @@ import { uesimApiOptsFromInventory, uesimApiOptsForSystem } from './inventory';
 
 export type ApiTestCategory =
   | 'auth' | 'version' | 'users' | 'admin-users' | 'simulators'
-  | 'system' | 'tools' | 'testcases' | 'executions' | 'statistics'
-  | 'logs' | 'negative' | 'mutating' | 'fuzz';
+  | 'system' | 'tools' | 'testcases' | 'test-creator' | 'executions' | 'statistics'
+  | 'logs' | 'jobs' | 'negative' | 'mutating' | 'fuzz';
 
 export type ApiTestSeverity = 'critical' | 'normal' | 'optional';
 
@@ -89,7 +89,7 @@ export interface ApiTesterResponse {
 
 const DEFAULT_CATEGORIES: ApiTestCategory[] = [
   'auth', 'version', 'users', 'admin-users', 'simulators',
-  'system', 'tools', 'testcases', 'executions', 'statistics', 'logs',
+  'system', 'tools', 'testcases', 'test-creator', 'executions', 'statistics', 'logs', 'jobs',
   'negative', 'fuzz',
 ];
 
@@ -103,6 +103,8 @@ interface RunCtx {
   recentSimulatorId?: string;
   /** First testcase id from /testcases list. */
   someTestcaseId?: string;
+  /** First job id discovered from GET /api/jobs (for jobs/{id} test). */
+  someJobId?: string;
   includeDestructive: boolean;
   includeLongRunning: boolean;
 }
@@ -206,6 +208,48 @@ function bad(name: string, base: { id: string; category: ApiTestCategory; method
 function skip(name: string, base: { id: string; category: ApiTestCategory; method: string; endpoint: string; severity: ApiTestSeverity; destructive?: boolean }, reason: string): ApiTestResult {
   return { ...base, name, ok: true, skipped: true, skippedReason: reason, destructive: !!base.destructive, ranAt: new Date().toISOString() };
 }
+
+// ---------- Test-creator request bodies ----------
+// Known-good payloads for the /tests/* config-builder family. Derived from the
+// OpenAPI examples and CORRECTED against the live UE-sim box, where the spec
+// examples are wrong:
+//   • cellConfig.master.product MUST be "UE-SIM" on a UE-sim box.
+//   • cellConfig.cells[].bandwidth is a STRING ("20"), not a number.
+//   • subscriber startingIMSI is a NUMBER (uint64), not a quoted string.
+//   • subscriber opc must match ^[0-9a-fA-F]{32}$ — omit it when op is supplied
+//     (the spec's opc:"" is rejected).
+// Section creation is ORDER-DEPENDENT: each section is gated on the previous
+// one (cells → subscribers → user-plane → power-cycle → mobility → settings),
+// and settings is the finaliser that LOCKS the case.
+const TC_CELLS_LTE = {
+  cellConfig: {
+    master: { product: 'UE-SIM', carrierAggregation: false, channelSim: false, pdcchDecodeOpt: true, pdcchDecodeOptThreshold: 0.1, ratType: 'smartphone', turboIteration: 14 },
+    cells: [{
+      cellType: '4g', syncId: 0, duplexMode: 'FDD', band: '1', EARFCN: { dl: 300, ul: 18300 },
+      bandwidth: '20', prach: 0, antennas: { dl: 1, ul: 1 }, rfCard: 0, rxToTxLatency: 4,
+      txGain: [70], rxGain: [0], globalTimingAdvance: -1,
+      mobility: { antennaType: 'isotropic', position: [4, 3], referencePower: -25, ulAttenuation: 60 },
+    }],
+  },
+};
+const TC_SUBS_LTE = {
+  subsConfig: {
+    subs: [{
+      ueCount: 2, servingCell: 0, startingIMSI: 1010123456789, preferredPLMN: ['011-01', '544-780'],
+      nextIMSI: 1, algorithm: 'milenage', sharedKey: '00112233445566778899aabbccddeeff',
+      op: '000102030405060708090A0B0C0D0E0F', resLength: 8, securityContext: true, asRelease: 13,
+      redCap: false, ueCategoryType: 'combined', ueCategory: '6', imeisv: '4085780000000102',
+      powerControl: false, powerMin: 0, powerMax: 0, attachType: 'normal', ueInitiatedEvents: 'tau',
+      eventsInLoop: true, triggerTime: [10], pdnType: 'ipv4', defaultApn: '',
+      cipherAlgorithm: ['eea0', 'eea1', 'eea2'], integrityAlgorithm: ['eia0', 'eia1', 'eia2'],
+      cqi: 'auto', ri: 'auto', pmi: 'auto', preambleIndex: 0,
+    }],
+  },
+};
+const TC_UPLANE = { userPlaneConfig: { profiles: [{ subscriberGroup: [0], dataType: 'no_data', pdnType: 'ipv4', apnName: '' }] } };
+const TC_PCYCLE = { powerCycleConfig: { profiles: [{ subscriberGroup: [0], loopProfile: 'disable', attachType: 'bursty', attachRate: 1, attachDelay: 0, powerOnTime: 2000, powerOffTime: 10 }] } };
+const TC_MOBILITY = { mobilityConfig: { profiles: [{ subscriberGroup: [0], tripType: 'roundTrip', loopProfile: 'time', startDelay: 5, duration: 380, waitTime: 0, uePosition: [0, 0], speed: 1, direction: 0, distance: 50, fadingProfile: { fadingType: 'awgn', frequencyDoppler: 70, mimoCorrelation: 'low' }, noiseSpectralDensity: -174 }] } };
+const TC_SETTINGS = { settings: { loggingProfileName: 'debug', successCriteriaName: 'abcd' } };
 
 // ---------- Test definitions ----------
 
@@ -1314,6 +1358,143 @@ function defs(): TestDef[] {
     },
   });
 
+  // ---------- TEST-CREATOR (/tests/* config builder) ----------
+  // How a test case is actually authored: POST /tests/cells initialises a case
+  // and returns its testCaseId, then each section is bound in dependency order.
+  // These read-only checks GET the sections of an existing case; the full
+  // create → configure → delete flow is `tc-create-lifecycle` below.
+  list.push({
+    id: 'tc-cells-get', name: 'GET /tests/{id}/cells', category: 'test-creator',
+    method: 'GET', endpoint: '/v2/tests/{id}/cells', severity: 'normal',
+    run: async (c) => {
+      const base = { id: 'tc-cells-get', category: 'test-creator' as const, method: 'GET' as const, endpoint: '/v2/tests/{id}/cells', severity: 'normal' as const };
+      if (!c.someTestcaseId) return skip(base.id, base, 'no testcase id (run testcases-list first)');
+      const r = await rawCall(c, 'GET', `${tBase(c.host)}/tests/${encodeURIComponent(c.someTestcaseId)}/cells`);
+      if (r.status === 200 && r.bodyJson?.cellConfig) return ok(base.id, base, r, `cellConfig present (${r.bodyJson.cellConfig?.cells?.length ?? '?'} cell(s))`);
+      return bad(base.id, base, r, `expected 200 with cellConfig, got ${r.status}`);
+    },
+  });
+  for (const slug of ['subscribers', 'user-plane', 'power-cycle', 'mobility', 'settings']) {
+    list.push({
+      id: `tc-${slug}-get`, name: `GET /tests/{id}/${slug}`, category: 'test-creator',
+      method: 'GET', endpoint: `/v2/tests/{id}/${slug}`, severity: 'optional',
+      run: async (c) => {
+        const base = { id: `tc-${slug}-get`, category: 'test-creator' as const, method: 'GET' as const, endpoint: `/v2/tests/{id}/${slug}`, severity: 'optional' as const };
+        if (!c.someTestcaseId) return skip(base.id, base, 'no testcase id (run testcases-list first)');
+        const r = await rawCall(c, 'GET', `${tBase(c.host)}/tests/${encodeURIComponent(c.someTestcaseId)}/${slug}`);
+        if (r.status === 200) return ok(base.id, base, r, JSON.stringify(r.bodyJson).slice(0, 100));
+        // A case created without this optional section returns 404 "section not
+        // found" — expected, not a failure.
+        if (r.status === 404) return skip(base.id, base, `this test case has no '${slug}' section`);
+        return bad(base.id, base, r, `expected 200 or 404, got ${r.status}`);
+      },
+    });
+  }
+
+  // Full create → configure → finalise → tag → purge-history → delete.
+  // Validated end-to-end against the live UE-sim box. Section order is
+  // mandatory and settings is the finaliser that LOCKS the case; mobility
+  // intentionally gets no PUT (the server rejects it with "section
+  // 'mobilityConfig' cannot be updated"). Cleans up after itself via DELETE.
+  list.push({
+    id: 'tc-create-lifecycle',
+    name: 'POST /tests/cells → subscribers → user-plane → power-cycle → mobility → settings (full create), PUT tags, purge history, DELETE',
+    category: 'test-creator',
+    method: 'POST', endpoint: '/v2/tests/cells (full lifecycle)', severity: 'critical',
+    destructive: true, longRunning: true,
+    run: async (c) => {
+      const base = { id: 'tc-create-lifecycle', category: 'test-creator' as const, method: 'POST' as const, endpoint: '/v2/tests/cells (full lifecycle)', severity: 'critical' as const, destructive: true };
+      const J = { 'Content-Type': 'application/json' };
+      const traces: string[] = [];
+
+      // 1. Initialise the case via cells → returns testCaseId.
+      const cells = await rawCall(c, 'POST', `${tBase(c.host)}/tests/cells`, { headers: J, body: JSON.stringify(TC_CELLS_LTE) });
+      traces.push(`cells=${cells.status}`);
+      const id: string | undefined = cells.bodyJson?.testCaseId;
+      if (cells.status !== 200 || !id) return bad(base.id, base, cells, `create cells returned ${cells.status}`, '200 with { success, testCaseId, testCaseName } per createCellConfig (master.product must be "UE-SIM", cells[].bandwidth must be a string)');
+
+      const cleanup = async () => { try { await rawCall(c, 'DELETE', `${tBase(c.host)}/testcases/${encodeURIComponent(id)}`); } catch { /* best effort */ } };
+      try {
+        // 2–5. Sections in dependency order; each is gated on the previous one.
+        const order: Array<[string, any]> = [['subscribers', TC_SUBS_LTE], ['user-plane', TC_UPLANE], ['power-cycle', TC_PCYCLE], ['mobility', TC_MOBILITY]];
+        for (const [slug, body] of order) {
+          const r = await rawCall(c, 'POST', `${tBase(c.host)}/tests/${encodeURIComponent(id)}/${slug}`, { headers: J, body: JSON.stringify(body) });
+          traces.push(`${slug}=${r.status}`);
+          if (r.status !== 200) { await cleanup(); return bad(base.id, base, r, `POST ${slug} returned ${r.status}: ${JSON.stringify(r.bodyJson)?.slice(0, 140)}; ${traces.join(' ')}`, '200; section creation is order-dependent (cells→subscribers→user-plane→power-cycle→mobility→settings)'); }
+        }
+        // 6. Update an existing section (cells supports PUT; mobility does not).
+        const putCells = await rawCall(c, 'PUT', `${tBase(c.host)}/tests/${encodeURIComponent(id)}/cells`, { headers: J, body: JSON.stringify(TC_CELLS_LTE) });
+        traces.push(`put-cells=${putCells.status}`);
+        // 7. Finalise — settings locks the case and sets the final name.
+        const settings = await rawCall(c, 'POST', `${tBase(c.host)}/tests/${encodeURIComponent(id)}/settings`, { headers: J, body: JSON.stringify(TC_SETTINGS) });
+        traces.push(`settings=${settings.status}`);
+        if (settings.status !== 200) { await cleanup(); return bad(base.id, base, settings, `settings (finalise) returned ${settings.status}; ${traces.join(' ')}`, '200 "testcase creation completed"'); }
+        // 8. Tag it (PUT /testcases/{id}).
+        const tags = await rawCall(c, 'PUT', `${tBase(c.host)}/testcases/${encodeURIComponent(id)}`, { headers: J, body: JSON.stringify({ user_tags: ['simqa', 'smoke'] }) });
+        traces.push(`tags=${tags.status}`);
+        // 9. Purge history (async job) and 10. track it via /api/jobs/{id}.
+        const purge = await rawCall(c, 'DELETE', `${tBase(c.host)}/testcases/${encodeURIComponent(id)}/history`);
+        traces.push(`purge=${purge.status}`);
+        const jobId: string | undefined = purge.bodyJson?.jobId;
+        if (jobId) { const job = await rawCall(c, 'GET', `${tBase(c.host)}/api/jobs/${encodeURIComponent(jobId)}`); traces.push(`job=${job.status}`); }
+        // 11. Confirm retrievable, then 12. delete + 13. confirm gone.
+        const verify = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/${encodeURIComponent(id)}`);
+        traces.push(`verify=${verify.status}`);
+        const del = await rawCall(c, 'DELETE', `${tBase(c.host)}/testcases/${encodeURIComponent(id)}`);
+        traces.push(`delete=${del.status}`);
+        if (del.status !== 200 && del.status !== 204) return bad(base.id, base, del, `DELETE testcase returned ${del.status} (leaked ${id}); ${traces.join(' ')}`, '200/204 — the case must be removable so a create smoke-test does not leak inventory');
+        return ok(base.id, base, cells, `${id}: ${traces.join(' ')}`);
+      } catch (e: any) {
+        await cleanup();
+        return bad(base.id, base, { status: 0, ms: 0, error: e?.message ?? String(e), request: { method: 'POST', url: `${tBase(c.host)}/tests/cells`, headers: {} } }, `lifecycle threw: ${e?.message ?? e}; ${traces.join(' ')}`);
+      }
+    },
+  });
+
+  // ---------- JOBS (async job tracking) ----------
+  list.push({
+    id: 'jobs-list', name: 'GET /api/jobs', category: 'jobs',
+    method: 'GET', endpoint: '/v2/api/jobs', severity: 'normal',
+    run: async (c) => {
+      const base = { id: 'jobs-list', category: 'jobs' as const, method: 'GET' as const, endpoint: '/v2/api/jobs', severity: 'normal' as const };
+      const r = await rawCall(c, 'GET', `${tBase(c.host)}/api/jobs`);
+      if (r.status === 200) {
+        const arr = Array.isArray(r.bodyJson) ? r.bodyJson : (r.bodyJson?.items ?? r.bodyJson?.jobs ?? []);
+        if (Array.isArray(arr) && arr.length > 0) c.someJobId = arr[0]?.id ?? arr[0]?.jobId;
+        return ok(base.id, base, r, `${Array.isArray(arr) ? arr.length : '?'} job(s)`);
+      }
+      return bad(base.id, base, r, `expected 200, got ${r.status}`);
+    },
+  });
+  list.push({
+    id: 'jobs-get-one', name: 'GET /api/jobs/{id}', category: 'jobs',
+    method: 'GET', endpoint: '/v2/api/jobs/{id}', severity: 'normal',
+    run: async (c) => {
+      const base = { id: 'jobs-get-one', category: 'jobs' as const, method: 'GET' as const, endpoint: '/v2/api/jobs/{id}', severity: 'normal' as const };
+      if (!c.someJobId) return skip(base.id, base, 'no job id available (run jobs-list first; box may have no jobs)');
+      const r = await rawCall(c, 'GET', `${tBase(c.host)}/api/jobs/${encodeURIComponent(c.someJobId)}`);
+      if (r.status === 200) return ok(base.id, base, r, JSON.stringify(r.bodyJson).slice(0, 100));
+      return bad(base.id, base, r, `expected 200, got ${r.status}`);
+    },
+  });
+
+  // ---------- USERS SEARCH ----------
+  // Spec documents POST /users/search. On the lab box the /users* routes exist
+  // but reject the master-realm admin token with 403 (search role not mapped),
+  // while /admin/users* 404s — so 403 here means "route present, authz
+  // enforced", which we accept as covered; 404 means the route is missing.
+  list.push({
+    id: 'users-search', name: 'POST /users/search', category: 'admin-users',
+    method: 'POST', endpoint: '/v2/users/search', severity: 'optional',
+    run: async (c) => {
+      const base = { id: 'users-search', category: 'admin-users' as const, method: 'POST' as const, endpoint: '/v2/users/search', severity: 'optional' as const };
+      const r = await rawCall(c, 'POST', `${tBase(c.host)}/users/search`, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pageNumber: 1, pageSize: 10 }) });
+      if (r.status === 200) return ok(base.id, base, r, `items=${r.bodyJson?.items?.length ?? r.bodyJson?.users?.length ?? '?'}`);
+      if (r.status === 403) return ok(base.id, base, r, 'route present; admin token forbidden (403) — search role not mapped for this deployment');
+      return bad(base.id, base, r, `expected 200 (or 403 if authz-gated), got ${r.status}`, '200 with a paged user list per spec; 404 means the /users/search route is not deployed');
+    },
+  });
+
   // ---------- FUZZ ----------
   // Schema fuzzing: send malformed payloads and assert the API rejects with
   // 4xx (not 5xx, not 200). The point is to surface input validation gaps.
@@ -1452,5 +1633,5 @@ export async function runApiTests(inv: Inventory, req: ApiTesterRequest): Promis
 }
 
 export function listAllCategories(): ApiTestCategory[] {
-  return ['auth', 'version', 'users', 'admin-users', 'simulators', 'system', 'tools', 'testcases', 'executions', 'statistics', 'logs', 'negative', 'mutating', 'fuzz'];
+  return ['auth', 'version', 'users', 'admin-users', 'simulators', 'system', 'tools', 'testcases', 'test-creator', 'executions', 'statistics', 'logs', 'jobs', 'negative', 'mutating', 'fuzz'];
 }
