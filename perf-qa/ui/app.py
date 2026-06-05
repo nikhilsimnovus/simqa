@@ -623,6 +623,107 @@ def api_testcases():
         return jsonify({"items": [], "error": str(exc)}), 502
 
 
+# ---------------------------------------------------------------------------
+# Shared SSH key — uploaded once via the Setup tab + auto-picked by OpenSSH
+# for every outbound connection from the collector. Path is the running
+# service user's standard SSH default location, so we don't need any -i
+# flag in the bash script. Customer install: $HOME = /var/lib/perfqa. Old
+# .36 install: $HOME = /home/sysadmin. Either way Path.home() resolves it.
+# ---------------------------------------------------------------------------
+_SSH_DIR = Path(os.environ.get("HOME", str(Path.home()))) / ".ssh"
+_SSH_KEY_PATH = _SSH_DIR / "id_ed25519"
+_SSH_KEY_HEADERS = (
+    b"-----BEGIN OPENSSH PRIVATE KEY-----",
+    b"-----BEGIN RSA PRIVATE KEY-----",
+    b"-----BEGIN EC PRIVATE KEY-----",
+    b"-----BEGIN DSA PRIVATE KEY-----",
+    b"-----BEGIN PRIVATE KEY-----",
+)
+
+
+def _ssh_key_info() -> dict:
+    """Status, fingerprint, and public key for the uploaded SSH key.
+
+    Fingerprint + public key are derived via ssh-keygen so the UI can show
+    them without ever exposing the private bytes.
+    """
+    info: dict = {"present": False, "path": str(_SSH_KEY_PATH)}
+    if not _SSH_KEY_PATH.exists():
+        return info
+    st = _SSH_KEY_PATH.stat()
+    info.update({
+        "present":     True,
+        "size":        st.st_size,
+        "mode":        oct(st.st_mode & 0o777),
+        "mtime":       st.st_mtime,
+        "fingerprint": "",
+        "pubkey":      "",
+    })
+    try:
+        fp = subprocess.run(
+            ["ssh-keygen", "-l", "-f", str(_SSH_KEY_PATH)],
+            capture_output=True, text=True, timeout=5,
+        )
+        if fp.returncode == 0:
+            info["fingerprint"] = fp.stdout.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        pub = subprocess.run(
+            ["ssh-keygen", "-y", "-f", str(_SSH_KEY_PATH)],
+            capture_output=True, text=True, timeout=5,
+        )
+        if pub.returncode == 0:
+            info["pubkey"] = pub.stdout.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return info
+
+
+@app.route("/api/ssh-key", methods=["GET"])
+def api_ssh_key_get():
+    return jsonify(_ssh_key_info())
+
+
+@app.route("/api/ssh-key", methods=["POST"])
+def api_ssh_key_upload():
+    f = request.files.get("key")
+    if f is None:
+        return jsonify({"ok": False, "error": "no file uploaded (use multipart field name 'key')"}), 400
+    data = f.read()
+    if not any(data.startswith(h) for h in _SSH_KEY_HEADERS):
+        return jsonify({"ok": False,
+                        "error": "file does not start with an SSH/PEM private-key header"}), 400
+    # Refuse upload if file looks encrypted — we can't decrypt at runtime and
+    # the BatchMode=yes flag in the collector would silently fail.
+    if b"ENCRYPTED" in data[:512]:
+        return jsonify({"ok": False,
+                        "error": "passphrase-protected keys aren't supported (ssh-keygen -p to remove)"}), 400
+    try:
+        _SSH_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(_SSH_DIR, 0o700)
+        # Back up any existing key so the operator can recover if they
+        # uploaded the wrong file. Only keep ONE backup (overwrite each time).
+        if _SSH_KEY_PATH.exists():
+            _SSH_KEY_PATH.replace(_SSH_KEY_PATH.with_suffix(".bak"))
+        _SSH_KEY_PATH.write_bytes(data)
+        os.chmod(_SSH_KEY_PATH, 0o600)
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"write failed: {exc}"}), 500
+    out = _ssh_key_info()
+    out["ok"] = True
+    out["message"] = ("key written to " + str(_SSH_KEY_PATH) +
+                      " — ssh will auto-use it for outbound connections")
+    return jsonify(out)
+
+
+@app.route("/api/ssh-key", methods=["DELETE"])
+def api_ssh_key_delete():
+    if _SSH_KEY_PATH.exists():
+        _SSH_KEY_PATH.unlink()
+    return jsonify({"ok": True, "path": str(_SSH_KEY_PATH)})
+
+
 @app.route("/api/profiles", methods=["GET"])
 def api_profiles_list():
     return jsonify(load_profiles())
@@ -2023,6 +2124,12 @@ SETUP_HTML = r"""<!doctype html>
 .profile-bar .hint{color:var(--mut);font-size:12.5px;margin-left:8px}
 .skip-tag{font-size:11px;color:#dc2626;background:#fee2e2;padding:2px 7px;border-radius:999px;margin-left:6px;font-weight:500}
 .coll-tag{font-size:11px;color:#166534;background:#dcfce7;padding:2px 7px;border-radius:999px;margin-left:6px;font-weight:500}
+.ssh-status{font-size:12.5px;padding:10px 12px;border-radius:6px;font-family:ui-monospace,Consolas,monospace;line-height:1.5}
+.ssh-status.ok{background:#f0fdf4;border:1px solid #bbf7d0;color:#166534}
+.ssh-status.missing{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412}
+.ssh-status .fp{color:#1c1c2e;font-weight:600}
+.ssh-status .path{color:#94a3b8;font-size:11.5px}
+#ssh-pub-details pre{background:#0f1117;color:#e2e8f0;padding:10px 12px;border-radius:6px;font:11.5px ui-monospace,Consolas,monospace;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
 *{box-sizing:border-box}
 body{margin:0;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Inter,sans-serif;color:var(--fg);background:var(--bg)}
 .topbar{background:var(--nav);color:#fff;padding:10px 22px;display:flex;align-items:center;gap:14px;border-bottom:3px solid var(--brand)}
@@ -2135,6 +2242,34 @@ details pre{margin:10px 0 0;padding:12px;background:#0f1117;color:#e2e8f0;border
     </select>
     <span class="hint">Edits here only update profiles.json. <code>setup.conf</code> is rewritten on the next Collector Run.</span>
   </div>
+
+  <!-- SSH key panel: profile-agnostic, applies to every outbound SSH from
+       the collector. Upload once, OpenSSH auto-picks it up because we save
+       to the service user's ~/.ssh/id_ed25519 (standard default location). -->
+  <section class="section" id="ssh-key-section">
+    <h2>SSH key (shared across all hosts)</h2>
+    <div id="ssh-key-status" class="ssh-status">loading…</div>
+    <div class="grid" style="margin-top:12px">
+      <div class="field">
+        <label>Upload private key<span class="ph">drop the file you'd normally put in ~/.ssh/ — written with mode 0600</span></label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="ssh-key-file" type="file" accept=".pem,.key,id_*" style="flex:1">
+          <button class="btn" type="button" onclick="uploadSshKey()">Upload</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Manage<span class="ph">replace by uploading again · delete when no longer needed</span></label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-secondary" type="button" onclick="copySshPubkey()" id="ssh-pub-copy" style="display:none">Copy public key</button>
+          <button class="btn btn-secondary danger" type="button" onclick="deleteSshKey()" id="ssh-key-del" style="display:none">Delete</button>
+        </div>
+      </div>
+    </div>
+    <details id="ssh-pub-details" style="display:none;margin-top:10px">
+      <summary>Public key — copy into <code>~/.ssh/authorized_keys</code> on each rack host</summary>
+      <pre id="ssh-pub-text"></pre>
+    </details>
+  </section>
 
   <form id="form" onsubmit="return false">
     <section class="section">
@@ -2321,6 +2456,86 @@ async function deleteProfile(){
 
 // Initial population from the first profile in the dropdown.
 loadProfileIntoForm();
+
+// ---- SSH key panel ----
+// Status box at the top of Setup. On load, fetches /api/ssh-key to show
+// fingerprint + path. Upload writes to $HOME/.ssh/id_ed25519 on the
+// collector host (perfqa user); OpenSSH auto-uses it for outbound.
+async function refreshSshKey(){
+  const status = document.getElementById('ssh-key-status');
+  const del    = document.getElementById('ssh-key-del');
+  const copy   = document.getElementById('ssh-pub-copy');
+  const det    = document.getElementById('ssh-pub-details');
+  const pubEl  = document.getElementById('ssh-pub-text');
+  try {
+    const r = await fetch('/api/ssh-key', {cache:'no-store'});
+    const d = await r.json();
+    if (d.present) {
+      const when = d.mtime ? new Date(d.mtime*1000).toLocaleString() : '';
+      status.className = 'ssh-status ok';
+      status.innerHTML =
+        `<div class="fp">✓ ${d.fingerprint || 'key uploaded'}</div>` +
+        `<div class="path">${d.path} · mode ${d.mode || ''} · ${d.size} bytes · ${when}</div>`;
+      del.style.display  = 'inline-block';
+      copy.style.display = d.pubkey ? 'inline-block' : 'none';
+      if (d.pubkey) { pubEl.textContent = d.pubkey; det.style.display = 'block'; }
+    } else {
+      status.className = 'ssh-status missing';
+      status.innerHTML = `No SSH key uploaded yet. Path on the collector host: <code>${d.path}</code>`;
+      del.style.display = 'none';
+      copy.style.display = 'none';
+      det.style.display = 'none';
+    }
+  } catch (e) {
+    status.className = 'ssh-status missing';
+    status.textContent = 'failed to load /api/ssh-key';
+  }
+}
+
+async function uploadSshKey(){
+  const f = document.getElementById('ssh-key-file').files[0];
+  if (!f) { flash('err', 'Pick a private key file first'); return; }
+  if (f.size > 32*1024) {
+    flash('err', 'File looks too large for an SSH key (' + f.size + ' bytes)');
+    return;
+  }
+  const fd = new FormData();
+  fd.append('key', f);
+  try {
+    const r = await fetch('/api/ssh-key', {method:'POST', body:fd});
+    const d = await r.json();
+    if (d.ok) {
+      flash('ok', d.message || 'key uploaded');
+      document.getElementById('ssh-key-file').value = '';
+      await refreshSshKey();
+    } else {
+      flash('err', d.error || 'upload failed');
+    }
+  } catch (e) {
+    flash('err', 'upload failed: ' + e.message);
+  }
+}
+
+async function deleteSshKey(){
+  if (!confirm('Delete the uploaded SSH key from the collector host?')) return;
+  const r = await fetch('/api/ssh-key', {method:'DELETE'});
+  const d = await r.json();
+  if (d.ok) { flash('ok', 'key deleted'); await refreshSshKey(); }
+  else      { flash('err', d.error || 'delete failed'); }
+}
+
+async function copySshPubkey(){
+  const pub = document.getElementById('ssh-pub-text').textContent.trim();
+  if (!pub) return;
+  try {
+    await navigator.clipboard.writeText(pub);
+    flash('ok', 'public key copied to clipboard');
+  } catch (e) {
+    flash('err', 'clipboard write failed: ' + e.message);
+  }
+}
+
+refreshSshKey();
 
 // ---- Cross-tab running-job indicator ----
 (function(){
