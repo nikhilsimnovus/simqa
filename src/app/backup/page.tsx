@@ -1,11 +1,12 @@
 'use client';
 
 // /backup — backup and restore simqa's persisted configuration, plus
-// download all testcases from a Simnovator system as a JSON snapshot.
+// download all testcases from a Simnovator system, plus snapshot/restore
+// the lab gNB + MME config trees on a remote box.
 //
-// Two cards on this page:
+// Three cards on this page:
 //
-//   1. Configuration backup
+//   1. Configuration backup (simqa's own state)
 //      • Download — fetches /api/backup/config which returns inventory.yaml
 //        + .env.local + ui-test baselines as one JSON file. Browser saves it
 //        with the timestamped filename the server suggests.
@@ -15,7 +16,7 @@
 //        files as <path>.bak-<timestamp> before overwriting (so this can
 //        never silently destroy your current inventory).
 //
-//   2. Testcase export
+//   2. Testcase export (from a remote Simnovator)
 //      • Pick a Simnovator system from inventory.
 //      • Click Export — server paginates /v2/testcases/search and streams
 //        the result back as a single JSON download. Workaround for the
@@ -24,12 +25,22 @@
 //        SIM40-2060). A header X-Simqa-Server-Total tells you how many the
 //        server *thinks* it has, vs X-Simqa-Pulled which is how many we
 //        actually got — if those differ, we caught a silent dropout.
+//
+//   3. Lab gNB / MME backup (from a remote box)
+//      • Pick a Simnovator system from inventory.
+//      • Download — SSH'es into the box, walks /root/enb/config and
+//        /root/mme/config, base64-encodes every file, returns them as one
+//        JSON archive. Binary-safe (.pem certs round-trip cleanly).
+//      • Restore — pick a previously-downloaded archive + a target system.
+//        Strict whitelist (must be under /root/enb/config or
+//        /root/mme/config); every existing remote file is preserved as
+//        <path>.bak-<timestamp> before overwriting.
 
 import { useEffect, useState } from 'react';
 import { Header } from '@/components/Header';
 import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
 import {
-  Download, Upload, Database, ListChecks, CheckCircle2, AlertTriangle, Loader2, FileJson, Server,
+  Download, Upload, Database, ListChecks, CheckCircle2, AlertTriangle, Loader2, FileJson, Server, Radio,
 } from 'lucide-react';
 
 interface TestSystem {
@@ -59,6 +70,14 @@ export default function BackupPage() {
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreResult, setRestoreResult] = useState<RestoreResp | null>(null);
 
+  // ─── Lab gNB / MME backup state ───
+  const [gnbSystem, setGnbSystem] = useState<string>('');
+  const [gnbBackupBusy, setGnbBackupBusy] = useState(false);
+  const [gnbBackupDetail, setGnbBackupDetail] = useState<{ files: number; bytes: number } | null>(null);
+  const [gnbRestoreBusy, setGnbRestoreBusy] = useState(false);
+  const [gnbRestoreResult, setGnbRestoreResult] = useState<RestoreResp | null>(null);
+  const [gnbErr, setGnbErr] = useState<string | null>(null);
+
   useEffect(() => {
     fetch('/api/ui-tests/systems')
       .then((r) => r.json())
@@ -66,6 +85,10 @@ export default function BackupPage() {
         const list: TestSystem[] = j.systems ?? [];
         setSystems(list);
         if (list.length > 0 && !tcSystem) setTcSystem(list[0].id);
+        // Default the gNB selector to the first SIMNOVATOR-typed system
+        // (more useful than just the first one) — falls back to first overall.
+        const firstSim = list.find((s) => s.type === 'SIMNOVATOR') ?? list[0];
+        if (firstSim && !gnbSystem) setGnbSystem(firstSim.id);
       })
       .catch(() => setSystems([]));
   }, []);
@@ -110,6 +133,55 @@ export default function BackupPage() {
       setRestoreResult({ ok: false, errors: [e?.message ?? String(e)] });
     } finally {
       setRestoreBusy(false);
+    }
+  }
+
+  // ── Lab gNB / MME backup ──
+  async function downloadGnbBackup() {
+    if (!gnbSystem) return;
+    setGnbBackupBusy(true); setGnbErr(null); setGnbBackupDetail(null);
+    try {
+      const r = await fetch(`/api/backup/gnb?systemId=${encodeURIComponent(gnbSystem)}`, { cache: 'no-store' });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${r.status}`);
+      }
+      const files = Number(r.headers.get('X-Simqa-File-Count') ?? 0);
+      const bytes = Number(r.headers.get('X-Simqa-Total-Bytes') ?? 0);
+      setGnbBackupDetail({ files, bytes });
+      const blob = await r.blob();
+      const cd = r.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename="([^"]+)"/);
+      const filename = m?.[1] ?? `gnb-mme-${gnbSystem}.json`;
+      saveBlobAs(blob, filename);
+    } catch (e: any) {
+      setGnbErr(e?.message ?? String(e));
+    } finally {
+      setGnbBackupBusy(false);
+    }
+  }
+
+  async function restoreGnbFromFile(file: File) {
+    if (!gnbSystem) return;
+    setGnbRestoreBusy(true); setGnbRestoreResult(null); setGnbErr(null);
+    try {
+      const text = await file.text();
+      let body: unknown;
+      try { body = JSON.parse(text); } catch (e: any) {
+        setGnbRestoreResult({ ok: false, errors: [`File is not valid JSON: ${e?.message ?? e}`] });
+        return;
+      }
+      const r = await fetch(`/api/backup/gnb?systemId=${encodeURIComponent(gnbSystem)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j: RestoreResp = await r.json();
+      setGnbRestoreResult(j);
+    } catch (e: any) {
+      setGnbRestoreResult({ ok: false, errors: [e?.message ?? String(e)] });
+    } finally {
+      setGnbRestoreBusy(false);
     }
   }
 
@@ -298,6 +370,120 @@ export default function BackupPage() {
               <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 flex gap-2">
                 <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-none" />
                 <div>{tcErr}</div>
+              </div>
+            ) : null}
+          </CardBody>
+        </Card>
+
+        {/* ── Card 3: Lab gNB / MME backup + restore ───────────────── */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Radio className="h-4 w-4 text-primary-600" />
+              Lab gNB / MME backup
+            </CardTitle>
+          </CardHeader>
+          <CardBody className="space-y-4">
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Snapshots the Amarisoft cfg trees on a remote Simnovator box —{' '}
+              <code className="font-mono text-[11px] bg-slate-100 px-1 rounded">/root/enb/config</code>{' '}
+              and{' '}
+              <code className="font-mono text-[11px] bg-slate-100 px-1 rounded">/root/mme/config</code>{' '}
+              — into a single JSON archive. Reads over SSH + sudo,
+              base64-encodes every file so binary content (.pem, .der, etc.)
+              round-trips cleanly. Restore is whitelist-strict — only those
+              two trees can be touched on the target box — and every existing
+              file is preserved as{' '}
+              <code className="font-mono text-[11px] bg-slate-100 px-1 rounded">&lt;path&gt;.bak-&lt;timestamp&gt;</code>{' '}
+              before overwrite.
+            </p>
+
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-slate-700 flex items-center gap-1.5">
+                  <Server className="h-3.5 w-3.5" /> Target system
+                </label>
+                {systems === null ? (
+                  <div className="text-xs text-slate-500 flex items-center gap-1.5 h-9 px-3"><Loader2 className="h-3 w-3 animate-spin" /> loading…</div>
+                ) : systems.length === 0 ? (
+                  <div className="text-xs text-slate-500 h-9 flex items-center px-3">No systems in inventory.yaml.</div>
+                ) : (
+                  <select
+                    value={gnbSystem}
+                    onChange={(e) => setGnbSystem(e.target.value)}
+                    className="w-full md:w-[420px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-white text-slate-700"
+                  >
+                    {systems.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name} ({s.host}) — {s.type}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <Button onClick={downloadGnbBackup} disabled={!gnbSystem || gnbBackupBusy} className="bg-primary-600 hover:bg-primary-700 text-white">
+                {gnbBackupBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                <span className="ml-1.5">Download backup</span>
+              </Button>
+
+              <label className={
+                'inline-flex items-center gap-1.5 px-4 h-9 rounded-md text-sm font-medium border cursor-pointer ' +
+                (gnbRestoreBusy || !gnbSystem
+                  ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50')
+              }>
+                {gnbRestoreBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                <span>Restore from file…</span>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  disabled={gnbRestoreBusy || !gnbSystem}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) restoreGnbFromFile(f);
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+            </div>
+
+            {gnbBackupDetail ? (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 flex gap-1.5 items-center">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                <span>Downloaded {gnbBackupDetail.files} file(s), ~{(gnbBackupDetail.bytes / 1024).toFixed(1)} KB total.</span>
+              </div>
+            ) : null}
+
+            {gnbRestoreResult ? (
+              <div className={
+                'rounded-md border p-3 text-xs leading-relaxed space-y-1.5 ' +
+                (gnbRestoreResult.ok
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                  : 'border-red-200 bg-red-50 text-red-700')
+              }>
+                <div className="flex items-center gap-1.5 font-semibold">
+                  {gnbRestoreResult.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
+                  {gnbRestoreResult.ok ? 'Restore complete' : 'Restore failed'}
+                </div>
+                {gnbRestoreResult.restoredFiles && gnbRestoreResult.restoredFiles.length > 0 ? (
+                  <FileList label="Restored" tone="green" files={gnbRestoreResult.restoredFiles} />
+                ) : null}
+                {gnbRestoreResult.backedUpFiles && gnbRestoreResult.backedUpFiles.length > 0 ? (
+                  <FileList label="Preserved as .bak" tone="slate" files={gnbRestoreResult.backedUpFiles} />
+                ) : null}
+                {gnbRestoreResult.rejectedFiles && gnbRestoreResult.rejectedFiles.length > 0 ? (
+                  <FileList label="Rejected (outside whitelist)" tone="amber" files={gnbRestoreResult.rejectedFiles} />
+                ) : null}
+                {gnbRestoreResult.errors && gnbRestoreResult.errors.length > 0 ? (
+                  <FileList label="Errors" tone="red" files={gnbRestoreResult.errors} />
+                ) : null}
+              </div>
+            ) : null}
+
+            {gnbErr ? (
+              <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 flex gap-2">
+                <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-none" />
+                <div>{gnbErr}</div>
               </div>
             ) : null}
           </CardBody>
