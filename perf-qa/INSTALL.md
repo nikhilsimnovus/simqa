@@ -120,6 +120,32 @@ sudo systemctl daemon-reload
 
 ## Troubleshooting
 
+### Corporate SSL-inspecting proxy (Zscaler / Palo Alto / Fortinet / etc.)
+
+If you see `SSL: CERTIFICATE_VERIFY_FAILED` from `pip` or `playwright install` during the installer, the customer network has a TLS-inspecting proxy that injects a self-signed certificate. The installer **auto-falls-back** to `--trusted-host` for pip (so the install completes), but for a permanent + secure fix point both tools at the customer's enterprise CA bundle and re-run:
+
+```bash
+# Find the customer's CA bundle — typical locations:
+ls /etc/pki/ca-trust/source/anchors/        # RHEL/CentOS
+ls /usr/local/share/ca-certificates/        # Debian/Ubuntu
+ls /etc/ssl/certs/ca-certificates.crt       # combined Debian/Ubuntu bundle
+ls /etc/pki/tls/certs/ca-bundle.crt         # combined RHEL/CentOS bundle
+
+# Export before re-running install.sh:
+sudo PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
+     NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
+     bash scripts/install.sh
+```
+
+Other env vars the installer respects (set any/all before running):
+
+* `PIP_INDEX_URL=https://pypi.internal.customer.com/simple/` — use an internal PyPI mirror.
+* `PIP_TRUSTED_HOST=pypi.internal.customer.com` — skip TLS verify for that host.
+* `HTTP_PROXY=http://proxy.customer.com:8080` + `HTTPS_PROXY=...` — for outbound HTTPS via corporate proxy.
+* `SKIP_PLAYWRIGHT=1` — skip the headless-Chromium download entirely (Beszel + Simnovator GUI screenshots will be disabled; everything else works).
+
+### Other issues
+
 | Symptom | Check |
 |---|---|
 | Service won't start | `journalctl -u perf-qa-ui -n 50` |
@@ -127,3 +153,4 @@ sudo systemctl daemon-reload
 | `Connectivity: unreachable` from the UI | `ssh perfqa@<host>` confirm key auth; check `setup.conf` IPs |
 | Beszel screenshot fails | `BESZEL_HUB_URL` set + viewer creds correct; check `/var/lib/perfqa/.cache/ms-playwright/` is populated |
 | Heat CSVs empty | heat-monitor service running on the rack host: `ssh ... systemctl is-active heat-monitor` |
+| `playwright install chromium FAILED` | Re-run with `NODE_EXTRA_CA_CERTS=<bundle>` (see SSL section above) — or `SKIP_PLAYWRIGHT=1` to skip browsers entirely |

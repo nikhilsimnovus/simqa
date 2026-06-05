@@ -116,18 +116,71 @@ else
     log "Creating Python venv at ${UI_INSTALL_DIR}/venv"
     sudo -u "${SERVICE_USER}" python3 -m venv "${UI_INSTALL_DIR}/venv"
 fi
-log "Installing Flask + Playwright into venv"
-sudo -u "${SERVICE_USER}" "${UI_INSTALL_DIR}/venv/bin/pip" install --upgrade --quiet pip
-sudo -u "${SERVICE_USER}" "${UI_INSTALL_DIR}/venv/bin/pip" install --upgrade --quiet flask playwright
+
+# pip_install: try a normal `pip install`; if TLS verification fails because
+# the customer has an SSL-inspecting proxy (Zscaler / Palo Alto / etc.), retry
+# once with --trusted-host on the official PyPI hosts. Customers can avoid
+# this fallback entirely by exporting PIP_CERT=/path/to/corp-ca-bundle.crt
+# (preferred), PIP_INDEX_URL=<their internal mirror>, or PIP_TRUSTED_HOST=...
+# before invoking install.sh — all are honoured automatically by pip.
+pip_install() {
+    local logf
+    logf="$(mktemp)"
+    if sudo -u "${SERVICE_USER}" -E "${UI_INSTALL_DIR}/venv/bin/pip" install --quiet "$@" >"$logf" 2>&1; then
+        rm -f "$logf"
+        return 0
+    fi
+    if grep -qE 'CERTIFICATE_VERIFY_FAILED|SSLError|self-signed certificate' "$logf"; then
+        warn "pip TLS verification failed — looks like a corporate SSL-inspecting proxy."
+        warn "Retrying with --trusted-host fallback. To avoid this next time, point pip"
+        warn "at your enterprise CA bundle:  export PIP_CERT=/etc/ssl/certs/ca-bundle.crt"
+        warn "(or set PIP_INDEX_URL to an internal mirror, or PIP_TRUSTED_HOST=<host>)."
+        if sudo -u "${SERVICE_USER}" -E "${UI_INSTALL_DIR}/venv/bin/pip" install --quiet \
+                --trusted-host pypi.org \
+                --trusted-host files.pythonhosted.org \
+                --trusted-host pypi.python.org \
+                "$@" >"$logf" 2>&1; then
+            rm -f "$logf"
+            return 0
+        fi
+    fi
+    # Final failure — surface the actual error so the customer can fix it.
+    echo "----- pip output (last 30 lines) -----" >&2
+    tail -30 "$logf" >&2
+    rm -f "$logf"
+    fail "pip install failed for: $*"
+}
+log "Installing Flask + Playwright into venv (pip)"
+pip_install --upgrade pip
+pip_install --upgrade flask playwright
 
 # Playwright browsers — only install if not already present (~150 MB download).
+# Playwright uses Node's HTTPS stack, which honours NODE_EXTRA_CA_CERTS for
+# the customer's enterprise CA bundle. SSL_CERT_FILE / SSL_CERT_DIR are the
+# OpenSSL equivalents (some Playwright versions respect them).
 PW_BROWSERS="${PERFQA_HOME}/.cache/ms-playwright"
+# Auto-discover a custom CA bundle the customer may have set up. If they've
+# pointed pip at one via PIP_CERT, plumb the same path through to Playwright.
+PW_CA_BUNDLE="${NODE_EXTRA_CA_CERTS:-${SSL_CERT_FILE:-${PIP_CERT:-}}}"
 if [[ -d "${PW_BROWSERS}/chromium-"* ]]; then
     log "Playwright Chromium already present in ${PW_BROWSERS}"
+elif [[ "${SKIP_PLAYWRIGHT:-0}" == "1" ]]; then
+    warn "SKIP_PLAYWRIGHT=1 — Beszel + Simnovator GUI screenshots will be disabled"
 else
     log "Downloading Playwright Chromium (~150 MB, one-shot)"
-    sudo -u "${SERVICE_USER}" PLAYWRIGHT_BROWSERS_PATH="${PW_BROWSERS}" \
-        "${UI_INSTALL_DIR}/venv/bin/playwright" install chromium
+    pw_env=(PLAYWRIGHT_BROWSERS_PATH="${PW_BROWSERS}")
+    [[ -n "${PW_CA_BUNDLE}" ]] && pw_env+=(NODE_EXTRA_CA_CERTS="${PW_CA_BUNDLE}" SSL_CERT_FILE="${PW_CA_BUNDLE}")
+    [[ -n "${HTTPS_PROXY:-}" ]] && pw_env+=(HTTPS_PROXY="${HTTPS_PROXY}")
+    [[ -n "${HTTP_PROXY:-}"  ]] && pw_env+=(HTTP_PROXY="${HTTP_PROXY}")
+    if ! sudo -u "${SERVICE_USER}" env "${pw_env[@]}" \
+            "${UI_INSTALL_DIR}/venv/bin/playwright" install chromium 2>&1; then
+        warn "playwright install chromium FAILED."
+        warn "Common cause: corporate SSL-inspecting proxy."
+        warn "Fix: export NODE_EXTRA_CA_CERTS=/path/to/corp-ca-bundle.crt before re-running."
+        warn "Or: re-run with SKIP_PLAYWRIGHT=1 to skip browser install (GUI screenshots disabled)."
+        warn "Or: pre-stage browsers manually at ${PW_BROWSERS}/chromium-<version>/"
+        fail "playwright install chromium failed (see message above)"
+    fi
     # Install OS libs needed by headless Chromium (apt only — RPM ships them).
     if [[ "${PKG}" == "apt" ]]; then
         log "Installing headless-Chromium OS libs via playwright install-deps"
