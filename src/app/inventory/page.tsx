@@ -423,13 +423,20 @@ function SystemCard({
           </div>
         ) : null}
 
-        {/* ── SSH credentials ── (everything except SIMNOVATOR/UESIM) */}
-        {!isUesimLike ? (
-          <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">SSH credentials</div>
-            <SshCredentialsBlock sys={sys} onPatch={onPatch} />
+        {/* ── SSH credentials ── always rendered.
+            For non-Simnovator/UESIM types (Callbox, App-server, …) SSH is the
+            primary access surface. For UESIM + SIMNOVATOR it's *optional* but
+            unlocks several features the REST API alone can't do — cfg patcher
+            on the UE-sim box, config-fidelity ue.cfg pull over SSH, gNB/MME
+            cfg backup on callbox-class boxes, container health on Simnovator.
+            Marked "optional" in the label so users know it's not required for
+            the REST happy-path. */}
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
+            SSH credentials{isUesimLike ? ' (optional — needed for cfg patcher, ue.cfg pull, gNB backup)' : ''}
           </div>
-        ) : null}
+          <SshCredentialsBlock sys={sys} onPatch={onPatch} />
+        </div>
       </div>
     </div>
   );

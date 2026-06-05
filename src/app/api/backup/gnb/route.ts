@@ -42,7 +42,19 @@ export async function GET(req: Request) {
       },
     });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
+    const msg: string = e?.message ?? String(e);
+    // Distinguish "this system isn't configured for SSH" (the caller's
+    // mistake — they pointed at a system without SSH creds) from "the SSH
+    // session failed mid-walk" (which IS server-side / network). The first
+    // class is a 400; the second remains 500.
+    const isConfigError =
+      /no SSH username/i.test(msg) ||
+      /no private key/i.test(msg) ||
+      /authMode.*privateKey.*but no privateKey/i.test(msg);
+    return NextResponse.json(
+      { ok: false, error: msg, hint: isConfigError ? 'add SSH credentials (username + authMode + privateKey or password) to this system in inventory.yaml before calling /api/backup/gnb against it' : undefined },
+      { status: isConfigError ? 400 : 500 },
+    );
   }
 }
 

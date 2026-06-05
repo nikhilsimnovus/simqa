@@ -16,7 +16,12 @@ import { uesimApiOptsFromInventory, uesimApiOptsForSystem } from './inventory';
 export type ApiTestCategory =
   | 'auth' | 'version' | 'users' | 'admin-users' | 'simulators'
   | 'system' | 'tools' | 'testcases' | 'test-creator' | 'executions' | 'statistics'
-  | 'logs' | 'jobs' | 'negative' | 'mutating' | 'fuzz';
+  | 'logs' | 'jobs' | 'negative' | 'mutating' | 'fuzz'
+  // Sample-test matrix categories — generated from src/lib/sampleTests/matrix.ts.
+  // Three parallel categories so report dashboards can render per-domain
+  // pass/fail bars at a glance (and so users can run "just NTN" or "just
+  // multi-user" in isolation).
+  | 'sample-foundational' | 'sample-ntn-features' | 'sample-multi-user-64ue';
 
 export type ApiTestSeverity = 'critical' | 'normal' | 'optional';
 
@@ -107,6 +112,10 @@ interface RunCtx {
   someJobId?: string;
   includeDestructive: boolean;
   includeLongRunning: boolean;
+  /** Full testcase catalogue (id + name), lazily loaded once and reused by
+   *  every sample-matrix test so we don't re-search the box 200+ times in
+   *  one sweep. Populated by `ensureTestcaseCatalog(c)`. */
+  testcaseCatalog?: Array<{ id: string; name: string }>;
 }
 
 function tBase(host: string) { return `http://${host}/v2`; }
@@ -249,7 +258,31 @@ const TC_SUBS_LTE = {
 const TC_UPLANE = { userPlaneConfig: { profiles: [{ subscriberGroup: [0], dataType: 'no_data', pdnType: 'ipv4', apnName: '' }] } };
 const TC_PCYCLE = { powerCycleConfig: { profiles: [{ subscriberGroup: [0], loopProfile: 'disable', attachType: 'bursty', attachRate: 1, attachDelay: 0, powerOnTime: 2000, powerOffTime: 10 }] } };
 const TC_MOBILITY = { mobilityConfig: { profiles: [{ subscriberGroup: [0], tripType: 'roundTrip', loopProfile: 'time', startDelay: 5, duration: 380, waitTime: 0, uePosition: [0, 0], speed: 1, direction: 0, distance: 50, fadingProfile: { fadingType: 'awgn', frequencyDoppler: 70, mimoCorrelation: 'low' }, noiseSpectralDensity: -174 }] } };
-const TC_SETTINGS = { settings: { loggingProfileName: 'debug', successCriteriaName: 'abcd' } };
+// settings is the finaliser. 4.0.0_260602 tightened validation so a
+// non-existent successCriteriaName now 400s with the explicit message:
+//   "successCriteriaName 'X' does not exist".
+// No public endpoint enumerates valid names (see P1 in the overnight bug
+// report), so we self-discover by reading settings.successCriteriaName +
+// .loggingProfileName off any existing testcase right before the call.
+// Falls back to the historical defaults if the catalogue is empty.
+async function tcSettingsBody(c: RunCtx, testCaseName?: string): Promise<any> {
+  const fallback = { loggingProfileName: 'debug', successCriteriaName: 'abcd' };
+  try {
+    const list = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/search`, {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ offset: 0, limit: 25 }),
+    });
+    const items: any[] = list.bodyJson?.items ?? list.bodyJson?.data ?? [];
+    for (const it of items) {
+      const tc = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/${encodeURIComponent(it.id)}`);
+      const s = tc.bodyJson?.testDefinition?.settings;
+      if (s?.successCriteriaName && s?.loggingProfileName) {
+        return { settings: { ...s, ...(testCaseName ? { testCaseName, test_name: testCaseName } : {}) } };
+      }
+    }
+  } catch { /* fall through to historical defaults */ }
+  return { settings: { ...fallback, ...(testCaseName ? { testCaseName, test_name: testCaseName } : {}) } };
+}
 
 // ---------- Test definitions ----------
 
@@ -1426,9 +1459,14 @@ function defs(): TestDef[] {
         const putCells = await rawCall(c, 'PUT', `${tBase(c.host)}/tests/${encodeURIComponent(id)}/cells`, { headers: J, body: JSON.stringify(TC_CELLS_LTE) });
         traces.push(`put-cells=${putCells.status}`);
         // 7. Finalise — settings locks the case and sets the final name.
-        const settings = await rawCall(c, 'POST', `${tBase(c.host)}/tests/${encodeURIComponent(id)}/settings`, { headers: J, body: JSON.stringify(TC_SETTINGS) });
+        // Self-discovers valid loggingProfileName + successCriteriaName on
+        // each run (4.0.0_260602+ now validates these against an internal
+        // list; the names that worked on older builds may not exist on
+        // every install).
+        const settingsBody = await tcSettingsBody(c, `simqa-create-lifecycle-${Date.now().toString(36)}`);
+        const settings = await rawCall(c, 'POST', `${tBase(c.host)}/tests/${encodeURIComponent(id)}/settings`, { headers: J, body: JSON.stringify(settingsBody) });
         traces.push(`settings=${settings.status}`);
-        if (settings.status !== 200) { await cleanup(); return bad(base.id, base, settings, `settings (finalise) returned ${settings.status}; ${traces.join(' ')}`, '200 "testcase creation completed"'); }
+        if (settings.status !== 200) { await cleanup(); return bad(base.id, base, settings, `settings (finalise) returned ${settings.status}: ${JSON.stringify(settings.bodyJson)?.slice(0, 160)}; ${traces.join(' ')}`, '200 "testcase creation completed". On 4.0.0_260602 settings now validates loggingProfileName and successCriteriaName against the box catalogue — the simqa test self-discovers these from an existing testcase.'); }
         // 8. Tag it (PUT /testcases/{id}).
         const tags = await rawCall(c, 'PUT', `${tBase(c.host)}/testcases/${encodeURIComponent(id)}`, { headers: J, body: JSON.stringify({ user_tags: ['simqa', 'smoke'] }) });
         traces.push(`tags=${tags.status}`);
@@ -1535,7 +1573,109 @@ function defs(): TestDef[] {
   list.push(fuzz('fuzz-satellite-out-of-range', 'POST /tools/satellite-tracker sLat=999',       '/v2/tools/satellite-tracker/metrics', 'POST', '/tools/satellite-tracker/metrics', { sLat: 999, sLon: 0, sAlt: 35786, sVel: 3.07, gLat: 0, gLon: 0 }, { expected: '400 BAD_REQUEST: sLat must be in range [-90, 90] per OpenAPI spec lines 1781-1801' }));
   list.push(fuzz('fuzz-content-type-text',      'POST /login Content-Type: text/plain',         '/v2/login',     'POST', '/login',     'username=admin&password=admin', { auth: 'none', headers: { 'Content-Type': 'text/plain' }, expected: '415 UNSUPPORTED_MEDIA_TYPE - reject before parsing. MUST NOT 5xx; another unauthenticated DoS vector.' }));
 
+  // ---------- SAMPLE-MATRIX (per-sample × variation) ----------
+  // Every variant produced by src/lib/sampleTests/matrix.ts becomes one
+  // ApiTest entry. The test:
+  //   1. Looks up the base testcase by name in the box catalogue (cached
+  //      per-sweep so we don't re-search 200+ times).
+  //   2. If absent on this build  → SKIP with "not yet authored on box".
+  //   3. If present + the box currently has NO active execution → trigger
+  //      `POST /v2/testcases/{id}/executions`, accept 200/201/202/204 as a
+  //      PASS (we don't poll for verdict — that's the end-to-end runner's
+  //      job; this catalog only validates the create-and-trigger contract).
+  //   4. If present but box is busy → SKIP with "box busy — cannot trigger"
+  //      so the matrix doesn't fight existing runs.
+  for (const variant of buildSampleMatrixEntries()) {
+    list.push(variant);
+  }
+
   return list;
+}
+
+/** Lazy-load the testcase catalog once per sweep and cache on the ctx. */
+async function ensureTestcaseCatalog(c: RunCtx): Promise<Array<{ id: string; name: string }>> {
+  if (c.testcaseCatalog) return c.testcaseCatalog;
+  const r = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/search`, {
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ offset: 0, limit: 5000 }),
+  });
+  const items: any[] = r.bodyJson?.items ?? r.bodyJson?.data ?? [];
+  c.testcaseCatalog = items
+    .filter((x: any) => x && typeof x === 'object')
+    .map((x: any) => ({ id: String(x.id ?? ''), name: String(x.name ?? '') }));
+  return c.testcaseCatalog;
+}
+
+/** Build one TestDef per matrix variant. Each variant maps to one of the
+ *  three sample-* categories so the report dashboards group cleanly. */
+function buildSampleMatrixEntries(): TestDef[] {
+  // Imported lazily-here (inside the function) to keep the file's top-level
+  // imports tidy and avoid a circular-import risk if the matrix module
+  // grows to depend on apiTester types.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { generateMatrix } = require('./sampleTests/matrix') as typeof import('./sampleTests/matrix');
+  const matrix = generateMatrix();
+  const out: TestDef[] = [];
+  for (const v of matrix) {
+    const category: ApiTestCategory = v.category === 'foundational'
+      ? 'sample-foundational'
+      : v.category === 'ntn-features'
+      ? 'sample-ntn-features'
+      : 'sample-multi-user-64ue';
+    out.push({
+      id: v.id,
+      name: v.name,
+      category,
+      method: 'POST',
+      endpoint: '/v2/testcases/{id}/executions',
+      severity: 'normal',
+      destructive: true,
+      longRunning: true,
+      run: async (c) => {
+        const base = { id: v.id, category, method: 'POST' as const, endpoint: '/v2/testcases/{id}/executions', severity: 'normal' as const, destructive: true };
+        const catalog = await ensureTestcaseCatalog(c);
+        // Match permissively: exact name (case-insensitive), exact id, or
+        // id starting with the base name (handles owner-suffix workarounds).
+        const wantName = v.baseName.toLowerCase();
+        const hit = catalog.find((t) =>
+          (t.name || '').toLowerCase() === wantName ||
+          (t.id   || '').toLowerCase() === wantName ||
+          (t.id   || '').toLowerCase() === wantName + '_' ||
+          (t.id   || '').toLowerCase().startsWith(wantName.replace(/-/g, '').slice(0, 24)),
+        );
+        if (!hit) return skip(base.id, base, `base testcase "${v.baseName}" not yet authored on box (owner: ${v.owner})`);
+
+        // Don't fire if the box is already busy — leaves other people's runs alone.
+        const sims = await rawCall(c, 'GET', `${tBase(c.host)}/simulators`);
+        const anyBusy = (sims.bodyJson?.items ?? []).some((s: any) => String(s?.availability ?? '').toUpperCase() === 'BUSY');
+        if (anyBusy) return skip(base.id, base, 'box has a BUSY simulator — declining to trigger ' + v.baseName + ' variant ' + shortLabelOf(v.params));
+
+        const trig = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/${encodeURIComponent(hit.id)}/executions`, {
+          headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        if (trig.status >= 200 && trig.status < 300) {
+          return ok(base.id, base, trig, `${v.baseName} [${shortLabelOf(v.params)}] trigger ${trig.status} on box id=${hit.id}`);
+        }
+        // 409 = busy. Treat as SKIP (correct system-wide-mutex behaviour, not a regression).
+        if (trig.status === 409) return skip(base.id, base, `box returned 409 BUSY when triggering ${v.baseName}`);
+        return bad(base.id, base, trig, `trigger ${trig.status} for ${hit.id}`, '200/201/202 accepting the execution start');
+      },
+    });
+  }
+  return out;
+}
+
+function shortLabelOf(p: any): string {
+  const bits: string[] = [];
+  if (p.band) bits.push(p.band);
+  if (p.traffic) bits.push(p.traffic);
+  if (p.direction) bits.push(p.direction);
+  if (p.ueCount) bits.push(`${p.ueCount}ue`);
+  if (p.mobility) bits.push(p.mobility);
+  if (p.channel) bits.push(p.channel);
+  if (p.powerCycle) bits.push(p.powerCycle);
+  if (p.hoMode) bits.push(p.hoMode);
+  return bits.join('-') || 'default';
 }
 
 // ---------- Driver ----------

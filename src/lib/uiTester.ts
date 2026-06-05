@@ -1735,36 +1735,54 @@ function defs(): UiTestDef[] {
         .map((x: any) => x?.id ?? x?.Test_Id ?? x?.testCaseId).filter(Boolean);
 
       // ─── API-side verify: does the cloned testcase actually exist? ───
-      const apiVerify = await page.request.get(`http://${ctx.host}/v2/testcases/${encodeURIComponent(cloneId)}`, { headers: bearer });
-      const apiVerifyStatus = apiVerify.status();
-      // Try with trailing underscore convention too (SIM40-2015).
-      const apiVerifyUnderscore = await page.request.get(`http://${ctx.host}/v2/testcases/${encodeURIComponent(cloneId + '_')}`, { headers: bearer });
-      const apiVerifyUnderscoreStatus = apiVerifyUnderscore.status();
+      // On 4.0.0_260602+ the box assigns a UUIDv7 as the canonical id and
+      // ignores the Test_Id we sent (per the SIM40-1976 fix). Prefer the
+      // server's returned id; only fall back to the sent id on older
+      // builds where the contract was still "respect Test_Id".
+      const serverId = importedIds[0];
+      const idCandidates: string[] = [];
+      if (serverId) idCandidates.push(serverId);
+      idCandidates.push(cloneId, cloneId + '_');
 
-      if (apiVerifyStatus !== 200 && apiVerifyUnderscoreStatus !== 200) {
+      let realId = '';
+      let apiVerifyStatus = 0;
+      for (const cand of idCandidates) {
+        const r = await page.request.get(`http://${ctx.host}/v2/testcases/${encodeURIComponent(cand)}`, { headers: bearer });
+        if (r.status() === 200) { realId = cand; apiVerifyStatus = 200; break; }
+        apiVerifyStatus = r.status();
+      }
+      if (!realId) {
         return {
           ok: false,
-          detail: `import returned ${importStatus} (importedIds=[${importedIds.join(',')}]) but GET /v2/testcases/${cloneId} returned ${apiVerifyStatus} and the trailing-underscore form returned ${apiVerifyUnderscoreStatus}. This is the SIM40-2010 silent-import-drop manifesting — the clone never actually landed, so we have nothing to delete via UI either.`,
-          expected: 'after a 200 import, GET /v2/testcases/<id> should return the cloned testcase. End-to-end clone+delete is blocked until SIM40-2010 is fixed.',
+          detail: `import returned ${importStatus} (importedIds=[${importedIds.join(',')}]) but every candidate id 404'd — tried [${idCandidates.join(', ')}]. Either SIM40-2010 (silent drop) is back, or the box now uses an id format this test does not know about.`,
+          expected: 'after a 200 import, GET /v2/testcases/<importedIds[0]> should return the cloned testcase.',
         };
       }
-      const realId = apiVerifyStatus === 200 ? cloneId : (cloneId + '_');
 
       // ─── UI-side: find the clone row, delete it, verify it's gone ────
+      // The displayed name in the table is typically the import's source
+      // name (since the box auto-assigns a UUID id but keeps the supplied
+      // name). Try cloneId first, then realId, as search criteria.
       await page.goto(`http://${ctx.host}/testcase`, { waitUntil: 'domcontentloaded' });
       await page.waitForTimeout(2500);
-      // Search to narrow the list to our clone.
       const searchBox = page.getByPlaceholder(/Search/i).first();
       if (await searchBox.count()) {
         await searchBox.fill(cloneId);
         await page.waitForTimeout(1500);
       }
-      const cloneRow = page.locator(`tr:has-text("${cloneId}"), [role="row"]:has-text("${cloneId}")`).first();
-      const rowVisible = await cloneRow.count();
+      const rowSelectors = [cloneId, realId.slice(0, 8)];
+      let cloneRow = page.locator(`tr:has-text("${rowSelectors[0]}"), [role="row"]:has-text("${rowSelectors[0]}")`).first();
+      let rowVisible = await cloneRow.count();
+      if (rowVisible === 0 && rowSelectors[1]) {
+        // Try the first 8 chars of the UUID
+        if (await searchBox.count()) { await searchBox.fill(''); await searchBox.fill(rowSelectors[1]); await page.waitForTimeout(1500); }
+        cloneRow = page.locator(`tr:has-text("${rowSelectors[1]}"), [role="row"]:has-text("${rowSelectors[1]}")`).first();
+        rowVisible = await cloneRow.count();
+      }
       if (rowVisible === 0) {
         return {
           ok: false,
-          detail: `API said clone landed (status 200 on GET) but UI list does not show row matching "${cloneId}". UI listing may be cached, paginated, or the clone landed under a different id.`,
+          detail: `API said clone landed (id=${realId}) but UI list does not show a row matching "${cloneId}" or "${rowSelectors[1]}". UI listing may be cached / paginated.`,
           expected: 'after a successful import, the clone should appear in /testcase and be deletable via the UI.',
         };
       }
@@ -1799,7 +1817,7 @@ function defs(): UiTestDef[] {
       const goneStatus = apiGone.status();
       return {
         ok: goneStatus === 404,
-        detail: `clone-id=${cloneId} import=${importStatus} verify=${apiVerifyStatus}/${apiVerifyUnderscoreStatus} ui-row-found=yes after-ui-delete-GET=${goneStatus}`,
+        detail: `clone-id=${cloneId} server-id=${realId} import=${importStatus} verify=${apiVerifyStatus} ui-row-found=yes after-ui-delete-GET=${goneStatus}`,
         expected: 'after deleting the clone via the UI, GET /v2/testcases/<id> should return 404. If the GET still returns 200, the UI delete did not propagate; if both sides 404 but the row reappears on refresh, listing is cached.',
       };
     },
