@@ -15,9 +15,23 @@
 
 export type RAT = 'LTE' | 'NR-SA' | 'NR-NSA' | 'NB-IoT';
 
-export type DataType = 'no_data' | 'iperf-both' | 'iperf-dl' | 'iperf-ul';
+export type DataType =
+  | 'no_data'
+  | 'iperf-both' | 'iperf-dl' | 'iperf-ul'
+  // Mixed traffic — subscriber group 0 gets the first profile, group 1 the
+  // second. Generates a 2-profile userPlaneConfig + 2-row subsConfig.
+  | 'mix-iperf-dl+ul'   // group 0 = DL iperf, group 1 = UL iperf
+  | 'mix-iperf+no_data' // group 0 = bidir iperf, group 1 = attach-only
+  | 'mix-iperf+tcp';    // group 0 = UDP iperf, group 1 = TCP iperf
 export type Mobility = 'stationary' | 'roundTrip';
-export type Fading = 'awgn' | 'tdla30' | 'tdlb100' | 'epa5' | 'eva70';
+// Fading model. Each one is valid ONLY for the listed RAT family per 3GPP:
+//   LTE channel models (3GPP TS 36.101 Annex B):  awgn, epa5, eva70, etu70
+//   NR  channel models (3GPP TS 38.101-4 Annex G): awgn, tdla30, tdlb100,
+//                                                  tdlc300, tdld30, tdle30
+// Use them in the per-RAT slice's `fading` list — never cross them.
+export type FadingLTE = 'awgn' | 'epa5' | 'eva70' | 'etu70';
+export type FadingNR  = 'awgn' | 'tdla30' | 'tdlb100' | 'tdlc300';
+export type Fading = FadingLTE | FadingNR;
 
 /** A single "slice" of the matrix — covers a band-set within one RAT plus
  *  the variation knobs to multiply against it. */
@@ -49,8 +63,7 @@ export interface MatrixSlice {
 // actually supports.
 export const SLICES: readonly MatrixSlice[] = [
   // LTE — broadest coverage by far (most common deployment scenario).
-  // 10 bands × 4 bw × 3 ue × 3 ant × 4 traffic × 2 mob × 2 fade = 5760 raw,
-  // but capped at 1000 (deterministic truncation in expandSlices).
+  // Per 3GPP 36.101 Annex B the LTE channel models are EPA / EVA / ETU.
   // NOTE: LTE rejects antennas.ul > 1 (the box validator says
   // "antennas/ul: value must be '1' for LTE profile 0"). DL can vary;
   // UL is fixed at 1.
@@ -62,12 +75,25 @@ export const SLICES: readonly MatrixSlice[] = [
     antennas: [[1, 1], [2, 1], [4, 1]],
     dataTypes: ['no_data', 'iperf-both', 'iperf-dl', 'iperf-ul'],
     mobility: ['stationary', 'roundTrip'],
-    fading: ['awgn', 'tdla30'],
+    fading: ['awgn', 'epa5', 'eva70'],
     maxVariants: 1000,
   },
-  // NR-SA — wide spread.
-  // 7 bands × 3 bw × 2 scs × 2 ue × 2 ant × 4 traffic × 2 mob × 2 fade = 5376
-  // raw, capped at 480.
+  // LTE mix-traffic slice — exercises multi-subscriber-group testcases
+  // (DL+UL split, iperf+no_data, UDP+TCP). Narrower band set since the
+  // important dimension here is the traffic combo, not the radio config.
+  {
+    rat: 'LTE',
+    bands: ['1', '3', '7'],
+    bandwidths: [10, 20],
+    ueCounts: [2, 4],          // need ≥2 UE per group
+    antennas: [[2, 1]],
+    dataTypes: ['mix-iperf-dl+ul', 'mix-iperf+no_data', 'mix-iperf+tcp'],
+    mobility: ['stationary'],
+    fading: ['awgn', 'epa5'],
+    maxVariants: 72,
+  },
+  // NR-SA — per 3GPP 38.101-4 Annex G the NR channel models are TDLA / TDLB
+  // / TDLC / TDLD / TDLE.
   {
     rat: 'NR-SA',
     bands: ['n2', 'n7', 'n28', 'n41', 'n66', 'n77', 'n78'],
@@ -77,18 +103,39 @@ export const SLICES: readonly MatrixSlice[] = [
     antennas: [[2, 2], [4, 2]],
     dataTypes: ['no_data', 'iperf-both', 'iperf-dl', 'iperf-ul'],
     mobility: ['stationary', 'roundTrip'],
-    fading: ['awgn', 'tdla30'],
-    maxVariants: 480,
+    fading: ['awgn', 'tdla30', 'tdlb100'],
+    maxVariants: 600,
   },
-  // NR-NSA is intentionally omitted from the bulk generator: the box
-  // requires NSA testcases to declare at least 2 cells (LTE anchor + NR
-  // secondary for EN-DC), which falls outside this single-cell generator's
-  // shape. The NR-NSA category exists in spec.ts's RAT enum so consumers
-  // can still target it explicitly, but no auto-generated variants are
-  // emitted today.
-
-  // NB-IoT — tiny but covers the IoT path.
-  // 2 bands × 1 bw × 2 ue × 1 ant × 1 traffic = 4.
+  // NR-SA mix-traffic slice.
+  {
+    rat: 'NR-SA',
+    bands: ['n41', 'n78'],
+    bandwidths: [40, 100],
+    scs: [30],
+    ueCounts: [2, 4],
+    antennas: [[2, 2]],
+    dataTypes: ['mix-iperf-dl+ul', 'mix-iperf+no_data', 'mix-iperf+tcp'],
+    mobility: ['stationary'],
+    fading: ['awgn', 'tdla30'],
+    maxVariants: 48,
+  },
+  // NR-NSA — EN-DC anchor on LTE + secondary NR carrier. Generated as a
+  // 2-cell test (LTE primary band + NR secondary band). The cellTypeP
+  // chain in the subscriber config gets `nsa` so the UE attaches via the
+  // LTE PCell first then adds the NR SCell.
+  {
+    rat: 'NR-NSA',
+    bands: ['n41', 'n78'],     // the NR secondary's band (LTE anchor is fixed below)
+    bandwidths: [40, 100],
+    scs: [30],
+    ueCounts: [1, 2],
+    antennas: [[2, 2]],
+    dataTypes: ['no_data', 'iperf-both'],
+    mobility: ['stationary'],
+    fading: ['awgn', 'tdla30'],
+    maxVariants: 32,
+  },
+  // NB-IoT — narrow-band IoT path.
   {
     rat: 'NB-IoT',
     bands: ['8', '20'],

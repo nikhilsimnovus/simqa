@@ -160,8 +160,66 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
       },
     };
   }
-  // NR-SA / NR-NSA — master config DIFFERS from LTE on this build:
-  //   - ratType is 'sa' or 'nsa' (NOT 'smartphone' — that's an LTE knob)
+  if (spec.rat === 'NR-NSA') {
+    // EN-DC: LTE anchor + NR secondary. The box requires ≥2 cells with
+    // ratType "nsa". LTE anchor defaults to band 3 (most-deployed FDD
+    // mid-band) so this generator doesn't need a separate anchor-band
+    // dimension. The spec's `band` + ARFCN drive the NR secondary cell.
+    return {
+      cellConfig: {
+        master: {
+          product: 'UE-SIM',
+          carrierAggregation: false,
+          channelSim: false,
+          ldpcIteration: 5,
+          pdcchDecodeOpt: false,
+          ratType: 'nsa',
+        },
+        cells: [
+          // Cell 0 — LTE anchor (PCell)
+          {
+            cellType: '4g',
+            syncId: 0,
+            duplexMode: 'FDD',
+            band: '3',
+            EARFCN: { dl: 1575, ul: 19575 },
+            bandwidth: '20',
+            prach: 0,
+            antennas: { dl: 2, ul: 1 },
+            rfCard: 0,
+            rxToTxLatency: 4,
+            txGain: [70],
+            rxGain: [0, 0],
+            globalTimingAdvance: -1,
+            mobility: { antennaType: 'isotropic', position: [4, 3], referencePower: -25, ulAttenuation: 60 },
+          },
+          // Cell 1 — NR secondary (SCell)
+          {
+            cellType: '5g',
+            syncId: 1,
+            duplexMode: spec.duplexMode,
+            band: spec.band,
+            NRARFCN: { dl: spec.earfcnDl, ssb: spec.nrarfcnSsb ?? spec.earfcnDl },
+            bandwidth: String(spec.bandwidth),
+            prach: 0,
+            antennas: { dl: spec.antennas.dl, ul: spec.antennas.ul },
+            rfCard: 0,
+            scs: spec.scs ?? 30,
+            ssbScs: spec.scs ?? 30,
+            ratTypeP: 'nsa',
+            carrierAggregationP: false,
+            channelSimP: false,
+            NTN: false,
+            asymmetricApplicable: false,
+            txGain: Array(spec.antennas.ul).fill(80),
+            rxGain: Array(spec.antennas.dl).fill(20),
+          },
+        ],
+      },
+    };
+  }
+  // NR-SA — master config DIFFERS from LTE on this build:
+  //   - ratType is 'sa' (NOT 'smartphone' — that's an LTE knob)
   //   - ldpcIteration replaces turboIteration
   //   - pdcchDecodeOpt defaults false in shipped NR templates
   // Cell-level keys also differ (NRARFCN + scs + ratTypeP).
@@ -173,7 +231,7 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
         channelSim: false,
         ldpcIteration: 5,
         pdcchDecodeOpt: false,
-        ratType: spec.rat === 'NR-SA' ? 'sa' : 'nsa',
+        ratType: 'sa',
       },
       cells: [{
         cellType: '5g',
@@ -186,8 +244,8 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
         antennas: { dl: spec.antennas.dl, ul: spec.antennas.ul },
         rfCard: 0,
         scs: spec.scs ?? 30,
-        ssbScs: spec.scs ?? 30,                  // box requires explicit ssbScs (separate from carrier scs)
-        ratTypeP: spec.rat === 'NR-SA' ? 'sa' : 'nsa',
+        ssbScs: spec.scs ?? 30,
+        ratTypeP: 'sa',
         carrierAggregationP: false,
         channelSimP: false,
         NTN: false,
@@ -199,6 +257,12 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
   };
 }
 
+/** True when the spec is a mix-traffic variant (two userPlane profiles,
+ *  two subscriber groups). */
+function isMixDataType(dt: string): boolean {
+  return dt.startsWith('mix-');
+}
+
 function buildSubscribersBody(spec: BulkTestCaseSpec) {
   // Spread the IMSIs across variants so multiple bulk testcases don't share
   // an IMSI range (the box validator may eventually reject duplicates).
@@ -208,110 +272,130 @@ function buildSubscribersBody(spec: BulkTestCaseSpec) {
   const imsiSeed = 1010100000000 + (Math.abs(h) % 1000000) * 100;
 
   const isNr = spec.rat === 'NR-SA' || spec.rat === 'NR-NSA';
+  const isMix = spec.dataType.startsWith('mix-');
+  // Half the UEs go to group 0, the other half to group 1 (per the mix
+  // userPlane wiring above). Cap each side at ≥1.
+  const halfUE = Math.max(1, Math.floor(spec.ueCount / 2));
+  const ratTypeP: 'sa' | 'nsa' = spec.rat === 'NR-NSA' ? 'nsa' : 'sa';
+  const cellsLen: number = spec.rat === 'NR-NSA' ? 2 : 1;
+  const cellTypeP: '4g' | '5g' = isNr ? '5g' : '4g';
 
   if (isNr) {
-    // NR-SA subscribers schema (sampled from an existing on-box testcase):
-    //   - SUPI fields, NOT IMSI (startingSUPI / nextSUPI)
-    //   - nea/nia algos, NOT eea/eia
-    //   - asRelease is uint8 integer in {15,16,17}
-    //   - protectionScheme literal "null" (NOT "null-scheme")
-    //   - algorithm "xor" (the box-shipped NR templates use xor by default;
-    //     milenage requires op which the NR schema doesn't carry)
-    //   - many NR-only required fields: NTNP, BLEROverrideValue, cellTypeP,
-    //     cellsLen, duplexModeP, ratTypeP, networkSlicing, publicKeyId,
-    //     routingIndicator, mncDigits, VoNRSupport, external_sim,
-    //     incrementSharedKey, access_control_classes, uac_access_identities
+    const nrSub = (group: number, ueCount: number) => ({
+      ueCount,
+      servingCell: spec.rat === 'NR-NSA' ? 1 : 0,   // NSA: the NR SCell is cell 1
+      startingSUPI: imsiSeed + group * 1000,
+      nextSUPI: 1,
+      algorithm: 'xor',
+      sharedKey: '00112233445566778899aabbccddeeff',
+      incrementSharedKey: 0,
+      resLength: 8,
+      securityContext: true,
+      asRelease: 15,
+      ueCategoryType: 'combined',
+      ueCategory: 'nr',
+      imeisv: '4085780000000102',
+      powerControl: false,
+      attachType: 'normal',
+      ueInitiatedEvents: 'none',
+      pdnType: 'ipv4',
+      cipherAlgorithm: ['nea0', 'nea1', 'nea2'],
+      integrityAlgorithm: ['nia0', 'nia1', 'nia2'],
+      cqi: 'auto',
+      ri: 'auto',
+      pmi: 'auto',
+      preambleIndex: 0,
+      mncDigits: 2,
+      VoNRSupport: false,
+      protectionScheme: 'null',
+      publicKeyId: 0,
+      routingIndicator: 1111,
+      networkSlicing: 'disable',
+      ratTypeP,
+      cellTypeP,
+      cellsLen,
+      carrierAggregationP: false,
+      channelSimP: false,
+      duplexModeP: spec.duplexMode,
+      NTNP: false,
+      BLEROverrideValue: 0,
+      external_sim: false,
+      access_control_classes: [],
+      uac_access_identities: [],
+    });
     return {
       subsConfig: {
-        subs: [{
-          ueCount: spec.ueCount,
-          servingCell: 0,
-          startingSUPI: imsiSeed,
-          nextSUPI: 1,
-          algorithm: 'xor',
-          sharedKey: '00112233445566778899aabbccddeeff',
-          incrementSharedKey: 0,
-          resLength: 8,
-          securityContext: true,
-          asRelease: 15,
-          ueCategoryType: 'combined',
-          ueCategory: 'nr',
-          imeisv: '4085780000000102',
-          powerControl: false,
-          attachType: 'normal',
-          ueInitiatedEvents: 'none',
-          pdnType: 'ipv4',
-          cipherAlgorithm: ['nea0', 'nea1', 'nea2'],
-          integrityAlgorithm: ['nia0', 'nia1', 'nia2'],
-          cqi: 'auto',
-          ri: 'auto',
-          pmi: 'auto',
-          preambleIndex: 0,
-          mncDigits: 2,
-          VoNRSupport: false,
-          protectionScheme: 'null',
-          publicKeyId: 0,
-          routingIndicator: 1111,
-          networkSlicing: 'disable',
-          ratTypeP: spec.rat === 'NR-SA' ? 'sa' : 'nsa',
-          cellTypeP: '5g',
-          cellsLen: 1,
-          carrierAggregationP: false,
-          channelSimP: false,
-          duplexModeP: spec.duplexMode,
-          NTNP: false,
-          BLEROverrideValue: 0,
-          external_sim: false,
-          access_control_classes: [],
-          uac_access_identities: [],
-        }],
+        subs: isMix ? [nrSub(0, halfUE), nrSub(1, halfUE)] : [nrSub(0, spec.ueCount)],
       },
     };
   }
 
   // LTE / NB-IoT subscriber schema (eea/eia + integer asRelease + IMSI).
+  const lteSub = (group: number, ueCount: number) => ({
+    ueCount,
+    servingCell: 0,
+    startingIMSI: imsiSeed + group * 1000,
+    preferredPLMN: ['011-01', '544-780'],
+    nextIMSI: 1,
+    algorithm: 'milenage',
+    sharedKey: '00112233445566778899aabbccddeeff',
+    op: '000102030405060708090A0B0C0D0E0F',
+    resLength: 8,
+    securityContext: true,
+    asRelease: 13,
+    redCap: false,
+    ueCategoryType: 'combined',
+    ueCategory: '6',
+    imeisv: '4085780000000102',
+    powerControl: false,
+    powerMin: 0,
+    powerMax: 0,
+    attachType: 'normal',
+    ueInitiatedEvents: 'tau',
+    eventsInLoop: true,
+    triggerTime: [10],
+    pdnType: 'ipv4',
+    defaultApn: '',
+    cipherAlgorithm: ['eea0', 'eea1', 'eea2'],
+    integrityAlgorithm: ['eia0', 'eia1', 'eia2'],
+    cqi: 'auto',
+    ri: 'auto',
+    pmi: 'auto',
+    preambleIndex: 0,
+  });
   return {
     subsConfig: {
-      subs: [{
-        ueCount: spec.ueCount,
-        servingCell: 0,
-        startingIMSI: imsiSeed,
-        preferredPLMN: ['011-01', '544-780'],
-        nextIMSI: 1,
-        algorithm: 'milenage',
-        sharedKey: '00112233445566778899aabbccddeeff',
-        op: '000102030405060708090A0B0C0D0E0F',
-        resLength: 8,
-        securityContext: true,
-        asRelease: 13,
-        redCap: false,
-        ueCategoryType: 'combined',
-        ueCategory: '6',
-        imeisv: '4085780000000102',
-        powerControl: false,
-        powerMin: 0,
-        powerMax: 0,
-        attachType: 'normal',
-        ueInitiatedEvents: 'tau',
-        eventsInLoop: true,
-        triggerTime: [10],
-        pdnType: 'ipv4',
-        defaultApn: '',
-        cipherAlgorithm: ['eea0', 'eea1', 'eea2'],
-        integrityAlgorithm: ['eia0', 'eia1', 'eia2'],
-        cqi: 'auto',
-        ri: 'auto',
-        pmi: 'auto',
-        preambleIndex: 0,
-      }],
+      subs: isMix ? [lteSub(0, halfUE), lteSub(1, halfUE)] : [lteSub(0, spec.ueCount)],
     },
+  };
+}
+
+/** Build a single iperf profile bound to one subscriber group. */
+function iperfProfile(group: number, direction: 'uplink' | 'downlink' | 'both', protocol: 'udp' | 'tcp', subsLen: number) {
+  return {
+    subscriberGroup: [group],
+    dataType: 'iperf',
+    dataDirection: direction,
+    dataLoop: false,
+    dataBitrate: { dl: { unit: 'mbps', value: 100 }, ul: { unit: 'mbps', value: 20 } },
+    transportProtocol: protocol,
+    startDelay: 5,
+    sessionDuration: 60,
+    serverIpAddress: '20.10.10.1',
+    portRange: 5000,
+    mtuSize: 1500,
+    subsLen,
+    pdnType: 'ipv4',
+    apnName: '',
   };
 }
 
 function buildUserPlaneBody(spec: BulkTestCaseSpec) {
   // Box-valid dataTypes (learned from existing testcases on 4.0.0_260602):
   //   'no_data' — no PDU traffic, used for attach-detach style cases
-  //   'iperf'   — bidirectional or single-direction throughput, drives `dataDirection`
+  //   'iperf'   — bidirectional or single-direction throughput
+  // Plus our generator's `mix-*` combos which produce 2-profile bodies
+  // bound to 2 distinct subscriber groups (see buildSubscribersBody).
   if (spec.dataType === 'no_data') {
     return {
       userPlaneConfig: {
@@ -324,47 +408,67 @@ function buildUserPlaneBody(spec: BulkTestCaseSpec) {
       },
     };
   }
+
+  // Mix-traffic variants: half the UEs land in group 0, the other half in
+  // group 1, and the two groups carry different traffic profiles.
+  const halfUE = Math.max(1, Math.floor(spec.ueCount / 2));
+  if (spec.dataType === 'mix-iperf-dl+ul') {
+    return {
+      userPlaneConfig: {
+        profiles: [
+          iperfProfile(0, 'downlink', 'udp', halfUE),
+          iperfProfile(1, 'uplink',   'udp', halfUE),
+        ],
+      },
+    };
+  }
+  if (spec.dataType === 'mix-iperf+no_data') {
+    return {
+      userPlaneConfig: {
+        profiles: [
+          iperfProfile(0, 'both', 'udp', halfUE),
+          { subscriberGroup: [1], dataType: 'no_data', pdnType: 'ipv4', apnName: '' },
+        ],
+      },
+    };
+  }
+  if (spec.dataType === 'mix-iperf+tcp') {
+    return {
+      userPlaneConfig: {
+        profiles: [
+          iperfProfile(0, 'both', 'udp', halfUE),
+          iperfProfile(1, 'both', 'tcp', halfUE),
+        ],
+      },
+    };
+  }
+
+  // Single-profile iperf cases.
   const direction =
     spec.dataType === 'iperf-dl' ? 'downlink' :
     spec.dataType === 'iperf-ul' ? 'uplink' :
     'both';
   return {
     userPlaneConfig: {
-      profiles: [{
-        subscriberGroup: [0],
-        dataType: 'iperf',
-        dataDirection: direction,
-        dataLoop: false,
-        dataBitrate: {
-          dl: { unit: 'mbps', value: 100 },
-          ul: { unit: 'mbps', value: 20 },
-        },
-        transportProtocol: 'udp',
-        startDelay: 5,
-        sessionDuration: 60,
-        serverIpAddress: '20.10.10.1',
-        portRange: 5000,
-        mtuSize: 1500,
-        subsLen: spec.ueCount,
-        pdnType: 'ipv4',
-        apnName: '',
-      }],
+      profiles: [iperfProfile(0, direction, 'udp', spec.ueCount)],
     },
   };
 }
 
-function buildPowerCycleBody() {
+function buildPowerCycleBody(spec: BulkTestCaseSpec) {
+  const isMix = spec.dataType.startsWith('mix-');
+  const profile = (group: number) => ({
+    subscriberGroup: [group],
+    loopProfile: 'disable',
+    attachType: 'bursty',
+    attachRate: 1,
+    attachDelay: 0,
+    powerOnTime: 2000,
+    powerOffTime: 10,
+  });
   return {
     powerCycleConfig: {
-      profiles: [{
-        subscriberGroup: [0],
-        loopProfile: 'disable',
-        attachType: 'bursty',
-        attachRate: 1,
-        attachDelay: 0,
-        powerOnTime: 2000,
-        powerOffTime: 10,
-      }],
+      profiles: isMix ? [profile(0), profile(1)] : [profile(0)],
     },
   };
 }
@@ -372,24 +476,29 @@ function buildPowerCycleBody() {
 function buildMobilityBody(spec: BulkTestCaseSpec) {
   // tripType: 'stationary' → speed 0, no motion; 'roundTrip' → moves back
   // and forth across the configured distance. fadingType maps directly to
-  // the box's accepted channel models (awgn/tdla30/tdlb100/epa5/eva70).
+  // the box's per-RAT accepted channel models —
+  //   LTE: awgn / epa5 / eva70 / etu70  (3GPP 36.101 Annex B)
+  //   NR:  awgn / tdla30 / tdlb100 / …  (3GPP 38.101-4 Annex G)
+  // The spec.ts slices wire these correctly per-RAT; we never cross them.
   const isStationary = spec.mobility === 'stationary';
+  const isMix = spec.dataType.startsWith('mix-');
+  const profile = (group: number) => ({
+    subscriberGroup: [group],
+    tripType: isStationary ? 'stationary' : 'roundTrip',
+    loopProfile: 'time',
+    startDelay: 5,
+    duration: 380,
+    waitTime: 0,
+    uePosition: [0, 0],
+    speed: isStationary ? 0 : 1,
+    direction: 0,
+    distance: isStationary ? 0 : 50,
+    fadingProfile: { fadingType: spec.fading, frequencyDoppler: 70, mimoCorrelation: 'low' },
+    noiseSpectralDensity: -174,
+  });
   return {
     mobilityConfig: {
-      profiles: [{
-        subscriberGroup: [0],
-        tripType: isStationary ? 'stationary' : 'roundTrip',
-        loopProfile: 'time',
-        startDelay: 5,
-        duration: 380,
-        waitTime: 0,
-        uePosition: [0, 0],
-        speed: isStationary ? 0 : 1,
-        direction: 0,
-        distance: isStationary ? 0 : 50,
-        fadingProfile: { fadingType: spec.fading, frequencyDoppler: 70, mimoCorrelation: 'low' },
-        noiseSpectralDensity: -174,
-      }],
+      profiles: isMix ? [profile(0), profile(1)] : [profile(0)],
     },
   };
 }
@@ -574,7 +683,7 @@ export async function generateBulkTestcases(
       const steps: Array<[string, () => Promise<Response>]> = [
         ['subscribers', () => POST(`/v2/tests/${encodeURIComponent(boxId)}/subscribers`, buildSubscribersBody(v))],
         ['user-plane',  () => POST(`/v2/tests/${encodeURIComponent(boxId)}/user-plane`,  buildUserPlaneBody(v))],
-        ['power-cycle', () => POST(`/v2/tests/${encodeURIComponent(boxId)}/power-cycle`, buildPowerCycleBody())],
+        ['power-cycle', () => POST(`/v2/tests/${encodeURIComponent(boxId)}/power-cycle`, buildPowerCycleBody(v))],
         ['mobility',    () => POST(`/v2/tests/${encodeURIComponent(boxId)}/mobility`,    buildMobilityBody(v))],
       ];
       let failedStep: string | null = null;
