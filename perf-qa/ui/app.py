@@ -1398,7 +1398,7 @@ HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>perf-qa collector — Simnovus</title>
+<title>OneClick — Simnovus</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -1423,7 +1423,8 @@ body{margin:0;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Rob
 }
 .topbar img.logo{height:28px;display:block}
 .topbar .divider{width:1px;height:24px;background:#3a3a55}
-.topbar .title{font-size:15px;font-weight:600;letter-spacing:.01em}
+.topbar .title{font-size:15px;font-weight:700;letter-spacing:.01em}
+.topbar .brand-sub{font-size:11.5px;font-weight:500;color:var(--mut2);margin-left:6px;text-transform:lowercase;letter-spacing:.04em}
 .topbar .sub{color:var(--mut2);font-size:12px}
 .topbar .right{margin-left:auto;display:flex;align-items:center;gap:10px;color:var(--mut2);font-size:12px}
 .topnav{display:flex;gap:4px;margin-left:24px}
@@ -1637,7 +1638,7 @@ small{color:var(--mut);font-weight:400}
 <header class="topbar">
   <img class="logo" src="/static/logo.svg" alt="Simnovus">
   <div class="divider"></div>
-  <span class="title">perf-qa collector</span>
+  <span class="title">OneClick</span><span class="brand-sub">collector</span>
   <nav class="topnav">
     <a href="/" class="active">Collector</a>
     <a href="/logs">Logs</a>
@@ -2171,7 +2172,7 @@ SETUP_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>perf-qa setup — Simnovus</title>
+<title>OneClick setup — Simnovus</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -2281,7 +2282,7 @@ details pre{margin:10px 0 0;padding:12px;background:#0f1117;color:#e2e8f0;border
 <header class="topbar">
   <img class="logo" src="/static/logo.svg" alt="Simnovus">
   <div class="divider"></div>
-  <span class="title">perf-qa setup</span>
+  <span class="title">OneClick</span><span class="brand-sub">setup</span>
   <nav class="topnav">
     <a href="/">Collector</a>
     <a href="/logs">Logs</a>
@@ -2713,7 +2714,7 @@ LOGS_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>perf-qa logs — Simnovus</title>
+<title>OneClick logs — Simnovus</title>
 <link rel="icon" type="image/png" href="/favicon.png">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -2879,7 +2880,7 @@ pre.dark .info{color:#60a5fa}
 <header class="topbar">
   <img class="logo" src="/static/logo.svg" alt="Simnovus">
   <div class="divider"></div>
-  <span class="title">perf-qa</span>
+  <span class="title">OneClick</span>
   <nav class="topnav">
     <a href="/">Collector</a>
     <a href="/logs" class="active">Logs</a>

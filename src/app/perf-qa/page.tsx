@@ -51,7 +51,7 @@ export default function PerfQaPage() {
   return (
     <div className="flex flex-col h-full">
       <Header
-        title="Perf QA"
+        title="OneClick"
         subtitle="One-click diagnostics for a perf-test run — collector + analyzer + bundle inspector"
       />
 

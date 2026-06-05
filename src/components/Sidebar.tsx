@@ -44,7 +44,7 @@ const SECTIONS: NavSection[] = [
       { href: '/bulk-tests',      label: 'Bulk Tests',      icon: Boxes },
       { href: '/config-fidelity', label: 'Config Fidelity', icon: FileCheck2 },
       { href: '/validate',        label: 'Build Check',     icon: ShieldCheck },
-      { href: '/perf-qa',         label: 'Perf QA',         icon: Activity },
+      { href: '/perf-qa',         label: 'OneClick',        icon: Activity },
     ],
   },
   {
