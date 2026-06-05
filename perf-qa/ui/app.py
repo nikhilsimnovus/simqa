@@ -724,6 +724,54 @@ def api_ssh_key_delete():
     return jsonify({"ok": True, "path": str(_SSH_KEY_PATH)})
 
 
+# ---------------------------------------------------------------------------
+# Self-update from GitHub. The Update icon in the topbar hits /api/update,
+# which downloads main.tar.gz from the canonical repo, lays it down at
+# ${SCRIPT_DIR} + ${UI_DIR}, and re-runs scripts/install.sh as root (sudo).
+# install.sh is idempotent so this safely upgrades an existing install.
+# ---------------------------------------------------------------------------
+UPDATE_REPO_URL = os.environ.get(
+    "PERFQA_UPDATE_TARBALL",
+    "https://github.com/nikhilsimnovus/oneclick/archive/refs/heads/main.tar.gz",
+)
+
+
+@app.route("/api/update", methods=["POST"])
+def api_update():
+    """Run /usr/local/sbin/perfqa-update via sudo -n.
+
+    The wrapper script (planted by install.sh, sudoers entry also planted
+    by install.sh) downloads the latest tarball from the oneclick repo and
+    re-runs install.sh from it. systemctl restart happens INSIDE install.sh
+    so this response may cut off mid-stream — the client treats that as
+    expected and reloads after a few seconds.
+    """
+    updater = "/usr/local/sbin/perfqa-update"
+    if not Path(updater).exists():
+        return jsonify({
+            "ok": False,
+            "log": (f"[update] {updater} missing — was this install upgraded "
+                    f"to the self-update layout? Run install.sh once locally "
+                    f"to plant the wrapper + sudoers entry."),
+        }), 500
+    try:
+        rc = subprocess.run(
+            ["sudo", "-n", updater],
+            capture_output=True, text=True, timeout=600,
+            env={**os.environ, "PERFQA_UPDATE_TARBALL": UPDATE_REPO_URL},
+        )
+        out = (rc.stdout or "")[-4000:]
+        if rc.stderr:
+            out += "\n--- stderr ---\n" + rc.stderr[-2000:]
+        if rc.returncode != 0:
+            return jsonify({"ok": False, "log": out + f"\n[update] exited {rc.returncode}"}), 500
+        return jsonify({"ok": True, "log": out + "\n[update] done"})
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "log": "[update] timed out after 600s"}), 504
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "log": f"[update] FAILED: {exc}"}), 500
+
+
 @app.route("/api/profiles", methods=["GET"])
 def api_profiles_list():
     return jsonify(load_profiles())
@@ -1383,6 +1431,12 @@ body{margin:0;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Rob
 .topnav a:hover{background:rgba(255,255,255,.06);color:#fff}
 .topnav a.active{background:var(--brand);color:#fff}
 .topbar .pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:11px;background:#0f0f1a;border:1px solid #3a3a55;padding:2px 8px;border-radius:4px;color:#cbd5e1}
+.update-btn{display:inline-flex;align-items:center;gap:5px;background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.5);color:#dcfce7;font:500 11.5px ui-sans-serif,sans-serif;padding:4px 10px;border-radius:6px;cursor:pointer;transition:background .15s}
+.update-btn:hover{background:rgba(34,197,94,.32);color:#fff}
+.update-btn:disabled{cursor:wait;opacity:.7}
+.update-btn .update-icon{font-size:13px;line-height:1}
+.update-btn.spin .update-icon{animation:update-spin .9s linear infinite}
+@keyframes update-spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
 .beszel-link{color:#ffedd5;text-decoration:none;font-size:11.5px;font-weight:500;padding:4px 10px;border-radius:6px;background:rgba(249,115,22,.15);border:1px solid rgba(249,115,22,.35);transition:background .15s}
 .beszel-link:hover{background:rgba(249,115,22,.3);color:#fff}
 .ri-pill{display:inline-flex;align-items:center;gap:7px;color:#fff;text-decoration:none;font-size:11.5px;padding:4px 10px;border-radius:6px;background:rgba(249,115,22,.22);border:1px solid rgba(249,115,22,.5);transition:background .15s;max-width:280px;overflow:hidden}
@@ -1594,6 +1648,11 @@ small{color:var(--mut);font-weight:400}
       <span class="ri-dot"></span>
       <span class="ri-text">Running: <strong id="ri-tc">…</strong></span>
     </a>
+    <button type="button" class="update-btn" id="update-btn" onclick="runUpdate()"
+            title="Fetch the latest perf-qa from GitHub (oneclick repo) and re-install. Service restarts automatically.">
+      <span class="update-icon" id="update-icon">⤓</span>
+      <span class="update-label" id="update-label">Update</span>
+    </button>
     {% if beszel_url %}<a class="beszel-link" href="{{ beszel_url }}" target="_blank" rel="noopener" title="Open Beszel hub">Beszel ↗</a>{% endif %}
     <span class="dot" title="online"></span>
     <span>{{ host_label }}</span>
@@ -2149,6 +2208,12 @@ body{margin:0;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Rob
 .topnav a:hover{background:rgba(255,255,255,.06);color:#fff}
 .topnav a.active{background:var(--brand);color:#fff}
 .topbar .pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:11px;background:#0f0f1a;border:1px solid #3a3a55;padding:2px 8px;border-radius:4px;color:#cbd5e1}
+.update-btn{display:inline-flex;align-items:center;gap:5px;background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.5);color:#dcfce7;font:500 11.5px ui-sans-serif,sans-serif;padding:4px 10px;border-radius:6px;cursor:pointer;transition:background .15s}
+.update-btn:hover{background:rgba(34,197,94,.32);color:#fff}
+.update-btn:disabled{cursor:wait;opacity:.7}
+.update-btn .update-icon{font-size:13px;line-height:1}
+.update-btn.spin .update-icon{animation:update-spin .9s linear infinite}
+@keyframes update-spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
 .beszel-link{color:#ffedd5;text-decoration:none;font-size:11.5px;font-weight:500;padding:4px 10px;border-radius:6px;background:rgba(249,115,22,.15);border:1px solid rgba(249,115,22,.35);transition:background .15s}
 .beszel-link:hover{background:rgba(249,115,22,.3);color:#fff}
 .ri-pill{display:inline-flex;align-items:center;gap:7px;color:#fff;text-decoration:none;font-size:11.5px;padding:4px 10px;border-radius:6px;background:rgba(249,115,22,.22);border:1px solid rgba(249,115,22,.5);transition:background .15s;max-width:280px;overflow:hidden}
@@ -2227,6 +2292,11 @@ details pre{margin:10px 0 0;padding:12px;background:#0f1117;color:#e2e8f0;border
       <span class="ri-dot"></span>
       <span class="ri-text">Running: <strong id="ri-tc">…</strong></span>
     </a>
+    <button type="button" class="update-btn" id="update-btn" onclick="runUpdate()"
+            title="Fetch the latest perf-qa from GitHub (oneclick repo) and re-install. Service restarts automatically.">
+      <span class="update-icon" id="update-icon">⤓</span>
+      <span class="update-label" id="update-label">Update</span>
+    </button>
     {% if beszel_url %}<a class="beszel-link" href="{{ beszel_url }}" target="_blank" rel="noopener" title="Open Beszel hub">Beszel ↗</a>{% endif %}
     <span class="pill">setup.conf</span>
   </div>
@@ -2573,6 +2643,45 @@ async function copySshPubkey(){
 
 refreshSshKey();
 
+// ---- Self-update from GitHub ----
+// Hits /api/update which downloads main.tar.gz from the oneclick repo,
+// extracts it, runs sudo bash scripts/install.sh, restarts the service.
+// The systemd restart kills our own process before the response returns,
+// so we treat "fetch failed mid-stream" as expected and reload after a
+// few seconds to pick up the new code.
+async function runUpdate(){
+  const btn  = document.getElementById('update-btn');
+  const lbl  = document.getElementById('update-label');
+  if (!btn) return;
+  if (!confirm('Fetch the latest perf-qa from GitHub and re-install?\n\nThe service will restart. This usually takes 10–30 seconds.')) return;
+  btn.disabled = true;
+  btn.classList.add('spin');
+  lbl.textContent = 'Updating…';
+  let stillUp = true;
+  try {
+    const r = await fetch('/api/update', {method: 'POST', cache: 'no-store'});
+    const j = await r.json().catch(() => ({}));
+    if (j && j.ok) {
+      lbl.textContent = 'Updated — reloading';
+    } else {
+      stillUp = false;
+      const tail = (j && j.log) ? '\n\nLast log lines:\n' + j.log.split('\n').slice(-15).join('\n') : '';
+      lbl.textContent = 'Update failed';
+      alert('Update failed.' + tail);
+    }
+  } catch (e) {
+    // Most common case — the service restarted before our response came back.
+    // That's actually success; reload to pick up the new code.
+    lbl.textContent = 'Restarting — reloading';
+  }
+  if (stillUp) {
+    setTimeout(() => { location.reload(); }, 4000);
+  } else {
+    btn.disabled = false;
+    btn.classList.remove('spin');
+  }
+}
+
 // ---- Cross-tab running-job indicator ----
 (function(){
   const ind  = document.getElementById('run-indicator');
@@ -2628,6 +2737,12 @@ body{margin:0;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Rob
 .topnav a:hover{background:rgba(255,255,255,.06);color:#fff}
 .topnav a.active{background:var(--brand);color:#fff}
 .topbar .pill{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:11px;background:#0f0f1a;border:1px solid #3a3a55;padding:2px 8px;border-radius:4px;color:#cbd5e1}
+.update-btn{display:inline-flex;align-items:center;gap:5px;background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.5);color:#dcfce7;font:500 11.5px ui-sans-serif,sans-serif;padding:4px 10px;border-radius:6px;cursor:pointer;transition:background .15s}
+.update-btn:hover{background:rgba(34,197,94,.32);color:#fff}
+.update-btn:disabled{cursor:wait;opacity:.7}
+.update-btn .update-icon{font-size:13px;line-height:1}
+.update-btn.spin .update-icon{animation:update-spin .9s linear infinite}
+@keyframes update-spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
 .beszel-link{color:#ffedd5;text-decoration:none;font-size:11.5px;font-weight:500;padding:4px 10px;border-radius:6px;background:rgba(249,115,22,.15);border:1px solid rgba(249,115,22,.35);transition:background .15s}
 .beszel-link:hover{background:rgba(249,115,22,.3);color:#fff}
 .ri-pill{display:inline-flex;align-items:center;gap:7px;color:#fff;text-decoration:none;font-size:11.5px;padding:4px 10px;border-radius:6px;background:rgba(249,115,22,.22);border:1px solid rgba(249,115,22,.5);transition:background .15s;max-width:280px;overflow:hidden}
@@ -2775,6 +2890,11 @@ pre.dark .info{color:#60a5fa}
       <span class="ri-dot"></span>
       <span class="ri-text">Running: <strong id="ri-tc">…</strong></span>
     </a>
+    <button type="button" class="update-btn" id="update-btn" onclick="runUpdate()"
+            title="Fetch the latest perf-qa from GitHub (oneclick repo) and re-install. Service restarts automatically.">
+      <span class="update-icon" id="update-icon">⤓</span>
+      <span class="update-label" id="update-label">Update</span>
+    </button>
     {% if beszel_url %}<a class="beszel-link" href="{{ beszel_url }}" target="_blank" rel="noopener" title="Open Beszel hub">Beszel ↗</a>{% endif %}
     <span>{{ host_label }}</span>
     <span class="pill">bundle inspector</span>
@@ -3371,6 +3491,45 @@ window.addEventListener('hashchange', () => {
     setView(currentView);
   }
 });
+
+// ---- Self-update from GitHub ----
+// Hits /api/update which downloads main.tar.gz from the oneclick repo,
+// extracts it, runs sudo bash scripts/install.sh, restarts the service.
+// The systemd restart kills our own process before the response returns,
+// so we treat "fetch failed mid-stream" as expected and reload after a
+// few seconds to pick up the new code.
+async function runUpdate(){
+  const btn  = document.getElementById('update-btn');
+  const lbl  = document.getElementById('update-label');
+  if (!btn) return;
+  if (!confirm('Fetch the latest perf-qa from GitHub and re-install?\n\nThe service will restart. This usually takes 10–30 seconds.')) return;
+  btn.disabled = true;
+  btn.classList.add('spin');
+  lbl.textContent = 'Updating…';
+  let stillUp = true;
+  try {
+    const r = await fetch('/api/update', {method: 'POST', cache: 'no-store'});
+    const j = await r.json().catch(() => ({}));
+    if (j && j.ok) {
+      lbl.textContent = 'Updated — reloading';
+    } else {
+      stillUp = false;
+      const tail = (j && j.log) ? '\n\nLast log lines:\n' + j.log.split('\n').slice(-15).join('\n') : '';
+      lbl.textContent = 'Update failed';
+      alert('Update failed.' + tail);
+    }
+  } catch (e) {
+    // Most common case — the service restarted before our response came back.
+    // That's actually success; reload to pick up the new code.
+    lbl.textContent = 'Restarting — reloading';
+  }
+  if (stillUp) {
+    setTimeout(() => { location.reload(); }, 4000);
+  } else {
+    btn.disabled = false;
+    btn.classList.remove('spin');
+  }
+}
 
 // ---- Cross-tab running-job indicator ----
 (function(){
