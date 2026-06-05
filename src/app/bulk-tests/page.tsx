@@ -61,6 +61,10 @@ interface UiStep { step: string; ok: boolean; durationMs: number; detail?: strin
 interface UiRow { id: string; boxId: string; name: string; category: string; steps: UiStep[]; ok: boolean; durationMs: number; screenshotFile?: string }
 interface UiSummary { startedAt: string; finishedAt: string; targetHost: string; total: number; sampleSize: number; passed: number; failed: number; results: UiRow[]; runDir: string }
 
+interface ExecStep { step: string; ok: boolean; durationMs: number; detail?: string }
+interface ExecRow { id: string; boxId: string; name: string; steps: ExecStep[]; ok: boolean; durationMs: number; executionId?: string; evidenceDir: string }
+interface ExecSummary { startedAt: string; finishedAt: string; targetHost: string; buildVersion?: string; total: number; passed: number; failed: number; results: ExecRow[]; evidenceRoot: string }
+
 export default function BulkTestsPage() {
   const [systems, setSystems] = useState<SystemSummary[]>([]);
   const [systemId, setSystemId] = useState<string>('sys-6');
@@ -72,6 +76,9 @@ export default function BulkTestsPage() {
   const [uiProgress, setUiProgress] = useState<Progress | null>(null);
   const [uiResult, setUiResult] = useState<UiSummary | null>(null);
   const [uiSampleSize, setUiSampleSize] = useState<number>(50);
+  const [execProgress, setExecProgress] = useState<Progress | null>(null);
+  const [execResult, setExecResult] = useState<ExecSummary | null>(null);
+  const [execSampleSize, setExecSampleSize] = useState<number>(5);
   const [busy, setBusy] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [catFilter, setCatFilter] = useState<string>('all');
@@ -104,6 +111,10 @@ export default function BulkTestsPage() {
         if (d?.uiValidation) {
           setUiProgress(d.uiValidation.progress);
           setUiResult(d.uiValidation.result);
+        }
+        if (d?.execution) {
+          setExecProgress(d.execution.progress);
+          setExecResult(d.execution.result);
         }
       } catch { /* keep polling */ }
       if (!stop) setTimeout(tick, 1500);
@@ -151,6 +162,20 @@ export default function BulkTestsPage() {
     finally { setBusy(''); }
   };
 
+  const startExecute = async () => {
+    if (!confirm(`Execute ${execSampleSize} testcase(s) sequentially on the box? Each run triggers an actual execution, retrieves ue.cfg from the UE-sim, captures error trace on failure. Box has a system-wide execution mutex so this is slow (~30s/case).`)) return;
+    setError(''); setBusy('execute');
+    try {
+      const r = await fetch('/api/bulk-tests/execute', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ systemId, uesimSystemId: 'sys-7', sampleSize: execSampleSize }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) setError(d?.error ?? `execute returned ${r.status}`);
+    } catch (e: any) { setError(e?.message ?? String(e)); }
+    finally { setBusy(''); }
+  };
+
   const startCleanup = async () => {
     if (!confirm(`Delete EVERY testcase on ${systemId} whose name starts with qa-bulk- or carries the qa-bulk tag?\n\nThis is irreversible.`)) return;
     setError(''); setBusy('cleanup');
@@ -173,6 +198,7 @@ export default function BulkTestsPage() {
   const genRunning = !!genProgress && !genProgress.finishedAt;
   const valRunning = !!valProgress && !valProgress.finishedAt;
   const uiRunning  = !!uiProgress  && !uiProgress.finishedAt;
+  const execRunning = !!execProgress && !execProgress.finishedAt;
 
   const filteredResults = (valResult?.results ?? []).filter(r => catFilter === 'all' || r.category === catFilter);
   const categories = Array.from(new Set((valResult?.results ?? []).map(r => r.category))).sort();
@@ -243,6 +269,13 @@ export default function BulkTestsPage() {
               </label>
               <button onClick={startValidateUI} disabled={!!busy || uiRunning || !(genResult?.created?.length)} className="rounded-md bg-purple-500 hover:bg-purple-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
                 {uiRunning ? 'Validating UI…' : 'Validate (UI)'}
+              </button>
+              <label className="flex items-center gap-2 text-xs text-slate-600">
+                <span>Exec sample</span>
+                <input type="number" min={1} max={50} value={execSampleSize} onChange={e => setExecSampleSize(Number(e.target.value) || 5)} className="border border-slate-300 rounded-md px-2 py-1 w-[60px] text-sm" />
+              </label>
+              <button onClick={startExecute} disabled={!!busy || execRunning || !(genResult?.created?.length)} title="Trigger actual execution + retrieve ue.cfg + capture failure trace from UE-sim" className="rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
+                {execRunning ? 'Executing…' : 'Execute'}
               </button>
               <button onClick={startCleanup} disabled={!!busy} className="rounded-md bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
                 Cleanup
@@ -498,6 +531,64 @@ export default function BulkTestsPage() {
                   </tbody>
                 </table>
               </div>
+            )}
+          </section>
+        )}
+        {/* Execution grid — actual on-box runs with ue.cfg + failure-trace evidence */}
+        {execProgress && (
+          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+            <h2 className="text-base font-semibold text-slate-900 mb-3 flex items-center gap-2">
+              Execution
+              <span className="text-xs text-slate-500 font-normal">— per testcase: trigger → ue.cfg → export → on-fail screen/ots.log capture</span>
+            </h2>
+            <div className="text-sm text-slate-700 mb-2">
+              {execProgress.done} / {execProgress.total} done — {execProgress.passed} pass · {execProgress.failed} fail
+              {execRunning && execProgress.currentName && <span className="text-slate-500 ml-2">· current: <code className="font-mono text-[11px]">{execProgress.currentName}</code></span>}
+            </div>
+            <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+              <div className="h-full bg-emerald-500" style={{ width: `${execProgress.total ? (100 * execProgress.done / execProgress.total) : 0}%` }} />
+            </div>
+            {execResult && execResult.results.length > 0 && (
+              <>
+                <div className="text-xs text-slate-500 mt-3 mb-2">Evidence under <code className="font-mono">{execResult.evidenceRoot}</code> — each test gets <code>testcase.json</code>, <code>ue.cfg</code>, <code>execution.json</code>, and <code>error-trace.txt</code> on failure.</div>
+                <div className="overflow-x-auto border border-slate-200 rounded-md">
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-medium">#</th>
+                        <th className="text-left px-3 py-2 font-medium">Name</th>
+                        <th className="text-center px-2 py-2 font-medium" title="POST /testcases/{id}/executions">Trigger</th>
+                        <th className="text-center px-2 py-2 font-medium" title="ue.cfg pulled from UE-sim with matching log_filename">ue.cfg</th>
+                        <th className="text-center px-2 py-2 font-medium" title="POST /testcases/export saved as testcase.json">Export</th>
+                        <th className="text-center px-2 py-2 font-medium" title="screen -X -S lte hardcopy + ots.log tail (on-fail only)">Trace</th>
+                        <th className="text-right px-3 py-2 font-medium">ms</th>
+                        <th className="text-center px-3 py-2 font-medium">Verdict</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {execResult.results.map((r, i) => {
+                        const stepCell = (name: string) => {
+                          const s = r.steps.find(x => x.step === name);
+                          if (!s) return <td className="text-center px-2 py-1.5 text-slate-300">—</td>;
+                          return <td className={`text-center px-2 py-1.5 font-mono ${s.ok ? 'text-emerald-700' : 'text-red-700'}`} title={s.detail ?? ''}>{s.ok ? '✓' : '✗'}</td>;
+                        };
+                        return (
+                          <tr key={r.id}>
+                            <td className="px-3 py-1.5 text-slate-500">{i + 1}</td>
+                            <td className="px-3 py-1.5 font-mono text-[11px]">{r.name}</td>
+                            {stepCell('trigger')}
+                            {stepCell('ue-cfg')}
+                            {stepCell('export')}
+                            {stepCell('evidence')}
+                            <td className="px-3 py-1.5 text-right font-mono text-slate-500">{r.durationMs}</td>
+                            <td className={`px-3 py-1.5 text-center font-semibold ${r.ok ? 'text-emerald-700' : 'text-red-700'}`}>{r.ok ? 'PASS' : 'FAIL'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </section>
         )}

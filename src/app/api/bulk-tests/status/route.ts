@@ -27,5 +27,9 @@ export async function GET() {
       progress: s.uiValidation.progress ?? null,
       result:   s.uiValidation.result   ?? null,
     },
+    execution: {
+      progress: s.execution?.progress ?? null,
+      result:   s.execution?.result   ?? null,
+    },
   }, { headers: { 'Cache-Control': 'no-store' } });
 }

@@ -49,14 +49,17 @@ export interface MatrixSlice {
 // actually supports.
 export const SLICES: readonly MatrixSlice[] = [
   // LTE — broadest coverage by far (most common deployment scenario).
-  // 10 bands × 4 bw × 3 ue × 2 ant × 4 traffic × 2 mob × 2 fade = 3840 raw,
+  // 10 bands × 4 bw × 3 ue × 3 ant × 4 traffic × 2 mob × 2 fade = 5760 raw,
   // but capped at 1000 (deterministic truncation in expandSlices).
+  // NOTE: LTE rejects antennas.ul > 1 (the box validator says
+  // "antennas/ul: value must be '1' for LTE profile 0"). DL can vary;
+  // UL is fixed at 1.
   {
     rat: 'LTE',
     bands: ['1', '2', '3', '5', '7', '8', '13', '20', '28', '41'],
     bandwidths: [5, 10, 15, 20],
     ueCounts: [1, 2, 4],
-    antennas: [[1, 1], [2, 2]],
+    antennas: [[1, 1], [2, 1], [4, 1]],
     dataTypes: ['no_data', 'iperf-both', 'iperf-dl', 'iperf-ul'],
     mobility: ['stationary', 'roundTrip'],
     fading: ['awgn', 'tdla30'],

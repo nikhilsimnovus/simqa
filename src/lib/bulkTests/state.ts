@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import type { GenerationProgress, GenerationResult } from './generator';
 import type { ValidationProgress, ValidationSummary } from './validator';
 import type { UiValidationProgress, UiValidationSummary } from './uiValidator';
+import type { ExecutionProgress, ExecutionSummary } from './executor';
 
 export interface RunHandle {
   abort: AbortController;
@@ -32,6 +33,13 @@ interface BulkState {
     result?: UiValidationSummary;
     handle?: RunHandle;
   };
+  /** Per-testcase execution runs (trigger → ue.cfg → export → on-fail
+   *  capture screen/ots.log). */
+  execution?: {
+    progress?: ExecutionProgress;
+    result?: ExecutionSummary;
+    handle?: RunHandle;
+  };
   /** Last manifest written to disk (in-memory snapshot). */
   manifestPath?: string;
 }
@@ -40,6 +48,7 @@ const STATE: BulkState = {
   generation: {},
   validation: {},
   uiValidation: {},
+  execution: {},
 };
 
 export function getState(): BulkState { return STATE; }
