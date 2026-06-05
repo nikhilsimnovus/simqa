@@ -168,17 +168,23 @@ VENDOR_BROWSERS="${SRC_ROOT}/vendor/playwright-browsers"
 # Plumb a customer-supplied CA bundle through to Playwright (Node HTTPS).
 PW_CA_BUNDLE="${NODE_EXTRA_CA_CERTS:-${SSL_CERT_FILE:-${PIP_CERT:-}}}"
 
+# Helper: returns 0 if at least one chromium-<version> dir exists under $1.
+# Plain `[[ -d "$1/chromium-"* ]]` does NOT work — bash's [[ ]] disables
+# filename globbing, so the `*` stays literal and the test always fails.
+# compgen -G expands the glob in a context that does match real files.
+has_chromium() { compgen -G "$1/chromium-*" >/dev/null 2>&1; }
+
 # (a) Vendored browsers shipped inside the tarball — preferred path.
-if [[ -d "${VENDOR_BROWSERS}/chromium-"* ]] && ! [[ -d "${PW_BROWSERS}/chromium-"* ]]; then
+if has_chromium "${VENDOR_BROWSERS}" && ! has_chromium "${PW_BROWSERS}"; then
     log "Installing pre-staged Playwright browsers from ${VENDOR_BROWSERS}"
     sudo -u "${SERVICE_USER}" mkdir -p "${PW_BROWSERS}"
     # Copy preserving owner-writable perms; -a keeps symlinks + executables.
-    sudo cp -a "${VENDOR_BROWSERS}"/* "${PW_BROWSERS}/"
+    sudo cp -a "${VENDOR_BROWSERS}"/. "${PW_BROWSERS}/"
     sudo chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${PW_BROWSERS}"
     log "Vendored: $(du -sh "${PW_BROWSERS}" | cut -f1) under ${PW_BROWSERS}"
 fi
 
-if [[ -d "${PW_BROWSERS}/chromium-"* ]]; then
+if has_chromium "${PW_BROWSERS}"; then
     log "Playwright Chromium already present in ${PW_BROWSERS}"
 elif [[ "${SKIP_PLAYWRIGHT:-0}" == "1" ]]; then
     warn "SKIP_PLAYWRIGHT=1 — Beszel + Simnovator GUI screenshots will be disabled"
@@ -203,7 +209,7 @@ fi
 # Install OS libs needed by headless Chromium (apt only — RPM ships them).
 # Runs whenever browsers are present, even if they were pre-staged — the
 # system libs are separate from the browser binary.
-if [[ -d "${PW_BROWSERS}/chromium-"* && "${PKG}" == "apt" ]]; then
+if has_chromium "${PW_BROWSERS}" && [[ "${PKG}" == "apt" ]]; then
     log "Installing headless-Chromium OS libs via playwright install-deps"
     "${UI_INSTALL_DIR}/venv/bin/playwright" install-deps chromium || \
         warn "playwright install-deps failed; some libs may be missing"
