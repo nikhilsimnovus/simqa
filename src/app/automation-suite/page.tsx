@@ -27,7 +27,7 @@ interface SuiteRow {
   kind?: 'uesim-only' | 'uesim+callbox';
   uesimSystemId?: string; callboxSystemId?: string;
   uploadedConfigs?: Record<string, string>;
-  callboxConfigs?: string[];
+  callboxConfig?: string;
   testcaseIds: string[];
   stopOnFail?: boolean;
   updatedAt?: string;
@@ -98,8 +98,10 @@ export default function AutomationSuitePage() {
   const [loadingCbx, setLoadingCbx]   = useState(false);
   const [uploadedConfigs, setUploads] = useState<Record<string, string>>({});
 
-  // Separate selections for each list — in callbox kind, both apply.
-  const [selectedCfgs, setSelectedCfgs] = useState<Set<string>>(new Set());
+  // Selections: callbox config is single-select (radio), Simnovator
+  // testcases is multi-select (Set). A uesim+callbox suite binds ONE
+  // radio config and N testcases per the user's design call.
+  const [selectedCfg,  setSelectedCfg]  = useState<string>('');
   const [selectedTcs,  setSelectedTcs]  = useState<Set<string>>(new Set());
   const [cbxFilter, setCbxFilter]       = useState<string>('');
   const [tcFilter,  setTcFilter]        = useState<string>('');
@@ -192,39 +194,34 @@ export default function AutomationSuitePage() {
 
   /** "Add an upload" — reads one or more files into base64 and merges
    *  them into uploadedConfigs. Pre-selects them too. */
-  const onPickUploads = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    if (files.length === 0) return;
-    let done = 0;
-    const next: Record<string, string> = { ...uploadedConfigs };
-    const sel = new Set(selectedCfgs);
-    for (const f of files) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const data = String(reader.result ?? '');
-        const b64 = data.includes(',') ? data.split(',', 2)[1] : btoa(data);
-        next[f.name] = b64;
-        sel.add(f.name);
-        done += 1;
-        if (done === files.length) { setUploads(next); setSelectedCfgs(sel); }
-      };
-      reader.readAsDataURL(f);
-    }
-    // Reset so the same file can be re-uploaded.
+  /** Upload a SINGLE .cfg file — bind it as the suite's callbox config.
+   *  Uploads replace any prior selection (since the suite carries one
+   *  config). Multi-file picks aren't allowed. */
+  const onPickUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const data = String(reader.result ?? '');
+      const b64 = data.includes(',') ? data.split(',', 2)[1] : btoa(data);
+      setUploads({ ...uploadedConfigs, [f.name]: b64 });
+      setSelectedCfg(f.name);
+    };
+    reader.readAsDataURL(f);
     e.target.value = '';
-  }, [uploadedConfigs, selectedCfgs]);
+  }, [uploadedConfigs]);
 
   const removeUpload = useCallback((filename: string) => {
     const next = { ...uploadedConfigs };
     delete next[filename];
     setUploads(next);
-    const sel = new Set(selectedCfgs); sel.delete(filename); setSelectedCfgs(sel);
-  }, [uploadedConfigs, selectedCfgs]);
+    if (selectedCfg === filename) setSelectedCfg('');
+  }, [uploadedConfigs, selectedCfg]);
 
   const resetWizard = useCallback(() => {
     setEditingId(''); setName(''); setKind('uesim-only');
     setUesim(''); setCbx(''); setCbxFiles([]); setUploads({}); setCbxLoadError('');
-    setUeTcs([]); setSelectedCfgs(new Set()); setSelectedTcs(new Set());
+    setUeTcs([]); setSelectedCfg(''); setSelectedTcs(new Set());
     setStopOnFail(false); setCbxFilter(''); setTcFilter('');
     setError(''); setShowWizard(false);
   }, []);
@@ -238,7 +235,7 @@ export default function AutomationSuitePage() {
     setUesim(s.uesimSystemId ?? '');
     setCbx(s.callboxSystemId ?? '');
     setUploads(s.uploadedConfigs ?? {});
-    setSelectedCfgs(new Set(s.callboxConfigs ?? []));
+    setSelectedCfg(s.callboxConfig ?? '');
     setSelectedTcs(new Set(s.testcaseIds));
     setStopOnFail(!!s.stopOnFail);
     setShowWizard(true);
@@ -250,20 +247,26 @@ export default function AutomationSuitePage() {
     if (!name.trim())     { setError('name required'); return; }
     if (!uesimSystemId)   { setError('UESIM system required'); return; }
     if (kind === 'uesim+callbox' && !callboxSystemId) { setError('callbox system required'); return; }
-    const tcs  = [...selectedTcs];
-    const cfgs = kind === 'uesim+callbox' ? [...selectedCfgs] : [];
-    if (tcs.length + cfgs.length === 0) {
-      setError(kind === 'uesim+callbox' ? 'pick at least one callbox config or Simnovator testcase' : 'pick at least one Simnovator testcase');
+    const tcs = [...selectedTcs];
+    const cfg = kind === 'uesim+callbox' ? selectedCfg : '';
+    if (tcs.length === 0 && !cfg) {
+      setError(kind === 'uesim+callbox' ? 'pick a callbox config and/or one or more Simnovator testcases' : 'pick at least one Simnovator testcase');
       return;
     }
+
+    // Only persist the upload blob that corresponds to the selected
+    // config — drop the rest so the suite record stays small.
+    const trimmedUploads = (kind === 'uesim+callbox' && cfg && uploadedConfigs[cfg])
+      ? { [cfg]: uploadedConfigs[cfg] }
+      : undefined;
 
     const payload: any = {
       name: name.trim(),
       kind,
       uesimSystemId,
       callboxSystemId: kind === 'uesim+callbox' ? callboxSystemId : undefined,
-      uploadedConfigs: kind === 'uesim+callbox' ? uploadedConfigs : undefined,
-      callboxConfigs: kind === 'uesim+callbox' ? cfgs : undefined,
+      uploadedConfigs: trimmedUploads,
+      callboxConfig: kind === 'uesim+callbox' ? (cfg || undefined) : undefined,
       testcaseIds: tcs,
       stopOnFail,
     };
@@ -281,11 +284,10 @@ export default function AutomationSuitePage() {
   };
 
   const runSuite = async (s: SuiteRow) => {
-    const cfgN = s.callboxConfigs?.length ?? 0;
-    const tcN  = s.testcaseIds.length;
+    const tcN = s.testcaseIds.length;
     const summary = s.kind === 'uesim+callbox'
-      ? `${cfgN} callbox config(s) + ${tcN} Simnovator testcase(s)`
-      : `${tcN} Simnovator testcase(s)`;
+      ? `Push callbox config ${s.callboxConfig ? `'${s.callboxConfig}'` : '(none)'} + trigger ${tcN} Simnovator testcase${tcN === 1 ? '' : 's'}`
+      : `Trigger ${tcN} Simnovator testcase${tcN === 1 ? '' : 's'}`;
     if (!window.confirm(`Run suite "${s.name}"?\n\n${summary}.\nDiagnostics: ${collectDiagnostics ? 'perf-qa collection will run alongside' : 'off'}`)) return;
     setRunning(s.id); setRunResult(null); setError('');
     try {
@@ -326,7 +328,7 @@ export default function AutomationSuitePage() {
   }, [uesimSystemId]);
   // Switching kind keeps the testcase selection but clears the callbox
   // selection (since the callbox system is also potentially different).
-  useEffect(() => { setSelectedCfgs(new Set()); }, [kind]);
+  useEffect(() => { setSelectedCfg(''); }, [kind]);
 
   // Callbox file list = uploads at the top + on-box files below.
   type CfgItem = { id: string; label: string; sub?: string; upload?: boolean };
@@ -376,9 +378,8 @@ export default function AutomationSuitePage() {
                     <th className="text-left px-3 py-2 font-medium">Kind</th>
                     <th className="text-left px-3 py-2 font-medium">UESIM</th>
                     <th className="text-left px-3 py-2 font-medium">Callbox</th>
-                    <th className="text-right px-3 py-2 font-medium">Configs</th>
+                    <th className="text-left px-3 py-2 font-medium">Config</th>
                     <th className="text-right px-3 py-2 font-medium">Tests</th>
-                    <th className="text-right px-3 py-2 font-medium">Uploads</th>
                     <th className="text-right px-3 py-2 font-medium">Updated</th>
                     <th className="text-right px-3 py-2 font-medium">Actions</th>
                   </tr>
@@ -390,9 +391,8 @@ export default function AutomationSuitePage() {
                       <td className="px-3 py-2 text-slate-700">{s.kind ?? 'uesim-only'}</td>
                       <td className="px-3 py-2 text-slate-700 font-mono text-xs">{s.uesimSystemId ?? '–'}</td>
                       <td className="px-3 py-2 text-slate-700 font-mono text-xs">{s.callboxSystemId ?? '–'}</td>
-                      <td className="px-3 py-2 text-right">{s.callboxConfigs?.length ?? 0}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{s.callboxConfig ?? '–'}{s.callboxConfig && s.uploadedConfigs?.[s.callboxConfig] ? ' (uploaded)' : ''}</td>
                       <td className="px-3 py-2 text-right">{s.testcaseIds.length}</td>
-                      <td className="px-3 py-2 text-right">{Object.keys(s.uploadedConfigs ?? {}).length}</td>
                       <td className="px-3 py-2 text-right text-xs text-slate-500">{s.updatedAt?.slice(0, 19).replace('T', ' ') ?? '–'}</td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">
                         <button onClick={() => runSuite(s)} disabled={running === s.id} className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white text-xs px-2 py-1 mr-1">
@@ -576,18 +576,21 @@ export default function AutomationSuitePage() {
               )}
             </div>
 
-            {/* Callbox config picker — only when kind=uesim+callbox */}
+            {/* Callbox config picker — single-select (radio). Each suite
+                is scoped to ONE eNB config; campaigns spanning multiple
+                configs belong in separate suites. */}
             {kind === 'uesim+callbox' && callboxSystemId && (
               <div className="mb-4 border border-slate-200 rounded-md p-3 bg-slate-50/50">
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                    Configs in <code>/root/enb/config</code> on <code>{callboxSystemId}</code> ({selectedCfgs.size} selected of {cfgItems.length})
+                    Pick ONE config from <code>/root/enb/config</code> on <code>{callboxSystemId}</code>
+                    {selectedCfg && <> · selected: <code className="text-slate-700">{selectedCfg}</code></>}
                   </div>
                   <input type="search" placeholder="filter…" value={cbxFilter} onChange={e => setCbxFilter(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs" />
                 </div>
                 {cbxLoadError && (
                   <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1 mb-2">
-                    SSH error: <code>{cbxLoadError}</code> — fix the callbox's SSH creds in <code>inventory.yaml</code>, or upload .cfg files manually below.
+                    SSH error: <code>{cbxLoadError}</code> — fix the callbox's SSH creds in <code>inventory.yaml</code>, or upload a .cfg file below.
                   </div>
                 )}
                 <div className="border border-slate-200 rounded-md bg-white max-h-60 overflow-y-auto">
@@ -595,20 +598,17 @@ export default function AutomationSuitePage() {
                     <div className="p-3 text-sm text-slate-500">Loading via SSH…</div>
                   ) : filteredCfgs.length === 0 ? (
                     <div className="p-3 text-sm text-slate-500">
-                      No files in <code>/root/enb/config</code> (or SSH failed). Use Upload below to add some.
+                      No files match <code>{cbxFilter || '*'}</code> in <code>/root/enb/config</code> (or SSH failed). Use Upload below.
                     </div>
                   ) : (
                     <ul className="divide-y divide-slate-100 text-sm">
                       {filteredCfgs.map(it => (
-                        <li key={it.id} className="px-3 py-1.5 flex items-center gap-2 hover:bg-slate-50">
-                          <input type="checkbox" checked={selectedCfgs.has(it.id)} onChange={e => {
-                            const next = new Set(selectedCfgs);
-                            if (e.target.checked) next.add(it.id); else next.delete(it.id);
-                            setSelectedCfgs(next);
-                          }} />
+                        <li key={it.id} className="px-3 py-1.5 flex items-center gap-2 hover:bg-slate-50 cursor-pointer"
+                            onClick={() => setSelectedCfg(it.id)}>
+                          <input type="radio" name="cbxcfg" checked={selectedCfg === it.id} onChange={() => setSelectedCfg(it.id)} />
                           <span className="flex-1 truncate" title={it.id}>{it.label}</span>
                           {it.upload && (
-                            <button type="button" onClick={() => removeUpload(it.id)} className="text-[10px] text-red-600 hover:underline" title="Remove this upload">remove</button>
+                            <button type="button" onClick={(e) => { e.stopPropagation(); removeUpload(it.id); }} className="text-[10px] text-red-600 hover:underline" title="Remove this upload">remove</button>
                           )}
                           {it.sub && <span className="text-[10px] text-slate-400 truncate">{it.sub}</span>}
                         </li>
@@ -618,11 +618,11 @@ export default function AutomationSuitePage() {
                 </div>
                 <div className="mt-3 flex items-center gap-3 text-sm">
                   <label className="cursor-pointer rounded-md border border-slate-300 px-3 py-1.5 hover:bg-slate-100">
-                    Upload .cfg file(s)…
-                    <input type="file" multiple onChange={onPickUploads} className="hidden" />
+                    Upload .cfg file…
+                    <input type="file" onChange={onPickUpload} className="hidden" />
                   </label>
                   <span className="text-xs text-slate-500">
-                    Uploaded files are scp'd to <code>/root/enb/config/&lt;name&gt;</code> when the suite runs.
+                    Uploaded file is scp'd to <code>/root/enb/config/&lt;name&gt;</code> when the suite runs.
                   </span>
                 </div>
               </div>

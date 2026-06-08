@@ -136,12 +136,13 @@ export interface AutomationSuite {
    *  'uesim+callbox' suites these run AFTER the callbox configs are
    *  pushed. */
   testcaseIds: string[];
-  /** Filenames under /root/enb/config on the callbox (only when
-   *  kind == 'uesim+callbox'). The file may already live on the callbox
-   *  (picked from `ls`) or come from a `uploadedConfigs` blob in this
-   *  suite. The runner pushes uploads first, then triggers the
-   *  Simnovator testcases. */
-  callboxConfigs?: string[];
+  /** Single filename under /root/enb/config on the callbox (only when
+   *  kind == 'uesim+callbox'). May be a file that already lives on the
+   *  callbox (picked from `ls`) or one in `uploadedConfigs`. The runner
+   *  pushes the upload (if any) before triggering the Simnovator
+   *  testcases. Each suite is scoped to ONE radio config — multi-config
+   *  campaigns belong in separate suites. */
+  callboxConfig?: string;
   /** Default topology profile id when running this suite. */
   topologyId?: string;
   /** If true, skip SSH push + execution trigger; just generate. */

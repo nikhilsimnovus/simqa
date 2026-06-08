@@ -140,31 +140,30 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   const steps: SuiteRunStep[] = [];
   let passed = 0, failed = 0;
 
-  // Total = callbox-config-push steps + Simnovator-trigger steps.
-  // The page renders these as two prefixed sections (cfg:foo / tc:bar).
-  const cfgs = suite.callboxConfigs ?? [];
-  const tcs  = suite.testcaseIds;
-  const total = cfgs.length + tcs.length;
+  // Total = (1 callbox-config-push step if configured) + Simnovator-trigger steps.
+  // The page renders these as prefixed step ids (cfg:foo / tc:bar).
+  const cfg = suite.callboxConfig;
+  const tcs = suite.testcaseIds;
+  const total = (cfg ? 1 : 0) + tcs.length;
   let done = 0;
 
-  // ── Phase 1: push/verify callbox configs ─────────────────────────
+  // ── Phase 1: push/verify the single callbox config (if set) ─────
   let existing = new Set<string>();
   try {
     const raw = await readCommand(sys, 'ls -1 /root/enb/config 2>/dev/null');
     existing = new Set(raw.split('\n').map(s => s.trim()).filter(Boolean));
-  } catch { /* leave empty — uploads still attempt */ }
+  } catch { /* leave empty — upload still attempts */ }
 
-  for (const filename of cfgs) {
-    if (opts.signal?.aborted) break;
-    opts.onProgress?.(done, total, `cfg:${filename}`);
+  if (cfg && !opts.signal?.aborted) {
+    opts.onProgress?.(done, total, `cfg:${cfg}`);
     const t0 = Date.now();
-    const safeName = safe(filename);
+    const safeName = safe(cfg);
     const target = `/root/enb/config/${safeName}`;
-    const isUpload = !!suite.uploadedConfigs?.[filename];
+    const isUpload = !!suite.uploadedConfigs?.[cfg];
 
     try {
       if (isUpload) {
-        const b64 = suite.uploadedConfigs![filename];
+        const b64 = suite.uploadedConfigs![cfg];
         const buf = Buffer.from(b64, 'base64');
         await withSsh(sys, async (ssh) => {
           const sftp = await ssh.requestSFTP();
@@ -176,27 +175,35 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
           });
         });
         steps.push({
-          testcaseId: `cfg:${filename}`, status: 200, ok: true,
+          testcaseId: `cfg:${cfg}`, status: 200, ok: true,
           detail: `uploaded ${buf.length}B → ${target} (overwrote=${existing.has(safeName)})`,
           durationMs: Date.now() - t0,
         });
-        existing.add(safeName);
         passed += 1;
       } else {
-        const ok = existing.has(filename) || existing.has(safeName);
+        const ok = existing.has(cfg) || existing.has(safeName);
         steps.push({
-          testcaseId: `cfg:${filename}`, status: ok ? 200 : 404, ok,
+          testcaseId: `cfg:${cfg}`, status: ok ? 200 : 404, ok,
           detail: ok ? `present at ${target}` : `missing on callbox /root/enb/config`,
           durationMs: Date.now() - t0,
         });
-        if (ok) passed += 1; else { failed += 1; if (suite.stopOnFail) break; }
+        if (ok) passed += 1; else { failed += 1; }
       }
     } catch (e: any) {
-      steps.push({ testcaseId: `cfg:${filename}`, status: 0, ok: false, detail: `ssh: ${e?.message ?? e}`, durationMs: Date.now() - t0 });
+      steps.push({ testcaseId: `cfg:${cfg}`, status: 0, ok: false, detail: `ssh: ${e?.message ?? e}`, durationMs: Date.now() - t0 });
       failed += 1;
-      if (suite.stopOnFail) break;
     }
     done += 1;
+    // If the config step failed and stopOnFail is set, skip testcases.
+    if (suite.stopOnFail && failed > 0) {
+      opts.onProgress?.(total, total);
+      return {
+        startedAt, finishedAt: new Date().toISOString(),
+        suiteId: suite.id, suiteName: suite.name, kind: 'uesim+callbox',
+        callboxHost: sys.host,
+        total, passed, failed, steps,
+      };
+    }
   }
 
   // ── Phase 2: trigger Simnovator testcases ─────────────────────────
