@@ -20,14 +20,21 @@ import { runSuite } from '@/lib/automation/runner';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 900;
 
-export async function POST(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   const suite = getSuite(id);
   if (!suite) return NextResponse.json({ ok: false, error: `no suite "${id}"` }, { status: 404 });
 
+  let body: any = {};
+  try { body = await req.json(); } catch { /* empty */ }
+
   try {
-    const result = await runSuite(suite);
-    return NextResponse.json({ ok: true, result });
+    const result = await runSuite(suite, {
+      collectDiagnostics: !!body.collectDiagnostics,
+      perfQaUrl: typeof body.perfQaUrl === 'string' ? body.perfQaUrl : undefined,
+      perfQaProfile: typeof body.perfQaProfile === 'string' ? body.perfQaProfile : undefined,
+    });
+    return NextResponse.json({ ok: true, result, runId: result.runId });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
   }

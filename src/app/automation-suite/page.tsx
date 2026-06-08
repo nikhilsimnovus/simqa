@@ -48,6 +48,26 @@ interface SuiteRunResult {
   kind: string; uesimHost?: string; callboxHost?: string;
   total: number; passed: number; failed: number;
   steps: SuiteRunStep[];
+  runId?: string; buildVersion?: string;
+  diagnostics?: { perfQaUrl: string; jobId: string; triggeredAt: string };
+}
+interface RunHistoryRow {
+  runId: string; startedAt: string; finishedAt: string;
+  kind: string; total: number; passed: number; failed: number;
+  buildVersion?: string;
+  diagnostics?: { perfQaUrl: string; jobId: string };
+}
+interface CompareRow {
+  testcaseId: string;
+  a?: { status: number; ok: boolean; detail?: string };
+  b?: { status: number; ok: boolean; detail?: string };
+  verdict: 'matched-pass' | 'matched-fail' | 'regressed' | 'fixed' | 'only-a' | 'only-b';
+}
+interface CompareSummary {
+  a: { runId: string; buildVersion?: string; finishedAt: string; passed: number; failed: number; total: number };
+  b: { runId: string; buildVersion?: string; finishedAt: string; passed: number; failed: number; total: number };
+  summary: { regressed: number; fixed: number; matchedPass: number; matchedFail: number; onlyA: number; onlyB: number; totalRows: number };
+  rows: CompareRow[];
 }
 
 type Kind = 'uesim-only' | 'uesim+callbox';
@@ -84,6 +104,48 @@ export default function AutomationSuitePage() {
   // Run state ────────────────────────────────────────────────────────────
   const [runResult, setRunResult] = useState<SuiteRunResult | null>(null);
   const [running, setRunning]     = useState<string>('');
+  const [collectDiagnostics, setCollectDx] = useState<boolean>(true);
+  // Run history (per suite, lazy)
+  const [historyFor, setHistoryFor] = useState<string>('');           // suite id whose history we're viewing
+  const [history, setHistory]       = useState<RunHistoryRow[]>([]);
+  // Compare selection — array of (runId) toggled, max 2
+  const [compareSel, setCompareSel] = useState<Set<string>>(new Set());
+  const [compareData, setCompareData] = useState<CompareSummary | null>(null);
+  const [compareBusy, setCompareBusy] = useState(false);
+
+  const loadHistory = useCallback(async (suiteId: string) => {
+    setHistoryFor(suiteId); setHistory([]); setCompareSel(new Set()); setCompareData(null);
+    if (!suiteId) return;
+    try {
+      const r = await fetch(`/api/automation/suites/${suiteId}/runs`).then(r => r.json());
+      if (r?.ok) setHistory(r.runs ?? []);
+    } catch { /* keep empty */ }
+  }, []);
+
+  const toggleCompare = (runId: string) => {
+    const next = new Set(compareSel);
+    if (next.has(runId)) { next.delete(runId); }
+    else {
+      // Cap at 2 — if already at 2, drop the oldest.
+      if (next.size >= 2) { const first = next.values().next().value; if (first) next.delete(first); }
+      next.add(runId);
+    }
+    setCompareSel(next);
+    setCompareData(null);
+  };
+
+  const runCompare = async () => {
+    if (compareSel.size !== 2) return;
+    setCompareBusy(true);
+    try {
+      const r = await fetch('/api/automation/runs/compare', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runIds: [...compareSel] }),
+      });
+      const d = await r.json();
+      if (r.ok && d.ok) setCompareData(d.compare); else setError(d?.error ?? `HTTP ${r.status}`);
+    } finally { setCompareBusy(false); }
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -205,13 +267,18 @@ export default function AutomationSuitePage() {
 
   const runSuite = async (s: SuiteRow) => {
     const what = s.kind === 'uesim+callbox' ? 'config file(s) onto the callbox' : 'testcase(s) on the Simnovator';
-    if (!window.confirm(`Run suite "${s.name}" — fires ${s.testcaseIds.length} ${what}?`)) return;
+    if (!window.confirm(`Run suite "${s.name}" — fires ${s.testcaseIds.length} ${what}?\n\nDiagnostics: ${collectDiagnostics ? 'perf-qa collection will run alongside' : 'off'}`)) return;
     setRunning(s.id); setRunResult(null); setError('');
     try {
-      const r = await fetch(`/api/automation/suites/${s.id}/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const r = await fetch(`/api/automation/suites/${s.id}/run`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collectDiagnostics }),
+      });
       const d = await r.json();
       if (!r.ok || !d.ok) throw new Error(d?.error ?? `HTTP ${r.status}`);
       setRunResult(d.result);
+      // Refresh history if we were viewing this suite's runs.
+      if (historyFor === s.id) await loadHistory(s.id);
     } catch (e: any) { setError(e?.message ?? String(e)); }
     finally { setRunning(''); }
   };
@@ -269,9 +336,15 @@ export default function AutomationSuitePage() {
         <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-slate-900">Saved suites ({suites.length})</h2>
-            <button onClick={openNew} className="rounded-md bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium px-4 py-2">
-              + New suite
-            </button>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                <input type="checkbox" checked={collectDiagnostics} onChange={e => setCollectDx(e.target.checked)} />
+                <span>Collect diagnostics (perf-qa) on Run</span>
+              </label>
+              <button onClick={openNew} className="rounded-md bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium px-4 py-2">
+                + New suite
+              </button>
+            </div>
           </div>
           {suites.length === 0 ? (
             <div className="text-sm text-slate-500 py-4 text-center">No suites yet. Click "+ New suite" to build one.</div>
@@ -300,9 +373,12 @@ export default function AutomationSuitePage() {
                       <td className="px-3 py-2 text-right">{s.testcaseIds.length}</td>
                       <td className="px-3 py-2 text-right">{Object.keys(s.uploadedConfigs ?? {}).length}</td>
                       <td className="px-3 py-2 text-right text-xs text-slate-500">{s.updatedAt?.slice(0, 19).replace('T', ' ') ?? '–'}</td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="px-3 py-2 text-right whitespace-nowrap">
                         <button onClick={() => runSuite(s)} disabled={running === s.id} className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white text-xs px-2 py-1 mr-1">
                           {running === s.id ? 'Running…' : 'Run'}
+                        </button>
+                        <button onClick={() => historyFor === s.id ? setHistoryFor('') : loadHistory(s.id)} className={`rounded-md text-xs px-2 py-1 mr-1 border ${historyFor === s.id ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300 hover:bg-slate-50'}`}>
+                          Runs
                         </button>
                         <button onClick={() => openEdit(s)} className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-2 py-1 mr-1">Edit</button>
                         <button onClick={() => deleteSuite(s)} className="rounded-md border border-red-300 text-red-600 hover:bg-red-50 text-xs px-2 py-1">Delete</button>
@@ -314,6 +390,125 @@ export default function AutomationSuitePage() {
             </div>
           )}
         </section>
+
+        {/* Run history + compare (visible when "Runs" was clicked) */}
+        {historyFor && (
+          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-base font-semibold text-slate-900">
+                Runs for <code>{historyFor}</code> ({history.length})
+              </h2>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500">
+                  Check 2 runs to compare ({compareSel.size}/2)
+                </span>
+                <button onClick={runCompare} disabled={compareSel.size !== 2 || compareBusy}
+                  className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white text-xs px-3 py-1">
+                  {compareBusy ? 'Comparing…' : 'Compare selected'}
+                </button>
+                <button onClick={() => { setHistoryFor(''); setCompareData(null); setCompareSel(new Set()); }}
+                  className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-2 py-1">Close</button>
+              </div>
+            </div>
+
+            {history.length === 0 ? (
+              <div className="text-sm text-slate-500 py-4 text-center">No runs yet for this suite.</div>
+            ) : (
+              <div className="overflow-x-auto border border-slate-200 rounded-md">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-slate-50 text-slate-600">
+                    <tr>
+                      <th className="px-3 py-2">✓</th>
+                      <th className="text-left px-3 py-2">Run id</th>
+                      <th className="text-left px-3 py-2">Finished</th>
+                      <th className="text-left px-3 py-2">Build</th>
+                      <th className="text-left px-3 py-2">Kind</th>
+                      <th className="text-right px-3 py-2">Pass</th>
+                      <th className="text-right px-3 py-2">Fail</th>
+                      <th className="text-right px-3 py-2">Total</th>
+                      <th className="text-left px-3 py-2">Diagnostics</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {history.map(h => (
+                      <tr key={h.runId}>
+                        <td className="px-3 py-1.5 text-center">
+                          <input type="checkbox" checked={compareSel.has(h.runId)} onChange={() => toggleCompare(h.runId)} />
+                        </td>
+                        <td className="px-3 py-1.5 font-mono text-[11px]">{h.runId}</td>
+                        <td className="px-3 py-1.5 text-slate-700">{h.finishedAt?.slice(0, 19).replace('T', ' ')}</td>
+                        <td className="px-3 py-1.5 font-mono text-[11px]">{h.buildVersion ?? '–'}</td>
+                        <td className="px-3 py-1.5">{h.kind}</td>
+                        <td className="px-3 py-1.5 text-right text-emerald-700">{h.passed}</td>
+                        <td className="px-3 py-1.5 text-right text-red-700">{h.failed}</td>
+                        <td className="px-3 py-1.5 text-right">{h.total}</td>
+                        <td className="px-3 py-1.5 text-[11px] text-slate-600">
+                          {h.diagnostics
+                            ? <a className="text-blue-600 hover:underline" target="_blank" rel="noreferrer" href={`${h.diagnostics.perfQaUrl}/jobs/${h.diagnostics.jobId}/stream`}>perf-qa job {h.diagnostics.jobId}</a>
+                            : '–'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {compareData && (
+              <div className="mt-5 border border-slate-200 rounded-md p-3 bg-slate-50/50">
+                <div className="text-sm font-semibold text-slate-900 mb-2">
+                  Compare: <code>{compareData.a.buildVersion ?? compareData.a.runId.slice(-8)}</code>
+                  &nbsp;↔&nbsp;
+                  <code>{compareData.b.buildVersion ?? compareData.b.runId.slice(-8)}</code>
+                </div>
+                <div className="text-xs text-slate-700 mb-3">
+                  <span className="text-red-700">regressed {compareData.summary.regressed}</span> ·
+                  &nbsp;<span className="text-emerald-700">fixed {compareData.summary.fixed}</span> ·
+                  &nbsp;matched-pass {compareData.summary.matchedPass} ·
+                  &nbsp;matched-fail {compareData.summary.matchedFail} ·
+                  &nbsp;only-A {compareData.summary.onlyA} ·
+                  &nbsp;only-B {compareData.summary.onlyB}
+                </div>
+                <div className="overflow-x-auto border border-slate-200 rounded-md bg-white max-h-96">
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr>
+                        <th className="text-left px-3 py-2">Testcase</th>
+                        <th className="text-center px-3 py-2">Verdict</th>
+                        <th className="text-center px-3 py-2">A status</th>
+                        <th className="text-center px-3 py-2">A ok</th>
+                        <th className="text-center px-3 py-2">B status</th>
+                        <th className="text-center px-3 py-2">B ok</th>
+                        <th className="text-left px-3 py-2">Detail (B)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {compareData.rows.map(r => {
+                        const verdictColor =
+                          r.verdict === 'regressed'   ? 'text-red-700 font-semibold' :
+                          r.verdict === 'fixed'       ? 'text-emerald-700 font-semibold' :
+                          r.verdict === 'matched-pass'? 'text-emerald-600' :
+                          r.verdict === 'matched-fail'? 'text-red-600' :
+                          'text-slate-500';
+                        return (
+                          <tr key={r.testcaseId}>
+                            <td className="px-3 py-1.5 font-mono text-[11px]">{r.testcaseId}</td>
+                            <td className={`px-3 py-1.5 text-center ${verdictColor}`}>{r.verdict}</td>
+                            <td className="px-3 py-1.5 text-center font-mono">{r.a?.status ?? '—'}</td>
+                            <td className="px-3 py-1.5 text-center">{r.a ? (r.a.ok ? '✓' : '✗') : '—'}</td>
+                            <td className="px-3 py-1.5 text-center font-mono">{r.b?.status ?? '—'}</td>
+                            <td className="px-3 py-1.5 text-center">{r.b ? (r.b.ok ? '✓' : '✗') : '—'}</td>
+                            <td className="px-3 py-1.5 text-slate-600 text-[11px] max-w-md truncate" title={r.b?.detail}>{r.b?.detail ?? ''}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
 
         {/* Wizard */}
         {showWizard && (

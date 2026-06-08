@@ -21,6 +21,8 @@
 
 import { loadInventory, getSystem, uesimApiOptsForSystem, type AutomationSuite } from '../inventory';
 import { withSsh, readCommand } from '../configFidelity/ssh';
+import { saveRun, newRunId, type RunRecord } from './runStore';
+import { triggerPerfQaCollection, DEFAULT_PERFQA_URL } from './diagnostics';
 
 export interface SuiteRunStep {
   testcaseId: string;
@@ -48,6 +50,27 @@ export interface SuiteRunResult {
 interface RunOpts {
   signal?: AbortSignal;
   onProgress?: (done: number, total: number, currentId?: string) => void;
+  /** When true, fire a perf-qa collection job alongside the run + stash
+   *  the job id on the run record. Off by default — the customer may not
+   *  have perf-qa deployed. */
+  collectDiagnostics?: boolean;
+  /** Override the perf-qa URL (otherwise SIMQA_PERFQA_URL / default). */
+  perfQaUrl?: string;
+  /** perf-qa profile name to load before collecting. */
+  perfQaProfile?: string;
+}
+
+/** Best-effort capture of the box build version — used to stamp the run
+ *  record so QA can compare runs across builds. */
+async function fetchBuildVersion(host: string, token: string): Promise<string | undefined> {
+  try {
+    const r = await fetch(`http://${host}/v2/version`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) });
+    if (!r.ok) return undefined;
+    const j: any = await r.json();
+    const v = j?.simnovator?.version;
+    const b = j?.simnovator?.build;
+    return v && b ? `${v} (${b})` : (v ?? undefined);
+  } catch { return undefined; }
 }
 
 async function login(host: string, username: string, password: string): Promise<string> {
@@ -95,12 +118,14 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
     }
   }
   opts.onProgress?.(steps.length, suite.testcaseIds.length);
+  const buildVersion = await fetchBuildVersion(ueOpts.host, token);
   return {
     startedAt, finishedAt: new Date().toISOString(),
     suiteId: suite.id, suiteName: suite.name, kind: 'uesim-only',
     uesimHost: ueOpts.host,
     total: suite.testcaseIds.length, passed, failed, steps,
-  };
+    buildVersion,
+  } as SuiteRunResult & { buildVersion?: string };
 }
 
 async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteRunResult> {
@@ -176,6 +201,34 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   };
 }
 
-export async function runSuite(suite: AutomationSuite, opts: RunOpts = {}): Promise<SuiteRunResult> {
-  return suite.kind === 'uesim+callbox' ? runCallbox(suite, opts) : runUesimOnly(suite, opts);
+export async function runSuite(suite: AutomationSuite, opts: RunOpts = {}): Promise<RunRecord> {
+  // Fire perf-qa BEFORE the run starts so its sample window covers both
+  // the pre-state and the actual execution. perf-qa returns a job_id
+  // synchronously; the collection itself continues in a background thread.
+  let diagnostics: RunRecord['diagnostics'] | undefined;
+  if (opts.collectDiagnostics) {
+    const dg = await triggerPerfQaCollection({
+      perfQaUrl: opts.perfQaUrl ?? DEFAULT_PERFQA_URL,
+      testCaseName: suite.name,
+      iterationId: newRunId(),
+      profile: opts.perfQaProfile,
+    });
+    if (dg.ok && dg.jobId) {
+      diagnostics = { perfQaUrl: dg.perfQaUrl, jobId: dg.jobId, triggeredAt: new Date().toISOString() };
+    }
+  }
+
+  const summary = suite.kind === 'uesim+callbox'
+    ? await runCallbox(suite, opts)
+    : await runUesimOnly(suite, opts);
+
+  // Persist the run + return the full record (with runId).
+  const rec: RunRecord = {
+    ...summary,
+    runId: newRunId(),
+    buildVersion: (summary as any).buildVersion,
+    diagnostics,
+  };
+  saveRun(rec);
+  return rec;
 }

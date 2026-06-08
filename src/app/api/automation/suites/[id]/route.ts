@@ -4,6 +4,7 @@
 
 import { NextResponse } from 'next/server';
 import { getSuite, updateSuite, deleteSuite } from '@/lib/automation/store';
+import { deleteRunsForSuite } from '@/lib/automation/runStore';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,5 +31,6 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
   const { id } = await ctx.params;
   const ok = deleteSuite(id);
   if (!ok) return NextResponse.json({ ok: false, error: 'not found' }, { status: 404 });
-  return NextResponse.json({ ok: true });
+  const removedRuns = deleteRunsForSuite(id);
+  return NextResponse.json({ ok: true, removedRuns });
 }
