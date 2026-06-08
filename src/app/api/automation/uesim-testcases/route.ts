@@ -36,14 +36,24 @@ export async function GET(req: Request) {
     if (!r.ok) return NextResponse.json({ ok: false, error: `box returned ${r.status}` }, { status: 502 });
     const d: any = await r.json();
     const items: any[] = d.items ?? d.data ?? [];
-    // Trim to the fields the UI multi-select needs.
+    // Trim to the fields the UI multi-select needs, surface lastModifiedOn
+    // so callers can show it and we can sort newest-first.
     const out = items.map(t => ({
       id: t.id,
       name: t.name,
       description: (t.description ?? '').slice(0, 140),
       lastResult: t?.metadata?.lastExecution?.result ?? null,
       lastStatus: t?.metadata?.lastExecution?.status ?? null,
+      lastModifiedOn: t?.metadata?.lastModifiedOn ?? null,
+      lastExecutedOn: t?.metadata?.lastExecutedOn ?? null,
+      createdOn:      t?.metadata?.createdOn ?? null,
     }));
+    // Sort newest first by lastModifiedOn → lastExecutedOn → createdOn.
+    out.sort((a, b) => {
+      const ax = a.lastModifiedOn || a.lastExecutedOn || a.createdOn || '';
+      const bx = b.lastModifiedOn || b.lastExecutedOn || b.createdOn || '';
+      return bx.localeCompare(ax);
+    });
     return NextResponse.json({ ok: true, testcases: out, total: out.length, host: opts.host });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });

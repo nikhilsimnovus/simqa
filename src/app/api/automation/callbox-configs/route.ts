@@ -22,12 +22,26 @@ export async function GET(req: Request) {
   }
 
   try {
-    // ls -la with name + size + mtime; skip "." / ".." entries.
-    const raw = await readCommand(sys, 'ls -la /root/enb/config 2>/dev/null | awk \'NR>1 && $NF != "." && $NF != ".." { printf "%s\\t%s\\t%s %s %s\\n", $NF, $5, $6, $7, $8 }\'');
+    // Use `find -printf` to get the mtime as an epoch float so we can sort
+    // deterministically. Format: <epoch>\t<size>\t<name>. Hidden files
+    // (leading dot) are skipped per the lab convention — .md5 etc. aren't
+    // testcase configs.
+    const cmd = `find /root/enb/config -maxdepth 1 -type f ! -name '.*' -printf '%T@\\t%s\\t%f\\n' 2>/dev/null`;
+    const raw = await readCommand(sys, cmd);
     const files = raw.split('\n').filter(Boolean).map(line => {
-      const [name, size, mtime] = line.split('\t');
-      return { name, size: Number(size) || 0, mtime: (mtime ?? '').trim() };
+      const [epoch, size, ...nameParts] = line.split('\t');
+      const name = nameParts.join('\t');
+      const epochNum = Number(epoch) || 0;
+      return {
+        name,
+        size: Number(size) || 0,
+        mtimeEpoch: epochNum,
+        // Pretty mtime for the UI — ISO is sortable + unambiguous.
+        mtime: epochNum ? new Date(epochNum * 1000).toISOString().slice(0, 19).replace('T', ' ') : '',
+      };
     }).filter(f => f.name);
+    // Sort newest first.
+    files.sort((a, b) => b.mtimeEpoch - a.mtimeEpoch);
     return NextResponse.json({ ok: true, host: sys.host, dir: '/root/enb/config', files });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });

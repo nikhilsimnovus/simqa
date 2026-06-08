@@ -35,6 +35,7 @@ interface SuiteRow {
 interface UesimTestcase {
   id: string; name: string; description?: string;
   lastResult?: string | null; lastStatus?: string | null;
+  lastModifiedOn?: string | null;
 }
 interface CallboxFile {
   name: string; size: number; mtime: string;
@@ -654,6 +655,7 @@ export default function AutomationSuitePage() {
                           }} />
                           <span className="flex-1 truncate" title={t.id}>{t.name}</span>
                           {t.lastResult && <span className="text-[10px] uppercase text-slate-400">{t.lastResult}</span>}
+                          {t.lastModifiedOn && <span className="text-[10px] text-slate-400 font-mono">{String(t.lastModifiedOn).slice(0, 10)}</span>}
                         </li>
                       ))}
                     </ul>
