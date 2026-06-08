@@ -105,15 +105,20 @@ install -d -m 0755 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${SIMQA_HOME}"
 log "Syncing source from ${SRC_ROOT} -> ${SIMQA_HOME}"
 # Use rsync if available (preserves perms, faster on re-runs), else tar pipe.
 if command -v rsync >/dev/null 2>&1; then
+  # NB: --exclude inventory.yaml is critical — without it rsync --delete
+  # wipes the customer's edited inventory before the "preserve existing"
+  # check fires below. data/ + dist/build-reports/ etc are excluded for
+  # the same reason (don't clobber the customer's local run artifacts).
   rsync -a --delete \
     --exclude '.git' --exclude 'node_modules' --exclude '.next' \
     --exclude 'dist/build-reports' --exclude 'dist/ui-runs' \
     --exclude 'data' --exclude '.DS_Store' \
+    --exclude 'inventory.yaml' \
     "${SRC_ROOT}/" "${SIMQA_HOME}/"
 else
   ( cd "${SRC_ROOT}" && tar --exclude=.git --exclude=node_modules --exclude=.next \
                             --exclude=dist/build-reports --exclude=dist/ui-runs \
-                            --exclude=data \
+                            --exclude=data --exclude=inventory.yaml \
                             -cf - . ) | tar -xf - -C "${SIMQA_HOME}"
 fi
 
