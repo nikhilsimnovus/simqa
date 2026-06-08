@@ -141,6 +141,27 @@ export interface AutomationSuite {
   /** If true, on first failure skip remaining testcases. */
   stopOnFail?: boolean;
   notes?: string;
+  // ── Setup kind + system targets (new in 2026-06) ──────────────────────
+  /** Setup shape. 'uesim-only' = pull testcases from a Simnovator/UESIM
+   *  and run them as-is. 'uesim+callbox' = same, but additionally bind a
+   *  callbox eNB config (picked from /root/enb/config on the callbox or
+   *  uploaded) so the suite carries the radio side too. */
+  kind?: 'uesim-only' | 'uesim+callbox';
+  /** Inventory id of the UESIM / Simnovator that owns the testcases. */
+  uesimSystemId?: string;
+  /** Inventory id of the callbox (only when kind == 'uesim+callbox'). */
+  callboxSystemId?: string;
+  /** When kind == 'uesim+callbox' — which eNB config to use. */
+  callboxConfig?: {
+    source: 'pick' | 'upload';
+    /** Path on the callbox under /root/enb/config (when source == 'pick'),
+     *  or the chosen filename for the uploaded blob (source == 'upload'). */
+    filename: string;
+    /** Base64 contents of the uploaded config (source == 'upload' only). */
+    contentBase64?: string;
+  };
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Inventory {

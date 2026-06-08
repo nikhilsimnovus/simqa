@@ -30,9 +30,10 @@ const SECTIONS: NavSection[] = [
     id: 'plan',
     title: 'Plan',
     items: [
-      { href: '/',             label: 'Dashboard',      icon: LayoutDashboard },
-      { href: '/testcases',    label: 'Test Cases',     icon: FlaskConical },
-      { href: '/run-validate', label: 'Run & Validate', icon: Rocket },
+      { href: '/',                  label: 'Dashboard',         icon: LayoutDashboard },
+      { href: '/testcases',         label: 'Test Cases',        icon: FlaskConical },
+      { href: '/automation-suite',  label: 'Automation Suite',  icon: PlayCircle },
+      { href: '/run-validate',      label: 'Run & Validate',    icon: Rocket },
     ],
   },
   {
