@@ -30,6 +30,7 @@ export async function POST(req: Request) {
       uesimSystemId: body.uesimSystemId,
       callboxSystemId: body.callboxSystemId,
       uploadedConfigs: body.uploadedConfigs && typeof body.uploadedConfigs === 'object' ? body.uploadedConfigs : undefined,
+      callboxConfigs: Array.isArray(body.callboxConfigs) ? body.callboxConfigs : undefined,
       testcaseIds: Array.isArray(body.testcaseIds) ? body.testcaseIds : [],
       stopOnFail: !!body.stopOnFail,
       notes: body.notes,

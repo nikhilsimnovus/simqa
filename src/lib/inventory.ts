@@ -132,14 +132,16 @@ export interface TopologyProfile {
 export interface AutomationSuite {
   id: string;
   name: string;
-  /** Testcase identifiers — meaning depends on `kind`:
-   *    kind == 'uesim-only'    → Simnovator REST testcase ids (UUIDs).
-   *    kind == 'uesim+callbox' → filenames under /root/enb/config on the
-   *                              callbox (each .cfg IS the testcase). The
-   *                              file may live on the callbox already
-   *                              (picked from `ls`) or come from a
-   *                              `uploadedConfigs` blob in this suite. */
+  /** Simnovator REST testcase ids (UUIDs). Used in BOTH kinds — for
+   *  'uesim+callbox' suites these run AFTER the callbox configs are
+   *  pushed. */
   testcaseIds: string[];
+  /** Filenames under /root/enb/config on the callbox (only when
+   *  kind == 'uesim+callbox'). The file may already live on the callbox
+   *  (picked from `ls`) or come from a `uploadedConfigs` blob in this
+   *  suite. The runner pushes uploads first, then triggers the
+   *  Simnovator testcases. */
+  callboxConfigs?: string[];
   /** Default topology profile id when running this suite. */
   topologyId?: string;
   /** If true, skip SSH push + execution trigger; just generate. */

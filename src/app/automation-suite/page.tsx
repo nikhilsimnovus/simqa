@@ -27,6 +27,7 @@ interface SuiteRow {
   kind?: 'uesim-only' | 'uesim+callbox';
   uesimSystemId?: string; callboxSystemId?: string;
   uploadedConfigs?: Record<string, string>;
+  callboxConfigs?: string[];
   testcaseIds: string[];
   stopOnFail?: boolean;
   updatedAt?: string;
@@ -96,10 +97,15 @@ export default function AutomationSuitePage() {
   const [loadingCbx, setLoadingCbx]   = useState(false);
   const [uploadedConfigs, setUploads] = useState<Record<string, string>>({});
 
-  // Common: the set of selected items (interpreted per-kind)
-  const [selected, setSelected]       = useState<Set<string>>(new Set());
-  const [filter, setFilter]           = useState<string>('');
-  const [stopOnFail, setStopOnFail]   = useState<boolean>(false);
+  // Separate selections for each list — in callbox kind, both apply.
+  const [selectedCfgs, setSelectedCfgs] = useState<Set<string>>(new Set());
+  const [selectedTcs,  setSelectedTcs]  = useState<Set<string>>(new Set());
+  const [cbxFilter, setCbxFilter]       = useState<string>('');
+  const [tcFilter,  setTcFilter]        = useState<string>('');
+  const [stopOnFail, setStopOnFail]     = useState<boolean>(false);
+  /** SSH error surfaced from /api/automation/callbox-configs so the user
+   *  sees WHY the config list is empty (auth failure vs empty dir). */
+  const [cbxLoadError, setCbxLoadError] = useState<string>('');
 
   // Run state ────────────────────────────────────────────────────────────
   const [runResult, setRunResult] = useState<SuiteRunResult | null>(null);
@@ -164,12 +170,12 @@ export default function AutomationSuitePage() {
   const callboxSystems = systems.filter(s => /CALLBOX/i.test(s.type));
 
   const loadCallboxConfigs = useCallback(async (sysId: string) => {
-    if (!sysId) { setCbxFiles([]); return; }
-    setLoadingCbx(true);
+    if (!sysId) { setCbxFiles([]); setCbxLoadError(''); return; }
+    setLoadingCbx(true); setCbxLoadError('');
     try {
       const r = await fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(sysId)}`).then(r => r.json());
       setCbxFiles(r?.ok ? (r.files ?? []) : []);
-      if (!r?.ok) setError(r?.error ?? 'failed to list callbox configs');
+      if (!r?.ok) setCbxLoadError(r?.error ?? 'failed to list callbox configs');
     } finally { setLoadingCbx(false); }
   }, []);
 
@@ -190,7 +196,7 @@ export default function AutomationSuitePage() {
     if (files.length === 0) return;
     let done = 0;
     const next: Record<string, string> = { ...uploadedConfigs };
-    const sel = new Set(selected);
+    const sel = new Set(selectedCfgs);
     for (const f of files) {
       const reader = new FileReader();
       reader.onload = () => {
@@ -199,25 +205,26 @@ export default function AutomationSuitePage() {
         next[f.name] = b64;
         sel.add(f.name);
         done += 1;
-        if (done === files.length) { setUploads(next); setSelected(sel); }
+        if (done === files.length) { setUploads(next); setSelectedCfgs(sel); }
       };
       reader.readAsDataURL(f);
     }
     // Reset so the same file can be re-uploaded.
     e.target.value = '';
-  }, [uploadedConfigs, selected]);
+  }, [uploadedConfigs, selectedCfgs]);
 
   const removeUpload = useCallback((filename: string) => {
     const next = { ...uploadedConfigs };
     delete next[filename];
     setUploads(next);
-    const sel = new Set(selected); sel.delete(filename); setSelected(sel);
-  }, [uploadedConfigs, selected]);
+    const sel = new Set(selectedCfgs); sel.delete(filename); setSelectedCfgs(sel);
+  }, [uploadedConfigs, selectedCfgs]);
 
   const resetWizard = useCallback(() => {
     setEditingId(''); setName(''); setKind('uesim-only');
-    setUesim(''); setCbx(''); setCbxFiles([]); setUploads({});
-    setUeTcs([]); setSelected(new Set()); setStopOnFail(false); setFilter('');
+    setUesim(''); setCbx(''); setCbxFiles([]); setUploads({}); setCbxLoadError('');
+    setUeTcs([]); setSelectedCfgs(new Set()); setSelectedTcs(new Set());
+    setStopOnFail(false); setCbxFilter(''); setTcFilter('');
     setError(''); setShowWizard(false);
   }, []);
 
@@ -230,18 +237,24 @@ export default function AutomationSuitePage() {
     setUesim(s.uesimSystemId ?? '');
     setCbx(s.callboxSystemId ?? '');
     setUploads(s.uploadedConfigs ?? {});
-    setSelected(new Set(s.testcaseIds));
+    setSelectedCfgs(new Set(s.callboxConfigs ?? []));
+    setSelectedTcs(new Set(s.testcaseIds));
     setStopOnFail(!!s.stopOnFail);
     setShowWizard(true);
     if (s.callboxSystemId && s.kind === 'uesim+callbox') void loadCallboxConfigs(s.callboxSystemId);
-    if (s.uesimSystemId   && s.kind === 'uesim-only')    void loadUesimTestcases(s.uesimSystemId);
+    if (s.uesimSystemId) void loadUesimTestcases(s.uesimSystemId);
   }, [resetWizard, loadCallboxConfigs, loadUesimTestcases]);
 
   const saveSuite = async () => {
     if (!name.trim())     { setError('name required'); return; }
     if (!uesimSystemId)   { setError('UESIM system required'); return; }
     if (kind === 'uesim+callbox' && !callboxSystemId) { setError('callbox system required'); return; }
-    if (selected.size === 0) { setError('pick at least one testcase / config'); return; }
+    const tcs  = [...selectedTcs];
+    const cfgs = kind === 'uesim+callbox' ? [...selectedCfgs] : [];
+    if (tcs.length + cfgs.length === 0) {
+      setError(kind === 'uesim+callbox' ? 'pick at least one callbox config or Simnovator testcase' : 'pick at least one Simnovator testcase');
+      return;
+    }
 
     const payload: any = {
       name: name.trim(),
@@ -249,7 +262,8 @@ export default function AutomationSuitePage() {
       uesimSystemId,
       callboxSystemId: kind === 'uesim+callbox' ? callboxSystemId : undefined,
       uploadedConfigs: kind === 'uesim+callbox' ? uploadedConfigs : undefined,
-      testcaseIds: [...selected],
+      callboxConfigs: kind === 'uesim+callbox' ? cfgs : undefined,
+      testcaseIds: tcs,
       stopOnFail,
     };
     setBusy(editingId ? 'update' : 'create'); setError('');
@@ -266,8 +280,12 @@ export default function AutomationSuitePage() {
   };
 
   const runSuite = async (s: SuiteRow) => {
-    const what = s.kind === 'uesim+callbox' ? 'config file(s) onto the callbox' : 'testcase(s) on the Simnovator';
-    if (!window.confirm(`Run suite "${s.name}" — fires ${s.testcaseIds.length} ${what}?\n\nDiagnostics: ${collectDiagnostics ? 'perf-qa collection will run alongside' : 'off'}`)) return;
+    const cfgN = s.callboxConfigs?.length ?? 0;
+    const tcN  = s.testcaseIds.length;
+    const summary = s.kind === 'uesim+callbox'
+      ? `${cfgN} callbox config(s) + ${tcN} Simnovator testcase(s)`
+      : `${tcN} Simnovator testcase(s)`;
+    if (!window.confirm(`Run suite "${s.name}"?\n\n${summary}.\nDiagnostics: ${collectDiagnostics ? 'perf-qa collection will run alongside' : 'off'}`)) return;
     setRunning(s.id); setRunResult(null); setError('');
     try {
       const r = await fetch(`/api/automation/suites/${s.id}/run`, {
@@ -294,29 +312,29 @@ export default function AutomationSuitePage() {
     finally { setBusy(''); }
   };
 
-  // Auto-load the right kind of testcase list when systems change.
+  // Auto-load both lists when systems change. UESIM testcases are
+  // pulled in BOTH kinds now — for uesim+callbox the user picks which
+  // Simnovator testcases run AFTER the callbox configs are pushed.
   useEffect(() => {
     if (kind === 'uesim+callbox' && callboxSystemId) void loadCallboxConfigs(callboxSystemId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, callboxSystemId]);
   useEffect(() => {
-    if (kind === 'uesim-only' && uesimSystemId) void loadUesimTestcases(uesimSystemId);
+    if (uesimSystemId) void loadUesimTestcases(uesimSystemId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, uesimSystemId]);
-  // Switching kind wipes selections (they mean different things in each mode)
-  useEffect(() => { setSelected(new Set()); }, [kind]);
+  }, [uesimSystemId]);
+  // Switching kind keeps the testcase selection but clears the callbox
+  // selection (since the callbox system is also potentially different).
+  useEffect(() => { setSelectedCfgs(new Set()); }, [kind]);
 
-  // Build the unified "items to select" list for the multi-select.
-  // UESIM-only: Simnovator testcases. Callbox: the on-box files + any
-  // upload entries the user added (uploads bubble to the top + are tagged).
-  type Item = { id: string; label: string; sub?: string; upload?: boolean };
-  const items: Item[] = kind === 'uesim+callbox'
-    ? [
-        ...Object.keys(uploadedConfigs).map(fn => ({ id: fn, label: fn, sub: 'uploaded — will be scp\'d on run', upload: true })),
-        ...callboxFiles.map(f => ({ id: f.name, label: f.name, sub: `${f.size}B · ${f.mtime}` })),
-      ]
-    : uesimTestcases.map(t => ({ id: t.id, label: t.name, sub: t.lastResult ? `last: ${t.lastResult}` : undefined }));
-  const filteredItems = items.filter(it => !filter || it.label.toLowerCase().includes(filter.toLowerCase()));
+  // Callbox file list = uploads at the top + on-box files below.
+  type CfgItem = { id: string; label: string; sub?: string; upload?: boolean };
+  const cfgItems: CfgItem[] = [
+    ...Object.keys(uploadedConfigs).map(fn => ({ id: fn, label: fn, sub: 'uploaded — will be scp\'d on run', upload: true })),
+    ...callboxFiles.map(f => ({ id: f.name, label: f.name, sub: `${f.size}B · ${f.mtime}` })),
+  ];
+  const filteredCfgs = cfgItems.filter(it => !cbxFilter || it.label.toLowerCase().includes(cbxFilter.toLowerCase()));
+  const filteredTcs  = uesimTestcases.filter(t => !tcFilter || t.name.toLowerCase().includes(tcFilter.toLowerCase()));
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -357,6 +375,7 @@ export default function AutomationSuitePage() {
                     <th className="text-left px-3 py-2 font-medium">Kind</th>
                     <th className="text-left px-3 py-2 font-medium">UESIM</th>
                     <th className="text-left px-3 py-2 font-medium">Callbox</th>
+                    <th className="text-right px-3 py-2 font-medium">Configs</th>
                     <th className="text-right px-3 py-2 font-medium">Tests</th>
                     <th className="text-right px-3 py-2 font-medium">Uploads</th>
                     <th className="text-right px-3 py-2 font-medium">Updated</th>
@@ -370,6 +389,7 @@ export default function AutomationSuitePage() {
                       <td className="px-3 py-2 text-slate-700">{s.kind ?? 'uesim-only'}</td>
                       <td className="px-3 py-2 text-slate-700 font-mono text-xs">{s.uesimSystemId ?? '–'}</td>
                       <td className="px-3 py-2 text-slate-700 font-mono text-xs">{s.callboxSystemId ?? '–'}</td>
+                      <td className="px-3 py-2 text-right">{s.callboxConfigs?.length ?? 0}</td>
                       <td className="px-3 py-2 text-right">{s.testcaseIds.length}</td>
                       <td className="px-3 py-2 text-right">{Object.keys(s.uploadedConfigs ?? {}).length}</td>
                       <td className="px-3 py-2 text-right text-xs text-slate-500">{s.updatedAt?.slice(0, 19).replace('T', ' ') ?? '–'}</td>
@@ -555,33 +575,35 @@ export default function AutomationSuitePage() {
               )}
             </div>
 
-            {/* The big multi-select — items differ by kind */}
-            {((kind === 'uesim-only' && uesimSystemId) || (kind === 'uesim+callbox' && callboxSystemId)) && (
+            {/* Callbox config picker — only when kind=uesim+callbox */}
+            {kind === 'uesim+callbox' && callboxSystemId && (
               <div className="mb-4 border border-slate-200 rounded-md p-3 bg-slate-50/50">
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                    {kind === 'uesim-only'
-                      ? <>Testcases from <code>{uesimSystemId}</code> ({selected.size} selected of {uesimTestcases.length})</>
-                      : <>Configs in <code>/root/enb/config</code> on <code>{callboxSystemId}</code> ({selected.size} selected of {items.length})</>}
+                    Configs in <code>/root/enb/config</code> on <code>{callboxSystemId}</code> ({selectedCfgs.size} selected of {cfgItems.length})
                   </div>
-                  <input type="search" placeholder="filter…" value={filter} onChange={e => setFilter(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs" />
+                  <input type="search" placeholder="filter…" value={cbxFilter} onChange={e => setCbxFilter(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs" />
                 </div>
-
-                <div className="border border-slate-200 rounded-md bg-white max-h-72 overflow-y-auto">
-                  {(loadingTc || loadingCbx) ? (
-                    <div className="p-3 text-sm text-slate-500">Loading…</div>
-                  ) : filteredItems.length === 0 ? (
+                {cbxLoadError && (
+                  <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1 mb-2">
+                    SSH error: <code>{cbxLoadError}</code> — fix the callbox's SSH creds in <code>inventory.yaml</code>, or upload .cfg files manually below.
+                  </div>
+                )}
+                <div className="border border-slate-200 rounded-md bg-white max-h-60 overflow-y-auto">
+                  {loadingCbx ? (
+                    <div className="p-3 text-sm text-slate-500">Loading via SSH…</div>
+                  ) : filteredCfgs.length === 0 ? (
                     <div className="p-3 text-sm text-slate-500">
-                      {kind === 'uesim+callbox' ? 'No files in /root/enb/config (or SSH failed). Add some via Upload below.' : 'No testcases match.'}
+                      No files in <code>/root/enb/config</code> (or SSH failed). Use Upload below to add some.
                     </div>
                   ) : (
                     <ul className="divide-y divide-slate-100 text-sm">
-                      {filteredItems.map(it => (
+                      {filteredCfgs.map(it => (
                         <li key={it.id} className="px-3 py-1.5 flex items-center gap-2 hover:bg-slate-50">
-                          <input type="checkbox" checked={selected.has(it.id)} onChange={e => {
-                            const next = new Set(selected);
+                          <input type="checkbox" checked={selectedCfgs.has(it.id)} onChange={e => {
+                            const next = new Set(selectedCfgs);
                             if (e.target.checked) next.add(it.id); else next.delete(it.id);
-                            setSelected(next);
+                            setSelectedCfgs(next);
                           }} />
                           <span className="flex-1 truncate" title={it.id}>{it.label}</span>
                           {it.upload && (
@@ -593,19 +615,50 @@ export default function AutomationSuitePage() {
                     </ul>
                   )}
                 </div>
+                <div className="mt-3 flex items-center gap-3 text-sm">
+                  <label className="cursor-pointer rounded-md border border-slate-300 px-3 py-1.5 hover:bg-slate-100">
+                    Upload .cfg file(s)…
+                    <input type="file" multiple onChange={onPickUploads} className="hidden" />
+                  </label>
+                  <span className="text-xs text-slate-500">
+                    Uploaded files are scp'd to <code>/root/enb/config/&lt;name&gt;</code> when the suite runs.
+                  </span>
+                </div>
+              </div>
+            )}
 
-                {/* Upload-only when callbox kind */}
-                {kind === 'uesim+callbox' && (
-                  <div className="mt-3 flex items-center gap-3 text-sm">
-                    <label className="cursor-pointer rounded-md border border-slate-300 px-3 py-1.5 hover:bg-slate-100">
-                      Upload .cfg file(s)…
-                      <input type="file" multiple onChange={onPickUploads} className="hidden" />
-                    </label>
-                    <span className="text-xs text-slate-500">
-                      Uploaded files are scp'd to <code>/root/enb/config/&lt;name&gt;</code> on the callbox when the suite runs.
-                    </span>
+            {/* Simnovator testcase picker — shown for BOTH kinds. In
+                uesim+callbox mode these run AFTER the callbox configs
+                are pushed (the runner does configs first, then tcs). */}
+            {uesimSystemId && (
+              <div className="mb-4 border border-slate-200 rounded-md p-3 bg-slate-50/50">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                    Simnovator testcases from <code>{uesimSystemId}</code> ({selectedTcs.size} selected of {uesimTestcases.length})
                   </div>
-                )}
+                  <input type="search" placeholder="filter…" value={tcFilter} onChange={e => setTcFilter(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs" />
+                </div>
+                <div className="border border-slate-200 rounded-md bg-white max-h-60 overflow-y-auto">
+                  {loadingTc ? (
+                    <div className="p-3 text-sm text-slate-500">Pulling testcases from {uesimSystemId}…</div>
+                  ) : filteredTcs.length === 0 ? (
+                    <div className="p-3 text-sm text-slate-500">No testcases match.</div>
+                  ) : (
+                    <ul className="divide-y divide-slate-100 text-sm">
+                      {filteredTcs.map(t => (
+                        <li key={t.id} className="px-3 py-1.5 flex items-center gap-2 hover:bg-slate-50">
+                          <input type="checkbox" checked={selectedTcs.has(t.id)} onChange={e => {
+                            const next = new Set(selectedTcs);
+                            if (e.target.checked) next.add(t.id); else next.delete(t.id);
+                            setSelectedTcs(next);
+                          }} />
+                          <span className="flex-1 truncate" title={t.id}>{t.name}</span>
+                          {t.lastResult && <span className="text-[10px] uppercase text-slate-400">{t.lastResult}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
             )}
 
