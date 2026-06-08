@@ -7,7 +7,7 @@ import {
   LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle,
   ShieldCheck, Beaker, MousePointerClick, Info, Layers, Wrench, Database,
   Rocket, FileCheck2, Activity, ChevronDown, ChevronRight, Boxes,
-  PanelLeftClose, PanelLeftOpen,
+  PanelLeftClose, PanelLeftOpen, RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
@@ -123,6 +123,56 @@ export function Sidebar({ version, versionSource }: SidebarProps = {}) {
   });
   const [hydrated, setHydrated] = useState(false);
 
+  // ── Self-update plumbing ─────────────────────────────────────────────
+  // Probes /api/update on mount. The endpoint returns
+  //   { ok, available, updaterPath, repoTarball }
+  // We show the Update pill only when `available: true` (i.e. the
+  // /usr/local/sbin/simqa-update wrapper was planted by install.sh).
+  // Mirrors the OneClick pattern in perf-qa/ui/app.py.
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateLabel, setUpdateLabel] = useState('Update');
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/update').then((r) => r.json()).then((d) => {
+      if (!cancelled) setUpdateAvailable(!!d?.available);
+    }).catch(() => { /* dev workstation — hide pill */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const runUpdate = useCallback(async () => {
+    if (updateBusy) return;
+    if (!window.confirm(
+      'Fetch the latest simqa from GitHub and re-install?\n\n' +
+      'The service will restart. This usually takes 30–60 seconds (npm ci + next build).',
+    )) return;
+    setUpdateBusy(true);
+    setUpdateLabel('Updating…');
+    let stillUp = true;
+    try {
+      const r = await fetch('/api/update', { method: 'POST', cache: 'no-store' });
+      const j: any = await r.json().catch(() => ({}));
+      if (j?.ok) {
+        setUpdateLabel('Updated — reloading');
+      } else {
+        stillUp = false;
+        setUpdateLabel('Update failed');
+        const tail = j?.log ? '\n\nLast log lines:\n' + String(j.log).split('\n').slice(-15).join('\n') : '';
+        window.alert('Update failed.' + tail);
+      }
+    } catch {
+      // Most common case — the service restarted before our response came
+      // back. That's actually success; reload to pick up the new code.
+      setUpdateLabel('Restarting — reloading');
+    }
+    if (stillUp) {
+      window.setTimeout(() => { window.location.reload(); }, 4000);
+    } else {
+      setUpdateBusy(false);
+      setUpdateLabel('Update');
+    }
+  }, [updateBusy]);
+
   useEffect(() => {
     try {
       const r = typeof window !== 'undefined' ? window.localStorage.getItem(LS_RAILMODE) : null;
@@ -187,6 +237,24 @@ export function Sidebar({ version, versionSource }: SidebarProps = {}) {
             <div className="text-sm font-semibold tracking-tight text-slate-900">QA Ka BAAP</div>
             <div className="text-[10px] uppercase tracking-wider text-slate-500">Father of QA</div>
           </div>
+        ) : null}
+        {!rail && updateAvailable ? (
+          <button
+            type="button"
+            onClick={runUpdate}
+            disabled={updateBusy}
+            className={cn(
+              'rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wider flex items-center gap-1 border transition-colors',
+              updateBusy
+                ? 'bg-amber-50 border-amber-200 text-amber-700'
+                : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100',
+            )}
+            title="Pull latest simqa from GitHub and re-install — service restarts"
+            aria-label="Update simqa"
+          >
+            <RefreshCw className={cn('h-3 w-3', updateBusy ? 'animate-spin' : '')} aria-hidden />
+            <span>{updateLabel}</span>
+          </button>
         ) : null}
         {!rail ? (
           <button
