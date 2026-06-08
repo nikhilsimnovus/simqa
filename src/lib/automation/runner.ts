@@ -19,7 +19,7 @@
 // Sequential in both modes (the Simnovator box has a system-wide
 // execution mutex anyway; sequential SFTP keeps callbox load sane).
 
-import { loadInventory, getSystem, uesimApiOptsForSystem, type AutomationSuite } from '../inventory';
+import { loadInventory, getSystem, uesimApiOptsForSystem, type AutomationSuite, type SuiteItem } from '../inventory';
 import { withSsh, readCommand } from '../configFidelity/ssh';
 import { saveRun, newRunId, type RunRecord } from './runStore';
 import { triggerPerfQaCollection, DEFAULT_PERFQA_URL } from './diagnostics';
@@ -417,6 +417,171 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   };
 }
 
+/** Pair-shaped flow: one item = one (Simnovator testcase + optional
+ *  callbox cfg). Each item triggers its own eNB bring-up cycle BEFORE
+ *  the testcase fires, so each row carries its own radio context.
+ *
+ *  Per-item sequence (uesim+callbox):
+ *    1. cfg-push     scp upload OR verify picked file
+ *    2. cfg-link     ln -sfn /root/enb/config/<name> /root/enb/config/enb.cfg
+ *    3. cfg-restart  service lte restart + 15s settle
+ *    4. tc-trigger   POST /v2/testcases/{id}/executions
+ *    5. tc-poll      poll lastExecution until terminal or duration timeout
+ *
+ *  For uesim-only suites items just skip 1-3. */
+async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpts): Promise<SuiteRunResult & { buildVersion?: string }> {
+  const startedAt = new Date().toISOString();
+  const inv = loadInventory();
+  const ueOpts = uesimApiOptsForSystem(inv, suite.uesimSystemId ?? '');
+  if (!ueOpts) throw new Error(`suite uesimSystemId "${suite.uesimSystemId}" not testable`);
+  const callboxSys = suite.kind === 'uesim+callbox' && suite.callboxSystemId
+    ? getSystem(inv, suite.callboxSystemId)
+    : undefined;
+  if (suite.kind === 'uesim+callbox' && (!callboxSys || callboxSys.type !== 'CALLBOX')) {
+    throw new Error(`suite callboxSystemId "${suite.callboxSystemId}" is not a CALLBOX`);
+  }
+
+  const safe = (s: string) => s.replace(/[^\w.\-]/g, '_');
+  const steps: SuiteRunStep[] = [];
+  let passed = 0, failed = 0;
+  const total = items.length;
+  let done = 0;
+
+  // Cache of files currently on the callbox so we don't re-ls per item.
+  let existing = new Set<string>();
+  if (callboxSys) {
+    try {
+      const raw = await readCommand(callboxSys, 'ls -1 /root/enb/config 2>/dev/null');
+      existing = new Set(raw.split('\n').map(s => s.trim()).filter(Boolean));
+    } catch { /* uploads still attempt */ }
+  }
+
+  const token = await login(ueOpts.host, ueOpts.username, ueOpts.password).catch(() => '');
+  const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const defaultDur = suite.defaultDurationSec ?? 10;
+
+  for (const item of items) {
+    if (opts.signal?.aborted) break;
+    opts.onProgress?.(done, total, item.name);
+    const t0 = Date.now();
+    const stepDetails: string[] = [];
+    let itemOk = true;
+
+    // ── Phase 1-3: callbox bring-up (only if cfg + callbox present)
+    if (callboxSys && item.callboxCfg) {
+      const cfg = item.callboxCfg;
+      const safeName = safe(cfg);
+      const target = `/root/enb/config/${safeName}`;
+      const linkPath = `/root/enb/config/enb.cfg`;
+      const isUpload = !!suite.uploadedConfigs?.[cfg];
+
+      try {
+        if (isUpload) {
+          const b64 = suite.uploadedConfigs![cfg];
+          const buf = Buffer.from(b64, 'base64');
+          await withSsh(callboxSys, async (ssh) => {
+            const sftp = await ssh.requestSFTP();
+            await new Promise<void>((resolve, reject) => {
+              const ws = sftp.createWriteStream(target);
+              ws.on('close', () => resolve());
+              ws.on('error', reject);
+              ws.end(buf);
+            });
+          });
+          existing.add(safeName);
+          stepDetails.push(`cfg-push: uploaded ${buf.length}B`);
+        } else if (!existing.has(cfg) && !existing.has(safeName)) {
+          throw new Error(`cfg "${cfg}" missing on callbox /root/enb/config`);
+        } else {
+          stepDetails.push(`cfg-push: present`);
+        }
+
+        await withSsh(callboxSys, async (ssh) => {
+          const r = await ssh.execCommand(`ln -sfn "${target}" "${linkPath}"`);
+          if (r.code !== 0) throw new Error(`ln: ${r.stderr || r.stdout || `exit ${r.code}`}`);
+        });
+        stepDetails.push(`cfg-link: ${linkPath} → ${safeName}`);
+
+        const restartCmd = `(sudo systemctl restart lte 2>/dev/null) || (sudo service lte restart 2>/dev/null) || (sudo /etc/init.d/lte restart 2>/dev/null) || (echo "ERROR: no recognised init system" >&2; exit 1)`;
+        await withSsh(callboxSys, async (ssh) => {
+          const r = await ssh.execCommand(restartCmd);
+          if (r.code !== 0) throw new Error(`restart: ${r.stderr || r.stdout || `exit ${r.code}`}`);
+        });
+        await new Promise(r => setTimeout(r, 15_000));
+        stepDetails.push(`cfg-restart: lte restarted + 15s settle`);
+      } catch (e: any) {
+        steps.push({
+          testcaseId: item.name, status: 0, ok: false,
+          detail: `bring-up failed: ${e?.message ?? e}`,
+          durationMs: Date.now() - t0,
+        });
+        failed += 1; itemOk = false;
+        if (suite.stopOnFail) { done += 1; break; }
+        done += 1;
+        continue;
+      }
+    }
+
+    // ── Phase 4-5: trigger + poll the Simnovator testcase
+    if (!token) {
+      steps.push({ testcaseId: item.name, status: 0, ok: false, detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}simnovator login failed`, durationMs: Date.now() - t0 });
+      failed += 1; done += 1;
+      if (suite.stopOnFail) break;
+      continue;
+    }
+    const durSec = item.durationSec ?? defaultDur;
+    try {
+      const r = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(item.simnovatorTcId)}/executions`, {
+        method: 'POST', headers: H, body: '{}',
+      });
+      const j: any = await r.json().catch(() => ({}));
+      const triggerOk = r.ok || r.status === 200 || r.status === 201;
+      const execId: string | undefined = j?.executionId ?? j?.id;
+      if (!triggerOk) {
+        steps.push({
+          testcaseId: item.name, status: r.status, ok: false,
+          executionId: execId,
+          detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}trigger ${r.status}: ${typeof j === 'object' ? JSON.stringify(j).slice(0, 160) : ''}`,
+          durationMs: Date.now() - t0,
+        });
+        failed += 1;
+        if (suite.stopOnFail) { done += 1; break; }
+        done += 1;
+        continue;
+      }
+      const finalState = await pollExecutionToTerminal(ueOpts.host, token, item.simnovatorTcId, execId, durSec, opts.signal);
+      const verdict = (finalState?.result ?? '').toUpperCase();
+      const passLike = verdict === 'PASS' || verdict === 'PASSED' || finalState?.status === 'Passed';
+      steps.push({
+        testcaseId: item.name, status: r.status, ok: passLike,
+        executionId: finalState?.executionId ?? execId,
+        detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}${finalState
+          ? `status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s`
+          : `triggered but no terminal state within ${durSec}s`}`,
+        durationMs: Date.now() - t0,
+      });
+      if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) { done += 1; break; } }
+    } catch (e: any) {
+      steps.push({ testcaseId: item.name, status: 0, ok: false, detail: `threw: ${e?.message ?? e}`, durationMs: Date.now() - t0 });
+      failed += 1;
+      if (suite.stopOnFail) { done += 1; break; }
+    }
+    done += 1;
+  }
+  opts.onProgress?.(total, total);
+  const buildVersion = token ? await fetchBuildVersion(ueOpts.host, token) : undefined;
+
+  return {
+    startedAt, finishedAt: new Date().toISOString(),
+    suiteId: suite.id, suiteName: suite.name,
+    kind: suite.kind ?? 'uesim-only',
+    uesimHost: ueOpts.host,
+    callboxHost: callboxSys?.host,
+    total, passed, failed, steps,
+    buildVersion,
+  };
+}
+
 export async function runSuite(suite: AutomationSuite, opts: RunOpts = {}): Promise<RunRecord> {
   // Fire perf-qa BEFORE the run starts so its sample window covers both
   // the pre-state and the actual execution. perf-qa returns a job_id
@@ -434,9 +599,15 @@ export async function runSuite(suite: AutomationSuite, opts: RunOpts = {}): Prom
     }
   }
 
-  const summary = suite.kind === 'uesim+callbox'
-    ? await runCallbox(suite, opts)
-    : await runUesimOnly(suite, opts);
+  // Prefer the items[] flow when the suite has it — each row is a
+  // self-contained (tc + cfg) pair with its own bring-up cycle. Fall
+  // back to the legacy flat-list flow (one shared callbox cfg, N tcs)
+  // for older suites saved before the items[] schema landed.
+  const summary = (suite.items && suite.items.length > 0)
+    ? await runItems(suite, suite.items, opts)
+    : (suite.kind === 'uesim+callbox'
+        ? await runCallbox(suite, opts)
+        : await runUesimOnly(suite, opts));
 
   // Persist the run + return the full record (with runId).
   const rec: RunRecord = {

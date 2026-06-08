@@ -23,6 +23,13 @@ import { cn } from '@/lib/cn';
 interface SystemRow {
   id: string; name: string; host: string; type: string;
 }
+interface SuiteItem {
+  id: string;
+  name: string;
+  simnovatorTcId: string;
+  callboxCfg?: string;
+  durationSec?: number;
+}
 interface SuiteRow {
   id: string; name: string;
   kind?: 'uesim-only' | 'uesim+callbox';
@@ -32,6 +39,7 @@ interface SuiteRow {
   testcaseIds: string[];
   defaultDurationSec?: number;
   testcaseDurations?: Record<string, number>;
+  items?: SuiteItem[];
   stopOnFail?: boolean;
   updatedAt?: string;
 }
@@ -113,6 +121,11 @@ export default function AutomationSuitePage() {
   const [defaultDur, setDefaultDur]     = useState<number>(10);
   const [perTcDur,   setPerTcDur]       = useState<Record<string, number>>({});
   const [massDurInput, setMassDurInput] = useState<string>('10');
+  // ── Items list (new): each row pairs (Simnovator tc + callbox cfg).
+  const [items, setItems]               = useState<SuiteItem[]>([]);
+  // "Add row" picker state
+  const [addTcId,  setAddTcId]          = useState<string>('');
+  const [addCfg,   setAddCfg]           = useState<string>('');
   // Wizard tab state
   const [tab, setTab]                   = useState<'setup' | 'testcases' | 'results'>('setup');
   /** SSH error surfaced from /api/automation/callbox-configs so the user
@@ -233,6 +246,7 @@ export default function AutomationSuitePage() {
     setUeTcs([]); setSelectedCfg(''); setSelectedTcs(new Set());
     setStopOnFail(false); setCbxFilter(''); setTcFilter('');
     setDefaultDur(10); setPerTcDur({}); setMassDurInput('10');
+    setItems([]); setAddTcId(''); setAddCfg('');
     setTab('setup');
     setError(''); setShowWizard(false);
   }, []);
@@ -252,6 +266,20 @@ export default function AutomationSuitePage() {
     setDefaultDur(s.defaultDurationSec ?? 10);
     setPerTcDur(s.testcaseDurations ?? {});
     setMassDurInput(String(s.defaultDurationSec ?? 10));
+    // Items: prefer the new items[]; if absent (legacy suite), synthesize
+    // from the flat testcaseIds list + shared callboxConfig.
+    if (s.items && s.items.length > 0) {
+      setItems(s.items);
+    } else {
+      const synth: SuiteItem[] = s.testcaseIds.map((tcId, i) => ({
+        id: `item-${i}-${Math.random().toString(36).slice(2, 8)}`,
+        name: tcId,                       // user can rename
+        simnovatorTcId: tcId,
+        callboxCfg: s.kind === 'uesim+callbox' ? s.callboxConfig : undefined,
+        durationSec: s.testcaseDurations?.[tcId],
+      }));
+      setItems(synth);
+    }
     setShowWizard(true);
     if (s.callboxSystemId && s.kind === 'uesim+callbox') void loadCallboxConfigs(s.callboxSystemId);
     if (s.uesimSystemId) void loadUesimTestcases(s.uesimSystemId);
@@ -263,8 +291,8 @@ export default function AutomationSuitePage() {
     if (kind === 'uesim+callbox' && !callboxSystemId) { setError('callbox system required'); return; }
     const tcs = [...selectedTcs];
     const cfg = kind === 'uesim+callbox' ? selectedCfg : '';
-    if (tcs.length === 0 && !cfg) {
-      setError(kind === 'uesim+callbox' ? 'pick a callbox config and/or one or more Simnovator testcases' : 'pick at least one Simnovator testcase');
+    if (items.length === 0 && tcs.length === 0) {
+      setError('add at least one testcase row on the Testcases tab');
       return;
     }
 
@@ -279,16 +307,31 @@ export default function AutomationSuitePage() {
     const trimmedDurs: Record<string, number> = {};
     for (const id of tcs) if (perTcDur[id] && perTcDur[id] > 0) trimmedDurs[id] = perTcDur[id];
 
+    // Keep ALL referenced uploads in the saved suite — each item can
+    // reference a different uploaded cfg, so don't trim by selectedCfg.
+    const itemUploads: Record<string, string> = {};
+    if (kind === 'uesim+callbox') {
+      for (const it of items) {
+        if (it.callboxCfg && uploadedConfigs[it.callboxCfg]) {
+          itemUploads[it.callboxCfg] = uploadedConfigs[it.callboxCfg];
+        }
+      }
+    }
+    const trimmedItemUploads = Object.keys(itemUploads).length ? itemUploads : undefined;
+
     const payload: any = {
       name: name.trim(),
       kind,
       uesimSystemId,
       callboxSystemId: kind === 'uesim+callbox' ? callboxSystemId : undefined,
-      uploadedConfigs: trimmedUploads,
+      uploadedConfigs: trimmedItemUploads ?? trimmedUploads,
+      // Legacy fields stay populated for old consumers, but the runner
+      // prefers items[] when present.
       callboxConfig: kind === 'uesim+callbox' ? (cfg || undefined) : undefined,
-      testcaseIds: tcs,
+      testcaseIds: items.length > 0 ? items.map(it => it.simnovatorTcId) : tcs,
       defaultDurationSec: defaultDur > 0 ? defaultDur : 10,
       testcaseDurations: Object.keys(trimmedDurs).length ? trimmedDurs : undefined,
+      items: items.length > 0 ? items : undefined,
       stopOnFail,
     };
     setBusy(editingId ? 'update' : 'create'); setError('');
@@ -413,8 +456,10 @@ export default function AutomationSuitePage() {
                       <td className="px-3 py-2 text-slate-700">{s.kind ?? 'uesim-only'}</td>
                       <td className="px-3 py-2 text-slate-700 font-mono text-xs">{s.uesimSystemId ?? '–'}</td>
                       <td className="px-3 py-2 text-slate-700 font-mono text-xs">{s.callboxSystemId ?? '–'}</td>
-                      <td className="px-3 py-2 font-mono text-xs">{s.callboxConfig ?? '–'}{s.callboxConfig && s.uploadedConfigs?.[s.callboxConfig] ? ' (uploaded)' : ''}</td>
-                      <td className="px-3 py-2 text-right">{s.testcaseIds.length}</td>
+                      <td className="px-3 py-2 font-mono text-xs">
+                        {s.items?.some(it => it.callboxCfg) ? `${new Set(s.items.filter(it => it.callboxCfg).map(it => it.callboxCfg)).size} cfg(s)` : (s.callboxConfig ?? '–')}
+                      </td>
+                      <td className="px-3 py-2 text-right">{s.items?.length ?? s.testcaseIds.length}</td>
                       <td className="px-3 py-2 text-right text-xs text-slate-500">{s.updatedAt?.slice(0, 19).replace('T', ' ') ?? '–'}</td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">
                         <button onClick={() => runSuite(s)} disabled={running === s.id} className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white text-xs px-2 py-1 mr-1">
@@ -618,55 +663,14 @@ export default function AutomationSuitePage() {
               )}
             </div>
 
-            {/* Callbox config picker — single-select (radio). Each suite
-                is scoped to ONE eNB config; campaigns spanning multiple
-                configs belong in separate suites. */}
+            {/* Setup tab is now JUST about systems — per-row eNB cfg
+                lives on the Testcases tab where each row pairs a
+                Simnovator testcase with its own callbox cfg. */}
             {kind === 'uesim+callbox' && callboxSystemId && (
-              <div className="mb-4 border border-slate-200 rounded-md p-3 bg-slate-50/50">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                    Pick ONE config from <code>/root/enb/config</code> on <code>{callboxSystemId}</code>
-                    {selectedCfg && <> · selected: <code className="text-slate-700">{selectedCfg}</code></>}
-                  </div>
-                  <input type="search" placeholder="filter…" value={cbxFilter} onChange={e => setCbxFilter(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs" />
-                </div>
-                {cbxLoadError && (
-                  <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1 mb-2">
-                    SSH error: <code>{cbxLoadError}</code> — fix the callbox's SSH creds in <code>inventory.yaml</code>, or upload a .cfg file below.
-                  </div>
-                )}
-                <div className="border border-slate-200 rounded-md bg-white max-h-60 overflow-y-auto">
-                  {loadingCbx ? (
-                    <div className="p-3 text-sm text-slate-500">Loading via SSH…</div>
-                  ) : filteredCfgs.length === 0 ? (
-                    <div className="p-3 text-sm text-slate-500">
-                      No files match <code>{cbxFilter || '*'}</code> in <code>/root/enb/config</code> (or SSH failed). Use Upload below.
-                    </div>
-                  ) : (
-                    <ul className="divide-y divide-slate-100 text-sm">
-                      {filteredCfgs.map(it => (
-                        <li key={it.id} className="px-3 py-1.5 flex items-center gap-2 hover:bg-slate-50 cursor-pointer"
-                            onClick={() => setSelectedCfg(it.id)}>
-                          <input type="radio" name="cbxcfg" checked={selectedCfg === it.id} onChange={() => setSelectedCfg(it.id)} />
-                          <span className="flex-1 truncate" title={it.id}>{it.label}</span>
-                          {it.upload && (
-                            <button type="button" onClick={(e) => { e.stopPropagation(); removeUpload(it.id); }} className="text-[10px] text-red-600 hover:underline" title="Remove this upload">remove</button>
-                          )}
-                          {it.sub && <span className="text-[10px] text-slate-400 truncate">{it.sub}</span>}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-                <div className="mt-3 flex items-center gap-3 text-sm">
-                  <label className="cursor-pointer rounded-md border border-slate-300 px-3 py-1.5 hover:bg-slate-100">
-                    Upload .cfg file…
-                    <input type="file" onChange={onPickUpload} className="hidden" />
-                  </label>
-                  <span className="text-xs text-slate-500">
-                    Uploaded file is scp'd to <code>/root/enb/config/&lt;name&gt;</code> when the suite runs.
-                  </span>
-                </div>
+              <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-md px-3 py-2 mb-4">
+                Each testcase row pairs a Simnovator testcase with an eNB cfg file —
+                pick those on the <strong>Testcases</strong> tab. (eNB cfg list is fetched
+                via SSH from <code>/root/enb/config</code> on <code>{callboxSystemId}</code>.)
               </div>
             )}
 
@@ -675,91 +679,144 @@ export default function AutomationSuitePage() {
             </div>
             </>)}
 
-            {/* ── Tab 2: Testcases + Durations ─────────────────── */}
+            {/* ── Tab 2: Testcases (items table) ─────────────────── */}
             {tab === 'testcases' && (<>
             {!uesimSystemId ? (
               <div className="text-sm text-slate-500 py-6 text-center">
                 Pick a UESIM/Simnovator system on the Setup tab first.
               </div>
-            ) : (
-              <div className="mb-4 border border-slate-200 rounded-md p-3 bg-slate-50/50">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                    Simnovator testcases from <code>{uesimSystemId}</code> · {selectedTcs.size} selected of {uesimTestcases.length}
-                  </div>
-                  <input type="search" placeholder="filter…" value={tcFilter} onChange={e => setTcFilter(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs" />
-                </div>
-
-                {/* Duration controls — default + mass apply */}
-                <div className="flex flex-wrap items-center gap-3 mb-2 text-sm">
-                  <label className="flex items-center gap-2">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Default duration (sec)</span>
-                    <input type="number" min={1} value={defaultDur} onChange={e => setDefaultDur(Math.max(1, Number(e.target.value) || 1))} className="border border-slate-300 rounded-md px-2 py-1 w-[80px] text-sm" />
-                  </label>
-                  <span className="text-xs text-slate-400">|</span>
-                  <label className="flex items-center gap-2">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Apply to all selected</span>
-                    <input type="number" min={1} value={massDurInput} onChange={e => setMassDurInput(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 w-[80px] text-sm" />
-                    <button type="button" onClick={() => {
-                      const n = Math.max(1, Number(massDurInput) || 1);
-                      const next: Record<string, number> = { ...perTcDur };
-                      for (const id of selectedTcs) next[id] = n;
-                      setPerTcDur(next);
-                    }} disabled={selectedTcs.size === 0} className="rounded-md bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white text-xs px-2 py-1">Apply</button>
-                  </label>
-                  <button type="button" onClick={() => setPerTcDur({})} className="text-xs text-slate-500 hover:text-slate-900 underline">clear all overrides</button>
-                </div>
-
-                <div className="border border-slate-200 rounded-md bg-white max-h-72 overflow-y-auto">
-                  {loadingTc ? (
-                    <div className="p-3 text-sm text-slate-500">Pulling testcases from {uesimSystemId}…</div>
-                  ) : filteredTcs.length === 0 ? (
-                    <div className="p-3 text-sm text-slate-500">No testcases match.</div>
-                  ) : (
-                    <table className="min-w-full text-xs">
-                      <thead className="bg-slate-50 text-slate-600 sticky top-0">
-                        <tr>
-                          <th className="px-2 py-1.5">✓</th>
-                          <th className="text-left px-2 py-1.5">Name</th>
-                          <th className="text-left px-2 py-1.5">Last modified</th>
-                          <th className="text-left px-2 py-1.5">Last result</th>
-                          <th className="text-right px-2 py-1.5">Duration (s)</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {filteredTcs.map(t => {
-                          const checked = selectedTcs.has(t.id);
-                          const dur = perTcDur[t.id] ?? defaultDur;
-                          return (
-                            <tr key={t.id} className="hover:bg-slate-50">
-                              <td className="px-2 py-1 text-center">
-                                <input type="checkbox" checked={checked} onChange={e => {
-                                  const next = new Set(selectedTcs);
-                                  if (e.target.checked) next.add(t.id); else next.delete(t.id);
-                                  setSelectedTcs(next);
-                                }} />
-                              </td>
-                              <td className="px-2 py-1 font-mono text-[11px] truncate max-w-[280px]" title={t.id}>{t.name}</td>
-                              <td className="px-2 py-1 text-slate-500 font-mono text-[10px]">{t.lastModifiedOn?.slice(0, 19).replace('T', ' ') ?? '–'}</td>
-                              <td className="px-2 py-1 text-[10px] uppercase text-slate-500">{t.lastResult ?? '–'}</td>
-                              <td className="px-2 py-1 text-right">
-                                <input type="number" min={1} disabled={!checked} value={dur}
-                                  onChange={e => setPerTcDur({ ...perTcDur, [t.id]: Math.max(1, Number(e.target.value) || 1) })}
-                                  className="border border-slate-300 rounded px-1 py-0.5 w-[60px] text-xs disabled:bg-slate-100 disabled:text-slate-400" />
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
+            ) : (<>
+              {/* Default duration knob (suite-wide) */}
+              <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
+                <label className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Default duration (sec)</span>
+                  <input type="number" min={1} value={defaultDur} onChange={e => setDefaultDur(Math.max(1, Number(e.target.value) || 1))} className="border border-slate-300 rounded-md px-2 py-1 w-[80px] text-sm" />
+                </label>
+                <span className="text-xs text-slate-400">|</span>
+                <label className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Apply to all rows</span>
+                  <input type="number" min={1} value={massDurInput} onChange={e => setMassDurInput(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 w-[80px] text-sm" />
+                  <button type="button" onClick={() => {
+                    const n = Math.max(1, Number(massDurInput) || 1);
+                    setItems(items.map(it => ({ ...it, durationSec: n })));
+                  }} disabled={items.length === 0} className="rounded-md bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white text-xs px-2 py-1">Apply</button>
+                </label>
+                <button type="button" onClick={() => setItems(items.map(it => ({ ...it, durationSec: undefined })))} className="text-xs text-slate-500 hover:text-slate-900 underline">clear all overrides</button>
               </div>
-            )}
+
+              {/* Items table — one row = (simnovator tc + callbox cfg + display name + duration) */}
+              <div className="mb-3 border border-slate-200 rounded-md bg-white overflow-x-auto">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-slate-50 text-slate-600">
+                    <tr>
+                      <th className="px-2 py-1.5 text-left w-8">#</th>
+                      <th className="px-2 py-1.5 text-left">Display name (editable)</th>
+                      <th className="px-2 py-1.5 text-left">Simnovator testcase</th>
+                      {kind === 'uesim+callbox' && <th className="px-2 py-1.5 text-left">eNB cfg</th>}
+                      <th className="px-2 py-1.5 text-right">Duration (s)</th>
+                      <th className="px-2 py-1.5"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {items.length === 0 ? (
+                      <tr><td colSpan={kind === 'uesim+callbox' ? 6 : 5} className="px-3 py-4 text-center text-slate-500">No testcases yet. Add one below.</td></tr>
+                    ) : items.map((it, i) => {
+                      const tc = uesimTestcases.find(t => t.id === it.simnovatorTcId);
+                      const updateItem = (patch: Partial<SuiteItem>) => {
+                        const next = [...items]; next[i] = { ...it, ...patch }; setItems(next);
+                      };
+                      return (
+                        <tr key={it.id} className="hover:bg-slate-50">
+                          <td className="px-2 py-1 text-slate-400">{i + 1}</td>
+                          <td className="px-2 py-1">
+                            <input value={it.name} onChange={e => updateItem({ name: e.target.value })}
+                              className="border border-slate-300 rounded px-2 py-1 text-xs w-full" />
+                          </td>
+                          <td className="px-2 py-1 font-mono text-[11px] text-slate-600 truncate max-w-[260px]" title={it.simnovatorTcId}>
+                            {tc?.name ?? it.simnovatorTcId}
+                          </td>
+                          {kind === 'uesim+callbox' && (
+                            <td className="px-2 py-1 font-mono text-[11px] text-slate-600">
+                              {it.callboxCfg ?? <span className="text-slate-400 italic">(none)</span>}
+                              {it.callboxCfg && uploadedConfigs[it.callboxCfg] && <span className="text-[9px] text-emerald-700 ml-1">[upload]</span>}
+                            </td>
+                          )}
+                          <td className="px-2 py-1 text-right">
+                            <input type="number" min={1} placeholder={String(defaultDur)} value={it.durationSec ?? ''}
+                              onChange={e => updateItem({ durationSec: e.target.value === '' ? undefined : Math.max(1, Number(e.target.value) || 1) })}
+                              className="border border-slate-300 rounded px-1 py-0.5 w-[64px] text-xs text-right" />
+                          </td>
+                          <td className="px-2 py-1 text-right">
+                            <button type="button" onClick={() => setItems(items.filter((_, j) => j !== i))} className="text-xs text-red-600 hover:underline">remove</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Add-row picker */}
+              <div className="mb-4 border border-slate-200 rounded-md p-3 bg-slate-50/50">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Add a testcase row</div>
+                <div className="grid grid-cols-3 gap-2 items-end">
+                  <label className="flex flex-col text-xs">
+                    <span className="text-slate-500 mb-1">Simnovator testcase</span>
+                    <select value={addTcId} onChange={e => setAddTcId(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs">
+                      <option value="">— pick —</option>
+                      {uesimTestcases.map(t => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {kind === 'uesim+callbox' && (
+                    <label className="flex flex-col text-xs">
+                      <span className="text-slate-500 mb-1">eNB cfg (/root/enb/config or upload)</span>
+                      <select value={addCfg} onChange={e => setAddCfg(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs">
+                        <option value="">— pick —</option>
+                        {Object.keys(uploadedConfigs).map(fn => (
+                          <option key={fn} value={fn}>{fn} (uploaded)</option>
+                        ))}
+                        {callboxFiles.map(f => (
+                          <option key={f.name} value={f.name}>{f.name} · {f.mtime}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => {
+                      if (!addTcId) return;
+                      const tc = uesimTestcases.find(t => t.id === addTcId);
+                      const newItem: SuiteItem = {
+                        id: `item-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                        name: tc?.name ?? addTcId,
+                        simnovatorTcId: addTcId,
+                        callboxCfg: kind === 'uesim+callbox' && addCfg ? addCfg : undefined,
+                      };
+                      setItems([...items, newItem]);
+                      setAddTcId(''); setAddCfg('');
+                    }} disabled={!addTcId || (kind === 'uesim+callbox' && !addCfg)} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm px-3 py-1.5">
+                      + Add
+                    </button>
+                    {kind === 'uesim+callbox' && (
+                      <label className="cursor-pointer rounded-md border border-slate-300 px-3 py-1.5 hover:bg-slate-100 text-sm">
+                        Upload cfg…
+                        <input type="file" onChange={onPickUpload} className="hidden" />
+                      </label>
+                    )}
+                  </div>
+                </div>
+                {kind === 'uesim+callbox' && cbxLoadError && (
+                  <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1 mt-2">
+                    SSH error listing /root/enb/config: <code>{cbxLoadError}</code> — Upload below works either way.
+                  </div>
+                )}
+              </div>
+            </>)}
 
             <label className="flex items-center gap-2 text-sm mb-4">
               <input type="checkbox" checked={stopOnFail} onChange={e => setStopOnFail(e.target.checked)} />
-              <span>Stop on first failure (skip remaining tests)</span>
+              <span>Stop on first failure (skip remaining items)</span>
             </label>
 
             <div className="flex justify-between mt-4">

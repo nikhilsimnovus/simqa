@@ -129,12 +129,38 @@ export interface TopologyProfile {
  * run as a batch against a topology. The "Run" button on /automation kicks
  * off one RunRecord per testcase, all sharing a batchId.
  */
+/** One concrete test row inside an Automation Suite — a Simnovator
+ *  testcase paired with an optional callbox eNB cfg. The cfg gets
+ *  symlinked + the eNB restarted IMMEDIATELY before the Simnovator
+ *  testcase fires, so each row carries its own radio context. */
+export interface SuiteItem {
+  /** Stable id within the suite (so the UI can key the row). */
+  id: string;
+  /** Display name — defaults to the Simnovator testcase name when the
+   *  row is first added, renameable. */
+  name: string;
+  /** Simnovator REST testcase id (the UUID from /v2/testcases). */
+  simnovatorTcId: string;
+  /** Filename under /root/enb/config on the callbox (only for
+   *  uesim+callbox suites). May refer to an existing file or to a
+   *  blob in `uploadedConfigs`. Absent for uesim-only suites. */
+  callboxCfg?: string;
+  /** Max seconds to wait for the Simnovator testcase to reach a
+   *  terminal state. Falls back to the suite's defaultDurationSec
+   *  (or 10) when absent. */
+  durationSec?: number;
+}
+
 export interface AutomationSuite {
   id: string;
   name: string;
-  /** Simnovator REST testcase ids (UUIDs). Used in BOTH kinds — for
-   *  'uesim+callbox' suites these run AFTER the callbox configs are
-   *  pushed. */
+  /** Ordered list of test rows. Each row pairs a Simnovator testcase
+   *  with (optionally) a callbox eNB cfg. New in 2026-06 — supersedes
+   *  the flat `testcaseIds` + `callboxConfig` pair, which the runner
+   *  still falls back to when this is absent. */
+  items?: SuiteItem[];
+  /** LEGACY: flat list of Simnovator testcase ids. Used when `items`
+   *  is absent. New suites should write `items` instead. */
   testcaseIds: string[];
   /** Single filename under /root/enb/config on the callbox (only when
    *  kind == 'uesim+callbox'). May be a file that already lives on the
