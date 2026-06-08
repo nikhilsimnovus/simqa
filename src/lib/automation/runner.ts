@@ -73,6 +73,55 @@ async function fetchBuildVersion(host: string, token: string): Promise<string | 
   } catch { return undefined; }
 }
 
+/** Terminal states the box reports on a finished execution. We poll
+ *  until we hit one of these or run out the per-testcase duration. */
+const TERMINAL_STATUSES = new Set(['Completed', 'Failed', 'Aborted', 'Stopped', 'Passed', 'INCOMPLETE']);
+
+interface ExecutionState {
+  status?: string;
+  result?: string;
+  executionId?: string;
+  durationSeconds?: number;
+}
+
+async function fetchLastExecution(host: string, token: string, tcId: string): Promise<ExecutionState | null> {
+  try {
+    const r = await fetch(`http://${host}/v2/testcases/${encodeURIComponent(tcId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!r.ok) return null;
+    const j: any = await r.json();
+    const le = j?.metadata?.lastExecution;
+    if (!le) return null;
+    return {
+      status: le.status, result: le.result,
+      executionId: le.executionId, durationSeconds: le.durationSeconds,
+    };
+  } catch { return null; }
+}
+
+/** Poll a testcase's lastExecution.status until we see a terminal state
+ *  or hit the per-testcase duration budget (seconds). Returns the
+ *  final state captured, or null if the box never reported. */
+async function pollExecutionToTerminal(host: string, token: string, tcId: string, triggerExecId: string | undefined, maxWaitSec: number, signal?: AbortSignal): Promise<ExecutionState | null> {
+  const deadline = Date.now() + Math.max(5, maxWaitSec) * 1000;
+  let last: ExecutionState | null = null;
+  while (Date.now() < deadline && !signal?.aborted) {
+    const s = await fetchLastExecution(host, token, tcId);
+    if (s) {
+      last = s;
+      // Wait until the box has SEEN our trigger (its lastExecution.id
+      // matches the one our POST returned). If our POST didn't return
+      // an id, we fall back to "any terminal status will do".
+      const ours = !triggerExecId || s.executionId === triggerExecId;
+      if (ours && s.status && TERMINAL_STATUSES.has(s.status)) return s;
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  return last;
+}
+
 async function login(host: string, username: string, password: string): Promise<string> {
   const r = await fetch(`http://${host}/v2/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -93,24 +142,42 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
   const steps: SuiteRunStep[] = [];
   let passed = 0, failed = 0;
 
+  const defaultDur = suite.defaultDurationSec ?? 10;
   for (const tcId of suite.testcaseIds) {
     if (opts.signal?.aborted) break;
     opts.onProgress?.(steps.length, suite.testcaseIds.length, tcId);
     const t0 = Date.now();
+    const durSec = suite.testcaseDurations?.[tcId] ?? defaultDur;
     try {
       const r = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(tcId)}/executions`, {
         method: 'POST', headers: H, body: '{}',
       });
       const j: any = await r.json().catch(() => ({}));
-      const ok = r.ok || r.status === 200 || r.status === 201;
+      const triggerOk = r.ok || r.status === 200 || r.status === 201;
+      const execId: string | undefined = j?.executionId ?? j?.id;
+      if (!triggerOk) {
+        steps.push({
+          testcaseId: tcId, status: r.status, ok: false,
+          executionId: execId,
+          detail: typeof j === 'object' ? JSON.stringify(j).slice(0, 200) : 'no body',
+          durationMs: Date.now() - t0,
+        });
+        failed += 1;
+        if (suite.stopOnFail) break;
+        continue;
+      }
+      const finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, execId, durSec, opts.signal);
+      const verdict = (finalState?.result ?? '').toUpperCase();
+      const passLike = verdict === 'PASS' || verdict === 'PASSED' || finalState?.status === 'Passed';
       steps.push({
-        testcaseId: tcId, status: r.status, ok,
-        executionId: j?.executionId ?? j?.id,
-        detail: ok ? 'execution kicked off' : (typeof j === 'object' ? JSON.stringify(j).slice(0, 200) : 'no body'),
+        testcaseId: tcId, status: r.status, ok: passLike,
+        executionId: finalState?.executionId ?? execId,
+        detail: finalState
+          ? `status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s`
+          : `triggered but no terminal state within ${durSec}s`,
         durationMs: Date.now() - t0,
       });
-      if (ok) passed += 1; else failed += 1;
-      if (!ok && suite.stopOnFail) break;
+      if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) break; }
     } catch (e: any) {
       steps.push({ testcaseId: tcId, status: 0, ok: false, detail: `threw: ${e?.message ?? e}`, durationMs: Date.now() - t0 });
       failed += 1;
@@ -154,13 +221,24 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
     existing = new Set(raw.split('\n').map(s => s.trim()).filter(Boolean));
   } catch { /* leave empty — upload still attempts */ }
 
+  // The callbox phase is now 3 steps when a config is set:
+  //   1. cfg-push    scp the upload (or verify the picked file exists)
+  //   2. cfg-link    ln -sf /root/enb/config/<name> /root/enb/config/enb.cfg
+  //   3. cfg-restart `service lte restart` (fallback systemctl)
+  //                  then wait ~15s for the eNB process to bind sockets
+  // The total bumps by 3 instead of 1 to reflect the multi-step bring-up.
+  const totalWithBringUp = (cfg ? 3 : 0) + tcs.length;
+
   if (cfg && !opts.signal?.aborted) {
-    opts.onProgress?.(done, total, `cfg:${cfg}`);
-    const t0 = Date.now();
     const safeName = safe(cfg);
     const target = `/root/enb/config/${safeName}`;
+    const linkPath = `/root/enb/config/enb.cfg`;
     const isUpload = !!suite.uploadedConfigs?.[cfg];
 
+    // Step 1: cfg push
+    opts.onProgress?.(done, totalWithBringUp, `cfg-push:${cfg}`);
+    const t0 = Date.now();
+    let cfgPushed = false;
     try {
       if (isUpload) {
         const b64 = suite.uploadedConfigs![cfg];
@@ -175,33 +253,84 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
           });
         });
         steps.push({
-          testcaseId: `cfg:${cfg}`, status: 200, ok: true,
+          testcaseId: `cfg-push:${cfg}`, status: 200, ok: true,
           detail: `uploaded ${buf.length}B → ${target} (overwrote=${existing.has(safeName)})`,
           durationMs: Date.now() - t0,
         });
-        passed += 1;
+        cfgPushed = true; passed += 1;
       } else {
-        const ok = existing.has(cfg) || existing.has(safeName);
+        const present = existing.has(cfg) || existing.has(safeName);
         steps.push({
-          testcaseId: `cfg:${cfg}`, status: ok ? 200 : 404, ok,
-          detail: ok ? `present at ${target}` : `missing on callbox /root/enb/config`,
+          testcaseId: `cfg-push:${cfg}`, status: present ? 200 : 404, ok: present,
+          detail: present ? `present at ${target}` : `missing on callbox /root/enb/config`,
           durationMs: Date.now() - t0,
         });
-        if (ok) passed += 1; else { failed += 1; }
+        if (present) { cfgPushed = true; passed += 1; } else failed += 1;
       }
     } catch (e: any) {
-      steps.push({ testcaseId: `cfg:${cfg}`, status: 0, ok: false, detail: `ssh: ${e?.message ?? e}`, durationMs: Date.now() - t0 });
+      steps.push({ testcaseId: `cfg-push:${cfg}`, status: 0, ok: false, detail: `ssh: ${e?.message ?? e}`, durationMs: Date.now() - t0 });
       failed += 1;
     }
     done += 1;
-    // If the config step failed and stopOnFail is set, skip testcases.
+
+    // Step 2: symlink enb.cfg → picked config
+    if (cfgPushed) {
+      opts.onProgress?.(done, totalWithBringUp, `cfg-link:${cfg}`);
+      const t1 = Date.now();
+      try {
+        await withSsh(sys, async (ssh) => {
+          const r = await ssh.execCommand(`ln -sfn "${target}" "${linkPath}" && ls -la "${linkPath}"`);
+          if (r.code !== 0) throw new Error(r.stderr || r.stdout || `ln exit ${r.code}`);
+          return r.stdout;
+        });
+        steps.push({ testcaseId: `cfg-link:${cfg}`, status: 200, ok: true, detail: `${linkPath} → ${target}`, durationMs: Date.now() - t1 });
+        passed += 1;
+      } catch (e: any) {
+        steps.push({ testcaseId: `cfg-link:${cfg}`, status: 0, ok: false, detail: `ln failed: ${e?.message ?? e}`, durationMs: Date.now() - t1 });
+        failed += 1;
+        cfgPushed = false;
+      }
+      done += 1;
+    } else {
+      // Skip link if push failed.
+      done += 1;
+    }
+
+    // Step 3: restart the lte service + give it 15s to stabilise
+    if (cfgPushed) {
+      opts.onProgress?.(done, totalWithBringUp, `cfg-restart:${cfg}`);
+      const t2 = Date.now();
+      try {
+        // Try systemctl first (newer Ubuntu / RHEL), then plain service
+        // (older Ubuntu / Debian), then init.d (most ancient). Any one
+        // succeeding short-circuits to success.
+        const restartCmd = `(sudo systemctl restart lte 2>/dev/null) || (sudo service lte restart 2>/dev/null) || (sudo /etc/init.d/lte restart 2>/dev/null) || (echo "ERROR: no recognised init system for 'lte'" >&2; exit 1)`;
+        await withSsh(sys, async (ssh) => {
+          const r = await ssh.execCommand(restartCmd);
+          if (r.code !== 0) throw new Error(r.stderr || r.stdout || `restart exit ${r.code}`);
+        });
+        // Give the eNB ~15s to bind sockets + come back. The actual
+        // UE-attach attempts won't fire until after this sleep.
+        await new Promise(r => setTimeout(r, 15_000));
+        steps.push({ testcaseId: `cfg-restart:${cfg}`, status: 200, ok: true, detail: `lte service restarted + 15s settle`, durationMs: Date.now() - t2 });
+        passed += 1;
+      } catch (e: any) {
+        steps.push({ testcaseId: `cfg-restart:${cfg}`, status: 0, ok: false, detail: `restart failed: ${e?.message ?? e}`, durationMs: Date.now() - t2 });
+        failed += 1;
+      }
+      done += 1;
+    } else {
+      done += 1;
+    }
+
+    // If the bring-up failed and stopOnFail is set, skip testcases.
     if (suite.stopOnFail && failed > 0) {
-      opts.onProgress?.(total, total);
+      opts.onProgress?.(totalWithBringUp, totalWithBringUp);
       return {
         startedAt, finishedAt: new Date().toISOString(),
         suiteId: suite.id, suiteName: suite.name, kind: 'uesim+callbox',
         callboxHost: sys.host,
-        total, passed, failed, steps,
+        total: totalWithBringUp, passed, failed, steps,
       };
     }
   }
@@ -222,23 +351,50 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   }
   if (token) {
     const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    // total may have been bumped by the callbox bring-up steps — use it
+    // for progress reporting in both branches.
+    const totalProg = (cfg ? 3 : 0) + tcs.length;
+    const defaultDur = suite.defaultDurationSec ?? 10;
     for (const tcId of tcs) {
       if (opts.signal?.aborted) break;
-      opts.onProgress?.(done, total, `tc:${tcId}`);
+      opts.onProgress?.(done, totalProg, `tc:${tcId}`);
       const t0 = Date.now();
+      const durSec = suite.testcaseDurations?.[tcId] ?? defaultDur;
       try {
         const r = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(tcId)}/executions`, {
           method: 'POST', headers: H, body: '{}',
         });
         const j: any = await r.json().catch(() => ({}));
-        const ok = r.ok || r.status === 200 || r.status === 201;
+        const triggerOk = r.ok || r.status === 200 || r.status === 201;
+        const execId: string | undefined = j?.executionId ?? j?.id;
+        if (!triggerOk) {
+          steps.push({
+            testcaseId: `tc:${tcId}`, status: r.status, ok: false,
+            executionId: execId,
+            detail: typeof j === 'object' ? JSON.stringify(j).slice(0, 200) : 'no body',
+            durationMs: Date.now() - t0,
+          });
+          failed += 1;
+          if (suite.stopOnFail) break;
+          done += 1;
+          continue;
+        }
+        // Trigger worked — now poll until terminal state or duration hits.
+        const finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, execId, durSec, opts.signal);
+        const verdict = (finalState?.result ?? '').toUpperCase();
+        // Box uses several status/result combos. Treat anything in the
+        // PASS family as ok; the rest (FAIL, ERROR, INCOMPLETE, ABORTED,
+        // STOPPED, plus "no state" = timed out) as fail.
+        const passLike = verdict === 'PASS' || verdict === 'PASSED' || finalState?.status === 'Passed';
         steps.push({
-          testcaseId: `tc:${tcId}`, status: r.status, ok,
-          executionId: j?.executionId ?? j?.id,
-          detail: ok ? 'execution kicked off' : (typeof j === 'object' ? JSON.stringify(j).slice(0, 200) : 'no body'),
+          testcaseId: `tc:${tcId}`, status: r.status, ok: passLike,
+          executionId: finalState?.executionId ?? execId,
+          detail: finalState
+            ? `status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s`
+            : `triggered but no terminal state within ${durSec}s`,
           durationMs: Date.now() - t0,
         });
-        if (ok) passed += 1; else { failed += 1; if (suite.stopOnFail) break; }
+        if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) break; }
       } catch (e: any) {
         steps.push({ testcaseId: `tc:${tcId}`, status: 0, ok: false, detail: `threw: ${e?.message ?? e}`, durationMs: Date.now() - t0 });
         failed += 1;
@@ -248,7 +404,8 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
     }
     buildVersion = await fetchBuildVersion(ueOpts.host, token);
   }
-  opts.onProgress?.(total, total);
+  const totalFinal = (cfg ? 3 : 0) + tcs.length;
+  opts.onProgress?.(totalFinal, totalFinal);
 
   return {
     startedAt, finishedAt: new Date().toISOString(),

@@ -31,6 +31,8 @@ export async function POST(req: Request) {
       callboxSystemId: body.callboxSystemId,
       uploadedConfigs: body.uploadedConfigs && typeof body.uploadedConfigs === 'object' ? body.uploadedConfigs : undefined,
       callboxConfig: typeof body.callboxConfig === 'string' && body.callboxConfig.trim() ? body.callboxConfig.trim() : undefined,
+      defaultDurationSec: typeof body.defaultDurationSec === 'number' && body.defaultDurationSec > 0 ? body.defaultDurationSec : undefined,
+      testcaseDurations: body.testcaseDurations && typeof body.testcaseDurations === 'object' ? body.testcaseDurations : undefined,
       testcaseIds: Array.isArray(body.testcaseIds) ? body.testcaseIds : [],
       stopOnFail: !!body.stopOnFail,
       notes: body.notes,

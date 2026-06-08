@@ -138,11 +138,21 @@ export interface AutomationSuite {
   testcaseIds: string[];
   /** Single filename under /root/enb/config on the callbox (only when
    *  kind == 'uesim+callbox'). May be a file that already lives on the
-   *  callbox (picked from `ls`) or one in `uploadedConfigs`. The runner
-   *  pushes the upload (if any) before triggering the Simnovator
-   *  testcases. Each suite is scoped to ONE radio config — multi-config
-   *  campaigns belong in separate suites. */
+   *  callbox (picked from `ls`) or one in `uploadedConfigs`. The runner:
+   *    1. scp's the upload (if it's a fresh blob)
+   *    2. `ln -sf /root/enb/config/<name> /root/enb/config/enb.cfg`
+   *    3. `service lte restart` (falls back to systemctl)
+   *    4. waits ~15s for the eNB to stabilise
+   *  before triggering any Simnovator testcase. Each suite is scoped to
+   *  ONE radio config — multi-config campaigns belong in separate suites. */
   callboxConfig?: string;
+  /** Max seconds the runner waits for each Simnovator testcase to reach
+   *  a terminal state (Completed/Failed/Aborted/Stopped/Passed) before
+   *  declaring "inconclusive" and moving on. Default 10 if unset. */
+  defaultDurationSec?: number;
+  /** Per-testcase duration overrides (seconds). Falls back to
+   *  defaultDurationSec when an entry is absent. */
+  testcaseDurations?: Record<string, number>;
   /** Default topology profile id when running this suite. */
   topologyId?: string;
   /** If true, skip SSH push + execution trigger; just generate. */

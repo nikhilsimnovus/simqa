@@ -18,6 +18,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { cn } from '@/lib/cn';
 
 interface SystemRow {
   id: string; name: string; host: string; type: string;
@@ -29,6 +30,8 @@ interface SuiteRow {
   uploadedConfigs?: Record<string, string>;
   callboxConfig?: string;
   testcaseIds: string[];
+  defaultDurationSec?: number;
+  testcaseDurations?: Record<string, number>;
   stopOnFail?: boolean;
   updatedAt?: string;
 }
@@ -106,6 +109,12 @@ export default function AutomationSuitePage() {
   const [cbxFilter, setCbxFilter]       = useState<string>('');
   const [tcFilter,  setTcFilter]        = useState<string>('');
   const [stopOnFail, setStopOnFail]     = useState<boolean>(false);
+  // Duration controls
+  const [defaultDur, setDefaultDur]     = useState<number>(10);
+  const [perTcDur,   setPerTcDur]       = useState<Record<string, number>>({});
+  const [massDurInput, setMassDurInput] = useState<string>('10');
+  // Wizard tab state
+  const [tab, setTab]                   = useState<'setup' | 'testcases' | 'results'>('setup');
   /** SSH error surfaced from /api/automation/callbox-configs so the user
    *  sees WHY the config list is empty (auth failure vs empty dir). */
   const [cbxLoadError, setCbxLoadError] = useState<string>('');
@@ -223,6 +232,8 @@ export default function AutomationSuitePage() {
     setUesim(''); setCbx(''); setCbxFiles([]); setUploads({}); setCbxLoadError('');
     setUeTcs([]); setSelectedCfg(''); setSelectedTcs(new Set());
     setStopOnFail(false); setCbxFilter(''); setTcFilter('');
+    setDefaultDur(10); setPerTcDur({}); setMassDurInput('10');
+    setTab('setup');
     setError(''); setShowWizard(false);
   }, []);
 
@@ -238,6 +249,9 @@ export default function AutomationSuitePage() {
     setSelectedCfg(s.callboxConfig ?? '');
     setSelectedTcs(new Set(s.testcaseIds));
     setStopOnFail(!!s.stopOnFail);
+    setDefaultDur(s.defaultDurationSec ?? 10);
+    setPerTcDur(s.testcaseDurations ?? {});
+    setMassDurInput(String(s.defaultDurationSec ?? 10));
     setShowWizard(true);
     if (s.callboxSystemId && s.kind === 'uesim+callbox') void loadCallboxConfigs(s.callboxSystemId);
     if (s.uesimSystemId) void loadUesimTestcases(s.uesimSystemId);
@@ -260,6 +274,11 @@ export default function AutomationSuitePage() {
       ? { [cfg]: uploadedConfigs[cfg] }
       : undefined;
 
+    // Trim per-testcase durations to ONLY the selected testcases so the
+    // suite record doesn't carry stale entries for tcs we unchecked.
+    const trimmedDurs: Record<string, number> = {};
+    for (const id of tcs) if (perTcDur[id] && perTcDur[id] > 0) trimmedDurs[id] = perTcDur[id];
+
     const payload: any = {
       name: name.trim(),
       kind,
@@ -268,6 +287,8 @@ export default function AutomationSuitePage() {
       uploadedConfigs: trimmedUploads,
       callboxConfig: kind === 'uesim+callbox' ? (cfg || undefined) : undefined,
       testcaseIds: tcs,
+      defaultDurationSec: defaultDur > 0 ? defaultDur : 10,
+      testcaseDurations: Object.keys(trimmedDurs).length ? trimmedDurs : undefined,
       stopOnFail,
     };
     setBusy(editingId ? 'update' : 'create'); setError('');
@@ -285,9 +306,10 @@ export default function AutomationSuitePage() {
 
   const runSuite = async (s: SuiteRow) => {
     const tcN = s.testcaseIds.length;
+    const dur = s.defaultDurationSec ?? 10;
     const summary = s.kind === 'uesim+callbox'
-      ? `Push callbox config ${s.callboxConfig ? `'${s.callboxConfig}'` : '(none)'} + trigger ${tcN} Simnovator testcase${tcN === 1 ? '' : 's'}`
-      : `Trigger ${tcN} Simnovator testcase${tcN === 1 ? '' : 's'}`;
+      ? `Push callbox cfg ${s.callboxConfig ? `'${s.callboxConfig}'` : '(none)'} → ln -sf enb.cfg → service lte restart → trigger ${tcN} testcase${tcN === 1 ? '' : 's'} (poll up to ${dur}s each)`
+      : `Trigger ${tcN} Simnovator testcase${tcN === 1 ? '' : 's'} (poll up to ${dur}s each)`;
     if (!window.confirm(`Run suite "${s.name}"?\n\n${summary}.\nDiagnostics: ${collectDiagnostics ? 'perf-qa collection will run alongside' : 'off'}`)) return;
     setRunning(s.id); setRunResult(null); setError('');
     try {
@@ -534,11 +556,31 @@ export default function AutomationSuitePage() {
         {/* Wizard */}
         {showWizard && (
           <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-2">
               <h2 className="text-base font-semibold text-slate-900">{editingId ? 'Edit suite' : 'New suite'}</h2>
               <button onClick={resetWizard} className="text-sm text-slate-500 hover:text-slate-900">Cancel</button>
             </div>
 
+            {/* Tab strip — explicit step counter so the user sees the flow */}
+            <div className="flex items-center gap-1 border-b border-slate-200 mb-5">
+              {([
+                { id: 'setup',     label: '① Setup',      hint: 'name · systems · radio config' },
+                { id: 'testcases', label: '② Testcases',  hint: 'pick + durations' },
+                { id: 'results',   label: '③ Run',        hint: editingId ? 'history + diagnostics' : 'after Save you can run from the list' },
+              ] as const).map(t => (
+                <button key={t.id} type="button" onClick={() => setTab(t.id)}
+                  className={cn(
+                    'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
+                    tab === t.id ? 'border-orange-500 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-700',
+                  )}
+                  title={t.hint}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* ── Tab 1: Setup ─────────────────────────────────── */}
+            {tab === 'setup' && (<>
             <div className="grid grid-cols-2 gap-4 mb-4">
               <label className="flex flex-col">
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Suite name</span>
@@ -548,7 +590,7 @@ export default function AutomationSuitePage() {
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Setup kind</span>
                 <select value={kind} onChange={e => setKind(e.target.value as Kind)} className="border border-slate-300 rounded-md px-3 py-2 text-sm">
                   <option value="uesim-only">UESIM only — testcases from Simnovator REST</option>
-                  <option value="uesim+callbox">UESIM + Callbox — testcases are .cfg files in /root/enb/config</option>
+                  <option value="uesim+callbox">UESIM + Callbox — also bind an eNB .cfg</option>
                 </select>
               </label>
             </div>
@@ -628,37 +670,88 @@ export default function AutomationSuitePage() {
               </div>
             )}
 
-            {/* Simnovator testcase picker — shown for BOTH kinds. In
-                uesim+callbox mode these run AFTER the callbox configs
-                are pushed (the runner does configs first, then tcs). */}
-            {uesimSystemId && (
+            <div className="flex justify-end mt-4">
+              <button onClick={() => setTab('testcases')} className="rounded-md bg-slate-800 hover:bg-slate-900 text-white text-sm px-4 py-2">Next: Testcases →</button>
+            </div>
+            </>)}
+
+            {/* ── Tab 2: Testcases + Durations ─────────────────── */}
+            {tab === 'testcases' && (<>
+            {!uesimSystemId ? (
+              <div className="text-sm text-slate-500 py-6 text-center">
+                Pick a UESIM/Simnovator system on the Setup tab first.
+              </div>
+            ) : (
               <div className="mb-4 border border-slate-200 rounded-md p-3 bg-slate-50/50">
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                    Simnovator testcases from <code>{uesimSystemId}</code> ({selectedTcs.size} selected of {uesimTestcases.length})
+                    Simnovator testcases from <code>{uesimSystemId}</code> · {selectedTcs.size} selected of {uesimTestcases.length}
                   </div>
                   <input type="search" placeholder="filter…" value={tcFilter} onChange={e => setTcFilter(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs" />
                 </div>
-                <div className="border border-slate-200 rounded-md bg-white max-h-60 overflow-y-auto">
+
+                {/* Duration controls — default + mass apply */}
+                <div className="flex flex-wrap items-center gap-3 mb-2 text-sm">
+                  <label className="flex items-center gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Default duration (sec)</span>
+                    <input type="number" min={1} value={defaultDur} onChange={e => setDefaultDur(Math.max(1, Number(e.target.value) || 1))} className="border border-slate-300 rounded-md px-2 py-1 w-[80px] text-sm" />
+                  </label>
+                  <span className="text-xs text-slate-400">|</span>
+                  <label className="flex items-center gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Apply to all selected</span>
+                    <input type="number" min={1} value={massDurInput} onChange={e => setMassDurInput(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 w-[80px] text-sm" />
+                    <button type="button" onClick={() => {
+                      const n = Math.max(1, Number(massDurInput) || 1);
+                      const next: Record<string, number> = { ...perTcDur };
+                      for (const id of selectedTcs) next[id] = n;
+                      setPerTcDur(next);
+                    }} disabled={selectedTcs.size === 0} className="rounded-md bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white text-xs px-2 py-1">Apply</button>
+                  </label>
+                  <button type="button" onClick={() => setPerTcDur({})} className="text-xs text-slate-500 hover:text-slate-900 underline">clear all overrides</button>
+                </div>
+
+                <div className="border border-slate-200 rounded-md bg-white max-h-72 overflow-y-auto">
                   {loadingTc ? (
                     <div className="p-3 text-sm text-slate-500">Pulling testcases from {uesimSystemId}…</div>
                   ) : filteredTcs.length === 0 ? (
                     <div className="p-3 text-sm text-slate-500">No testcases match.</div>
                   ) : (
-                    <ul className="divide-y divide-slate-100 text-sm">
-                      {filteredTcs.map(t => (
-                        <li key={t.id} className="px-3 py-1.5 flex items-center gap-2 hover:bg-slate-50">
-                          <input type="checkbox" checked={selectedTcs.has(t.id)} onChange={e => {
-                            const next = new Set(selectedTcs);
-                            if (e.target.checked) next.add(t.id); else next.delete(t.id);
-                            setSelectedTcs(next);
-                          }} />
-                          <span className="flex-1 truncate" title={t.id}>{t.name}</span>
-                          {t.lastResult && <span className="text-[10px] uppercase text-slate-400">{t.lastResult}</span>}
-                          {t.lastModifiedOn && <span className="text-[10px] text-slate-400 font-mono">{String(t.lastModifiedOn).slice(0, 10)}</span>}
-                        </li>
-                      ))}
-                    </ul>
+                    <table className="min-w-full text-xs">
+                      <thead className="bg-slate-50 text-slate-600 sticky top-0">
+                        <tr>
+                          <th className="px-2 py-1.5">✓</th>
+                          <th className="text-left px-2 py-1.5">Name</th>
+                          <th className="text-left px-2 py-1.5">Last modified</th>
+                          <th className="text-left px-2 py-1.5">Last result</th>
+                          <th className="text-right px-2 py-1.5">Duration (s)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filteredTcs.map(t => {
+                          const checked = selectedTcs.has(t.id);
+                          const dur = perTcDur[t.id] ?? defaultDur;
+                          return (
+                            <tr key={t.id} className="hover:bg-slate-50">
+                              <td className="px-2 py-1 text-center">
+                                <input type="checkbox" checked={checked} onChange={e => {
+                                  const next = new Set(selectedTcs);
+                                  if (e.target.checked) next.add(t.id); else next.delete(t.id);
+                                  setSelectedTcs(next);
+                                }} />
+                              </td>
+                              <td className="px-2 py-1 font-mono text-[11px] truncate max-w-[280px]" title={t.id}>{t.name}</td>
+                              <td className="px-2 py-1 text-slate-500 font-mono text-[10px]">{t.lastModifiedOn?.slice(0, 19).replace('T', ' ') ?? '–'}</td>
+                              <td className="px-2 py-1 text-[10px] uppercase text-slate-500">{t.lastResult ?? '–'}</td>
+                              <td className="px-2 py-1 text-right">
+                                <input type="number" min={1} disabled={!checked} value={dur}
+                                  onChange={e => setPerTcDur({ ...perTcDur, [t.id]: Math.max(1, Number(e.target.value) || 1) })}
+                                  className="border border-slate-300 rounded px-1 py-0.5 w-[60px] text-xs disabled:bg-slate-100 disabled:text-slate-400" />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   )}
                 </div>
               </div>
@@ -666,10 +759,34 @@ export default function AutomationSuitePage() {
 
             <label className="flex items-center gap-2 text-sm mb-4">
               <input type="checkbox" checked={stopOnFail} onChange={e => setStopOnFail(e.target.checked)} />
-              <span>Stop on first failure</span>
+              <span>Stop on first failure (skip remaining tests)</span>
             </label>
 
-            <div className="flex gap-2 justify-end">
+            <div className="flex justify-between mt-4">
+              <button onClick={() => setTab('setup')} className="rounded-md border border-slate-300 text-sm px-4 py-2">← Back: Setup</button>
+              <button onClick={() => setTab('results')} className="rounded-md bg-slate-800 hover:bg-slate-900 text-white text-sm px-4 py-2" disabled={!editingId}>Run history →</button>
+            </div>
+            </>)}
+
+            {/* ── Tab 3: Run results / history ─────────────────── */}
+            {tab === 'results' && (<>
+            {!editingId ? (
+              <div className="text-sm text-slate-500 py-6 text-center">
+                Save the suite first, then click <b>Runs</b> next to it in the list to see history.
+              </div>
+            ) : (
+              <div className="text-sm text-slate-700 py-4 text-center">
+                Run history for this suite lives in the <b>Runs</b> button beside the suite row.
+                Close this wizard to access it.
+              </div>
+            )}
+            <div className="flex justify-between mt-4">
+              <button onClick={() => setTab('testcases')} className="rounded-md border border-slate-300 text-sm px-4 py-2">← Back: Testcases</button>
+            </div>
+            </>)}
+
+            {/* Save / Cancel — sticky across all tabs */}
+            <div className="flex gap-2 justify-end mt-5 pt-4 border-t border-slate-100">
               <button onClick={resetWizard} className="rounded-md border border-slate-300 text-sm px-4 py-2">Cancel</button>
               <button onClick={saveSuite} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
                 {busy ? 'Saving…' : (editingId ? 'Update suite' : 'Save suite')}
