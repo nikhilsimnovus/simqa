@@ -224,7 +224,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   // The callbox phase is now 3 steps when a config is set:
   //   1. cfg-push    scp the upload (or verify the picked file exists)
   //   2. cfg-link    ln -sf /root/enb/config/<name> /root/enb/config/enb.cfg
-  //   3. cfg-restart `service lte restart` (fallback systemctl)
+  //   3. cfg-restart `sudo service lte restart`
   //                  then wait ~15s for the eNB process to bind sockets
   // The total bumps by 3 instead of 1 to reflect the multi-step bring-up.
   const totalWithBringUp = (cfg ? 3 : 0) + tcs.length;
@@ -301,10 +301,8 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
       opts.onProgress?.(done, totalWithBringUp, `cfg-restart:${cfg}`);
       const t2 = Date.now();
       try {
-        // Try systemctl first (newer Ubuntu / RHEL), then plain service
-        // (older Ubuntu / Debian), then init.d (most ancient). Any one
-        // succeeding short-circuits to success.
-        const restartCmd = `(sudo systemctl restart lte 2>/dev/null) || (sudo service lte restart 2>/dev/null) || (sudo /etc/init.d/lte restart 2>/dev/null) || (echo "ERROR: no recognised init system for 'lte'" >&2; exit 1)`;
+        // The Simnovator callbox uses `service lte restart` — not systemd.
+        const restartCmd = `sudo service lte restart`;
         await withSsh(sys, async (ssh) => {
           const r = await ssh.execCommand(restartCmd);
           if (r.code !== 0) throw new Error(r.stderr || r.stdout || `restart exit ${r.code}`);
@@ -502,7 +500,9 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         });
         stepDetails.push(`cfg-link: ${linkPath} → ${safeName}`);
 
-        const restartCmd = `(sudo systemctl restart lte 2>/dev/null) || (sudo service lte restart 2>/dev/null) || (sudo /etc/init.d/lte restart 2>/dev/null) || (echo "ERROR: no recognised init system" >&2; exit 1)`;
+        // The Simnovator callbox uses `service lte restart` — not systemd.
+        // Going through sudo so the simqa SSH user doesn't need to be root.
+        const restartCmd = `sudo service lte restart`;
         await withSsh(callboxSys, async (ssh) => {
           const r = await ssh.execCommand(restartCmd);
           if (r.code !== 0) throw new Error(`restart: ${r.stderr || r.stdout || `exit ${r.code}`}`);
