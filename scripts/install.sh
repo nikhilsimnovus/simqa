@@ -157,7 +157,9 @@ Environment=HOSTNAME=0.0.0.0
 ExecStart=/usr/bin/npm run start
 Restart=on-failure
 RestartSec=5
-NoNewPrivileges=true
+# NB: do NOT set NoNewPrivileges=true — sudo needs the setuid bit, and
+# this unit invokes sudo -n /usr/local/sbin/simqa-update from the
+# /api/update handler. NoNewPrivileges blocks that escalation.
 PrivateTmp=true
 
 [Install]
