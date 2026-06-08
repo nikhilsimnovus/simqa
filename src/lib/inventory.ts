@@ -132,7 +132,13 @@ export interface TopologyProfile {
 export interface AutomationSuite {
   id: string;
   name: string;
-  /** UESIM testcase IDs (the leading slug from /v2/testcases). */
+  /** Testcase identifiers — meaning depends on `kind`:
+   *    kind == 'uesim-only'    → Simnovator REST testcase ids (UUIDs).
+   *    kind == 'uesim+callbox' → filenames under /root/enb/config on the
+   *                              callbox (each .cfg IS the testcase). The
+   *                              file may live on the callbox already
+   *                              (picked from `ls`) or come from a
+   *                              `uploadedConfigs` blob in this suite. */
   testcaseIds: string[];
   /** Default topology profile id when running this suite. */
   topologyId?: string;
@@ -142,24 +148,27 @@ export interface AutomationSuite {
   stopOnFail?: boolean;
   notes?: string;
   // ── Setup kind + system targets (new in 2026-06) ──────────────────────
-  /** Setup shape. 'uesim-only' = pull testcases from a Simnovator/UESIM
-   *  and run them as-is. 'uesim+callbox' = same, but additionally bind a
-   *  callbox eNB config (picked from /root/enb/config on the callbox or
-   *  uploaded) so the suite carries the radio side too. */
+  /** Setup shape:
+   *    'uesim-only'    = testcases come from the Simnovator REST catalog
+   *                      on `uesimSystemId`. Run = trigger each via
+   *                      POST /v2/testcases/{id}/executions.
+   *    'uesim+callbox' = testcases come from /root/enb/config on
+   *                      `callboxSystemId` (or `uploadedConfigs` for ones
+   *                      the user uploaded fresh). Run = for each .cfg
+   *                      push it to /root/enb/config on the callbox
+   *                      (uploaded ones only; picked ones are already
+   *                      there), then report. eNB restart is left to the
+   *                      operator. */
   kind?: 'uesim-only' | 'uesim+callbox';
   /** Inventory id of the UESIM / Simnovator that owns the testcases. */
   uesimSystemId?: string;
   /** Inventory id of the callbox (only when kind == 'uesim+callbox'). */
   callboxSystemId?: string;
-  /** When kind == 'uesim+callbox' — which eNB config to use. */
-  callboxConfig?: {
-    source: 'pick' | 'upload';
-    /** Path on the callbox under /root/enb/config (when source == 'pick'),
-     *  or the chosen filename for the uploaded blob (source == 'upload'). */
-    filename: string;
-    /** Base64 contents of the uploaded config (source == 'upload' only). */
-    contentBase64?: string;
-  };
+  /** Filename → base64 content for any /root/enb/config files the user
+   *  uploaded as part of this suite (kind == 'uesim+callbox' only).
+   *  These files don't exist on the callbox yet — on run, the runner
+   *  scp's them in before any tests fire. */
+  uploadedConfigs?: Record<string, string>;
   createdAt?: string;
   updatedAt?: string;
 }
