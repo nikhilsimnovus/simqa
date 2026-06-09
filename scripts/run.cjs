@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
  * Cross-platform wrapper around `next dev` / `next start` that respects the
- * PORT environment variable. Defaults to 4000 to match the historical port,
- * but at customer sites where 4000 is firewalled the user can:
+ * PORT environment variable. Defaults to 4100 — simqa's canonical port
+ * everywhere (install.sh, systemd unit, INSTALL.md). 4000 belongs to
+ * OneClick (perf-qa); defaulting there caused a port collision when PORT
+ * failed to reach the process. At customer sites the user can override:
  *
  *   PORT=8080 npm run dev           # Linux/macOS
  *   $env:PORT=8080; npm run dev     # PowerShell
@@ -47,7 +49,7 @@ if (!['dev', 'start'].includes(mode)) {
 // still works and overrides our PORT-based default.
 const passthrough = process.argv.slice(3);
 const wantsPort   = passthrough.includes('-p') || passthrough.includes('--port');
-const port        = process.env.PORT ? String(process.env.PORT) : '4000';
+const port        = process.env.PORT ? String(process.env.PORT) : '4100';
 
 const args = [mode];
 if (!wantsPort) args.push('-p', port);

@@ -158,7 +158,10 @@ WorkingDirectory=${SIMQA_HOME}
 Environment=PORT=${LISTEN_PORT}
 Environment=NODE_ENV=production
 Environment=HOSTNAME=0.0.0.0
-# `npm run start` invokes scripts/run.cjs which reads PORT from env.
+# 'npm run start' invokes scripts/run.cjs which reads PORT from env.
+# NB: no backticks in this heredoc — the delimiter (UNIT) is unquoted so
+# it expands \${VARS}; backticks here would command-substitute (running
+# npm run start mid-install, binding the wrong port). Keep it literal.
 ExecStart=/usr/bin/npm run start
 Restart=on-failure
 RestartSec=5
