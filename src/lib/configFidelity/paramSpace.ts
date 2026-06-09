@@ -76,7 +76,6 @@ function buildSubs(spec: Spec) {
     ueCount: spec.ueCount, servingCell: 0,
     algorithm: isNr ? 'xor' : 'milenage',
     sharedKey: '00112233445566778899aabbccddeeff',
-    op: '000102030405060708090A0B0C0D0E0F',
     resLength: 8, securityContext: true,
     asRelease: isNr ? 16 : 13, redCap: false,
     ueCategoryType: 'combined', ueCategory: isNr ? 'nr' : '6',
@@ -98,6 +97,12 @@ function buildSubs(spec: Spec) {
     sub.access_control_classes = []; sub.uac_access_identities = [];
   } else {
     sub.startingIMSI = 1010123456789; sub.nextIMSI = 1;
+    // LTE/milenage requires a real 32-hex OP. NR-SA (xor) must OMIT op
+    // entirely — the box validator flips the /op pattern based on the
+    // value's presence ('^$' when non-empty, 32-hex when empty), so the
+    // only state it accepts for SA is the field being absent. This
+    // matches the real on-box SA-VONR-256 subscriber (op: undefined).
+    sub.op = '000102030405060708090A0B0C0D0E0F';
   }
   if (spec.networkSlicing === 'enable') sub.nssaiObject = [{ sd: 1, sst: 1 }];
   return { subsConfig: { subs: [sub] } };
