@@ -165,6 +165,14 @@ export async function runAutoCreate(
       if (!settR.ok) {
         const m = (await settR.text()).slice(0, 200);
         await DEL(`/v2/testcases/${encodeURIComponent(boxId)}`);
+        // A name collision means the testcase already exists from a prior
+        // run (the dedup pre-load only sees the first 1000 names, so on a
+        // big box a collision can slip through). Treat as a SKIP, not a
+        // failure — keeps re-runs idempotent.
+        if (/already exists/i.test(m)) {
+          skips.push({ name: v.id, reason: 'already on box (name collision past dedup window)' });
+          progress.skipped++; progress.done++; continue;
+        }
         failures.push({ name: v.id, step: 'settings', status: settR.status, message: m });
         progress.failed++; progress.done++; continue;
       }
