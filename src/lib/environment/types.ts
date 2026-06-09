@@ -88,6 +88,28 @@ export interface EnvironmentSite {
   pcscfIp?: string;
   /** IMS realm from the first voice profile. */
   imsRealm?: string;
+
+  /** The GOLD's FULL traffic profile set, in order. A real config can run
+   *  several profiles concurrently on the same UEs — e.g.
+   *  "CS-1cell-64-UDP-TCP-VONR" carries UDP iperf + TCP iperf + VoNR voice
+   *  all on subscriberGroup [-1] (every UE). The "as-GOLD" auto-create
+   *  traffic mode replays these verbatim so generated tests reproduce the
+   *  customer's exact concurrent traffic mix. */
+  trafficProfiles?: GoldTrafficProfile[];
+}
+
+/** One userPlane profile lifted from the GOLD, normalized for replay. */
+export interface GoldTrafficProfile {
+  /** 'iperf' | 'volte' | 'vonr' | 'no_data' | 'ping' | … */
+  dataType: string;
+  /** Subscriber group binding. [-1] = every UE. */
+  subscriberGroup: number[];
+  /** iperf direction. */
+  direction?: string;
+  /** iperf transport. */
+  protocol?: string;
+  /** voice codec (volte/vonr). */
+  codec?: string;
 }
 
 /** Scenario knobs the generator may vary; seeded from GOLD, overridable. */

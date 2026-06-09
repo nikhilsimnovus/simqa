@@ -201,6 +201,22 @@ export function extractFromTestDefinition(td: any, suggestedName?: string): Pars
   const pcscfIp = voiceProfile ? pick(voiceProfile, 'dataNetworkConfig.pcscfIpAddress', 'pcscfIpAddress') : undefined;
   const imsRealm = voiceProfile ? pick(voiceProfile, 'dataNetworkConfig.realm', 'realm') : undefined;
 
+  // Capture the FULL traffic profile set so "as-GOLD" auto-create can
+  // replay the customer's exact concurrent mix (e.g. UDP+TCP+VoNR on the
+  // same UEs).
+  const trafficProfiles = profiles.map(p => {
+    const dataType = pick(p, 'dataGeneralInfo.dataType', 'dataType') ?? 'no_data';
+    const sgRaw = pick(p, 'subscriberGroup');
+    const subscriberGroup = Array.isArray(sgRaw) ? sgRaw : (sgRaw !== undefined ? [sgRaw] : [0]);
+    return {
+      dataType,
+      subscriberGroup,
+      direction: pick(p, 'dataSessionConfig.dataDirection', 'dataDirection') ?? undefined,
+      protocol: pick(p, 'dataSessionConfig.transportProtocol', 'transportProtocol') ?? undefined,
+      codec: pick(p, 'codec') ?? undefined,
+    };
+  }).filter(p => p.dataType);
+
   const site: EnvironmentSite = {
     rat, cells,
     imsiStart: imsiStart ?? 0,
@@ -210,6 +226,7 @@ export function extractFromTestDefinition(td: any, suggestedName?: string): Pars
     op, opc, incrementSharedKey,
     plmn, mncDigits, voNRSupport,
     iperfServerIp, pcscfIp, imsRealm,
+    trafficProfiles: trafficProfiles.length ? trafficProfiles : undefined,
   };
 
   // ── Scenario defaults (seeded from GOLD) ─────────────────────────────

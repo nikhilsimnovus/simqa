@@ -13,7 +13,8 @@
 import { useEffect, useMemo, useState } from 'react';
 
 interface EnvCell { cellType: string; band: string; duplexMode: string; bandwidthMhz?: number; rfCard: number; antennas: { dl: number; ul: number }; scs?: number; nrarfcn?: { dl: number; ssb: number }; earfcn?: { dl: number; ul?: number }; ntn?: boolean }
-interface EnvSite { rat: string; cells: EnvCell[]; imsiStart: number; imsiStride: number; algorithm: string; sharedKey: string; op?: string; opc?: string; plmn?: string[]; iperfServerIp?: string; pcscfIp?: string; voNRSupport?: boolean }
+interface GoldTrafficProfile { dataType: string; subscriberGroup: number[]; direction?: string; protocol?: string; codec?: string }
+interface EnvSite { rat: string; cells: EnvCell[]; imsiStart: number; imsiStride: number; algorithm: string; sharedKey: string; op?: string; opc?: string; plmn?: string[]; iperfServerIp?: string; pcscfIp?: string; voNRSupport?: boolean; trafficProfiles?: GoldTrafficProfile[] }
 interface EnvDefaults { bandwidths?: number[]; ueCount?: number; antennas?: { dl: number; ul: number }; dataType?: string; mobility?: string; fading?: string }
 interface EnvWarning { field: string; reason: string }
 interface Environment { id: string; name: string; createdAt: string; sourceFilename: string; site: EnvSite; defaults: EnvDefaults; extractionWarnings?: EnvWarning[] }
@@ -22,7 +23,16 @@ interface SystemSummary { id: string; name: string; host: string }
 interface Progress { startedAt: string; finishedAt?: string; total: number; done: number; created: number; failed: number; skipped: number; currentName?: string }
 interface AutoResult { total: number; created: any[]; failures: any[]; skips: any[]; buildVersion?: string; targetHost: string }
 
-const TRAFFIC_OPTIONS = ['no_data', 'iperf-dl', 'iperf-ul', 'iperf-both', 'iperf-tcp', 'volte', 'vonr', 'ping'];
+const TRAFFIC_OPTIONS = ['as-gold', 'no_data', 'iperf-dl', 'iperf-ul', 'iperf-both', 'iperf-tcp', 'volte', 'vonr', 'ping'];
+
+/** Compact human summary of the GOLD's concurrent traffic mix. */
+function trafficMixLabel(profiles?: GoldTrafficProfile[]): string {
+  if (!profiles || !profiles.length) return '–';
+  return profiles.map(p => {
+    if (p.dataType === 'iperf') return `${p.protocol ?? 'udp'}-${p.direction ?? 'both'}`;
+    return p.dataType;
+  }).join(' + ');
+}
 
 export default function EnvironmentsPage() {
   const [systems, setSystems] = useState<SystemSummary[]>([]);
@@ -35,7 +45,7 @@ export default function EnvironmentsPage() {
 
   // Matrix state
   const [cellCounts, setCellCounts] = useState<number[]>([1]);
-  const [traffic, setTraffic] = useState<string[]>(['iperf-both']);
+  const [traffic, setTraffic] = useState<string[]>(['as-gold']);
   const [ca, setCa] = useState(false);
   const [ho, setHo] = useState(false);
   const [slicing, setSlicing] = useState(false);
@@ -197,6 +207,7 @@ export default function EnvironmentsPage() {
                   <div>RAT: <b>{draft.site.rat}</b> · cells: {draft.site.cells.length} · IMSI start: {draft.site.imsiStart} · algo: {draft.site.algorithm}</div>
                   <div>Ki: <code>{(draft.site.sharedKey || '').slice(0, 12)}…</code>{draft.site.opc ? ` · OPc: ${draft.site.opc.slice(0,8)}…` : ''} · PLMN: {(draft.site.plmn ?? []).join(', ') || '–'}</div>
                   <div>iperf IP: {draft.site.iperfServerIp ?? '–'} · P-CSCF: {draft.site.pcscfIp ?? '–'} · VoNR: {String(draft.site.voNRSupport ?? false)}</div>
+                  <div>traffic mix: <b className="text-slate-700">{trafficMixLabel(draft.site.trafficProfiles)}</b>{draft.site.trafficProfiles && draft.site.trafficProfiles.length > 1 ? ' (concurrent — use "as-GOLD")' : ''}</div>
                   <div className="mt-2">
                     {draft.site.cells.map((c, i) => (
                       <div key={i} className="font-mono text-[11px] text-slate-600">cell{i}: {c.cellType} {c.band} {c.duplexMode} bw={c.bandwidthMhz} rfCard={c.rfCard} {c.antennas.dl}×{c.antennas.ul}{c.scs ? ` scs${c.scs}` : ''}{c.ntn ? ' NTN' : ''}</div>

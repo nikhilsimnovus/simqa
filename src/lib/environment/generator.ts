@@ -17,7 +17,10 @@ import type { Environment, EnvironmentCell } from './types';
 
 export type EnvTraffic =
   | 'no_data' | 'iperf-dl' | 'iperf-ul' | 'iperf-both' | 'iperf-tcp'
-  | 'volte' | 'vonr' | 'ping';
+  | 'volte' | 'vonr' | 'ping'
+  // Replay the GOLD's full concurrent traffic mix verbatim (e.g.
+  // UDP iperf + TCP iperf + VoNR voice, all on the same UEs).
+  | 'as-gold';
 
 export interface AutoCreateMatrix {
   /** Cell counts to generate (each ≥1). Constrained per-RAT in validate(). */
@@ -344,7 +347,34 @@ export function buildUserPlane(env: Environment, v: EnvVariant, ueCount: number)
   const serverIp = env.site.iperfServerIp ?? '20.10.10.1';
   const profiles: any[] = [];
   const t = v.traffic;
-  if (t === 'no_data') {
+
+  // as-GOLD: replay the customer's exact concurrent traffic mix. Each
+  // GOLD profile is re-emitted with site IPs re-stamped; subscriberGroup
+  // is preserved ([-1] = every UE → concurrent on the same subscribers).
+  if (t === 'as-gold' && env.site.trafficProfiles?.length) {
+    for (const gp of env.site.trafficProfiles) {
+      const group = gp.subscriberGroup?.[0] ?? 0;   // preserve -1 (all UEs)
+      if (gp.dataType === 'iperf') {
+        const dir = (gp.direction as any) ?? 'both';
+        const proto = (gp.protocol as any) ?? 'udp';
+        const p = iperfProfile(group, dir, proto, ueCount, serverIp);
+        p.subscriberGroup = gp.subscriberGroup ?? [group];
+        profiles.push(p);
+      } else if (gp.dataType === 'volte' || gp.dataType === 'vonr') {
+        const p = voiceProfile(env, group, 'vonr', ueCount);
+        p.subscriberGroup = gp.subscriberGroup ?? [group];
+        if (gp.codec) p.codec = gp.codec;
+        profiles.push(p);
+      } else if (gp.dataType === 'ping') {
+        profiles.push({ subscriberGroup: gp.subscriberGroup ?? [group], dataType: 'ping', pdnType: 'ipv4', apnName: '', startDelay: 5, sessionDuration: 60, serverIpAddress: serverIp });
+      } else {
+        profiles.push({ subscriberGroup: gp.subscriberGroup ?? [group], dataType: 'no_data', pdnType: 'ipv4', apnName: '' });
+      }
+    }
+    return { userPlaneConfig: { profiles } };
+  }
+
+  if (t === 'no_data' || t === 'as-gold') {
     profiles.push({ subscriberGroup: [0], dataType: 'no_data', pdnType: 'ipv4', apnName: '' });
   } else if (t === 'ping') {
     profiles.push({ subscriberGroup: [0], dataType: 'ping', pdnType: 'ipv4', apnName: '', startDelay: 5, sessionDuration: 60, serverIpAddress: serverIp });
