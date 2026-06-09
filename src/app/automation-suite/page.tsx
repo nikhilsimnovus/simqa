@@ -41,6 +41,7 @@ interface SuiteRow {
   testcaseDurations?: Record<string, number>;
   items?: SuiteItem[];
   stopOnFail?: boolean;
+  removeConfigAfterRun?: boolean;
   updatedAt?: string;
 }
 interface UesimTestcase {
@@ -119,6 +120,9 @@ export default function AutomationSuitePage() {
   const [cbxFilter, setCbxFilter]       = useState<string>('');
   const [tcFilter,  setTcFilter]        = useState<string>('');
   const [stopOnFail, setStopOnFail]     = useState<boolean>(false);
+  // Default ON: after each item the runner removes the simqa-deployed
+  // cfg + enb.cfg symlink so the callbox stays tidy.
+  const [removeCfgAfterRun, setRemoveCfgAfterRun] = useState<boolean>(true);
   // Duration controls
   const [defaultDur, setDefaultDur]     = useState<number>(10);
   const [perTcDur,   setPerTcDur]       = useState<Record<string, number>>({});
@@ -246,7 +250,7 @@ export default function AutomationSuitePage() {
     setEditingId(''); setName(''); setKind('uesim-only');
     setUesim(''); setCbx(''); setCbxFiles([]); setUploads({}); setCbxLoadError('');
     setUeTcs([]); setSelectedCfg(''); setSelectedTcs(new Set());
-    setStopOnFail(false); setCbxFilter(''); setTcFilter('');
+    setStopOnFail(false); setRemoveCfgAfterRun(true); setCbxFilter(''); setTcFilter('');
     setDefaultDur(10); setPerTcDur({}); setMassDurInput('10');
     setItems([]); setAddTcId(''); setAddCfg('');
     setTab('setup');
@@ -268,6 +272,7 @@ export default function AutomationSuitePage() {
     setDefaultDur(s.defaultDurationSec ?? 10);
     setPerTcDur(s.testcaseDurations ?? {});
     setMassDurInput(String(s.defaultDurationSec ?? 10));
+    setRemoveCfgAfterRun(s.removeConfigAfterRun !== false);
     // Items: prefer the new items[]; if absent (legacy suite), synthesize
     // from the flat testcaseIds list + shared callboxConfig.
     if (s.items && s.items.length > 0) {
@@ -335,6 +340,7 @@ export default function AutomationSuitePage() {
       testcaseDurations: Object.keys(trimmedDurs).length ? trimmedDurs : undefined,
       items: items.length > 0 ? items : undefined,
       stopOnFail,
+      removeConfigAfterRun: removeCfgAfterRun,
     };
     setBusy(editingId ? 'update' : 'create'); setError('');
     try {
@@ -786,14 +792,41 @@ export default function AutomationSuitePage() {
                     </label>
                   )}
                   <div className="flex gap-2">
-                    <button type="button" onClick={() => {
+                    <button type="button" onClick={async () => {
                       if (!addTcId) return;
                       const tc = uesimTestcases.find(t => t.id === addTcId);
+                      const cfgName = kind === 'uesim+callbox' && addCfg ? addCfg : undefined;
+                      // If the user picked an EXISTING file on the callbox
+                      // (i.e. not already in uploadedConfigs), pull it DOWN
+                      // first + stash in uploadedConfigs so the suite is
+                      // self-contained. Runner deploys from the local
+                      // blob with a sanitized name + cleans up after.
+                      let nextUploads = uploadedConfigs;
+                      if (cfgName && !uploadedConfigs[cfgName] && callboxSystemId) {
+                        try {
+                          const r = await fetch('/api/automation/callbox-configs/download', {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ systemId: callboxSystemId, filename: cfgName }),
+                          });
+                          const d = await r.json();
+                          if (d.ok && d.contentBase64) {
+                            nextUploads = { ...uploadedConfigs, [cfgName]: d.contentBase64 };
+                            setUploads(nextUploads);
+                          } else {
+                            // Surface the failure but still let the user
+                            // add the row — the runner's legacy cp path
+                            // can deploy it from the box at runtime.
+                            setError('cfg download failed: ' + (d.error ?? 'unknown') + ' (suite will fall back to in-place cp at run time)');
+                          }
+                        } catch (e: any) {
+                          setError('cfg download threw: ' + (e?.message ?? e));
+                        }
+                      }
                       const newItem: SuiteItem = {
                         id: `item-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
                         name: tc?.name ?? addTcId,
                         simnovatorTcId: addTcId,
-                        callboxCfg: kind === 'uesim+callbox' && addCfg ? addCfg : undefined,
+                        callboxCfg: cfgName,
                       };
                       setItems([...items, newItem]);
                       setAddTcId(''); setAddCfg('');
@@ -816,9 +849,13 @@ export default function AutomationSuitePage() {
               </div>
             </>)}
 
-            <label className="flex items-center gap-2 text-sm mb-4">
+            <label className="flex items-center gap-2 text-sm mb-2">
               <input type="checkbox" checked={stopOnFail} onChange={e => setStopOnFail(e.target.checked)} />
               <span>Stop on first failure (skip remaining items)</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm mb-4" title="When checked (default), after each item the runner removes the simqa-deployed cfg + enb.cfg symlink so the callbox is left tidy. Uncheck to keep the files in place for post-mortem inspection.">
+              <input type="checkbox" checked={removeCfgAfterRun} onChange={e => setRemoveCfgAfterRun(e.target.checked)} />
+              <span>Remove deployed cfg from callbox after each item (recommended)</span>
             </label>
 
             <div className="flex justify-between mt-4">

@@ -179,6 +179,11 @@ export interface AutomationSuite {
   /** Per-testcase duration overrides (seconds). Falls back to
    *  defaultDurationSec when an entry is absent. */
   testcaseDurations?: Record<string, number>;
+  /** When true, after each item's testcase completes the runner removes
+   *  the deployed cfg from /root/enb/config (keeping the callbox tidy).
+   *  Default true. Set false for debugging — leaves the cfg in place so
+   *  an operator can inspect / re-run by hand. */
+  removeConfigAfterRun?: boolean;
   /** Default topology profile id when running this suite. */
   topologyId?: string;
   /** If true, skip SSH push + execution trigger; just generate. */

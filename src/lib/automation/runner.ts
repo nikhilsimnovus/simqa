@@ -586,17 +586,23 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     let itemOk = true;
 
     // ── Phase 1-3: callbox bring-up (only if cfg + callbox present)
+    // New policy (2026-06): source-of-truth for each item's cfg is the
+    // local blob in suite.uploadedConfigs (pulled DOWN from the callbox
+    // at suite-save time when the user picks an existing /root/enb/config
+    // file, OR put there by upload). At run-time we ALWAYS scp the blob
+    // UP with a sanitized "safe" filename — sidesteps the commas + special
+    // chars that break ln on the callbox (e.g.
+    // "370-TC03-01,02,03,04,06,07,08-gnb.cfg").
     if (callboxSys && item.callboxCfg) {
       const cfg = item.callboxCfg;
-      const safeName = safe(cfg);
-      const target = `/root/enb/config/${safeName}`;
+      const deployName = `simqa-${safe(item.id)}.cfg`;       // deterministic per item
+      const target = `/root/enb/config/${deployName}`;
       const linkPath = `/root/enb/config/enb.cfg`;
-      const isUpload = !!suite.uploadedConfigs?.[cfg];
+      const blob = suite.uploadedConfigs?.[cfg];
 
       try {
-        if (isUpload) {
-          const b64 = suite.uploadedConfigs![cfg];
-          const buf = Buffer.from(b64, 'base64');
+        if (blob) {
+          const buf = Buffer.from(blob, 'base64');
           await withSsh(callboxSys, async (ssh) => {
             const sftp = await ssh.requestSFTP();
             await new Promise<void>((resolve, reject) => {
@@ -606,19 +612,31 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               ws.end(buf);
             });
           });
-          existing.add(safeName);
-          stepDetails.push(`cfg-push: uploaded ${buf.length}B`);
-        } else if (!existing.has(cfg) && !existing.has(safeName)) {
-          throw new Error(`cfg "${cfg}" missing on callbox /root/enb/config`);
+          stepDetails.push(`cfg-push: scp ${buf.length}B → ${deployName} (source: "${cfg}")`);
         } else {
-          stepDetails.push(`cfg-push: present`);
+          // Legacy fallback: cfg name refers to a file already on the
+          // callbox (the wizard didn't pull it down). cp (not mv) so the
+          // operator's original named file stays put.
+          if (!existing.has(cfg) && !existing.has(safe(cfg))) {
+            throw new Error(`cfg "${cfg}" not in suite uploadedConfigs and missing on callbox /root/enb/config`);
+          }
+          const sourceOnBox = existing.has(cfg) ? cfg : safe(cfg);
+          await withSsh(callboxSys, async (ssh) => {
+            // Quote-safe even when the source has commas: single-quoted
+            // shell arg with embedded literal quote escape.
+            const safeShell = sourceOnBox.replace(/'/g, "'\\''");
+            const r = await ssh.execCommand(`cp -f '/root/enb/config/${safeShell}' '${target}'`);
+            if (r.code !== 0) throw new Error(`cp: ${r.stderr || r.stdout || `exit ${r.code}`}`);
+          });
+          stepDetails.push(`cfg-push: copied existing "${sourceOnBox}" → ${deployName}`);
         }
+        existing.add(deployName);
 
         await withSsh(callboxSys, async (ssh) => {
           const r = await ssh.execCommand(`ln -sfn "${target}" "${linkPath}"`);
           if (r.code !== 0) throw new Error(`ln: ${r.stderr || r.stdout || `exit ${r.code}`}`);
         });
-        stepDetails.push(`cfg-link: ${linkPath} → ${safeName}`);
+        stepDetails.push(`cfg-link: ${linkPath} → ${deployName}`);
 
         // The Simnovator callbox uses `service lte restart` — not systemd.
         // Going through sudo so the simqa SSH user doesn't need to be root.
@@ -710,6 +728,22 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       steps.push({ testcaseId: item.name, status: 0, ok: false, detail: `threw: ${e?.message ?? e}`, durationMs: Date.now() - t0 });
       failed += 1;
       if (suite.stopOnFail) { done += 1; break; }
+    } finally {
+      // Phase 6: per-item cleanup (default ON).
+      // Removes the simqa-<id>.cfg deploy file + the enb.cfg symlink so
+      // the callbox is left tidy for the next operator. Set
+      // suite.removeConfigAfterRun=false to keep the files for
+      // post-mortem inspection. Best-effort: a failed rm doesn't
+      // change the test verdict.
+      const cleanup = suite.removeConfigAfterRun !== false; // default true
+      if (cleanup && callboxSys && item.callboxCfg) {
+        try {
+          const deployName = `simqa-${safe(item.id)}.cfg`;
+          await withSsh(callboxSys, async (ssh) => {
+            await ssh.execCommand(`rm -f "/root/enb/config/${deployName}" "/root/enb/config/enb.cfg"`);
+          });
+        } catch { /* cleanup is best-effort */ }
+      }
     }
     done += 1;
   }

@@ -33,6 +33,7 @@ export async function POST(req: Request) {
       callboxConfig: typeof body.callboxConfig === 'string' && body.callboxConfig.trim() ? body.callboxConfig.trim() : undefined,
       defaultDurationSec: typeof body.defaultDurationSec === 'number' && body.defaultDurationSec > 0 ? body.defaultDurationSec : undefined,
       testcaseDurations: body.testcaseDurations && typeof body.testcaseDurations === 'object' ? body.testcaseDurations : undefined,
+      removeConfigAfterRun: typeof body.removeConfigAfterRun === 'boolean' ? body.removeConfigAfterRun : undefined,
       items: Array.isArray(body.items) ? body.items.filter((it: any) => it && typeof it === 'object' && it.simnovatorTcId).map((it: any) => ({
         id: typeof it.id === 'string' && it.id ? it.id : `item-${Math.random().toString(36).slice(2, 10)}`,
         name: typeof it.name === 'string' && it.name.trim() ? it.name.trim() : it.simnovatorTcId,
