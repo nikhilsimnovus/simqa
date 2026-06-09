@@ -36,7 +36,14 @@ export function getEnvironment(id: string): Environment | undefined {
 /** Insert (no id collision allowed). Returns the persisted Environment. */
 export function createEnvironment(input: Omit<Environment, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }): Environment {
   const s = read();
-  const id = input.id ?? `env-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000).toString(36)}`;
+  // NB: the page posts the draft as { ...draft, id: '', createdAt: '' }, so
+  // input.id is an EMPTY STRING, not undefined — `?? ` would keep '' and
+  // every saved env would collide on id ''. Treat any blank id as absent
+  // and mint a fresh one. (This is why only the first env could be saved;
+  // the second threw "id already exists" → 500.)
+  const id = (typeof input.id === 'string' && input.id.trim())
+    ? input.id
+    : `env-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000).toString(36)}`;
   if (s.environments.some(x => x.id === id)) throw new Error(`environment id "${id}" already exists`);
   const now = new Date().toISOString();
   const env: Environment = { ...input, id, createdAt: now, updatedAt: now };
