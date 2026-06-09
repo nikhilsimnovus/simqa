@@ -703,5 +703,30 @@ export async function runSuite(suite: AutomationSuite, opts: RunOpts = {}): Prom
     diagnostics,
   };
   saveRun(rec);
+  // Cross-surface history row so /runs shows this suite-run alongside
+  // every other surface's runs.
+  try {
+    const { appendHistoryEntry } = await import('../historyStore');
+    appendHistoryEntry({
+      surface: 'automation-suite',
+      label: `Automation suite "${suite.name}" · ${rec.total} steps · ${rec.passed} pass / ${rec.failed} fail`,
+      startedAt: rec.startedAt,
+      finishedAt: rec.finishedAt,
+      targetSystemId: suite.uesimSystemId,
+      targetHost: rec.uesimHost,
+      buildVersion: rec.buildVersion,
+      total: rec.total,
+      passed: rec.passed,
+      failed: rec.failed,
+      detailPath: `data/automation-runs/${suite.id}/${rec.runId}.json`,
+      meta: {
+        suiteId: suite.id,
+        suiteName: suite.name,
+        kind: rec.kind,
+        callboxHost: rec.callboxHost,
+        diagnostics: !!diagnostics,
+      },
+    });
+  } catch { /* history side-channel */ }
   return rec;
 }

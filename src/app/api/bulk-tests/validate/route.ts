@@ -10,6 +10,7 @@ import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
 import { validateBulkTestcases } from '@/lib/bulkTests/validator';
 import { getState, readManifest, writeValidationSummary } from '@/lib/bulkTests/state';
 import { writeBuildReport } from '@/lib/bulkTests/reportBuilder';
+import { appendHistoryEntry } from '@/lib/historyStore';
 import type { UesimApiOpts } from '@/lib/bulkTests/types';
 
 export const dynamic = 'force-dynamic';
@@ -61,7 +62,30 @@ export async function POST(req: Request) {
       // Emit the per-build report (HTML + MD + JSON) so QA has a
       // shareable artifact for this Simnovator build. Joins the
       // generation manifest with the just-finished validation results.
-      try { writeBuildReport({ generation: result, validation: summary }); } catch (e) { /* don't fail the run if the report fails */ }
+      let detailPath: string | undefined;
+      try {
+        const paths = writeBuildReport({ generation: result, validation: summary });
+        detailPath = paths.htmlPath ? `dist/build-reports/${paths.buildSlug}/report.html` : undefined;
+      } catch (e) { /* don't fail the run if the report fails */ }
+      // Append a unified-history row so /runs shows this bulk-validate
+      // alongside everything else. Fail-closed: a write hiccup here
+      // must not break the API response.
+      try {
+        appendHistoryEntry({
+          surface: 'bulk-validate',
+          label: `Bulk validate · ${summary.total} testcases · ${summary.passed} pass / ${summary.failed} fail`,
+          startedAt: summary.startedAt,
+          finishedAt: summary.finishedAt,
+          targetSystemId: systemId,
+          targetHost: summary.targetHost,
+          buildVersion: result.buildVersion,
+          total: summary.total,
+          passed: summary.passed,
+          failed: summary.failed,
+          detailPath,
+          meta: { manifestSize: result.created.length },
+        });
+      } catch { /* history is a side-channel */ }
     } catch (e: any) {
       state.validation.result = {
         startedAt: state.validation.progress?.startedAt ?? new Date().toISOString(),

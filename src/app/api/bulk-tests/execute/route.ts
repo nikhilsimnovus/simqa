@@ -15,6 +15,7 @@ import { NextResponse } from 'next/server';
 import { loadInventory } from '@/lib/inventory';
 import { executeBulkTestcases } from '@/lib/bulkTests/executor';
 import { getState, readManifest } from '@/lib/bulkTests/state';
+import { appendHistoryEntry } from '@/lib/historyStore';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 3600;   // up to 60 min for ~30 sequential exec runs
@@ -61,6 +62,22 @@ export async function POST(req: Request) {
         onProgress: (p) => { state.execution!.progress = p; },
       });
       state.execution!.result = summary;
+      try {
+        appendHistoryEntry({
+          surface: 'bulk-execute',
+          label: `Bulk execute · ${summary.total} sampled · ${summary.passed} pass / ${summary.failed} fail`,
+          startedAt: summary.startedAt,
+          finishedAt: summary.finishedAt,
+          targetSystemId: systemId,
+          targetHost: summary.targetHost,
+          buildVersion: summary.buildVersion,
+          total: summary.total,
+          passed: summary.passed,
+          failed: summary.failed,
+          detailPath: summary.evidenceRoot,
+          meta: { uesimSystemId, sampleSize: sampleSize ?? null },
+        });
+      } catch { /* history side-channel */ }
     } catch (e: any) {
       state.execution!.result = {
         startedAt: state.execution!.progress?.startedAt ?? new Date().toISOString(),

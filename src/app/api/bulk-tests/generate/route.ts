@@ -11,6 +11,7 @@ import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
 import { generateBulkTestcases } from '@/lib/bulkTests/generator';
 import { executeBulkTestcases } from '@/lib/bulkTests/executor';
 import { getState, writeManifest } from '@/lib/bulkTests/state';
+import { appendHistoryEntry } from '@/lib/historyStore';
 import type { UesimApiOpts } from '@/lib/bulkTests/types';
 import type { SweepSize } from '@/lib/bulkTests/spec';
 
@@ -60,6 +61,23 @@ export async function POST(req: Request) {
       );
       state.generation.result = result;
       writeManifest(result);
+      try {
+        appendHistoryEntry({
+          surface: 'bulk-generate',
+          label: `Bulk generate (${sweep}) · ${result.total} planned · ${result.passed} created · ${result.failed} fail · ${result.skipped} skip`,
+          startedAt: result.startedAt,
+          finishedAt: result.finishedAt,
+          targetSystemId: systemId,
+          targetHost: result.targetHost,
+          buildVersion: result.buildVersion,
+          total: result.total,
+          passed: result.passed,
+          failed: result.failed,
+          skipped: result.skipped,
+          detailPath: 'data/bulk-tests/manifest.json',
+          meta: { sweep, limit: limit ?? null },
+        });
+      } catch { /* history is a side-channel */ }
 
       // If the caller asked for the combined generate+execute flow, kick
       // the executor off now over the just-created manifest. We always
@@ -82,6 +100,22 @@ export async function POST(req: Request) {
             onProgress: (p) => { state.execution!.progress = p; },
           });
           state.execution!.result = execSummary;
+          try {
+            appendHistoryEntry({
+              surface: 'bulk-execute',
+              label: `Bulk execute · ${execSummary.total} sampled · ${execSummary.passed} pass / ${execSummary.failed} fail`,
+              startedAt: execSummary.startedAt,
+              finishedAt: execSummary.finishedAt,
+              targetSystemId: systemId,
+              targetHost: execSummary.targetHost,
+              buildVersion: execSummary.buildVersion,
+              total: execSummary.total,
+              passed: execSummary.passed,
+              failed: execSummary.failed,
+              detailPath: execSummary.evidenceRoot,
+              meta: { uesimSystemId, sampleSize: execSampleSize ?? null },
+            });
+          } catch { /* history side-channel */ }
         } finally {
           if (state.execution?.progress) state.execution.progress.finishedAt = new Date().toISOString();
         }

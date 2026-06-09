@@ -8,6 +8,7 @@ import { NextResponse } from 'next/server';
 import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
 import { validateBulkTestcasesViaUI } from '@/lib/bulkTests/uiValidator';
 import { getState, readManifest } from '@/lib/bulkTests/state';
+import { appendHistoryEntry } from '@/lib/historyStore';
 import type { UesimApiOpts } from '@/lib/bulkTests/types';
 
 export const dynamic = 'force-dynamic';
@@ -56,6 +57,22 @@ export async function POST(req: Request) {
         handle.abort.signal,
       );
       state.uiValidation.result = summary;
+      try {
+        appendHistoryEntry({
+          surface: 'bulk-validate-ui',
+          label: `Bulk validate (UI) · ${summary.sampleSize} sampled of ${result.created.length} · ${summary.passed} pass / ${summary.failed} fail`,
+          startedAt: summary.startedAt,
+          finishedAt: summary.finishedAt,
+          targetSystemId: systemId,
+          targetHost: summary.targetHost,
+          buildVersion: result.buildVersion,
+          total: summary.total,
+          passed: summary.passed,
+          failed: summary.failed,
+          detailPath: summary.runDir,
+          meta: { sampleSize: summary.sampleSize, manifestSize: result.created.length },
+        });
+      } catch { /* history side-channel */ }
     } catch (e: any) {
       state.uiValidation.result = {
         startedAt: state.uiValidation.progress?.startedAt ?? new Date().toISOString(),
