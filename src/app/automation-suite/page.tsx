@@ -93,6 +93,7 @@ export default function AutomationSuitePage() {
   const [suites, setSuites]   = useState<SuiteRow[]>([]);
   const [busy, setBusy]       = useState<string>('');
   const [error, setError]     = useState<string>('');
+  const [invWarnings, setInvWarnings] = useState<string[]>([]);
   const [showWizard, setShowWizard] = useState(false);
   const [editingId, setEditingId] = useState<string>('');
 
@@ -192,6 +193,7 @@ export default function AutomationSuitePage() {
       ]);
       const sys: SystemRow[] = (sysR?.systems ?? []).map((s: any) => ({ id: s.id, name: s.name, host: s.host, type: s.type ?? 'UESIM' }));
       setSystems(sys);
+      setInvWarnings(((sysR?.warnings ?? []) as Array<{ message: string }>).map((w) => w.message));
       setSuites((suitesR?.suites ?? []) as SuiteRow[]);
     } catch (e: any) { setError(e?.message ?? String(e)); }
   }, []);
@@ -425,6 +427,15 @@ export default function AutomationSuitePage() {
         </header>
 
         {error && <div className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>}
+
+        {invWarnings.length > 0 && (
+          <div className="mb-4 text-sm text-amber-900 bg-amber-50 border border-amber-300 rounded-md px-3 py-2">
+            <div className="font-semibold mb-1">⚠ Inventory needs attention</div>
+            <ul className="list-disc pl-5 space-y-0.5">
+              {invWarnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          </div>
+        )}
 
         {/* Suite list */}
         <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">

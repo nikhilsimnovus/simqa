@@ -312,6 +312,25 @@ export function listTestableSystems(inv: Inventory): Array<{ id: string; name: s
     .map((s) => ({ id: s.id, name: s.name, host: s.host, type: s.type }));
 }
 
+/** System ids must be unique. inventory.yaml is hand-edited, so it's easy to
+ *  reuse an id (e.g. two systems both "sys-6"). getSystem() then returns only
+ *  the FIRST match — the rest are silently shadowed, which surfaces downstream
+ *  as confusing errors like "callboxSystemId X is not a CALLBOX". Detect the
+ *  collision up front so the UI can flag it loudly. */
+export function duplicateSystemIds(inv: Inventory): Array<{ id: string; count: number; entries: Array<{ type: SystemType; name: string; host: string }> }> {
+  const byId = new Map<string, Array<{ type: SystemType; name: string; host: string }>>();
+  for (const s of inv.systems) {
+    const arr = byId.get(s.id) ?? [];
+    arr.push({ type: s.type, name: s.name, host: s.host });
+    byId.set(s.id, arr);
+  }
+  const out: Array<{ id: string; count: number; entries: Array<{ type: SystemType; name: string; host: string }> }> = [];
+  for (const [id, entries] of byId) {
+    if (entries.length > 1) out.push({ id, count: entries.length, entries });
+  }
+  return out;
+}
+
 /** Inventory systems that can be the install target for a Simnovator build (Build Check). */
 export function listSimnovatorTargets(inv: Inventory): InventorySystem[] {
   return inv.systems.filter(isSimnovatorTarget);
