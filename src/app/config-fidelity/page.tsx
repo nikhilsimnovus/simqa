@@ -94,8 +94,11 @@ export default function ConfigFidelityPage() {
   return (
     <>
       <Header title="Config Fidelity" subtitle="Create → execute → retrieve ue.cfg → prove every JSON parameter is honoured" uesimHost={report?.targetHost}
-        right={busy ? <Button variant="danger" size="sm" onClick={abort}><Square className="h-4 w-4" /> Abort</Button>
-          : <Button size="sm" onClick={start} disabled={!target}><Play className="h-4 w-4" /> Run matrix</Button>} />
+        right={<div className="flex items-center gap-2">
+          <a href="/runs?surface=config-fidelity" className="text-sm rounded-md border border-slate-300 px-3 py-1.5 text-slate-700 hover:bg-slate-50 whitespace-nowrap">Past runs →</a>
+          {busy ? <Button variant="danger" size="sm" onClick={abort}><Square className="h-4 w-4" /> Abort</Button>
+            : <Button size="sm" onClick={start} disabled={!target}><Play className="h-4 w-4" /> Run matrix</Button>}
+        </div>} />
       <main className="p-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Controls */}
         <div className="lg:col-span-1 space-y-4">

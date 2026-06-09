@@ -74,6 +74,16 @@ export default function RunsPage() {
     } catch (e: any) { setError(e?.message ?? String(e)); }
   };
 
+  // Pre-set the surface filter from a ?surface= URL param so the
+  // "Past runs →" links on the bulk-tests / config-fidelity pages land
+  // already scoped to that surface.
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search).get('surface');
+      if (sp) setSurfaceFilter(sp);
+    } catch { /* SSR / no window */ }
+  }, []);
+
   useEffect(() => { load(); }, []);
   // Poll every 5s so a run completing elsewhere shows up here without a
   // manual refresh. Cheap — bytes are small + the file glob is fast.
