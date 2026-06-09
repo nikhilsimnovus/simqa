@@ -1,6 +1,14 @@
 // Generate src/lib/configFidelity/bandTable.ts from the vetted master CSV.
 import * as fs from 'fs';
-const CSV = process.argv[2] || 'C:\\Users\\Simnovus-Lab\\Documents\\master-all-rats.csv';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
+// The canonical CSV lives beside bandTable.ts in the repo. Resolve it
+// relative to THIS script so the generator works on any machine (it used
+// to hard-code a developer-specific Documents path that only existed on
+// one box, so re-running it elsewhere silently failed).
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_CSV = path.join(__dirname, '..', 'src', 'lib', 'configFidelity', 'master-all-rats.csv');
+const CSV = process.argv[2] || REPO_CSV;
 const lines = fs.readFileSync(CSV, 'utf8').split(/\r?\n/).filter((l) => l.trim());
 const rows = [];
 for (const line of lines.slice(1)) {

@@ -133,6 +133,7 @@ export function expandSlices(nr: BandInfoMap, lte: BandInfoMap, slices: readonly
 
 function buildCellsBody(spec: BulkTestCaseSpec) {
   if (spec.rat === 'LTE' || spec.rat === 'NB-IoT') {
+    const isNb = spec.rat === 'NB-IoT';
     return {
       cellConfig: {
         master: {
@@ -141,7 +142,11 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
           channelSim: false,
           pdcchDecodeOpt: true,
           pdcchDecodeOptThreshold: 0.1,
-          ratType: 'smartphone',
+          // NB-IoT runs on a 4g cell but with the dedicated 'nbiot' ratType
+          // (NOT 'smartphone'). Sending 'smartphone' silently created a
+          // plain LTE testcase mislabelled as NB-IoT (verified vs the
+          // box-accepted cf band-sweep NB-IoT path).
+          ratType: isNb ? 'nbiot' : 'smartphone',
           turboIteration: 14,
         },
         cells: [{
@@ -150,7 +155,9 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
           duplexMode: spec.duplexMode,
           band: spec.band,
           EARFCN: { dl: spec.earfcnDl, ul: spec.earfcnUl ?? spec.earfcnDl + 18000 },
-          bandwidth: String(spec.bandwidth),
+          // NB-IoT is narrowband — the box's nbiot ratType wants '1.4'
+          // (the cf band-sweep path uses the same; verified accepted).
+          bandwidth: isNb ? '1.4' : String(spec.bandwidth),
           prach: 0,
           antennas: { dl: spec.antennas.dl, ul: spec.antennas.ul },
           rfCard: 0,
@@ -339,7 +346,50 @@ function buildSubscribersBody(spec: BulkTestCaseSpec) {
     };
   }
 
-  // LTE / NB-IoT subscriber schema (eea/eia + integer asRelease + IMSI).
+  // NB-IoT subscriber schema — distinct from LTE: ueCategory 'nb1' + the
+  // NB-IoT-only flags (CIOTOpt/halfDuplex/multiTone/multiCarrier/twoHarq).
+  // Mirrors the box-accepted cf band-sweep bandNbiotSubs. NB-IoT is always
+  // single-UE / no_data in the bulk spec, so no mix-traffic branch.
+  if (spec.rat === 'NB-IoT') {
+    return {
+      subsConfig: {
+        subs: [{
+          ueCount: spec.ueCount,
+          servingCell: 0,
+          startingIMSI: imsiSeed,
+          nextIMSI: 1,
+          algorithm: 'milenage',
+          sharedKey: '00112233445566778899aabbccddeeff',
+          op: '000102030405060708090A0B0C0D0E0F',
+          resLength: 8,
+          securityContext: true,
+          asRelease: 13,
+          redCap: false,
+          ueCategoryType: 'combined',
+          ueCategory: 'nb1',
+          multiTone: true,
+          multiCarrier: true,
+          twoHarq: false,
+          imeisv: '4085780000000102',
+          powerControl: false,
+          attachType: 'normal',
+          ueInitiatedEvents: 'rrc',
+          eventsInLoop: false,
+          triggerTime: [10],
+          pdnType: 'ipv4',
+          defaultApn: '',
+          preambleIndex: 0,
+          CIOTOpt: true,
+          halfDuplex: true,
+          cipherAlgorithm: ['eea0', 'eea1', 'eea2'],
+          integrityAlgorithm: ['eia0', 'eia1', 'eia2'],
+          cqi: 'auto', ri: 'auto', pmi: 'auto',
+        }],
+      },
+    };
+  }
+
+  // LTE subscriber schema (eea/eia + integer asRelease + IMSI).
   const lteSub = (group: number, ueCount: number) => ({
     ueCount,
     servingCell: 0,

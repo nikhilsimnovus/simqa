@@ -93,7 +93,12 @@ function buildSubs(spec: Spec) {
     // the box validator (verified live — null on any of them -> 400).
     sub.startingSUPI = 1010123456001; sub.nextSUPI = 1; sub.mncDigits = 2;
     sub.VoNRSupport = true; sub.protectionScheme = 'null';
-    sub.publicKey = '00112233445566778899aabbccddeeff'; sub.publicKeyId = 0; sub.routingIndicator = 1111;
+    // With protectionScheme 'null' there is NO public key — the hand-authored
+    // on-box SA template + the bulk generator both omit `publicKey` and send
+    // only publicKeyId. Sending a publicKey here is the same conditional-field
+    // class as the old /op bug (accepted today, but the next to break if the
+    // box tightens validation). Omit it.
+    sub.publicKeyId = 0; sub.routingIndicator = 1111;
     sub.access_control_classes = []; sub.uac_access_identities = [];
   } else {
     sub.startingIMSI = 1010123456789; sub.nextIMSI = 1;

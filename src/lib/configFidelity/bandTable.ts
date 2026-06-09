@@ -30,7 +30,6 @@ export const BAND_TABLE: BandRow[] = [
   {"rat":"NR","band":48,"duplex":"TDD","bwMhz":10,"scsKhz":30,"ssbScsKhz":30,"dlArfcn":641666,"ssbArfcn":641664},
   {"rat":"NR","band":50,"duplex":"TDD","bwMhz":10,"scsKhz":30,"ssbScsKhz":30,"dlArfcn":294900,"ssbArfcn":294990},
   {"rat":"NR","band":53,"duplex":"TDD","bwMhz":5,"scsKhz":15,"ssbScsKhz":15,"dlArfcn":497880,"ssbArfcn":497790},
-  {"rat":"NR","band":65,"duplex":"FDD","bwMhz":5,"scsKhz":15,"ssbScsKhz":15,"dlArfcn":431040,"ssbArfcn":431070},
   {"rat":"NR","band":66,"duplex":"FDD","bwMhz":5,"scsKhz":15,"ssbScsKhz":15,"dlArfcn":429000,"ssbArfcn":428910},
   {"rat":"NR","band":70,"duplex":"FDD","bwMhz":5,"scsKhz":15,"ssbScsKhz":15,"dlArfcn":400500,"ssbArfcn":400590},
   {"rat":"NR","band":71,"duplex":"FDD","bwMhz":5,"scsKhz":15,"ssbScsKhz":15,"dlArfcn":126900,"ssbArfcn":126990},
