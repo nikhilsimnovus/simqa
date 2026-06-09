@@ -622,6 +622,11 @@ export interface CreatedTestcase {
   mobility: string;
   fading: string;
   scs?: number;
+  /** True when this testcase was NOT created this run — it already existed
+   *  on the box (same name) and we resolved its boxId so it stays
+   *  validatable + reportable. The run's `passed` count excludes these;
+   *  `skipped` counts them. */
+  preexisting?: boolean;
 }
 
 export interface GenerationResult {
@@ -687,9 +692,12 @@ export async function generateBulkTestcases(
   let variants = expandSlices(nrBands, lteBands, slicesFor(sweep));
   if (limit && limit > 0) variants = variants.slice(0, limit);
 
-  // 4. Pre-load existing names so we can skip duplicates cheaply. POST
+  // 4. Pre-load existing testcases (name → boxId) so we can skip duplicates
+  // cheaply AND resolve a skipped variant's boxId — a duplicate name means
+  // the testcase already lives on the box, so we keep it in `created`
+  // (flagged preexisting) to stay validatable + reportable. POST
   // /testcases/search caps at 50 on this build, so we use the GET form.
-  const existingByName = new Set<string>();
+  const existingByName = new Map<string, string>();
   try {
     const sR = await fetch(`http://${opts.host}/v2/testcases?limit=1000`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -697,7 +705,7 @@ export async function generateBulkTestcases(
     if (sR.ok) {
       const data: any = await sR.json();
       for (const it of (data.items ?? data.data ?? [])) {
-        if (it?.name) existingByName.add(String(it.name).toLowerCase());
+        if (it?.name && it?.id) existingByName.set(String(it.name).toLowerCase(), String(it.id));
       }
     }
   } catch { /* keep going — duplicate-name will surface as a 4xx */ }
@@ -718,8 +726,19 @@ export async function generateBulkTestcases(
     progress.currentName = v.name;
     onProgress?.(progress);
 
-    if (existingByName.has(v.name.toLowerCase())) {
-      skips.push({ id: v.id, name: v.name, reason: 'a testcase with this name already exists' });
+    const existingBoxId = existingByName.get(v.name.toLowerCase());
+    if (existingBoxId) {
+      // Already on the box — don't re-create, but resolve its boxId and
+      // keep it in `created` (flagged preexisting) so it's still
+      // validatable + reportable. Counted as skipped, not passed.
+      created.push({
+        id: v.id, name: v.name, boxId: existingBoxId, rat: v.rat, category: v.category,
+        band: v.band, bandwidth: v.bandwidth, duplexMode: v.duplexMode,
+        ueCount: v.ueCount, antennas: v.antennas, dataType: v.dataType,
+        mobility: v.mobility, fading: v.fading, scs: v.scs,
+        preexisting: true,
+      });
+      skips.push({ id: v.id, name: v.name, reason: 'already on box — reusing existing testcase' });
       progress.skipped++; progress.done++;
       continue;
     }
@@ -800,7 +819,11 @@ export async function generateBulkTestcases(
     targetHost: opts.host,
     buildVersion,
     total: variants.length,
-    passed: created.length,
+    // `passed` = freshly created this run (progress.passed is only
+    // incremented on a real create, never on the preexisting/skip path).
+    // `created` may be larger — it also carries preexisting testcases so
+    // they stay validatable + reportable.
+    passed: progress.passed,
     failed: failures.length,
     skipped: skips.length,
     created, failures, skips,
