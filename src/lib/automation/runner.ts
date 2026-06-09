@@ -144,10 +144,11 @@ async function pollExecutionToTerminal(host: string, token: string, tcId: string
  *
  *  Best-effort — every failure mode (stop returns 4xx, GET 404s, …)
  *  falls through to whatever lastExecution we captured before. */
-async function stopAndFinalize(host: string, token: string, tcId: string, execId: string | undefined, signal?: AbortSignal): Promise<ExecutionState | null> {
+async function stopAndFinalize(host: string, token: string, tcId: string, execId: string | undefined, signal?: AbortSignal, simulatorId?: string): Promise<ExecutionState | null> {
   if (!execId) return null;
   try {
-    await fetch(`http://${host}/v2/testcases/executions/${encodeURIComponent(execId)}/stop`, {
+    const simQ = simulatorId ? `?simulatorId=${encodeURIComponent(simulatorId)}` : '';
+    await fetch(`http://${host}/v2/testcases/executions/${encodeURIComponent(execId)}/stop${simQ}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: '{}',
@@ -194,6 +195,23 @@ async function login(host: string, username: string, password: string): Promise<
   return j.access_token ?? j.token;
 }
 
+/** Fetch the first available simulator's id. The box's POST
+ *  /v2/testcases/{id}/executions now rejects with 500 "No default
+ *  simulator found" when no ?simulatorId=… is passed (regression
+ *  introduced ~4.0.0_260605); pin every trigger to the first sim. */
+async function fetchFirstSimulatorId(host: string, token: string): Promise<string | undefined> {
+  try {
+    const r = await fetch(`http://${host}/v2/simulators`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!r.ok) return undefined;
+    const j: any = await r.json();
+    const sims = j?.items ?? j?.data ?? [];
+    return sims[0]?.id ? String(sims[0].id) : undefined;
+  } catch { return undefined; }
+}
+
 async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<SuiteRunResult> {
   const startedAt = new Date().toISOString();
   const inv = loadInventory();
@@ -201,6 +219,8 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
   if (!ueOpts) throw new Error(`suite uesimSystemId "${suite.uesimSystemId}" not testable`);
   const token = await login(ueOpts.host, ueOpts.username, ueOpts.password);
   const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const simulatorId = await fetchFirstSimulatorId(ueOpts.host, token);
+  const triggerBody = JSON.stringify(simulatorId ? { simulatorId } : {});
   const steps: SuiteRunStep[] = [];
   let passed = 0, failed = 0;
 
@@ -211,28 +231,49 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
     const t0 = Date.now();
     const durSec = suite.testcaseDurations?.[tcId] ?? defaultDur;
     try {
-      const r = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(tcId)}/executions`, {
-        method: 'POST', headers: H, body: '{}',
-      });
-      const j: any = await r.json().catch(() => ({}));
-      const triggerOk = r.ok || r.status === 200 || r.status === 201;
-      const execId: string | undefined = j?.executionId ?? j?.id;
+      // The box's POST .../executions needs `{simulatorId}` in the BODY
+      // (returns 500 "No default simulator found" without it), and holds
+      // the HTTP connection open for the WHOLE testDuration (minutes).
+      // Fire-and-forget: kick the trigger, give it 3s to register, then
+      // proceed to polling. The poll loop reads metadata.lastExecution
+      // for the real verdict, so the trigger response body is unneeded.
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 3000);
+      let r: { ok: boolean; status: number };
+      try {
+        const resp = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(tcId)}/executions`, {
+          method: 'POST', headers: H, body: triggerBody, signal: ac.signal,
+        });
+        r = { ok: resp.ok, status: resp.status };
+      } catch (e: any) {
+        // AbortError is expected (we cut the connection after 3s) — treat
+        // it as kickoff-OK. Any other error (network, DNS) is a real fail.
+        if (e?.name === 'AbortError') r = { ok: true, status: 202 };
+        else throw e;
+      } finally {
+        clearTimeout(timer);
+      }
+      const triggerOk = r.ok || r.status === 200 || r.status === 201 || r.status === 202;
       if (!triggerOk) {
         steps.push({
           testcaseId: tcId, status: r.status, ok: false,
-          executionId: execId,
-          detail: typeof j === 'object' ? JSON.stringify(j).slice(0, 200) : 'no body',
+          detail: `trigger ${r.status} — likely missing simulatorId in body`,
           durationMs: Date.now() - t0,
         });
         failed += 1;
         if (suite.stopOnFail) break;
         continue;
       }
-      let finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, execId, durSec, opts.signal);
+      // Give the box a tick to register the execution before the first poll.
+      await new Promise(res => setTimeout(res, 1500));
+      // execId is read from lastExecution by the poller since we abort
+      // the trigger fetch before getting its body.
+      let finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, undefined, durSec, opts.signal);
+      const execId = finalState?.executionId;
       let stoppedByUs = false;
       const naturallyDone = finalState?.status && TERMINAL_STATUSES.has(finalState.status);
       if (!naturallyDone && execId && !opts.signal?.aborted) {
-        const settled = await stopAndFinalize(ueOpts.host, token, tcId, execId, opts.signal);
+        const settled = await stopAndFinalize(ueOpts.host, token, tcId, execId, opts.signal, simulatorId);
         if (settled) finalState = settled;
         stoppedByUs = true;
       }
@@ -419,6 +460,8 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   }
   if (token) {
     const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const simulatorId = await fetchFirstSimulatorId(ueOpts.host, token);
+    const simQ = simulatorId ? `?simulatorId=${encodeURIComponent(simulatorId)}` : '';
     // total may have been bumped by the callbox bring-up steps — use it
     // for progress reporting in both branches.
     const totalProg = (cfg ? 3 : 0) + tcs.length;
@@ -429,7 +472,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
       const t0 = Date.now();
       const durSec = suite.testcaseDurations?.[tcId] ?? defaultDur;
       try {
-        const r = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(tcId)}/executions`, {
+        const r = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(tcId)}/executions${simQ}`, {
           method: 'POST', headers: H, body: '{}',
         });
         const j: any = await r.json().catch(() => ({}));
@@ -452,7 +495,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
         let stoppedByUs = false;
         const naturallyDone = finalState?.status && TERMINAL_STATUSES.has(finalState.status);
         if (!naturallyDone && execId && !opts.signal?.aborted) {
-          const settled = await stopAndFinalize(ueOpts.host, token, tcId, execId, opts.signal);
+          const settled = await stopAndFinalize(ueOpts.host, token, tcId, execId, opts.signal, simulatorId);
           if (settled) finalState = settled;
           stoppedByUs = true;
         }
@@ -531,6 +574,8 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
 
   const token = await login(ueOpts.host, ueOpts.username, ueOpts.password).catch(() => '');
   const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const simulatorId = token ? await fetchFirstSimulatorId(ueOpts.host, token) : undefined;
+  const simQ = simulatorId ? `?simulatorId=${encodeURIComponent(simulatorId)}` : '';
   const defaultDur = suite.defaultDurationSec ?? 10;
 
   for (const item of items) {
@@ -605,18 +650,28 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       continue;
     }
     const durSec = item.durationSec ?? defaultDur;
+    const triggerBody = JSON.stringify(simulatorId ? { simulatorId } : {});
     try {
-      const r = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(item.simnovatorTcId)}/executions`, {
-        method: 'POST', headers: H, body: '{}',
-      });
-      const j: any = await r.json().catch(() => ({}));
-      const triggerOk = r.ok || r.status === 200 || r.status === 201;
-      const execId: string | undefined = j?.executionId ?? j?.id;
+      // See runUesimOnly above for why this is fire-and-forget + abort.
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 3000);
+      let r: { ok: boolean; status: number };
+      try {
+        const resp = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(item.simnovatorTcId)}/executions`, {
+          method: 'POST', headers: H, body: triggerBody, signal: ac.signal,
+        });
+        r = { ok: resp.ok, status: resp.status };
+      } catch (e: any) {
+        if (e?.name === 'AbortError') r = { ok: true, status: 202 };
+        else throw e;
+      } finally {
+        clearTimeout(timer);
+      }
+      const triggerOk = r.ok || r.status === 200 || r.status === 201 || r.status === 202;
       if (!triggerOk) {
         steps.push({
           testcaseId: item.name, status: r.status, ok: false,
-          executionId: execId,
-          detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}trigger ${r.status}: ${typeof j === 'object' ? JSON.stringify(j).slice(0, 160) : ''}`,
+          detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}trigger ${r.status} — likely missing simulatorId in body`,
           durationMs: Date.now() - t0,
         });
         failed += 1;
@@ -624,14 +679,18 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         done += 1;
         continue;
       }
-      // 1. Poll up to durationSec for a natural terminal state.
-      let finalState = await pollExecutionToTerminal(ueOpts.host, token, item.simnovatorTcId, execId, durSec, opts.signal);
+      // 1. Give the box ~1.5s to register the trigger then poll for
+      //    terminal state up to durationSec. execId is read from the
+      //    polled lastExecution (we aborted the trigger response).
+      await new Promise(res => setTimeout(res, 1500));
+      let finalState = await pollExecutionToTerminal(ueOpts.host, token, item.simnovatorTcId, undefined, durSec, opts.signal);
+      const execId = finalState?.executionId;
       let stoppedByUs = false;
       const naturallyDone = finalState?.status && TERMINAL_STATUSES.has(finalState.status);
       // 2. If the window expired before the test stopped on its own,
       //    POST stop and re-read the verdict from lastExecution.
       if (!naturallyDone && execId && !opts.signal?.aborted) {
-        const settled = await stopAndFinalize(ueOpts.host, token, item.simnovatorTcId, execId, opts.signal);
+        const settled = await stopAndFinalize(ueOpts.host, token, item.simnovatorTcId, execId, opts.signal, simulatorId);
         if (settled) finalState = settled;
         stoppedByUs = true;
       }
