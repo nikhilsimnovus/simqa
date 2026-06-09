@@ -220,6 +220,17 @@ export function buildCells(env: Environment, v: EnvVariant): any {
       cell.ssbScs = c.ssbScs ?? c.scs ?? 30;
       cell.NTN = v.ntn;
       cell.asymmetricApplicable = false;
+      // When channel modelling is on, the box validates a TOP-LEVEL
+      // antennaType (string) + position (array) for SA cells. Confirmed on
+      // 192.168.10.202 (4.0.0_260605): a nested mobility{} block — which is
+      // all the 4g path emits — is NOT read for SA, so these must be flat on
+      // the cell. Omitted when channel sim is off (channelSim-off NR cells
+      // create fine without them, matching the bulk generator). Handover
+      // forces master.channelSim, so cover v.ho too.
+      if (v.channel !== 'off' || v.ho) {
+        cell.antennaType = 'isotropic';
+        cell.position = [4, 3];
+      }
     } else {
       cell.EARFCN = { dl: c.earfcn?.dl ?? 300, ul: c.earfcn?.ul ?? (c.earfcn?.dl ?? 300) + 18000 };
       cell.rxToTxLatency = v.rxTxLatency ?? c.rxToTxLatency ?? 4;
@@ -397,15 +408,40 @@ export function buildUserPlane(env: Environment, v: EnvVariant, ueCount: number)
 
 export function buildPowerCycle(env: Environment, v: EnvVariant): any {
   const groups = v.ho ? 2 : 1;
+  // A time-based attach/detach loop REQUIRES totalTestDuration > 0, and the
+  // box enforces totalTestDuration >= (powerOnTime + powerOffTime) * cycles.
+  // Confirmed on 192.168.10.202 (4.0.0_260605): powerOnTime 2000 +
+  // powerOffTime 10 + totalTestDuration 4100 is accepted (~2 cycles). A
+  // 'disable' (non-loop) profile must NOT carry totalTestDuration.
+  const powerOnTime = 2000, powerOffTime = 10;
   const profile = (g: number) => ({
     subscriberGroup: [g],
     loopProfile: v.loop ? 'time' : 'disable',
-    attachType: v.loop ? 'bursty' : 'bursty',
-    attachRate: 1, attachDelay: 0, powerOnTime: 2000, powerOffTime: 10,
+    attachType: 'bursty',
+    attachRate: 1, attachDelay: 0, powerOnTime, powerOffTime,
+    ...(v.loop ? { totalTestDuration: (powerOnTime + powerOffTime) * 2 + 80 } : {}),
   });
   const profiles = [];
   for (let g = 0; g < groups; g++) profiles.push(profile(g));
   return { powerCycleConfig: { profiles } };
+}
+
+/** Clamp a requested fading model to one the box accepts for this RAT.
+ *  Confirmed enums on 192.168.10.202 (4.0.0_260605):
+ *    NR : awgn, tdla30, tdlb100, tdlc300, tdld, tdle
+ *    LTE: awgn, epa, eva, etu, mbsfn
+ *  Falls back to awgn (always valid) for anything unrecognized — e.g. a
+ *  GOLD that carried an LTE model name like "epa5" onto an NR cell. */
+function validFading(env: Environment, requested?: string): string {
+  const NR = ['awgn', 'tdla30', 'tdlb100', 'tdlc300', 'tdld', 'tdle'];
+  const LTE = ['awgn', 'epa', 'eva', 'etu', 'mbsfn'];
+  const isNr = env.site.rat === 'NR-SA' || env.site.rat === 'NR-NSA' || env.site.rat === 'NTN';
+  const allowed = isNr ? NR : LTE;
+  const req = (requested ?? '').toLowerCase();
+  if (allowed.includes(req)) return req;
+  const alias: Record<string, string> = { epa5: 'epa', eva70: 'eva', etu70: 'etu', etu300: 'etu', tdla: 'tdla30', tdlb: 'tdlb100', tdlc: 'tdlc300' };
+  if (alias[req] && allowed.includes(alias[req])) return alias[req];
+  return 'awgn';
 }
 
 export function buildMobility(env: Environment, v: EnvVariant): any | null {
@@ -414,7 +450,12 @@ export function buildMobility(env: Environment, v: EnvVariant): any | null {
   // profile to carry the fading model.
   if (!v.ho && v.channel === 'off') return null;
   const groups = v.ho ? 2 : 1;
-  const fading = v.channel === 'off' ? 'awgn' : (env.defaults.fading ?? 'awgn');
+  const fading = v.channel === 'off' ? 'awgn' : validFading(env, env.defaults.fading);
+  // NB: fadingType + mimoCorrelation are FLAT on the profile — confirmed on
+  // 192.168.10.202 (4.0.0_260605) that the box validator reads them at the
+  // profile top level, NOT nested under a fadingProfile{} object (which the
+  // older bulk generator used; that shape now 400s with "expected string,
+  // but got null").
   const profile = (g: number) => ({
     subscriberGroup: [g],
     tripType: v.ho ? 'roundTrip' : 'stationary',
@@ -424,7 +465,9 @@ export function buildMobility(env: Environment, v: EnvVariant): any | null {
     speed: v.ho ? 10 : 0,
     direction: v.ho ? (g === 0 ? 0 : 180) : 0,
     distance: v.ho ? 50 : 0,
-    fadingProfile: { fadingType: fading, frequencyDoppler: 70, mimoCorrelation: 'low' },
+    fadingType: fading,
+    frequencyDoppler: 70,
+    mimoCorrelation: 'low',
     noiseSpectralDensity: -174,
   });
   const profiles = [];

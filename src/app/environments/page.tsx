@@ -25,6 +25,24 @@ interface AutoResult { total: number; created: any[]; failures: any[]; skips: an
 
 const TRAFFIC_OPTIONS = ['as-gold', 'no_data', 'iperf-dl', 'iperf-ul', 'iperf-both', 'iperf-tcp', 'volte', 'vonr', 'ping'];
 
+/** Parse a fetch Response as JSON, tolerating an empty or non-JSON body.
+ *  A truncated/empty body is exactly what arrives when the simqa service is
+ *  restarting (e.g. the Update pill) or a proxy/timeout cuts the response —
+ *  calling Response.json() on that throws the cryptic "Unexpected end of
+ *  JSON input". This surfaces a clear, actionable message instead. */
+async function readJson(r: Response): Promise<any> {
+  const text = await r.text();
+  if (!text.trim()) {
+    throw new Error(`server returned an empty response (HTTP ${r.status}) — it may be restarting; retry in a moment`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 120);
+    throw new Error(`server returned a non-JSON response (HTTP ${r.status}): ${snippet}`);
+  }
+}
+
 /** Compact human summary of the GOLD's concurrent traffic mix. */
 function trafficMixLabel(profiles?: GoldTrafficProfile[]): string {
   if (!profiles || !profiles.length) return '–';
@@ -61,9 +79,9 @@ export default function EnvironmentsPage() {
   const [progress, setProgress] = useState<Progress | null>(null);
   const [result, setResult] = useState<AutoResult | null>(null);
 
-  const loadEnvs = () => fetch('/api/environments').then(r => r.json()).then(d => setEnvs(d.environments ?? [])).catch(() => {});
+  const loadEnvs = () => fetch('/api/environments').then(readJson).then(d => setEnvs(d.environments ?? [])).catch(() => {});
   useEffect(() => {
-    fetch('/api/ui-tests/systems').then(r => r.json()).then(d => {
+    fetch('/api/ui-tests/systems').then(readJson).then(d => {
       const list: SystemSummary[] = (d?.systems ?? []).map((s: any) => ({ id: s.id, name: s.name, host: s.host }));
       setSystems(list);
       if (list.find(s => s.id === 'lab-uesim')) setSystemId('lab-uesim');
@@ -78,9 +96,9 @@ export default function EnvironmentsPage() {
       if (stop) return;
       try {
         const r = await fetch('/api/environments/autocreate-status', { cache: 'no-store' });
-        const d = await r.json();
+        const d = await readJson(r);
         setProgress(d.progress); setResult(d.result);
-      } catch { /* keep polling */ }
+      } catch { /* keep polling — empty body during a restart is expected */ }
       if (!stop) setTimeout(tick, 1500);
     };
     tick();
@@ -94,7 +112,7 @@ export default function EnvironmentsPage() {
       let json: any;
       try { json = JSON.parse(text); } catch { setError('file is not valid JSON'); setBusy(''); return; }
       const r = await fetch('/api/environments/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ json, filename: file.name }) });
-      const d = await r.json();
+      const d = await readJson(r);
       if (!d.ok) { setError(d.error ?? 'parse failed'); setBusy(''); return; }
       setDraft({ ...d.draft, id: '', createdAt: '' });
     } catch (e: any) { setError(e?.message ?? String(e)); }
@@ -106,7 +124,7 @@ export default function EnvironmentsPage() {
     setError(''); setBusy('save');
     try {
       const r = await fetch('/api/environments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft) });
-      const d = await r.json();
+      const d = await readJson(r);
       if (!d.ok) { setError(d.error ?? 'save failed'); return; }
       setDraft(null); await loadEnvs(); setSelected(d.environment);
     } catch (e: any) { setError(e?.message ?? String(e)); }
@@ -143,7 +161,7 @@ export default function EnvironmentsPage() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ preview: true, matrix: matrixBody() }),
       });
-      const d = await r.json();
+      const d = await readJson(r);
       if (!d.ok) { setError(d.error ?? 'preview failed'); return; }
       setPreviewCount(d.count); setPreviewSkips(d.skipped ?? []);
     } catch (e: any) { setError(e?.message ?? String(e)); }
@@ -159,7 +177,7 @@ export default function EnvironmentsPage() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ systemId, matrix: matrixBody() }),
       });
-      const d = await r.json();
+      const d = await readJson(r);
       if (!d.ok) setError(d.error ?? 'generate failed');
     } catch (e: any) { setError(e?.message ?? String(e)); }
     finally { setBusy(''); }
