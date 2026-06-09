@@ -53,7 +53,9 @@ interface CallboxFile {
 }
 interface SuiteRunStep {
   testcaseId: string; status: number; ok: boolean;
-  executionId?: string; detail?: string; durationMs: number;
+  executionId?: string;
+  verdict?: string; boxStatus?: string; stopped?: boolean;
+  detail?: string; durationMs: number;
 }
 interface SuiteRunResult {
   startedAt: string; finishedAt: string;
@@ -869,26 +871,38 @@ export default function AutomationSuitePage() {
                 <thead className="bg-slate-50 text-slate-600">
                   <tr>
                     <th className="text-left px-3 py-2">#</th>
-                    <th className="text-left px-3 py-2">{runResult.kind === 'uesim+callbox' ? 'Config file' : 'Testcase id'}</th>
+                    <th className="text-left px-3 py-2">Testcase</th>
                     <th className="text-center px-3 py-2">HTTP</th>
                     <th className="text-left px-3 py-2">Execution id</th>
                     <th className="text-right px-3 py-2">ms</th>
-                    <th className="text-center px-3 py-2">Verdict</th>
+                    <th className="text-center px-3 py-2" title="Box's final result/status after the test stopped">Verdict</th>
+                    <th className="text-center px-3 py-2" title="Was the test stopped by simqa (vs. ended on its own)?">Stop</th>
                     <th className="text-left px-3 py-2">Detail</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {runResult.steps.map((s, i) => (
-                    <tr key={i}>
-                      <td className="px-3 py-1.5 text-slate-500">{i + 1}</td>
-                      <td className="px-3 py-1.5 font-mono text-[11px]">{s.testcaseId}</td>
-                      <td className="px-3 py-1.5 text-center font-mono">{s.status || '—'}</td>
-                      <td className="px-3 py-1.5 font-mono text-[10px]">{s.executionId ?? '–'}</td>
-                      <td className="px-3 py-1.5 text-right text-slate-500 font-mono">{s.durationMs}</td>
-                      <td className={`px-3 py-1.5 text-center font-semibold ${s.ok ? 'text-emerald-700' : 'text-red-700'}`}>{s.ok ? 'PASS' : 'FAIL'}</td>
-                      <td className="px-3 py-1.5 text-slate-600 text-[11px] max-w-md truncate" title={s.detail}>{s.detail}</td>
-                    </tr>
-                  ))}
+                  {runResult.steps.map((s, i) => {
+                    // Verdict cell: prefer the box-reported verdict (PASS/FAIL/
+                    // INCOMPLETE/ABORTED/STOPPED/TIMEOUT/…) when present,
+                    // else fall back to ok→PASS/FAIL for bring-up rows.
+                    const verdict = s.verdict || (s.ok ? 'PASS' : 'FAIL');
+                    const verdictColor = verdict === 'PASS' ? 'text-emerald-700'
+                      : verdict === 'FAIL' || verdict === 'ERROR' ? 'text-red-700'
+                      : verdict === 'STOPPED' || verdict === 'ABORTED' ? 'text-amber-700'
+                      : 'text-slate-700';
+                    return (
+                      <tr key={i}>
+                        <td className="px-3 py-1.5 text-slate-500">{i + 1}</td>
+                        <td className="px-3 py-1.5 font-mono text-[11px]">{s.testcaseId}</td>
+                        <td className="px-3 py-1.5 text-center font-mono">{s.status || '—'}</td>
+                        <td className="px-3 py-1.5 font-mono text-[10px]">{s.executionId ?? '–'}</td>
+                        <td className="px-3 py-1.5 text-right text-slate-500 font-mono">{s.durationMs}</td>
+                        <td className={`px-3 py-1.5 text-center font-semibold ${verdictColor}`} title={s.boxStatus ? `box status: ${s.boxStatus}` : ''}>{verdict}</td>
+                        <td className="px-3 py-1.5 text-center text-xs text-slate-500">{s.stopped ? 'simqa' : '–'}</td>
+                        <td className="px-3 py-1.5 text-slate-600 text-[11px] max-w-md truncate" title={s.detail}>{s.detail}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

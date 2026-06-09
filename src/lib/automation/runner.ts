@@ -29,6 +29,17 @@ export interface SuiteRunStep {
   status: number;
   ok: boolean;
   executionId?: string;
+  /** Final verdict pulled from the box AFTER the test stops. Populated
+   *  for tc rows that reached a terminal state (whether by the test
+   *  finishing naturally or by us stopping it after the duration
+   *  window). One of: PASS, FAIL, INCOMPLETE, ABORTED, STOPPED,
+   *  TIMEOUT, ERROR — or '' if we never got a status back. */
+  verdict?: string;
+  /** Box's last reported execution status text (for diagnostics). */
+  boxStatus?: string;
+  /** Whether the test was stopped explicitly by simqa (vs. finished
+   *  on its own within the duration window). */
+  stopped?: boolean;
   detail?: string;
   durationMs: number;
 }
@@ -122,6 +133,57 @@ async function pollExecutionToTerminal(host: string, token: string, tcId: string
   return last;
 }
 
+/** Stop an in-flight execution then settle into a terminal verdict.
+ *
+ *  Used when the duration window expires before the test stopped on its
+ *  own — we explicitly POST /v2/testcases/executions/{eid}/stop, wait a
+ *  few seconds for the box to settle to a terminal state, then GET the
+ *  testcase one last time so the verdict surfaced to the user reflects
+ *  the FINAL state (Stopped/Aborted/etc). Without this, a long test
+ *  would just show "no terminal state within Ns" with no result.
+ *
+ *  Best-effort — every failure mode (stop returns 4xx, GET 404s, …)
+ *  falls through to whatever lastExecution we captured before. */
+async function stopAndFinalize(host: string, token: string, tcId: string, execId: string | undefined, signal?: AbortSignal): Promise<ExecutionState | null> {
+  if (!execId) return null;
+  try {
+    await fetch(`http://${host}/v2/testcases/executions/${encodeURIComponent(execId)}/stop`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch { /* ignore — we'll still poll for the settle */ }
+  // Give the box a moment to write the final status. Poll briefly.
+  const settleDeadline = Date.now() + 10_000;
+  let last: ExecutionState | null = null;
+  while (Date.now() < settleDeadline && !signal?.aborted) {
+    const s = await fetchLastExecution(host, token, tcId);
+    if (s) {
+      last = s;
+      if (s.status && TERMINAL_STATUSES.has(s.status)) return s;
+    }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  return last;
+}
+
+/** Map the box's (status, result) pair to a single uppercase verdict the
+ *  result table can show in one column. */
+function deriveVerdict(state: ExecutionState | null, timedOut: boolean): string {
+  if (!state && !timedOut) return '';
+  if (!state) return 'TIMEOUT';
+  const result = (state.result ?? '').toUpperCase();
+  const status = (state.status ?? '').toUpperCase();
+  if (result === 'PASS' || result === 'PASSED' || status === 'PASSED') return 'PASS';
+  if (result === 'FAIL' || result === 'FAILED' || status === 'FAILED') return 'FAIL';
+  if (result === 'INCOMPLETE') return 'INCOMPLETE';
+  if (status === 'ABORTED') return 'ABORTED';
+  if (status === 'STOPPED') return 'STOPPED';
+  if (status === 'COMPLETED' && result === 'ERROR') return 'ERROR';
+  return result || status || 'UNKNOWN';
+}
+
 async function login(host: string, username: string, password: string): Promise<string> {
   const r = await fetch(`http://${host}/v2/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -166,15 +228,23 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
         if (suite.stopOnFail) break;
         continue;
       }
-      const finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, execId, durSec, opts.signal);
-      const verdict = (finalState?.result ?? '').toUpperCase();
-      const passLike = verdict === 'PASS' || verdict === 'PASSED' || finalState?.status === 'Passed';
+      let finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, execId, durSec, opts.signal);
+      let stoppedByUs = false;
+      const naturallyDone = finalState?.status && TERMINAL_STATUSES.has(finalState.status);
+      if (!naturallyDone && execId && !opts.signal?.aborted) {
+        const settled = await stopAndFinalize(ueOpts.host, token, tcId, execId, opts.signal);
+        if (settled) finalState = settled;
+        stoppedByUs = true;
+      }
+      const verdict = deriveVerdict(finalState, !finalState);
+      const passLike = verdict === 'PASS';
       steps.push({
         testcaseId: tcId, status: r.status, ok: passLike,
         executionId: finalState?.executionId ?? execId,
+        verdict, boxStatus: finalState?.status, stopped: stoppedByUs,
         detail: finalState
-          ? `status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s`
-          : `triggered but no terminal state within ${durSec}s`,
+          ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s${stoppedByUs ? ' (stopped by simqa)' : ''}`
+          : `triggered but no terminal state within ${durSec}s — stop attempted${stoppedByUs ? '; box never settled' : ''}`,
         durationMs: Date.now() - t0,
       });
       if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) break; }
@@ -378,17 +448,22 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
           continue;
         }
         // Trigger worked — now poll until terminal state or duration hits.
-        const finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, execId, durSec, opts.signal);
-        const verdict = (finalState?.result ?? '').toUpperCase();
-        // Box uses several status/result combos. Treat anything in the
-        // PASS family as ok; the rest (FAIL, ERROR, INCOMPLETE, ABORTED,
-        // STOPPED, plus "no state" = timed out) as fail.
-        const passLike = verdict === 'PASS' || verdict === 'PASSED' || finalState?.status === 'Passed';
+        let finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, execId, durSec, opts.signal);
+        let stoppedByUs = false;
+        const naturallyDone = finalState?.status && TERMINAL_STATUSES.has(finalState.status);
+        if (!naturallyDone && execId && !opts.signal?.aborted) {
+          const settled = await stopAndFinalize(ueOpts.host, token, tcId, execId, opts.signal);
+          if (settled) finalState = settled;
+          stoppedByUs = true;
+        }
+        const verdict = deriveVerdict(finalState, !finalState);
+        const passLike = verdict === 'PASS';
         steps.push({
           testcaseId: `tc:${tcId}`, status: r.status, ok: passLike,
           executionId: finalState?.executionId ?? execId,
+          verdict, boxStatus: finalState?.status, stopped: stoppedByUs,
           detail: finalState
-            ? `status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s`
+            ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s${stoppedByUs ? ' (stopped by simqa)' : ''}`
             : `triggered but no terminal state within ${durSec}s`,
           durationMs: Date.now() - t0,
         });
@@ -549,15 +624,26 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         done += 1;
         continue;
       }
-      const finalState = await pollExecutionToTerminal(ueOpts.host, token, item.simnovatorTcId, execId, durSec, opts.signal);
-      const verdict = (finalState?.result ?? '').toUpperCase();
-      const passLike = verdict === 'PASS' || verdict === 'PASSED' || finalState?.status === 'Passed';
+      // 1. Poll up to durationSec for a natural terminal state.
+      let finalState = await pollExecutionToTerminal(ueOpts.host, token, item.simnovatorTcId, execId, durSec, opts.signal);
+      let stoppedByUs = false;
+      const naturallyDone = finalState?.status && TERMINAL_STATUSES.has(finalState.status);
+      // 2. If the window expired before the test stopped on its own,
+      //    POST stop and re-read the verdict from lastExecution.
+      if (!naturallyDone && execId && !opts.signal?.aborted) {
+        const settled = await stopAndFinalize(ueOpts.host, token, item.simnovatorTcId, execId, opts.signal);
+        if (settled) finalState = settled;
+        stoppedByUs = true;
+      }
+      const verdict = deriveVerdict(finalState, !finalState);
+      const passLike = verdict === 'PASS';
       steps.push({
         testcaseId: item.name, status: r.status, ok: passLike,
         executionId: finalState?.executionId ?? execId,
+        verdict, boxStatus: finalState?.status, stopped: stoppedByUs,
         detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}${finalState
-          ? `status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s`
-          : `triggered but no terminal state within ${durSec}s`}`,
+          ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s${stoppedByUs ? ' (stopped by simqa)' : ''}`
+          : `triggered but no terminal state within ${durSec}s — stop attempted${stoppedByUs ? '; box never settled' : ''}`}`,
         durationMs: Date.now() - t0,
       });
       if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) { done += 1; break; } }
