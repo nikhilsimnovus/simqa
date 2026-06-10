@@ -395,6 +395,10 @@ export default function AutomationSuitePage() {
   // Simnovator testcases run AFTER the callbox configs are pushed.
   useEffect(() => {
     if (kind === 'uesim+callbox' && callboxSystemId) void loadCallboxConfigs(callboxSystemId);
+    // uesim-only (or no callbox selected): clear any callbox configs left over
+    // from a previously-opened uesim+callbox suite so the cfg picker never
+    // shows another system's configs.
+    else { setCbxFiles([]); setCbxLoadError(''); }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, callboxSystemId]);
   useEffect(() => {
