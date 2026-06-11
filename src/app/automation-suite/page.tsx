@@ -106,6 +106,9 @@ export default function AutomationSuitePage() {
   // UESIM-only data: testcases pulled from Simnovator REST
   const [uesimTestcases, setUeTcs]    = useState<UesimTestcase[]>([]);
   const [loadingTc, setLoadingTc]     = useState(false);
+  /** Non-fatal notice when the box served fewer testcases than it claims to
+   *  hold (the REST list is capped at ~1000 rows — see uesim-testcases route). */
+  const [tcNotice, setTcNotice]       = useState('');
 
   // Callbox data: file list from /root/enb/config + any blobs the user
   // is layering on top via Upload
@@ -219,6 +222,9 @@ export default function AutomationSuitePage() {
       const r = await fetch(`/api/automation/uesim-testcases?systemId=${encodeURIComponent(sysId)}`).then(r => r.json());
       setUeTcs(r?.ok ? (r.testcases ?? []) : []);
       if (!r?.ok) setError(r?.error ?? 'failed to pull testcases');
+      setTcNotice(r?.ok && r.truncated
+        ? `showing ${r.total} of ${r.serverTotal} testcases — the box's REST list cannot serve rows past ~1000; older testcases are not selectable here`
+        : '');
     } finally { setLoadingTc(false); }
   }, []);
 
@@ -709,6 +715,11 @@ export default function AutomationSuitePage() {
                 Pick a UESIM/Simnovator system on the Setup tab first.
               </div>
             ) : (<>
+              {tcNotice && (
+                <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 text-amber-800 text-xs px-3 py-2">
+                  ⚠ {tcNotice}
+                </div>
+              )}
               {/* Default duration knob (suite-wide) */}
               <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
                 <label className="flex items-center gap-2">

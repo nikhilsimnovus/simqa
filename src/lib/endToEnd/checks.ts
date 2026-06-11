@@ -345,10 +345,22 @@ const triggerStart: CheckDef = {
     // is unpatched (SDR rf_driver block on hardware with no /dev/sdr0) —
     // we want to surface that error message rather than an unhelpful
     // "This operation was aborted" client-side timeout.
+    // Build 4.0.0_260609 dropped the default-simulator behaviour: an empty
+    // start body now returns 500 "No default simulator found". Resolve a
+    // simulatorId — the testcase's last-used simulator, else the first
+    // registered one.
+    let simulatorId: string | undefined;
+    const lastSim = ctx.testcaseMetadata?.lastExecution?.simulatorId;
+    if (lastSim !== undefined && lastSim !== null && String(lastSim) !== '') simulatorId = String(lastSim);
+    if (!simulatorId) {
+      const sims = await jsonFetch(`${apiBase(ctx.systemHost)}/simulators`, { headers: authHeaders(ctx) });
+      const arr: any[] = sims.body?.items ?? sims.body?.data ?? [];
+      if (arr[0]?.id !== undefined && arr[0]?.id !== null) simulatorId = String(arr[0].id);
+    }
     const r = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/${encodeURIComponent(ctx.testcaseId)}/executions`, {
       method: 'POST',
       headers: { ...authHeaders(ctx), 'Content-Type': 'application/json' },
-      body: '{}',
+      body: JSON.stringify(simulatorId ? { simulatorId } : {}),
     }, 90_000);
     if (r.status !== 200 && r.status !== 201 && r.status !== 202) {
       return makeResult(base, 'fail', `start returned ${r.status}: ${r.raw.slice(0, 200)}`, { durationMs: r.durationMs });

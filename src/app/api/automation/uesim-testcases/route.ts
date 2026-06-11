@@ -30,12 +30,30 @@ export async function GET(req: Request) {
     const loginD: any = await loginR.json();
     const token: string = loginD.access_token ?? loginD.token;
 
-    const r = await fetch(`http://${opts.host}/v2/testcases?limit=1000`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!r.ok) return NextResponse.json({ ok: false, error: `box returned ${r.status}` }, { status: 502 });
-    const d: any = await r.json();
-    const items: any[] = d.items ?? d.data ?? [];
+    // Page through the catalogue. The box caps a single response at 1000 rows
+    // and (verified on 4.0.0_260609) offsets at/near 1000 return EMPTY while
+    // total can exceed it — rows past 1000 are unreachable via this API. Page
+    // in 500s to collect whatever the box will serve and surface serverTotal +
+    // truncated so callers can tell the user what is missing.
+    const items: any[] = [];
+    let serverTotal = 0;
+    for (let offset = 0, page = 0; page < 20; page++) {
+      const r = await fetch(`http://${opts.host}/v2/testcases?limit=500&offset=${offset}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) {
+        if (page === 0) return NextResponse.json({ ok: false, error: `box returned ${r.status}` }, { status: 502 });
+        break;
+      }
+      const d: any = await r.json();
+      const batch: any[] = d.items ?? d.data ?? [];
+      serverTotal = d.total ?? serverTotal;
+      if (batch.length === 0) break;
+      items.push(...batch);
+      offset += batch.length;
+      if (serverTotal > 0 && items.length >= serverTotal) break;
+    }
+    const truncated = serverTotal > items.length;
     // Trim to the fields the UI multi-select needs, surface lastModifiedOn
     // so callers can show it and we can sort newest-first.
     const out = items.map(t => ({
@@ -54,7 +72,7 @@ export async function GET(req: Request) {
       const bx = b.lastModifiedOn || b.lastExecutedOn || b.createdOn || '';
       return bx.localeCompare(ax);
     });
-    return NextResponse.json({ ok: true, testcases: out, total: out.length, host: opts.host });
+    return NextResponse.json({ ok: true, testcases: out, total: out.length, serverTotal, truncated, host: opts.host });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
   }
