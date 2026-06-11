@@ -71,6 +71,37 @@ function expectedGroupTypes(ratType: string | undefined): string[] {
   }
 }
 
+/** Canonicalise an NB-IoT deployment/operation mode value (GUI or ue.cfg).
+ *  GUI side: cellType / operation-mode-style values ("in-band", "guardBand",
+ *  "standalone", ...). ue.cfg side: `operation_mode` — "standalone" matches
+ *  the vetted master-all-rats.csv cfg snippets; the "same_pci"/"different_pci"
+ *  (in-band) and "guardband" (guard-band) encodings are derived from eNB-SIDE
+ *  callbox samples (callbox_configs/extracted/enb-nbiot.cfg.bak) and remain
+ *  UNVERIFIED for ue.cfg until a live NB-IoT cfg is captured. Returns
+ *  undefined for values that carry no mode information (e.g. cellType '4g'). */
+function nbiotMode(v: unknown): 'standalone' | 'in-band' | 'guard-band' | undefined {
+  const s = ci(v).replace(/[\s_-]/g, '');
+  if (!s) return undefined;
+  if (s.includes('standalone')) return 'standalone';
+  if (s.includes('guard')) return 'guard-band';
+  if (s.includes('samepci') || s.includes('differentpci') || s.includes('inband')) return 'in-band';
+  return undefined;
+}
+
+/** First key on `obj` whose name looks like a deployment/operation mode.
+ *  `operation_mode` is the conventional name (CSV snippets + the eNB-side
+ *  callbox sample — like the mode encodings above, the ue.cfg key name
+ *  remains UNVERIFIED until a live NB-IoT cfg is captured); scan for
+ *  operation/deployment variants so a renamed key still matches. */
+function modeEntry(obj: any): { key: string; value: unknown } | undefined {
+  if (!obj || typeof obj !== 'object') return undefined;
+  if (obj.operation_mode !== undefined) return { key: 'operation_mode', value: obj.operation_mode };
+  for (const [k, v] of Object.entries(obj)) {
+    if (/operation|deployment/i.test(k) && v !== undefined && v !== null) return { key: k, value: v };
+  }
+  return undefined;
+}
+
 /** ["nea0","nea1","nea2"] → 224 (each algo n sets bit (5+n)). Same scheme for nia. */
 function algoBitmap(list: unknown): number | undefined {
   if (!Array.isArray(list)) return undefined;
@@ -152,6 +183,137 @@ const ratTypeChecker: Checker = {
   },
 };
 
+// NB-IoT structural fidelity (SIM40-2311 / SIM40-2312).
+//
+// The generator shipped UNBOOTABLE NB-IoT ue.cfgs: it dropped the per-UE
+// ue_category nb1/nb2 (SIM40-2311, asserted in subscriberChecker) and silently
+// reset an in-band cell's deployment mode to standalone (SIM40-2312). This
+// checker engages ONLY when master.ratType === 'nbiot', so NR/LTE cases are
+// completely unaffected.
+const nbiotChecker: Checker = {
+  feature: 'cell',
+  run: (input, ue) => {
+    if (ci(input.cellConfig?.master?.ratType) !== 'nbiot') return [];
+    const out: ParamResult[] = [];
+    const cells = input.cellConfig?.cells ?? [];
+    const groups = new Set(ueCells(ue).map((x) => x.group));
+
+    cells.forEach((c, i) => {
+      const m = matchCell(c, i, ue);
+      if (!m) return; // cellsChecker already reports the missing cell.
+      const path = `cellConfig.cells[${i}]`;
+      const up = `cell_groups[${m.gi}].cells[${m.ci}]`;
+
+      // Deployment / operation mode (SIM40-2312: in-band reset to standalone).
+      // GUI side: the cellType carries the mode for NB-IoT (standalone /
+      // in-band / guard-band); tolerate an operation/deployment-named field
+      // too (same fuzzy contract as the apiTester completeness check).
+      const guiModeRaw = nbiotMode(c.cellType) !== undefined
+        ? { key: 'cellType', value: c.cellType }
+        : modeEntry(c);
+      const cfgMode = modeEntry(m.cell) ?? modeEntry(m.group);
+      const want = guiModeRaw ? nbiotMode(guiModeRaw.value) : undefined;
+      if (want) {
+        out.push(res({
+          inputPath: `${path}.${guiModeRaw!.key}`,
+          ueCfgPath: `${up}.${cfgMode?.key ?? 'operation_mode'}`,
+          label: 'NB-IoT deployment mode', feature: 'cell',
+          // A dropped/reset mode on an in-band or guard-band cell IS the
+          // unbootable-config bug; for standalone a missing key may just be
+          // the generator relying on the default — surface, don't fail.
+          criticality: want === 'standalone' ? 'normal' : 'critical',
+          // Encoding-level disagreement is 'no-rule', NOT 'mismatch': the
+          // ue.cfg mode encodings are eNB-side-derived and UNVERIFIED (see
+          // nbiotMode doc), so it surfaces in the report without failing the
+          // case on a guessed encoding until a live NB-IoT cfg is captured.
+          status: cfgMode === undefined ? 'missing'
+            : nbiotMode(cfgMode.value) === want ? 'honoured' : 'no-rule',
+          expected: want, actual: cfgMode?.value,
+          detail: cfgMode === undefined
+            ? 'no operation/deployment mode in ue.cfg (SIM40-2312: mode dropped/reset → unbootable NB-IoT config, SIM40-2311)'
+            : nbiotMode(cfgMode.value) === undefined
+              ? `unrecognised mode value "${cfgMode.value}" — review encoding`
+              : undefined,
+        }));
+      } else {
+        // No GUI mode on this case (e.g. generic '4g' cellType) — still assert
+        // the generated NB-IoT cell carries SOME mode, since the vetted master
+        // CSV snippets always do. Reported, not case-failing ('normal'),
+        // because we could not regenerate a live NB-IoT ue.cfg to confirm the
+        // key is mandatory for standalone.
+        out.push(res({
+          inputPath: path, ueCfgPath: `${up}.operation_mode`,
+          label: 'NB-IoT operation_mode present', feature: 'cell', criticality: 'normal',
+          status: cfgMode !== undefined ? 'honoured' : 'missing',
+          expected: '(any deployment mode)', actual: cfgMode?.value,
+          detail: cfgMode === undefined ? 'NB-IoT cell has no operation/deployment mode key (SIM40-2312 signature)' : undefined,
+        }));
+      }
+
+      // global_timing_advance must be present on an NB-IoT cell (SIM40-2311:
+      // the unbootable cfgs also shipped without the NB-IoT group timing
+      // fields). Presence-only — the GUI value (-1 = auto) encoding is not
+      // re-checkable until the lab can generate a real NB-IoT ue.cfg.
+      if (c.globalTimingAdvance !== undefined) {
+        const gta = m.cell?.global_timing_advance ?? m.group?.global_timing_advance ?? (ue as any)?.global_timing_advance;
+        out.push(res({
+          inputPath: `${path}.globalTimingAdvance`, ueCfgPath: `${up}.global_timing_advance`,
+          label: 'NB-IoT global_timing_advance present', feature: 'cell', criticality: 'normal',
+          status: gta !== undefined && gta !== null ? 'honoured' : 'missing',
+          expected: '(present)', actual: gta ?? undefined,
+        }));
+      }
+    });
+
+    // multi_ue must be true for the NB-IoT cell group (SIM40-2311: without it
+    // the multi-UE NB-IoT config does not boot). Group-level per the
+    // cell_groups convention; tolerate a root-level fallback. 'normal' (not
+    // case-failing on absence) and an explicit `false` is downgraded to
+    // 'no-rule' (reported, not case-failing) until a live NB-IoT ue.cfg
+    // confirms the key name/placement.
+    const g0 = [...groups].find((g) => ci(g?.group_type) === 'nbiot') ?? [...groups][0];
+    const multiUe = g0?.multi_ue ?? (ue as any)?.multi_ue;
+    out.push(res({
+      inputPath: 'cellConfig.master.ratType', ueCfgPath: 'cell_groups[].multi_ue',
+      label: 'NB-IoT multi_ue', feature: 'cell', criticality: 'normal',
+      status: multiUe === undefined || multiUe === null ? 'missing' : multiUe === true ? 'honoured' : 'no-rule',
+      expected: true, actual: multiUe ?? undefined,
+    }));
+
+    // multi_carrier only when non-anchor carriers are configured (SIM40-2311
+    // family: spurious/missing carrier flags also yield non-booting configs).
+    // "Configured" = any input cell carries a non-anchor list, or the
+    // subscriber group enables multiCarrier. Like multi_ue, value-level
+    // disagreement (either direction) is 'no-rule', not 'mismatch', until a
+    // live NB-IoT ue.cfg confirms the key name/placement.
+    const subs = input.subsConfig?.subs ?? [];
+    const nonAnchor = cells.some((c) => Object.entries(c ?? {}).some(([k, v]) =>
+      /non.?anchor/i.test(k) && (Array.isArray(v) ? v.length > 0 : !!v)));
+    const wantMc = nonAnchor || subs.some((s) => s.multiCarrier === true);
+    const list: any[] = Array.isArray(ue?.ue_list) ? ue.ue_list : [];
+    const mc = g0?.multi_carrier ?? (ue as any)?.multi_carrier ?? list[0]?.multi_carrier;
+    if (wantMc) {
+      out.push(res({
+        inputPath: nonAnchor ? 'cellConfig.cells[].nonAnchor' : 'subsConfig.subs[].multiCarrier',
+        ueCfgPath: 'cell_groups[].multi_carrier',
+        label: 'NB-IoT multi_carrier', feature: 'cell', criticality: 'normal',
+        status: mc === undefined || mc === null ? 'missing' : mc === true ? 'honoured' : 'no-rule',
+        expected: true, actual: mc ?? undefined,
+      }));
+    } else if (mc === true) {
+      // Spurious multi_carrier with no non-anchor carriers configured.
+      out.push(res({
+        inputPath: 'subsConfig.subs[].multiCarrier', ueCfgPath: 'cell_groups[].multi_carrier',
+        label: 'NB-IoT multi_carrier (unexpected)', feature: 'cell', criticality: 'normal',
+        status: 'no-rule', expected: '(absent/false — no non-anchor carriers configured)', actual: mc,
+        detail: 'ue.cfg enables multi_carrier but the testcase configures no non-anchor carriers',
+      }));
+    }
+
+    return out;
+  },
+};
+
 const ueCountChecker: Checker = {
   feature: 'subscriber',
   run: (input, ue) => {
@@ -189,12 +351,22 @@ const subscriberChecker: Checker = {
         if (cat.startsWith('nb')) {
           // NB-IoT: the box encodes the category as an Amarisoft numeric code
           // (Cat-NB1 -> -2), not the 'nbN' string. Compare against the verified
-          // mapping; surface any unmapped NB-IoT category as a coverage gap
-          // (no-rule) rather than a false mismatch — never guess the encoding.
+          // mapping; surface an unmapped-but-PRESENT NB-IoT category as a
+          // coverage gap (no-rule) rather than a false mismatch — never guess
+          // the encoding (Cat-NB2's code is unverified until the lab can
+          // generate a live NB-IoT ue.cfg again).
+          // A DROPPED ue_category is different: that is SIM40-2311 (generator
+          // omitted ue_category nb1/nb2 entirely → unbootable NB-IoT config),
+          // so absence is a CRITICAL miss for nb1 AND nb2 alike.
           const NBIOT_UE_CATEGORY: Record<string, string> = { nb1: '-2' }; // verified live on 192.168.10.202
           const exp = NBIOT_UE_CATEGORY[cat];
-          if (exp !== undefined) out.push(check({ ...B('ueCategory', 'ue_category') }, exp, ci(u.ue_category)));
-          else out.push(res({ ...B('ueCategory', 'ue_category'), status: 'no-rule', expected: cat, actual: ci(u.ue_category), detail: `NB-IoT ue_category "${cat}" encoding not yet mapped (box uses an Amarisoft numeric code)` }));
+          if (u.ue_category === undefined || u.ue_category === null) {
+            out.push(res({ ...B('ueCategory', 'ue_category', 'critical'), status: 'missing', expected: exp ?? cat, detail: 'ue_category dropped from ue.cfg — NB-IoT UE cannot boot (SIM40-2311)' }));
+          } else if (exp !== undefined) {
+            out.push(check({ ...B('ueCategory', 'ue_category', 'critical') }, exp, ci(u.ue_category)));
+          } else {
+            out.push(res({ ...B('ueCategory', 'ue_category'), status: 'no-rule', expected: cat, actual: ci(u.ue_category), detail: `NB-IoT ue_category "${cat}" encoding not yet mapped (box uses an Amarisoft numeric code)` }));
+          }
         } else {
           out.push(check({ ...B('ueCategory', 'ue_category') }, ci(s.ueCategory), ci(u.ue_category)));
         }
@@ -292,9 +464,9 @@ const settingsChecker: Checker = {
 };
 
 export const CHECKERS: Checker[] = [
-  cellsChecker, ratTypeChecker, ueCountChecker, subscriberChecker,
+  cellsChecker, ratTypeChecker, nbiotChecker, ueCountChecker, subscriberChecker,
   featureFlagChecker, userPlaneChecker, settingsChecker,
 ];
 
 // Exposed for unit tests.
-export const _internals = { bandNum, algoBitmap, expectedGroupTypes, ueCells, matchCell };
+export const _internals = { bandNum, algoBitmap, expectedGroupTypes, ueCells, matchCell, nbiotMode, modeEntry };

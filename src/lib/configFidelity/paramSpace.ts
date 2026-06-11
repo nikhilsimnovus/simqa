@@ -248,7 +248,14 @@ export function generateMatrix(req: MatrixRequest): Case[] {
 const LTE_BW_OK = new Set([3, 5, 10, 15, 20]);
 const mobObj = { antennaType: 'isotropic', position: [4, 3], referencePower: -25, ulAttenuation: 60 };
 
-function bandCells(r: BandRow) {
+// NB-IoT deployment-mode variant (SIM40-2312). For NB-IoT the cell's cellType
+// carries the deployment/operation mode (standalone / in-band) — the same
+// contract the bulkTests generator and the apiTester
+// nbiot-definition-completeness check use, and the field the configFidelity
+// nbiotChecker reads.
+type NbIotModeVariant = 'standalone' | 'in-band';
+
+function bandCells(r: BandRow, nbMode?: NbIotModeVariant) {
   if (r.rat === 'NR') {
     const NRARFCN: any = r.duplex === 'TDD'
       ? { dl: r.dlArfcn, ssb: r.ssbArfcn, ul: r.dlArfcn }
@@ -274,7 +281,9 @@ function bandCells(r: BandRow) {
   const ul = String(r.band) === '66' ? 131972 : (r.duplex === 'FDD' ? r.dlArfcn + 18000 : r.dlArfcn);
   const ratType = isNb ? 'nbiot' : 'smartphone';
   const cell: any = {
-    cellType: '4g', syncId: 0, duplexMode: r.duplex, band: String(r.band), EARFCN: { dl: r.dlArfcn, ul },
+    // Mode variants carry the deployment mode in cellType; plain sweep rows
+    // keep the legacy mode-less '4g' (box-accepted) cellType.
+    cellType: isNb && nbMode ? nbMode : '4g', syncId: 0, duplexMode: r.duplex, band: String(r.band), EARFCN: { dl: r.dlArfcn, ul },
     bandwidth: bw, prach: 0, antennas: { dl: 1, ul: 1 }, rfCard: 0, rxToTxLatency: 4, txGain: [70], rxGain: [0],
     globalTimingAdvance: -1, mobility: mobObj,
   };
@@ -295,8 +304,8 @@ function bandNbiotSubs() {
 
 const RAT_LABEL: Record<BandRat, Rat> = { NR: 'nr-sa', LTE: 'lte', CATM: 'catm', NBIOT: 'nbiot' };
 
-function bandCase(r: BandRow, dataType: 'no_data' | 'udp' | 'tcp'): Case {
-  const cells = bandCells(r);
+function bandCase(r: BandRow, dataType: 'no_data' | 'udp' | 'tcp', nbMode?: NbIotModeVariant): Case {
+  const cells = bandCells(r, nbMode);
   // NB-IoT carries no iperf data plane in this sweep.
   const dt = r.rat === 'NBIOT' ? 'no_data' : dataType;
   const subscribers = r.rat === 'NR'
@@ -307,12 +316,15 @@ function bandCase(r: BandRow, dataType: 'no_data' | 'udp' | 'tcp'): Case {
   const userPlane = buildUserPlane({ dataType: dt } as Spec);
   const powerCycle = buildPowerCycle();
   // Test-case names allow only [A-Za-z0-9_-]; bandwidths like 1.4/0.2 have a
-  // dot, so encode it as 'p' (1.4 -> 1p4mhz) to keep the name valid.
-  const id = `band-${r.rat.toLowerCase()}-b${r.band}-${r.duplex.toLowerCase()}-${String(r.bwMhz).replace('.', 'p')}mhz`;
+  // dot, so encode it as 'p' (1.4 -> 1p4mhz) to keep the name valid. Mode
+  // variants likewise drop the dash ('in-band' -> '-inband' suffix).
+  const modeSuffix = nbMode ? `-${nbMode.replace(/-/g, '')}` : '';
+  const id = `band-${r.rat.toLowerCase()}-b${r.band}-${r.duplex.toLowerCase()}-${String(r.bwMhz).replace('.', 'p')}mhz${modeSuffix}`;
   const settings = { settings: { loggingProfileName: 'rrc_debug', successCriteriaName: 'BLER Success', testCaseName: id, test_name: id } };
   const input = { cellConfig: cells.cellConfig, subsConfig: subscribers.subsConfig, userPlaneConfig: userPlane.userPlaneConfig, powerCycleConfig: powerCycle.powerCycleConfig, settings: settings.settings };
   const tags = [RAT_LABEL[r.rat], `band${r.band}`, r.duplex.toLowerCase(), 'band-sweep'];
-  return { id, rat: RAT_LABEL[r.rat], description: `${r.rat} band ${r.band} ${r.duplex} ${r.bwMhz}MHz`, cells, subscribers, userPlane, powerCycle, settings, input, tags };
+  if (nbMode) tags.push(nbMode);
+  return { id, rat: RAT_LABEL[r.rat], description: `${r.rat} band ${r.band} ${r.duplex} ${r.bwMhz}MHz${nbMode ? ` ${nbMode}` : ''}`, cells, subscribers, userPlane, powerCycle, settings, input, tags };
 }
 
 export interface BandSweepRequest { rats?: BandRat[]; dataType?: 'no_data' | 'udp' | 'tcp'; cap?: number }
@@ -321,7 +333,15 @@ export interface BandSweepRequest { rats?: BandRat[]; dataType?: 'no_data' | 'ud
 export function generateBandSweep(req: BandSweepRequest = {}): Case[] {
   const want = new Set(req.rats ?? ['NR', 'LTE', 'CATM', 'NBIOT']);
   const dt = req.dataType ?? 'no_data';
-  const out = BAND_TABLE.filter((r) => want.has(r.rat)).map((r) => bandCase(r, dt));
+  const rows = BAND_TABLE.filter((r) => want.has(r.rat));
+  const out = rows.map((r) => bandCase(r, dt));
+  // NB-IoT deployment-mode variants (SIM40-2312): the plain sweep rows keep
+  // the legacy mode-less '4g' cellType, so the nbiotChecker's deployment-mode
+  // check never engages on them. Emit explicit standalone + in-band variants
+  // for the first NB-IoT band (ids suffixed -standalone / -inband) so the
+  // check has real cases to bite on.
+  const nb = rows.find((r) => r.rat === 'NBIOT');
+  if (nb) for (const m of ['standalone', 'in-band'] as const) out.push(bandCase(nb, dt, m));
   return req.cap ? out.slice(0, req.cap) : out;
 }
 
