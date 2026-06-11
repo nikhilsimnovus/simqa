@@ -304,6 +304,413 @@ async function recordEvidence(testDir: string, page: Page, bundle: PageBundle): 
   return { screenshotFile, networkFile, consoleFile };
 }
 
+// ---------- Page-integrity sentinel (reusable, STRICTLY read-only) ----------
+//
+// Exists to catch:
+//   - SIM40-1103 / SIM40-1172: pages leaking literal "NaN" / "undefined" into
+//     visible text, or rendering an empty main content region.
+//   - SIM40-1760: dropdowns listing the same option label twice.
+//   - SIM40-983 / SIM40-1316 / SIM40-2226: toasts that surface raw error
+//     internals (TypeError, stack frames, JSON blobs, "HTTP 5xx ...") instead
+//     of a human-readable message.
+//
+// Usage: const sentinel = await attachPageIntegritySentinel(page) BEFORE
+// navigating, then await sentinel.check('<step-label>') after each page
+// settles. Findings accumulate across the walk. Toast text is captured
+// passively by a MutationObserver installed into every document via
+// addInitScript, so toasts that auto-dismiss within seconds are still seen.
+
+export interface PageIntegrityFinding {
+  /** Label of the walk step the finding came from (e.g. "my-tests"). */
+  page: string;
+  kind: 'nan-undefined-leak' | 'empty-main-content' | 'pageerror' | 'duplicate-dropdown-options' | 'raw-error-toast';
+  detail: string;
+}
+
+export interface PageIntegritySentinel {
+  /** Run all integrity assertions against the page's CURRENT state. Returns
+   *  the findings from this check; they also accumulate in `findings`.
+   *  Pass { skipLeakScan: true } for steps whose legitimate content may
+   *  contain literal "NaN"/"undefined" as DATA (e.g. raw log viewers) —
+   *  all other assertions still run. */
+  check: (label: string, opts?: { skipLeakScan?: boolean }) => Promise<PageIntegrityFinding[]>;
+  /** Every finding accumulated across all check() calls. */
+  findings: PageIntegrityFinding[];
+  /** Every toast text captured passively (prefixed with the step label). */
+  toastsSeen: string[];
+}
+
+// Raw-error heuristics for toast text (SIM40-983 / SIM40-1316 / SIM40-2226).
+// "stack trace" (not bare "stack" — too many legit words contain it) plus a
+// JS stack-frame shape; HTTP only at 5xx — 4xx toasts can be legitimate
+// user-facing messages. Case-insensitive as these leak in varying casings.
+const RAW_ERROR_TOAST_RE = /TypeError|stack\s*trace|Exception|\{"|HTTP 5\d\d|at .+\(.+\.js/i;
+
+export async function attachPageIntegritySentinel(page: Page): Promise<PageIntegritySentinel> {
+  const findings: PageIntegrityFinding[] = [];
+  const toastsSeen: string[] = [];
+  const pageErrors: string[] = [];
+  page.on('pageerror', (e: any) => pageErrors.push(String(e?.message ?? e).slice(0, 200)));
+
+  // Passive toast capture (SIM40-983/1316/2226): record toast/notification
+  // text the moment the element is inserted — toasts auto-dismiss before a
+  // poll-based check would see them.
+  await page.addInitScript(() => {
+    const w = window as any;
+    if (w.__simqaToastWatch) return;
+    w.__simqaToastWatch = true;
+    w.__simqaToasts = [];
+    const SEL = '[role="status"],[role="alert"],[class*="toast" i],[class*="notification" i],[class*="snackbar" i]';
+    const record = (el: Element) => {
+      try {
+        const t = (el.textContent ?? '').trim();
+        if (t && t.length <= 500 && !w.__simqaToasts.includes(t)) w.__simqaToasts.push(t);
+      } catch { /* ignore */ }
+    };
+    const obs = new MutationObserver((muts) => {
+      for (const m of muts) {
+        m.addedNodes.forEach((n) => {
+          if (!(n instanceof Element)) return;
+          try {
+            if (n.matches(SEL)) record(n);
+            n.querySelectorAll(SEL).forEach(record);
+          } catch { /* ignore */ }
+        });
+      }
+    });
+    try { obs.observe(document, { childList: true, subtree: true }); } catch { /* ignore */ }
+  });
+
+  const check = async (label: string, opts?: { skipLeakScan?: boolean }): Promise<PageIntegrityFinding[]> => {
+    const found: PageIntegrityFinding[] = [];
+
+    // Uncaught exceptions since the previous check (SIM40-1172 family).
+    for (const e of pageErrors.splice(0)) found.push({ page: label, kind: 'pageerror', detail: e });
+
+    const dom = await page.evaluate((skipLeakScan) => {
+      const out = { leaks: [] as string[], mainLen: -1, bodyLen: 0, dupSelects: [] as string[], toasts: [] as string[] };
+      const bodyText = document.body ? (document.body as HTMLElement).innerText : '';
+      out.bodyLen = bodyText.trim().length;
+      // "NaN" / "undefined" leaked into VISIBLE text (SIM40-1103). Skipped
+      // when the caller flags the step as legitimately containing such
+      // strings as data (e.g. raw log content on /logs).
+      if (!skipLeakScan) {
+        const re = /\bNaN\b|\bundefined\b/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(bodyText)) && out.leaks.length < 5) {
+          out.leaks.push(bodyText.slice(Math.max(0, m.index - 40), m.index + m[0].length + 40).replace(/\s+/g, ' '));
+        }
+      }
+      // Main content region must not be empty (SIM40-1172). Only trust an
+      // explicit <main>/[role=main]; otherwise fall back to a body-level
+      // blank-page check to avoid false alarms from class-name guessing.
+      const main = document.querySelector('main, [role="main"]');
+      out.mainLen = main ? ((main as HTMLElement).innerText ?? '').trim().length : -1;
+      // No <select> may list the same option label twice (SIM40-1760).
+      document.querySelectorAll('select').forEach((sel) => {
+        const labels = Array.from(sel.options).map((o) => (o.label || o.textContent || '').trim()).filter((t) => t.length > 0);
+        const seen = new Set<string>(); const dups = new Set<string>();
+        for (const l of labels) { if (seen.has(l)) dups.add(l); seen.add(l); }
+        if (dups.size > 0) out.dupSelects.push(`<select${sel.id ? ` id="${sel.id}"` : ''}${sel.name ? ` name="${sel.name}"` : ''}> repeats: ${[...dups].slice(0, 5).join(', ')}`);
+      });
+      // Drain passively captured toasts.
+      const w = window as any;
+      out.toasts = Array.isArray(w.__simqaToasts) ? w.__simqaToasts.splice(0) : [];
+      return out;
+    }, opts?.skipLeakScan === true).catch(() => null);
+
+    if (dom) {
+      for (const l of dom.leaks) found.push({ page: label, kind: 'nan-undefined-leak', detail: `…${l}…` });
+      if ((dom.mainLen >= 0 && dom.mainLen < 20) || dom.bodyLen < 40) {
+        // Slow-hydrating pages can look empty right after settle: give the
+        // page ~3 extra seconds and re-evaluate ONCE; only report the finding
+        // if the main/body region is still empty.
+        await page.waitForTimeout(3000);
+        const recheck = await page.evaluate(() => {
+          const bodyText = document.body ? (document.body as HTMLElement).innerText : '';
+          const main = document.querySelector('main, [role="main"]');
+          return { mainLen: main ? ((main as HTMLElement).innerText ?? '').trim().length : -1, bodyLen: bodyText.trim().length };
+        }).catch(() => null);
+        const stillEmpty = !recheck || (recheck.mainLen >= 0 && recheck.mainLen < 20) || recheck.bodyLen < 40;
+        if (stillEmpty) {
+          const mainLen = recheck ? recheck.mainLen : dom.mainLen;
+          const bodyLen = recheck ? recheck.bodyLen : dom.bodyLen;
+          found.push({ page: label, kind: 'empty-main-content', detail: `main region text=${mainLen} chars, body text=${bodyLen} chars — page rendered (near) empty (still empty after a 3s re-check)` });
+        }
+      }
+      for (const d of dom.dupSelects) found.push({ page: label, kind: 'duplicate-dropdown-options', detail: d });
+      for (const t of dom.toasts) {
+        toastsSeen.push(`[${label}] ${t}`);
+        if (RAW_ERROR_TOAST_RE.test(t)) found.push({ page: label, kind: 'raw-error-toast', detail: `toast looks like a raw error: "${t.slice(0, 160)}"` });
+      }
+    }
+    findings.push(...found);
+    return found;
+  };
+
+  return { check, findings, toastsSeen };
+}
+
+// ---------- Create Test Case wizard helpers (read-only, never save) ----------
+//
+// Shared by ui-ue-category-rat-allowlist (SIM40-1041 / SIM40-2253 /
+// SIM40-2262) and ui-defaults-on-toggle (SIM40-1034 / SIM40-1091). They open
+// the wizard, drive dropdowns/toggles, and the calling test always cancels
+// out — Save / Start / Submit are NEVER clicked.
+
+async function openCreateTestCaseWizard(ctx: UiCtx, page: Page): Promise<{ ok: boolean; reason: string }> {
+  await page.goto(`http://${ctx.host}/testcase`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2500);
+  const create = page.locator('button:has-text("Create Test Case")').first();
+  if (!(await create.count())) return { ok: false, reason: 'Create Test Case button not found on /testcase' };
+  const startUrl = page.url();
+  const inputsBefore = await page.locator('input').count();
+  await create.click();
+  await page.waitForTimeout(3000);
+  const dialog = await page.locator('[role="dialog"], [class*="modal" i], [class*="drawer" i], [class*="wizard" i]').count();
+  const inputsAfter = await page.locator('input').count();
+  const opened = page.url() !== startUrl || dialog > 0 || inputsAfter > inputsBefore + 3;
+  return opened ? { ok: true, reason: '' } : { ok: false, reason: `Create Test Case click did not open a wizard (url unchanged, dialogs=${dialog}, inputs ${inputsBefore}->${inputsAfter})` };
+}
+
+async function cancelCreateTestCaseWizard(ctx: UiCtx, page: Page): Promise<void> {
+  const cancel = page.locator('button:has-text("Cancel"), button:has-text("Close"), [aria-label*="close" i]').first();
+  if (await cancel.count().catch(() => 0)) await cancel.click({ trial: false }).catch(() => null);
+  else await page.keyboard.press('Escape').catch(() => null);
+  await page.waitForTimeout(1000);
+  // Belt and braces: leave the wizard route entirely WITHOUT saving.
+  await page.goto(`http://${ctx.host}/testcase`, { waitUntil: 'domcontentloaded' }).catch(() => null);
+  await page.waitForTimeout(800);
+}
+
+/** Select a RAT in the create wizard. Tries, in order: a native <select>
+ *  offering the RAT as an option → a custom dropdown adjacent to a "RAT"
+ *  label → a segmented tile/button carrying the RAT name. Changing a dropdown
+ *  never persists anything (read-only). */
+async function selectWizardRat(page: Page, rat: string): Promise<{ ok: boolean; how: string }> {
+  // Path 1: native <select>.
+  const native = await page.evaluate((want) => {
+    const norm = (s: string) => s.toLowerCase().replace(/[\s_-]/g, '');
+    const sels = Array.from(document.querySelectorAll('select'));
+    for (let i = 0; i < sels.length; i++) {
+      const opt = Array.from(sels[i].options).find((o) => norm((o.label || o.textContent || '').trim()) === norm(want));
+      if (opt) return { idx: i, value: opt.value };
+    }
+    return null;
+  }, rat);
+  if (native) {
+    await page.locator('select').nth(native.idx).selectOption({ value: native.value }).catch(() => null);
+    await page.waitForTimeout(1500);
+    return { ok: true, how: `native <select> option value="${native.value}"` };
+  }
+  // Path 2: custom dropdown adjacent to a "RAT" label — open it, pick option.
+  const marked = await page.evaluate(() => {
+    document.querySelectorAll('[data-simqa-rat-control]').forEach((n) => n.removeAttribute('data-simqa-rat-control'));
+    const leaves = Array.from(document.querySelectorAll('label, span, div, p, td, th'))
+      .filter((el) => el.children.length === 0 && /^\s*RAT\s*:?\s*\*?\s*$/i.test(el.textContent ?? ''));
+    for (const lab of leaves) {
+      let node: Element | null = lab;
+      for (let up = 0; up < 4 && node; up++) {
+        node = node.parentElement;
+        if (!node) break;
+        const ctl = node.querySelector('[role="combobox"], [class*="select" i], [class*="dropdown" i]');
+        if (ctl && ctl !== lab) { ctl.setAttribute('data-simqa-rat-control', '1'); return true; }
+      }
+    }
+    return false;
+  });
+  if (marked) {
+    await page.locator('[data-simqa-rat-control]').first().click().catch(() => null);
+    await page.waitForTimeout(800);
+    const picked = await page.evaluate((want) => {
+      const norm = (s: string) => s.toLowerCase().replace(/[\s_-]/g, '');
+      const cands = Array.from(document.querySelectorAll('[role="option"], [role="menuitem"], li, [class*="option" i]'));
+      for (const el of cands) {
+        if (norm((el.textContent ?? '').trim()) === norm(want) && (el as HTMLElement).offsetParent !== null) {
+          (el as HTMLElement).click();
+          return true;
+        }
+      }
+      return false;
+    }, rat);
+    if (picked) { await page.waitForTimeout(1500); return { ok: true, how: 'custom dropdown next to RAT label' }; }
+    await page.keyboard.press('Escape').catch(() => null);
+  }
+  // Path 3: segmented buttons / radio tiles labelled with the RAT name.
+  const tile = await page.evaluate((want) => {
+    const norm = (s: string) => s.toLowerCase().replace(/[\s_-]/g, '');
+    const cands = Array.from(document.querySelectorAll('button, [role="radio"], [role="tab"], label, li, [class*="card" i], [class*="tile" i], [class*="option" i]'));
+    for (const el of cands) {
+      if (norm((el.textContent ?? '').trim()) === norm(want) && (el as HTMLElement).offsetParent !== null) {
+        (el as HTMLElement).click();
+        return true;
+      }
+    }
+    return false;
+  }, rat);
+  if (tile) { await page.waitForTimeout(1500); return { ok: true, how: 'RAT tile/button' }; }
+  return { ok: false, how: 'no native select, labelled dropdown, or RAT tile matched' };
+}
+
+/** Read the option labels of the UE Category dropdown in the create wizard.
+ *  Native <select> first (associated label or category-shaped options), then
+ *  a custom dropdown near a "UE Category" label (opened, scraped, closed). */
+async function readWizardUeCategoryOptions(page: Page): Promise<{ options: string[]; how: string } | null> {
+  const native = await page.evaluate(() => {
+    const sels = Array.from(document.querySelectorAll('select'));
+    for (const sel of sels) {
+      const opts = Array.from(sel.options).map((o) => (o.label || o.textContent || '').trim()).filter((t) => t.length > 0);
+      if (opts.length === 0) continue;
+      let assoc = '';
+      if (sel.id) assoc = document.querySelector(`label[for="${CSS.escape(sel.id)}"]`)?.textContent ?? '';
+      const wrap = sel.closest('div, td, li, fieldset');
+      const around = wrap ? (wrap.textContent ?? '').slice(0, 160) : '';
+      if (/ue\s*category|ue\s*cat\b/i.test(`${assoc} ${around}`)) return opts;
+    }
+    // Fallback: a select whose options LOOK like UE categories (nb1/nb2/m1/cat-N).
+    // Bare 1-2 digit numbers alone must NOT qualify (any numeric dropdown —
+    // counts, bandwidths, etc. — would match): the candidate must also offer
+    // at least one nb1/nb2 or cat-/m-prefixed option. When several selects
+    // qualify, prefer the one containing an nb-pattern option.
+    const nbRe = /^nb[\s_-]?[12]$/i;
+    const prefixedRe = /^(cat|m)\d/i;
+    let best: string[] | null = null;
+    let bestHasNb = false;
+    for (const sel of sels) {
+      const opts = Array.from(sel.options).map((o) => (o.label || o.textContent || '').trim()).filter((t) => t.length > 0);
+      if (opts.length === 0) continue;
+      const catLike = opts.filter((t) => /^(nb[\s_-]?[12]|(cat[\s_-]?)?m?[\s_-]?\d{1,2})$/i.test(t)).length;
+      if (catLike < Math.max(2, opts.length - 1)) continue;
+      const hasNb = opts.some((t) => nbRe.test(t));
+      if (!hasNb && !opts.some((t) => prefixedRe.test(t))) continue; // only bare numbers — not the UE-category control
+      if (!best || (hasNb && !bestHasNb)) { best = opts; bestHasNb = hasNb; }
+    }
+    if (best) return best;
+    return null;
+  });
+  if (native) return { options: native, how: 'native select' };
+  const marked = await page.evaluate(() => {
+    document.querySelectorAll('[data-simqa-cat-control]').forEach((n) => n.removeAttribute('data-simqa-cat-control'));
+    const leaves = Array.from(document.querySelectorAll('label, span, div, p, td, th'))
+      .filter((el) => el.children.length === 0 && /ue\s*category|ue\s*cat\b/i.test((el.textContent ?? '').trim()) && (el.textContent ?? '').trim().length < 40);
+    for (const lab of leaves) {
+      let node: Element | null = lab;
+      for (let up = 0; up < 4 && node; up++) {
+        node = node.parentElement;
+        if (!node) break;
+        const ctl = node.querySelector('[role="combobox"], [class*="select" i], [class*="dropdown" i], button');
+        if (ctl) { ctl.setAttribute('data-simqa-cat-control', '1'); return true; }
+      }
+    }
+    return false;
+  });
+  if (!marked) return null;
+  await page.locator('[data-simqa-cat-control]').first().click().catch(() => null);
+  await page.waitForTimeout(800);
+  const opts = await page.evaluate(() => {
+    const out: string[] = [];
+    document.querySelectorAll('[role="option"], [role="listbox"] li, [class*="menu" i] li, [class*="option" i]').forEach((el) => {
+      const t = (el.textContent ?? '').trim();
+      if (t && t.length < 40 && (el as HTMLElement).offsetParent !== null) out.push(t);
+    });
+    return [...new Set(out)];
+  });
+  await page.keyboard.press('Escape').catch(() => null);
+  await page.waitForTimeout(400);
+  return opts.length > 0 ? { options: opts, how: 'custom dropdown' } : null;
+}
+
+/** UE Category may live on a later wizard step; advance via "Next" (a pure
+ *  client-side step change — still read-only) a couple of times if needed. */
+async function readUeCategoryAcrossSteps(page: Page): Promise<{ options: string[]; how: string } | null> {
+  for (let step = 0; step < 3; step++) {
+    const got = await readWizardUeCategoryOptions(page);
+    if (got) return got;
+    const next = page.locator('button:has-text("Next")').first();
+    if (!(await next.count().catch(() => 0))) return null;
+    await next.click({ trial: false }).catch(() => null);
+    await page.waitForTimeout(1500);
+  }
+  return await readWizardUeCategoryOptions(page);
+}
+
+/** Find a feature toggle near a label matching labelReSrc and switch it ON.
+ *  Used by ui-defaults-on-toggle (SIM40-1034 / SIM40-1091). */
+async function enableWizardToggle(page: Page, labelReSrc: string): Promise<{ found: boolean; enabled: boolean; note: string }> {
+  const marked = await page.evaluate((reSrc) => {
+    document.querySelectorAll('[data-simqa-toggle]').forEach((n) => n.removeAttribute('data-simqa-toggle'));
+    const re = new RegExp(reSrc, 'i');
+    const leaves = Array.from(document.querySelectorAll('label, span, div, p, td, th'))
+      .filter((el) => el.children.length === 0 && re.test((el.textContent ?? '').trim()) && (el.textContent ?? '').trim().length < 60);
+    for (const lab of leaves) {
+      let node: Element | null = lab;
+      for (let up = 0; up < 5 && node; up++) {
+        node = node.parentElement;
+        if (!node) break;
+        const ctl = node.querySelector('input[type="checkbox"]') || node.querySelector('[role="switch"]') || node.querySelector('button[aria-pressed]') || node.querySelector('[class*="switch" i]');
+        if (ctl) { ctl.setAttribute('data-simqa-toggle', '1'); return true; }
+      }
+    }
+    return false;
+  }, labelReSrc);
+  if (!marked) return { found: false, enabled: false, note: 'toggle not found' };
+  const el = page.locator('[data-simqa-toggle]').first();
+  const isOn = () => el.evaluate((n) => {
+    if (n instanceof HTMLInputElement) return n.checked;
+    const ac = n.getAttribute('aria-checked') ?? n.getAttribute('aria-pressed');
+    if (ac !== null) return ac === 'true';
+    return /\b(on|checked|active|enabled)\b/i.test(String((n as HTMLElement).className ?? ''));
+  }).catch(() => false);
+  if (await isOn()) return { found: true, enabled: true, note: 'already enabled' };
+  // Material-style switches hide the real input; fall back to a DOM click.
+  await el.click({ force: true }).catch(async () => { await el.evaluate((n) => (n as HTMLElement).click()).catch(() => null); });
+  await page.waitForTimeout(1200);
+  const on = await isOn();
+  return { found: true, enabled: on, note: on ? 'enabled by click' : 'clicked but state did not flip' };
+}
+
+/** Read the value of the form field whose label matches labelReSrc. When
+ *  contextReSrc is given, label matches whose ancestors mention the context
+ *  are preferred (e.g. the Threshold inside the PDCCH section). */
+async function readWizardFieldValue(page: Page, labelReSrc: string, contextReSrc?: string): Promise<string | null> {
+  return await page.evaluate(({ labelReSrc, contextReSrc }) => {
+    const labRe = new RegExp(labelReSrc, 'i');
+    const ctxRe = contextReSrc ? new RegExp(contextReSrc, 'i') : null;
+    const leaves = Array.from(document.querySelectorAll('label, span, div, p, td, th'))
+      .filter((el) => el.children.length === 0 && labRe.test((el.textContent ?? '').trim()) && (el.textContent ?? '').trim().length < 60);
+    const valueFor = (lab: Element): string | null => {
+      const forId = lab.getAttribute('for');
+      if (forId) {
+        const t = document.getElementById(forId);
+        if (t && 'value' in t) return String((t as HTMLInputElement).value ?? '');
+      }
+      let node: Element | null = lab;
+      for (let up = 0; up < 3 && node; up++) {
+        node = node.parentElement;
+        if (!node) break;
+        const ctl = node.querySelector('input:not([type="checkbox"]):not([type="radio"]):not([type="button"]), select, textarea');
+        if (ctl) return String((ctl as HTMLInputElement).value ?? '');
+      }
+      return null;
+    };
+    const score = (el: Element): number => {
+      if (!ctxRe) return 0;
+      let node: Element | null = el;
+      for (let up = 0; up < 4 && node; up++) {
+        if (ctxRe.test(node.textContent ?? '')) return 0;
+        node = node.parentElement;
+      }
+      return 1;
+    };
+    const ranked = [...leaves].sort((a, b) => score(a) - score(b));
+    for (const lab of ranked) {
+      const v = valueFor(lab);
+      if (v !== null) return v;
+    }
+    return null;
+  }, { labelReSrc, contextReSrc: contextReSrc ?? null });
+}
+
 interface UiTestDef {
   id: string;
   name: string;
@@ -314,7 +721,10 @@ interface UiTestDef {
   needsAuth?: boolean;
   longRunning?: boolean;
   destructive?: boolean;
-  run: (args: { ctx: UiCtx; bundle: PageBundle; testDir: string }) => Promise<{ ok: boolean; detail: string; expected?: string; extraEvidence?: UiTestEvidence }>;
+  /** Tests may resolve with skipped:true (+ skippedReason) when a precondition
+   *  they cannot control is absent in this build (e.g. a filter UI that does
+   *  not render). The runner surfaces these as SKIP, not PASS/FAIL. */
+  run: (args: { ctx: UiCtx; bundle: PageBundle; testDir: string }) => Promise<{ ok: boolean; detail: string; expected?: string; extraEvidence?: UiTestEvidence; skipped?: boolean; skippedReason?: string }>;
 }
 
 // ---------- Test definitions ----------
@@ -4781,6 +5191,332 @@ function defs(): UiTestDef[] {
   });
 
   // ============================================================
+  // PAGE INTEGRITY + GRID / FILTER / WIZARD AUDIT CHECKS (2026-06-11)
+  // Catches: SIM40-1103 / SIM40-1172 / SIM40-1760 (page integrity),
+  // SIM40-983 / SIM40-1316 / SIM40-2226 (raw-error toasts — folded into the
+  // sentinel sweep as one more assertion), SIM40-1208 / SIM40-1417 /
+  // SIM40-2153 (My Tests default order), SIM40-1510 (date-range validation),
+  // SIM40-1041 / SIM40-2253 / SIM40-2262 (UE category vs RAT allow-list),
+  // SIM40-1034 / SIM40-1091 (defaults on feature toggles).
+  // All STRICTLY read-only: Save / Start / Delete / Submit are never clicked.
+  // ============================================================
+
+  // SIM40-1103 / SIM40-1172 / SIM40-1760 + the ui-toast-raw-error-lint
+  // assertion (SIM40-983 / SIM40-1316 / SIM40-2226).
+  list.push({
+    id: 'ui-page-integrity-sweep',
+    name: 'Page integrity sweep: no NaN/undefined leaks, no empty content, no pageerrors, unique dropdown options, no raw-error toasts',
+    description: 'Catches SIM40-1103/1172/1760 + SIM40-983/1316/2226. Walks dashboard → My Tests → a testcase view (opened read-only) → statistics → logs, asserting on each page: visible text has no "NaN"/"undefined" leak (scan skipped on /logs, where raw log content legitimately contains such strings as data), the main content region is non-empty, no uncaught pageerror fired, no <select> repeats an option label, and no passively-captured toast matches raw-error heuristics (TypeError / stack traces / JSON blobs / "HTTP 5xx").',
+    category: 'errors', severity: 'normal', needsAuth: true, longRunning: true,
+    run: async ({ ctx, bundle, testDir }) => {
+      const page = bundle.page;
+      const sentinel = await attachPageIntegritySentinel(page);
+      const visited: string[] = [];
+      const skippedSteps: string[] = [];
+
+      const visit = async (label: string, url: string, settleMs = 2500, opts?: { skipLeakScan?: boolean }) => {
+        const nav = await page.goto(url, { waitUntil: 'domcontentloaded' }).then(() => true).catch(() => false);
+        if (!nav) { skippedSteps.push(`${label} (navigation failed)`); return; }
+        await page.waitForTimeout(settleMs);
+        await sentinel.check(label, opts);
+        visited.push(label);
+      };
+
+      await visit('dashboard', `http://${ctx.host}/`);
+      await visit('my-tests', `http://${ctx.host}/testcase`);
+
+      // Testcase view, read-only: click the first row only — never a
+      // Save/Start/Delete/Restart/Submit affordance.
+      const firstRow = page.locator('table tbody tr').first();
+      if (await firstRow.count()) {
+        await firstRow.click().catch(() => null);
+        await page.waitForTimeout(2000);
+        await sentinel.check('testcase-view');
+        visited.push('testcase-view');
+        await page.keyboard.press('Escape').catch(() => null);
+      } else {
+        skippedSteps.push('testcase-view (no rows on /testcase)');
+      }
+
+      await visit('statistics', `http://${ctx.host}/statistics`);
+      // Raw log content legitimately contains "undefined"/"NaN" as data, so
+      // the leak scan is skipped on /logs; every other assertion still runs.
+      await visit('logs', `http://${ctx.host}/logs`, 3000, { skipLeakScan: true });
+
+      // Evidence: full finding + toast log next to the standard screenshot.
+      fs.writeFileSync(path.join(testDir, 'integrity-findings.json'), JSON.stringify({ visited, skippedSteps, findings: sentinel.findings, toastsSeen: sentinel.toastsSeen }, null, 2));
+
+      const f = sentinel.findings;
+      return {
+        ok: f.length === 0,
+        detail: f.length === 0
+          ? `visited [${visited.join(', ')}], 0 integrity findings, toasts captured=${sentinel.toastsSeen.length}${skippedSteps.length ? `, skipped: ${skippedSteps.join('; ')}` : ''}`
+          : `${f.length} finding(s): ${f.slice(0, 8).map((x) => `[${x.page}] ${x.kind}: ${x.detail}`).join(' | ')}${f.length > 8 ? ` (+${f.length - 8} more in integrity-findings.json)` : ''}`,
+        expected: 'every main page renders with no "NaN"/"undefined" in visible text (/logs exempt from the leak scan — raw log data), a non-empty main region, zero uncaught pageerrors, no duplicate dropdown option labels, and no toast exposing raw error internals',
+      };
+    },
+  });
+
+  // SIM40-1208 / SIM40-1417 / SIM40-2153: My Tests default-order regressions.
+  list.push({
+    id: 'ui-mytests-default-order',
+    name: 'My Tests grid default-sorts by Date Modified (newest first) with no interaction',
+    description: 'Catches SIM40-1208/1417/2153. Loads /testcase, touches nothing, reads the Date Modified cells of the first ~10 rows and asserts the sequence is non-increasing (newest first). Dates are parsed under both month-first and day-first interpretations and the test PASSES if EITHER yields a sorted sequence — deliberately lenient: it avoids false alarms from dd/mm vs mm/dd ambiguity at the cost of missing a mis-ordered grid that happens to look sorted under the other interpretation. Skips with a reason when the column is missing or the date format is unparseable.',
+    category: 'testcases', severity: 'normal', needsAuth: true,
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+      await page.goto(`http://${ctx.host}/testcase`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2500);
+      const headerIdx = await page.$$eval('table thead th', (ths) => {
+        const texts = ths.map((h) => (h.textContent ?? '').trim());
+        let i = texts.findIndex((t) => /date\s*modified/i.test(t));
+        if (i < 0) i = texts.findIndex((t) => /modified/i.test(t) && !/by/i.test(t));
+        return i;
+      });
+      if (headerIdx < 0) return { ok: true, skipped: true, skippedReason: 'no "Date Modified" column header found on /testcase', detail: 'Date Modified column not present in this build' };
+      const cells = (await page.$$eval('table tbody tr', (trs, idx) => trs.slice(0, 10).map((tr) => (tr.children.item(idx)?.textContent ?? '').trim()), headerIdx)).filter((c) => c.length > 0);
+      if (cells.length < 2) return { ok: true, skipped: true, skippedReason: `only ${cells.length} populated Date Modified cell(s) — not enough rows to verify ordering`, detail: `cells=[${cells.join(' | ')}]` };
+
+      // Parse under both common interpretations; PASS if the sequence is
+      // non-increasing under ANY interpretation that parses every cell.
+      // Avoids false alarms from dd/mm vs mm/dd ambiguity.
+      const dayFirst = (s: string): number => {
+        const m = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})(?:[ ,T]*(\d{1,2}):(\d{2})(?::(\d{2}))?)?\s*([AP]M)?/i);
+        if (!m) return NaN;
+        let hour = Number(m[4] ?? 0);
+        if (m[7] && /pm/i.test(m[7]) && hour < 12) hour += 12;
+        if (m[7] && /am/i.test(m[7]) && hour === 12) hour = 0;
+        const year = Number(m[3].length === 2 ? `20${m[3]}` : m[3]);
+        return new Date(year, Number(m[2]) - 1, Number(m[1]), hour, Number(m[5] ?? 0), Number(m[6] ?? 0)).getTime();
+      };
+      const interpretations: Array<{ label: string; values: number[] }> = [];
+      const native = cells.map((c) => Date.parse(c));
+      if (native.every((v) => !Number.isNaN(v))) interpretations.push({ label: 'standard', values: native });
+      const swapped = cells.map(dayFirst);
+      if (swapped.every((v) => !Number.isNaN(v))) interpretations.push({ label: 'day-first', values: swapped });
+      if (interpretations.length === 0) {
+        return { ok: true, skipped: true, skippedReason: `Date Modified cells use an unrecognised date format (sample: "${cells[0]}")`, detail: `cells=[${cells.join(' | ')}]` };
+      }
+      const nonIncreasing = (vals: number[]) => vals.every((v, i) => i === 0 || v <= vals[i - 1]);
+      const ordered = interpretations.some((it) => nonIncreasing(it.values));
+      return {
+        ok: ordered,
+        detail: `first ${cells.length} Date Modified cells: [${cells.join(' | ')}] — ${ordered ? 'non-increasing (newest first)' : `OUT OF ORDER under every date interpretation (${interpretations.map((i) => i.label).join(', ')})`}`,
+        expected: 'with zero interaction, /testcase lists testcases by Date Modified descending (newest first) — SIM40-1208/1417/2153 are regressions of this default order',
+      };
+    },
+  });
+
+  // SIM40-1510: start>end in a date-range filter must produce a visible
+  // validation error, never a silently-empty result set.
+  list.push({
+    id: 'ui-date-filter-validation',
+    name: 'Date-range filter: start > end shows a validation error (no silent empty result)',
+    description: 'Catches SIM40-1510. Opens the logs date/time filter, selects "Between", fills a start date AFTER the end date and applies. Any of four validation patterns counts as PASS: a visible validation message, an aria-invalid/:invalid flag increase, the Apply button being disabled by the inverted range, or the widget auto-correcting/clamping the values. Fails only when none of those appears AND a result set renders silently. Skips with a reason when the filter UI is not present.',
+    category: 'logs', severity: 'normal', needsAuth: true, longRunning: true,
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+      await page.goto(`http://${ctx.host}/logs`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(3000);
+      const tried: string[] = [];
+      const dateInputs = () => page.locator('input[type="date"], input[type="datetime-local"]');
+
+      if ((await dateInputs().count()) < 2) {
+        // (a) native <select> exposing a "Between" mode.
+        const selInfo = await page.evaluate(() => {
+          const sels = Array.from(document.querySelectorAll('select'));
+          for (let i = 0; i < sels.length; i++) {
+            const opt = Array.from(sels[i].options).find((o) => /between/i.test(o.label || o.textContent || ''));
+            if (opt) return { idx: i, value: opt.value };
+          }
+          return null;
+        });
+        if (selInfo) {
+          await page.locator('select').nth(selInfo.idx).selectOption({ value: selInfo.value }).catch(() => null);
+          tried.push('native select -> Between');
+          await page.waitForTimeout(1200);
+        } else {
+          // (b) a date/time trigger button, then a "Between" option.
+          const trigger = page.locator('button, [role="combobox"]').filter({ hasText: /execution\s*time|time\s*range|date/i }).first();
+          if (await trigger.count()) {
+            await trigger.click().catch(() => null);
+            await page.waitForTimeout(1000);
+            tried.push('clicked date/time trigger');
+            const between = page.locator('[role="option"], [role="menuitem"], li, label, button').filter({ hasText: /^\s*between\s*$/i }).first();
+            if (await between.count()) {
+              await between.click().catch(() => null);
+              await page.waitForTimeout(1200);
+              tried.push('picked "Between"');
+            }
+          }
+        }
+      }
+
+      const n = await dateInputs().count();
+      if (n < 2) {
+        return { ok: true, skipped: true, skippedReason: `date-range ("Between") filter UI not found on /logs — steps tried: ${tried.join('; ') || 'none matched'}; date inputs visible=${n}`, detail: `date inputs visible=${n}` };
+      }
+
+      const errRe = '(invalid (date|time|range)|must be (before|after|earlier|later)|cannot be (before|after|earlier|later)|(start|from).{0,40}(after|later|greater)|(end|to).{0,40}(before|earlier))';
+      const errLocator = () => page.locator(`:text-matches("${errRe}", "i")`);
+      const errsBefore = await errLocator().count();
+      const ariaBefore = await page.locator('[aria-invalid="true"]').count();
+      const invalidBefore = await page.locator('input:invalid').count();
+
+      // Deliberately inverted range: start AFTER end.
+      const start = dateInputs().first();
+      const end = dateInputs().nth(1);
+      const startType = await start.getAttribute('type');
+      const endType = await end.getAttribute('type');
+      const startFillVal = startType === 'datetime-local' ? '2026-06-10T12:00' : '2026-06-10';
+      const endFillVal = endType === 'datetime-local' ? '2026-06-01T12:00' : '2026-06-01';
+      const fillOk = await (async () => {
+        try {
+          await start.fill(startFillVal);
+          await end.fill(endFillVal);
+          return true;
+        } catch { return false; }
+      })();
+      if (!fillOk) return { ok: true, skipped: true, skippedReason: 'date inputs are not directly editable (calendar-only picker) — cannot drive start>end via fill', detail: 'fill() rejected on the date inputs' };
+      await page.waitForTimeout(800);
+
+      // Validation pattern: the inverted range disables the Apply button.
+      let applyDisabled = false;
+      const apply = page.locator('button:has-text("Apply"), button:has-text("OK"), button:has-text("Search"), button:has-text("Filter")').first();
+      if (await apply.count()) {
+        applyDisabled = (await apply.isDisabled().catch(() => false)) || (await apply.getAttribute('aria-disabled').catch(() => null)) === 'true';
+        if (applyDisabled) tried.push('Apply is disabled with the inverted range (validation evidence)');
+        else { await apply.click().catch(() => null); tried.push('clicked Apply'); }
+      }
+      await page.waitForTimeout(2500);
+
+      const errsAfter = await errLocator().count();
+      const ariaAfter = await page.locator('[aria-invalid="true"]').count();
+      const invalidAfter = await page.locator('input:invalid').count();
+      // Validation pattern: the widget auto-corrected/clamped the values we
+      // typed (only counted when a non-empty, readable value differs).
+      const startValAfter = await start.inputValue({ timeout: 3000 }).catch(() => null);
+      const endValAfter = await end.inputValue({ timeout: 3000 }).catch(() => null);
+      const autoCorrected = (startValAfter !== null && startValAfter !== '' && startValAfter !== startFillVal)
+        || (endValAfter !== null && endValAfter !== '' && endValAfter !== endFillVal);
+      const validation = errsAfter > errsBefore || ariaAfter > ariaBefore || invalidAfter > invalidBefore || applyDisabled || autoCorrected;
+      const rows = await page.locator('table tbody tr').count();
+      const resultsRendered = (await page.locator('table').count()) > 0;
+      // FAIL only when NO validation pattern (message / aria-invalid+:invalid
+      // / disabled Apply / auto-correct) appeared AND the page silently
+      // rendered a result set for the impossible range.
+      const ok = validation || !resultsRendered;
+      return {
+        ok,
+        detail: `inverted range submitted (${tried.join('; ')}); validation-msgs ${errsBefore}->${errsAfter}, aria-invalid ${ariaBefore}->${ariaAfter}, input:invalid ${invalidBefore}->${invalidAfter}, applyDisabled=${applyDisabled}, autoCorrected=${autoCorrected}${autoCorrected ? ` (values now "${startValAfter}" / "${endValAfter}")` : ''}, visibleRows=${rows}${!ok ? ' — SILENT RESULT WITH NO VALIDATION (the SIM40-1510 failure mode)' : ''}${!validation && !resultsRendered ? ' — no validation evidence, but no result grid rendered either (not the silent-result failure mode)' : ''}`,
+        expected: 'a start date after the end date surfaces validation in some form — a visible message, an aria-invalid/:invalid flag, a disabled Apply button, or auto-corrected values; it must not silently render a result set (SIM40-1510)',
+      };
+    },
+  });
+
+  // SIM40-1041 / SIM40-2253 / SIM40-2262: UE-category allow-list must follow
+  // the selected RAT (NSA must not offer nb1/nb2; NB-IoT must offer them).
+  list.push({
+    id: 'ui-ue-category-rat-allowlist',
+    name: 'Create wizard: UE Category options follow the selected RAT (NSA excludes nb1/nb2, NB-IoT offers them)',
+    description: 'Catches SIM40-1041/2253/2262. Opens the Create Test Case wizard read-only (never saves): with RAT=NSA the UE-category dropdown must NOT offer nb1/nb2; with RAT=NB-IoT it must offer nb1 and nb2. Each leg opens a fresh wizard and cancels out. Skips legs whose controls cannot be driven read-only, with a precise reason.',
+    category: 'lifecycle', severity: 'normal', needsAuth: true, longRunning: true,
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+
+      const runLeg = async (rat: string): Promise<{ options: string[] | null; reason: string }> => {
+        const opened = await openCreateTestCaseWizard(ctx, page);
+        if (!opened.ok) return { options: null, reason: opened.reason };
+        try {
+          const sel = await selectWizardRat(page, rat);
+          if (!sel.ok) return { options: null, reason: `RAT selector not driveable (${sel.how})` };
+          const got = await readUeCategoryAcrossSteps(page);
+          if (!got) return { options: null, reason: `UE Category dropdown not located after selecting RAT=${rat}` };
+          return { options: got.options, reason: got.how };
+        } finally {
+          await cancelCreateTestCaseWizard(ctx, page); // NEVER Save
+        }
+      };
+
+      const nsa = await runLeg('NSA');
+      if (!nsa.options) {
+        return { ok: true, skipped: true, skippedReason: `NSA leg could not run read-only: ${nsa.reason}`, detail: `NSA leg: ${nsa.reason}` };
+      }
+      const nb = await runLeg('NB-IoT');
+
+      const isNb1 = (o: string) => /^nb[\s_-]?1$/i.test(o.trim());
+      const isNb2 = (o: string) => /^nb[\s_-]?2$/i.test(o.trim());
+      const issues: string[] = [];
+      const forbidden = nsa.options.filter((o) => isNb1(o) || isNb2(o));
+      if (forbidden.length > 0) issues.push(`RAT=NSA UE-category offers [${forbidden.join(', ')}] — nb1/nb2 are NB-IoT-only (SIM40-1041 / SIM40-2253)`);
+      if (nb.options) {
+        const hasNb1 = nb.options.some(isNb1);
+        const hasNb2 = nb.options.some(isNb2);
+        if (!hasNb1 || !hasNb2) issues.push(`RAT=NB-IoT UE-category missing ${[!hasNb1 ? 'nb1' : '', !hasNb2 ? 'nb2' : ''].filter(Boolean).join(' and ')} — offers [${nb.options.join(', ')}] (SIM40-2262)`);
+      }
+      const nbNote = nb.options ? '' : ` | NB-IoT leg skipped: ${nb.reason}`;
+      return {
+        ok: issues.length === 0,
+        detail: `NSA categories=[${nsa.options.join(', ')}]${nb.options ? ` | NB-IoT categories=[${nb.options.join(', ')}]` : ''}${issues.length ? ` | ${issues.join(' | ')}` : ''}${nbNote}`,
+        expected: 'UE Category allow-list follows the selected RAT: NSA must NOT offer nb1/nb2; NB-IoT must offer both. Wizard is always cancelled — nothing is saved.',
+      };
+    },
+  });
+
+  // SIM40-1034 / SIM40-1091: enabling a feature toggle must pre-populate its
+  // dependent default fields (Network Slicing → Default NSSAI; PDCCH Decode
+  // Opt → Threshold) rather than revealing blank required fields.
+  list.push({
+    id: 'ui-defaults-on-toggle',
+    name: 'Create wizard: feature toggles pre-populate their default fields (read-only, cancelled)',
+    description: 'Catches SIM40-1034/1091. Opens the Create Test Case wizard read-only, enables the Network Slicing toggle and asserts Default NSSAI is non-empty, enables PDCCH Decode Opt and asserts its Threshold is pre-populated, then cancels without saving. Legs whose toggle is absent are noted; the test skips when neither leg is verifiable.',
+    category: 'lifecycle', severity: 'normal', needsAuth: true,
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+      const opened = await openCreateTestCaseWizard(ctx, page);
+      if (!opened.ok) return { ok: true, skipped: true, skippedReason: `create wizard not reachable read-only: ${opened.reason}`, detail: opened.reason };
+      try {
+        const legs: string[] = [];
+        const issues: string[] = [];
+        let verifiedLegs = 0;
+
+        // Leg 1 — SIM40-1034: Network Slicing → Default NSSAI non-empty.
+        const slicing = await enableWizardToggle(page, 'network\\s*slicing');
+        if (!slicing.found) legs.push('Network Slicing toggle not found — leg skipped');
+        else if (!slicing.enabled) legs.push(`Network Slicing toggle could not be enabled (${slicing.note}) — leg skipped`);
+        else {
+          const nssai = await readWizardFieldValue(page, 'nssai', 'slic|nssai');
+          if (nssai === null) legs.push('Network Slicing enabled but no NSSAI field located — leg unverified');
+          else if (nssai.trim() === '') { verifiedLegs++; issues.push('Default NSSAI is EMPTY after enabling Network Slicing (SIM40-1034)'); }
+          else { verifiedLegs++; legs.push(`Default NSSAI pre-populated="${nssai.trim().slice(0, 40)}"`); }
+        }
+
+        // Leg 2 — SIM40-1091: PDCCH Decode Opt → Threshold pre-populated.
+        const pdcch = await enableWizardToggle(page, 'pdcch\\s*decode');
+        if (!pdcch.found) legs.push('PDCCH Decode Opt toggle not found — leg skipped');
+        else if (!pdcch.enabled) legs.push(`PDCCH Decode Opt toggle could not be enabled (${pdcch.note}) — leg skipped`);
+        else {
+          const threshold = await readWizardFieldValue(page, 'threshold', 'pdcch');
+          if (threshold === null) legs.push('PDCCH Decode Opt enabled but no Threshold field located — leg unverified');
+          else if (threshold.trim() === '') { verifiedLegs++; issues.push('Threshold is EMPTY after enabling PDCCH Decode Opt (SIM40-1091)'); }
+          else { verifiedLegs++; legs.push(`PDCCH Threshold pre-populated="${threshold.trim().slice(0, 40)}"`); }
+        }
+
+        if (verifiedLegs === 0) {
+          return { ok: true, skipped: true, skippedReason: `no toggle leg verifiable read-only: ${legs.join(' | ')}`, detail: legs.join(' | ') };
+        }
+        return {
+          ok: issues.length === 0,
+          detail: [...legs, ...issues].join(' | '),
+          expected: 'enabling Network Slicing pre-populates Default NSSAI (SIM40-1034); enabling PDCCH Decode Opt pre-populates Threshold (SIM40-1091) — a toggle must never reveal blank required fields',
+        };
+      } finally {
+        await cancelCreateTestCaseWizard(ctx, page); // NEVER Save
+      }
+    },
+  });
+
+  // ============================================================
   // PER-FIELD TEST PACKS (data-driven from src/lib/ui-tests/reference/)
   // Add a new file under src/lib/ui-tests/tests/<field>.ts and import here.
   // ============================================================
@@ -5217,7 +5953,7 @@ export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<
       try {
         const verdict = await Promise.race([
           def.run({ ctx, bundle, testDir }),
-          new Promise<{ ok: false; detail: string; expected?: string }>((resolve) => setTimeout(() => resolve({ ok: false, detail: `timed out after ${testTimeoutMs}ms` }), testTimeoutMs)),
+          new Promise<{ ok: false; detail: string; expected?: string; skipped?: boolean; skippedReason?: string }>((resolve) => setTimeout(() => resolve({ ok: false, detail: `timed out after ${testTimeoutMs}ms` }), testTimeoutMs)),
         ]);
         const evidence = await recordEvidence(testDir, bundle.page, bundle);
         if ((verdict as any).extraEvidence) Object.assign(evidence, (verdict as any).extraEvidence);
@@ -5232,7 +5968,11 @@ export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<
         result = {
           number,
           id: def.id, name: def.name, description: def.description, category: def.category, severity: def.severity,
-          ok: verdict.ok,
+          // Self-skipped tests count as SKIP (ok so they don't fail the run),
+          // mirroring how preflight-dependent skips are reported.
+          ok: verdict.skipped ? true : verdict.ok,
+          skipped: verdict.skipped || undefined,
+          skippedReason: verdict.skippedReason,
           detail: verdict.detail,
           expected: verdict.expected,
           durationMs: Date.now() - t0,
