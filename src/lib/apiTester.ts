@@ -843,6 +843,270 @@ function defs(): TestDef[] {
     },
   });
 
+  // ---------- NEGATIVE-PATH + CONTRACT SWEEP (added 2026-06-11) ----------
+  // Read-only / 404-guaranteed probes. None of these can start an execution
+  // or mutate state: the only POSTs either target a testcase id that cannot
+  // exist (fresh random UUID) or hit the read-only /testcases/search route.
+
+  /** Syntactically-plausible v4-style UUID guaranteed not to exist on the box. */
+  const nonexistentUuid = (): string =>
+    'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+      const r = (Math.random() * 16) | 0;
+      return (ch === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    });
+
+  // SIM40-2011: starting an execution on a NONEXISTENT testcase id must be a
+  // clean client error (404 preferred, any 4xx tolerated) — never a 5xx. This
+  // POST is safe despite the no-mutation rule: the id cannot exist, so nothing
+  // can actually start. Body carries simulatorId because 4.0.0_260609 requires
+  // it on the start route ("No default simulator found" 500 without it) — we
+  // want the verdict to reflect the id lookup, not the missing-field path
+  // (that path has its own check below).
+  list.push({
+    id: 'exec-start-nonexistent-404', name: 'POST /testcases/<nonexistent>/executions -> 404, never 5xx (SIM40-2011)', category: 'negative',
+    method: 'POST', endpoint: '/v2/testcases/{id}/executions', severity: 'normal',
+    run: async (c) => {
+      const base = { id: 'exec-start-nonexistent-404', category: 'negative' as const, method: 'POST' as const, endpoint: '/v2/testcases/{id}/executions', severity: 'normal' as const };
+      const ghost = nonexistentUuid();
+      const simId = c.recentSimulatorId ?? '1';
+      const r = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/${encodeURIComponent(ghost)}/executions`, {
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ simulatorId: simId }),
+      });
+      const expected = '404 NOT_FOUND naming the unknown testcase id. A 5xx for a client-side identifier mistake masks the real problem and pages on-call for nothing (SIM40-2011).';
+      if (r.status === 404) return ok(base.id, base, r, `404 as expected for nonexistent testcase id (simulatorId=${simId})`);
+      if (r.status >= 400 && r.status < 500) return ok(base.id, base, r, `${r.status} (4xx — acceptable; 404 preferred; simulatorId=${simId})`);
+      if (r.status >= 500) return bad(base.id, base, r, `5xx for a nonexistent testcase id — server error where a 404 belongs (simulatorId=${simId})`, expected);
+      if (r.status >= 200 && r.status < 300) {
+        // Pathological: the box claims to have started a run for an id that
+        // cannot exist. Best-effort cleanup — stop whatever is now running on
+        // the simulator we named (mirrors the exec-start-stop pattern).
+        const stop = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/executions/current/stop?simulatorId=${encodeURIComponent(simId)}`, {
+          headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        return bad(base.id, base, r, `${r.status} — box claims to have started an execution for an id that does not exist (simulatorId=${simId}; cleanup stop returned ${stop.status})`, expected);
+      }
+      return bad(base.id, base, r, `unexpected ${r.status} (simulatorId=${simId})`, expected);
+    },
+  });
+
+  // Regression tripwire for the 2026-06-10 finding (SIM40-2011 family,
+  // missing-simulatorId variant): on 4.0.0_260609, POST .../executions with
+  // an EMPTY body ({}, no simulatorId) against an EXISTING testcase id 500s
+  // with "No default simulator found". A missing request field is a client
+  // error and deserves 400, never 500.
+  // LIMITATION (deliberate): we use a nonexistent UUID instead of a real id —
+  // exercising the existing-id form would START a real execution on any build
+  // that accepts the request, which simqa's no-mutation rule forbids outside
+  // the destructive gate. If the box resolves the simulator BEFORE looking up
+  // the testcase (the 260609 behaviour), this form still 500s and the check
+  // goes RED exactly as intended; if the box checks the id first, we instead
+  // verify the nonexistent-id contract and the existing-id 500 stays
+  // documented here rather than reproduced. Expected RED on 260609.
+  list.push({
+    id: 'exec-start-missing-simulatorid-4xx', name: 'POST /testcases/{id}/executions with empty body -> 4xx, never 5xx', category: 'negative',
+    method: 'POST', endpoint: '/v2/testcases/{id}/executions (empty body)', severity: 'normal',
+    run: async (c) => {
+      const base = { id: 'exec-start-missing-simulatorid-4xx', category: 'negative' as const, method: 'POST' as const, endpoint: '/v2/testcases/{id}/executions (empty body)', severity: 'normal' as const };
+      const ghost = nonexistentUuid();
+      const r = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/${encodeURIComponent(ghost)}/executions`, {
+        headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      const expected = '4xx (400 "simulatorId is required" or 404 for the unknown id). On 4.0.0_260609 an EXISTING id with an empty body returns 500 "No default simulator found" — a missing field is a client error, not a server crash.';
+      if (r.status >= 400 && r.status < 500) return ok(base.id, base, r, `${r.status} — client error as required for a request missing simulatorId`);
+      if (r.status >= 500) return bad(base.id, base, r, `5xx on an empty start body (known 260609 behaviour: "No default simulator found") — should be 4xx`, expected);
+      if (r.status >= 200 && r.status < 300) {
+        // Pathological: the box accepted a start with no simulatorId for an id
+        // that cannot exist. Best-effort cleanup — stop whatever is now
+        // running (mirrors the exec-start-stop pattern; no simulatorId was
+        // sent on start, so only pass one if we discovered it).
+        const stop = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/executions/current/stop${c.recentSimulatorId ? `?simulatorId=${encodeURIComponent(c.recentSimulatorId)}` : ''}`, {
+          headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        return bad(base.id, base, r, `${r.status} — box accepted a start for a nonexistent id with no simulatorId (cleanup stop returned ${stop.status})`, expected);
+      }
+      return bad(base.id, base, r, `unexpected ${r.status}`, expected);
+    },
+  });
+
+  // SIM40-2012-class: malformed search filters must be rejected with 400. A
+  // 5xx means the filter payload reaches the query layer unvalidated; a 2xx
+  // means garbage (unknown fields, $-operators, limit=-5) is silently accepted.
+  list.push({
+    id: 'search-malformed-filter-400', name: 'POST /testcases/search with garbage filter -> 400, never 5xx (SIM40-2012-class)', category: 'negative',
+    method: 'POST', endpoint: '/v2/testcases/search', severity: 'normal',
+    run: async (c) => {
+      const base = { id: 'search-malformed-filter-400', category: 'negative' as const, method: 'POST' as const, endpoint: '/v2/testcases/search', severity: 'normal' as const };
+      const r = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/search`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filter: { unknownField: { $bogus: 1 } }, limit: -5 }),
+      });
+      const expected = '400 BAD_REQUEST with a JSON error envelope naming the offending field. Never 5xx (filter reached the query layer unvalidated, SIM40-2012-class) and never 2xx (garbage silently accepted).';
+      if (r.status >= 400 && r.status < 500) return ok(base.id, base, r, `rejected with ${r.status} (good)`);
+      if (r.status >= 500) return bad(base.id, base, r, '5xx — search crashed on a malformed filter payload', expected);
+      if (r.status >= 200 && r.status < 300) return bad(base.id, base, r, `${r.status} — malformed filter + limit=-5 silently accepted (validation gap)`, expected);
+      return bad(base.id, base, r, `unexpected ${r.status}`, expected);
+    },
+  });
+
+  // SIM40-2022-class (wrong/misleading errors on nonexistent resources). The
+  // sweep spec asked for PATCH /simulators/<nonexistent> — but PATCH is a
+  // mutation verb and simqa's no-mutation rule is enforced by VERB, not by
+  // reachability of the target. So we probe the same id-lookup path with GET:
+  // a nonexistent simulator id must yield a clean 404, not a 5xx or a
+  // misleading error body.
+  list.push({
+    id: 'simulators-get-nonexistent-404', name: 'GET /simulators/<nonexistent> -> 404 (SIM40-2022-class)', category: 'negative',
+    method: 'GET', endpoint: '/v2/simulators/{id}', severity: 'normal',
+    run: async (c) => {
+      const base = { id: 'simulators-get-nonexistent-404', category: 'negative' as const, method: 'GET' as const, endpoint: '/v2/simulators/{id}', severity: 'normal' as const };
+      const ghost = nonexistentUuid();
+      const r = await rawCall(c, 'GET', `${tBase(c.host)}/simulators/${encodeURIComponent(ghost)}`);
+      const expected = '404 NOT_FOUND with an error body naming the unknown simulator id (SIM40-2022-class: errors must describe the actual problem).';
+      if (r.status === 404) return ok(base.id, base, r, '404 as expected for nonexistent simulator id');
+      // Some builds only route /simulators/{id} for PATCH/DELETE — a 405 means
+      // the lookup path is not probeable with a read verb on this build.
+      if (r.status === 405) return skip(base.id, base, 'GET not routed for /simulators/{id} on this build (405) — lookup path not probeable read-only');
+      if (r.status >= 400 && r.status < 500) return ok(base.id, base, r, `${r.status} (4xx — acceptable; 404 preferred)`);
+      if (r.status >= 500) return bad(base.id, base, r, '5xx for a nonexistent simulator id — server error where a 404 belongs', expected);
+      if (r.status >= 200 && r.status < 300) return bad(base.id, base, r, `${r.status} — box returned success for a simulator id that does not exist`, expected);
+      return bad(base.id, base, r, `unexpected ${r.status}`, expected);
+    },
+  });
+
+  // SIM40-(to-be-filed) enumeration cap, found 2026-06-10: GET /v2/testcases
+  // caps a single response at 1000 rows AND offsets near/past 1000 return
+  // EMPTY pages, so rows beyond 1000 are unreachable through the list API.
+  // (POST /testcases/search ignores offset too — see search-offset-honoured —
+  // so there is NO API path to enumerate a box with >1000 testcases.)
+  list.push({
+    id: 'testcases-list-cap-documented', name: 'GET /testcases offset near total — rows beyond 1000 must be reachable', category: 'testcases',
+    method: 'GET', endpoint: '/v2/testcases?offset=&limit=', severity: 'normal',
+    run: async (c) => {
+      const base = { id: 'testcases-list-cap-documented', category: 'testcases' as const, method: 'GET' as const, endpoint: '/v2/testcases?offset=&limit=', severity: 'normal' as const };
+      const head = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=1&offset=0`);
+      if (head.status !== 200) return bad(base.id, base, head, `pre-step list returned ${head.status}`);
+      const total = Number(head.bodyJson?.total ?? NaN);
+      if (!Number.isFinite(total)) return skip(base.id, base, 'list response carries no numeric total — cannot locate the cap');
+      if (total <= 1000) return skip(base.id, base, `total=${total} <= 1000 — enumeration cap not reachable on this box`);
+      const offset = Math.max(0, total - 5);
+      const expected = `200 with 5 items at offset=${offset} (total=${total}). The box currently returns an EMPTY page for offsets near/past 1000, making every testcase beyond row 1000 unreachable via the API — backup, audit and sync tooling silently sees a partial catalogue.`;
+      const tail = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=5&offset=${offset}`);
+      if (tail.status !== 200) return bad(base.id, base, tail, `offset=${offset} returned ${tail.status}`, expected);
+      const rows = Array.isArray(tail.bodyJson?.items) ? tail.bodyJson.items.length : 0;
+      if (rows > 0) return ok(base.id, base, tail, `offset=${offset} returned ${rows} row(s) — rows beyond 1000 reachable`);
+      return bad(base.id, base, tail, `enumeration cap CONFIRMED: total=${total} but offset=${offset} returns an empty page — rows beyond 1000 are unreachable via the list API`, expected);
+    },
+  });
+
+  // Same family as the enumeration cap above (SIM40-to-be-filed, found
+  // 2026-06-10): POST /testcases/search IGNORES `offset`, so search cannot be
+  // used to page past the GET cap either. Two non-overlapping pages must
+  // return different ids.
+  list.push({
+    id: 'search-offset-honoured', name: 'POST /testcases/search honours offset (page 0 vs page 1 differ)', category: 'testcases',
+    method: 'POST', endpoint: '/v2/testcases/search (paging)', severity: 'normal',
+    run: async (c) => {
+      const base = { id: 'search-offset-honoured', category: 'testcases' as const, method: 'POST' as const, endpoint: '/v2/testcases/search (paging)', severity: 'normal' as const };
+      const head = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=1&offset=0`);
+      if (head.status !== 200) return bad(base.id, base, head, `pre-step list returned ${head.status}`);
+      const total = Number(head.bodyJson?.total ?? NaN);
+      if (!Number.isFinite(total)) return skip(base.id, base, 'list response carries no numeric total — cannot size the paging probe');
+      if (total < 10) return skip(base.id, base, `total=${total} < 10 — not enough testcases to compare two pages`);
+      const page = (offset: number) => rawCall(c, 'POST', `${tBase(c.host)}/testcases/search`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offset, limit: 5 }),
+      });
+      const p0 = await page(0);
+      const p1 = await page(5);
+      if (p0.status !== 200 || p1.status !== 200) return bad(base.id, base, p1, `search returned ${p0.status}/${p1.status} for the two pages`);
+      const idsOf = (r: RawCallResult): string[] =>
+        ((r.bodyJson?.items ?? r.bodyJson?.data ?? []) as any[]).map((x) => String(x?.id ?? '')).filter(Boolean);
+      const a = idsOf(p0);
+      const b = idsOf(p1);
+      if (a.length === 0 || b.length === 0) return skip(base.id, base, `search returned ${a.length}/${b.length} ids despite total=${total} — cannot compare pages`);
+      const expected = `{offset:5,limit:5} must return the NEXT 5 rows, not the same leading rows as {offset:0,limit:5}. The box currently ignores offset entirely (the "page" param is ignored too), so search can never reach past the first page.`;
+      if (a.join(',') === b.join(',')) return bad(base.id, base, p1, `offset IGNORED: {offset:0} and {offset:5} returned identical id lists (${a.slice(0, 3).join(', ')}…)`, expected);
+      return ok(base.id, base, p1, `offset honoured: page0 starts ${a[0]}, page1 starts ${b[0]}`);
+    },
+  });
+
+  // SIM40-(to-be-filed) statistics window-unit contract, found 2026-06-10:
+  // /statistics/* startTime/endTime are epoch SECONDS; the SAME window passed
+  // in MILLISECONDS returns 200 with an EMPTY payload instead of a 400 — a
+  // silent footgun (every client that passes Date.now() sees "no data" and no
+  // error). Documentation-grade probe: PASSes with a note when it can
+  // demonstrate the contract, SKIPs when the box has no data — never fails.
+  list.push({
+    id: 'stats-window-seconds-contract', name: '/statistics/ues window units: seconds vs milliseconds (contract probe)', category: 'statistics',
+    method: 'GET', endpoint: '/v2/testcases/executions/{eid}/statistics/ues', severity: 'optional',
+    run: async (c) => {
+      const base = { id: 'stats-window-seconds-contract', category: 'statistics' as const, method: 'GET' as const, endpoint: '/v2/testcases/executions/{eid}/statistics/ues', severity: 'optional' as const };
+      let eid = c.recentExecutionId;
+      let executedOnSec: number | undefined;
+      let durationSec: number | undefined;
+      if (!eid) {
+        // Self-discover: any testcase carrying metadata.lastExecution will do
+        // (the statistics category can run without the testcases category).
+        const lst = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=100&offset=0`);
+        for (const it of (lst.bodyJson?.items ?? []) as any[]) {
+          const last = it?.metadata?.lastExecution;
+          if (last?.executionId) {
+            eid = String(last.executionId);
+            // Anchor the query window to THIS execution (same row): executedOn
+            // may arrive as epoch seconds, epoch millis or an ISO string.
+            const rawOn = last?.executedOn;
+            if (rawOn !== undefined && rawOn !== null) {
+              const n = typeof rawOn === 'number' ? rawOn : Number(rawOn);
+              if (Number.isFinite(n) && n > 0) {
+                executedOnSec = n > 1e11 ? Math.floor(n / 1000) : Math.floor(n);
+              } else {
+                const parsed = Date.parse(String(rawOn));
+                if (Number.isFinite(parsed)) executedOnSec = Math.floor(parsed / 1000);
+              }
+            }
+            const dur = Number(last?.durationSeconds ?? last?.testDuration ?? NaN);
+            if (Number.isFinite(dur) && dur > 0) durationSec = dur;
+            break;
+          }
+        }
+      }
+      if (!eid) return skip(base.id, base, 'no execution id available (no testcase carries metadata.lastExecution)');
+      const statsUrl = `${tBase(c.host)}/testcases/executions/${encodeURIComponent(eid)}/statistics/ues`;
+      // Window anchored to the discovered execution when executedOn is known;
+      // last-24h fallback otherwise.
+      const MARGIN_SEC = 60;
+      let start: number;
+      let end: number;
+      let windowDesc: string;
+      if (executedOnSec !== undefined) {
+        start = executedOnSec - MARGIN_SEC;
+        end = executedOnSec + (durationSec ?? 3600) + MARGIN_SEC;
+        windowDesc = `execution-anchored window (executedOn=${executedOnSec}s, duration=${durationSec ?? 3600}s, margin=${MARGIN_SEC}s)`;
+      } else {
+        end = Math.floor(Date.now() / 1000);
+        start = end - 24 * 3600;
+        windowDesc = 'last-24h fallback window (executedOn not available)';
+      }
+      const secs = await rawCall(c, 'GET', `${statsUrl}?startTime=${start}&endTime=${end}`);
+      if (secs.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale) — cannot probe the window contract');
+      if (secs.status !== 200) return skip(base.id, base, `seconds-window call returned ${secs.status} — documentation-grade probe, not failing hard`);
+      const millis = await rawCall(c, 'GET', `${statsUrl}?startTime=${start * 1000}&endTime=${end * 1000}`);
+      const rowsOf = (r: RawCallResult): number => Array.isArray(r.bodyJson?.data?.ue_data) ? r.bodyJson.data.ue_data.length : 0;
+      const sRows = rowsOf(secs);
+      const mRows = millis.status === 200 ? rowsOf(millis) : 0;
+      if (sRows > 0 && millis.status >= 400) {
+        return ok(base.id, base, millis, `seconds window -> ${sRows} ue_data rows; identical window in milliseconds -> ${millis.status}: box now rejects millisecond windows explicitly (${windowDesc})`);
+      }
+      if (sRows > 0 && millis.status === 200 && mRows === 0) {
+        return ok(base.id, base, millis, `CONTRACT CONFIRMED (silent empty payload): seconds window -> ${sRows} ue_data rows; identical window in milliseconds -> 200 with EMPTY payload (no 400). startTime/endTime are epoch SECONDS; millis fail silently (${windowDesc}).`);
+      }
+      if (sRows > 0 && mRows > 0) {
+        return ok(base.id, base, millis, `lenient parser on this build: seconds (${sRows} rows) AND milliseconds (${mRows} rows) windows both return data (${windowDesc})`);
+      }
+      return skip(base.id, base, `cannot demonstrate the unit contract in the queried window (${windowDesc}; seconds rows=${sRows}, millis status=${millis.status} rows=${mRows}) — re-run after an execution with attached UEs`);
+    },
+  });
+
   // ---------- EXECUTIONS (live, opt-in destructive + long-running) ----------
   // Triggers a real test run on hardware. Gated on BOTH includeDestructive
   // and includeLongRunning so it never fires by accident.
