@@ -142,6 +142,22 @@ su -s /bin/bash -c "cd '${SIMQA_HOME}' && npm ci --no-audit --no-fund" "${SERVIC
 log "Running next build"
 su -s /bin/bash -c "cd '${SIMQA_HOME}' && npm run build" "${SERVICE_USER}"
 
+# Update-path safety net: when this script runs via the self-update wrapper
+# it is a CHILD OF THE SIMQA SERVICE ITSELF, so the `systemctl restart` at
+# the end kills our own cgroup — including this script and any backgrounded
+# (even setsid'd) helper — before the restart reliably lands; the route's
+# timeout can do the same. Observed live 2026-06-11: build completes,
+# "Restarting" is logged, the updater dies, and the OLD process keeps
+# serving. systemd-run escapes the cgroup entirely: the restart runs as a
+# transient timer unit owned by systemd, 8s after this line, no matter what
+# happens to us. Harmless double-restart when the inline one also lands.
+if systemctl is-enabled simqa.service >/dev/null 2>&1; then
+    log "Scheduling cgroup-independent safety-net restart (update path)"
+    systemd-run --on-active=8 --unit="simqa-deferred-restart-$$" --collect \
+        systemctl restart simqa.service \
+        || warn "systemd-run safety net failed — relying on inline restart"
+fi
+
 # ---- 5) Systemd unit ------------------------------------------------------
 log "Writing systemd unit to ${SYSTEMD_UNIT}"
 cat > "${SYSTEMD_UNIT}" <<UNIT

@@ -19,7 +19,7 @@ import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 600;   // up to 10 min for the npm install + build
+export const maxDuration = 1800;  // up to 30 min for the npm install + build
 
 const UPDATER_PATH = '/usr/local/sbin/simqa-update';
 const REPO_TARBALL = process.env.SIMQA_UPDATE_TARBALL
@@ -34,7 +34,12 @@ function runUpdater(): Promise<UpdateResult> {
       ['-n', UPDATER_PATH],
       {
         env: { ...process.env, SIMQA_UPDATE_TARBALL: REPO_TARBALL },
-        timeout: 580_000,           // 580s — well under maxDuration
+        // 29 min — a cold npm ci + next build on a loaded lab host can take
+        // well over the old 580s, and a kill BETWEEN build and the systemctl
+        // restart strands a fully-built tree with the old service still
+        // serving (observed live 2026-06-11). install.sh now also schedules
+        // a detached restart right after the build as a second safety net.
+        timeout: 1_740_000,
         maxBuffer: 8 * 1024 * 1024, // capture up to 8MB of output
       },
       (err, stdout, stderr) => {
