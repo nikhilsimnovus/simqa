@@ -16,6 +16,7 @@
 //              don't drive the overall verdict.
 
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import type { CheckResult, Phase, Severity } from './types';
 import type { RunCtx } from './ctx';
 import { pollUntil, sleep } from './poll';
@@ -58,6 +59,20 @@ function makeResult(
     ...extra,
     ...(status === 'skip' && !extra.skippedReason ? { skippedReason: detail } : {}),
   };
+}
+
+/** Resolve the simulatorId used for start + runtime-status queries: the
+ *  testcase's last-used simulator when present, else the first registered
+ *  one. Build 4.0.0_260609 requires an explicit simulatorId both to start
+ *  an execution (empty body → 500 "No default simulator found") and to
+ *  query /testcases/executions/current/status. */
+async function resolveSimulatorId(ctx: RunCtx): Promise<string | undefined> {
+  const lastSim = ctx.testcaseMetadata?.lastExecution?.simulatorId;
+  if (lastSim !== undefined && lastSim !== null && String(lastSim) !== '') return String(lastSim);
+  const sims = await jsonFetch(`${apiBase(ctx.systemHost)}/simulators`, { headers: authHeaders(ctx) });
+  const arr: any[] = sims.body?.items ?? sims.body?.data ?? [];
+  if (arr[0]?.id !== undefined && arr[0]?.id !== null) return String(arr[0].id);
+  return undefined;
 }
 
 // ───────────── Check definitions ─────────────
@@ -328,6 +343,112 @@ const preflightSimulatorsAvailable: CheckDef = {
   },
 };
 
+// ── PREFLIGHT — security posture ───────────────────────────────────────────
+
+/** Outcome of the anonymous-FTP login probe. */
+type FtpProbeOutcome =
+  | { kind: 'logged-in'; detail: string }   // 230 — anonymous accepted (BAD)
+  | { kind: 'rejected'; detail: string }    // 3xx/530/5xx — anonymous locked (GOOD)
+  | { kind: 'refused'; detail: string }     // ECONNREFUSED — port closed (GOOD)
+  | { kind: 'timeout'; detail: string }     // no reply — can't judge
+  | { kind: 'no-ftp'; detail: string };     // not an FTP service — can't judge
+
+/** Raw FTP conversation: read banner, "USER anonymous", "PASS guest@", judge
+ *  the final reply code. Plain node:net — no FTP library, no shell-out. Every
+ *  path destroys the socket exactly once (settled flag); listeners stay
+ *  attached so a late 'error' after resolve can never crash the process. */
+function probeAnonymousFtp(host: string, port = 21, timeoutMs = 5000): Promise<FtpProbeOutcome> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let buf = '';
+    let stage: 'banner' | 'user' | 'pass' = 'banner';
+    let settled = false;
+    let lastLine = '';
+    let hardCap: ReturnType<typeof setTimeout> | undefined;
+    const finish = (o: FtpProbeOutcome) => {
+      if (settled) return;
+      settled = true;
+      if (hardCap) clearTimeout(hardCap);
+      try { socket.destroy(); } catch { /* already gone */ }
+      resolve(o);
+    };
+    // Hard cap across all stages — the per-stage idle timeout resets on every
+    // chunk, so a slow-drip server could otherwise hold us for minutes.
+    hardCap = setTimeout(() => finish({ kind: 'timeout', detail: `probe exceeded ${timeoutMs * 3}ms overall (stage=${stage})` }), timeoutMs * 3);
+    socket.setTimeout(timeoutMs);
+    socket.on('timeout', () => finish({ kind: 'timeout', detail: `no FTP reply within ${timeoutMs}ms (stage=${stage})` }));
+    socket.on('error', (e: any) => {
+      if (e?.code === 'ECONNREFUSED') finish({ kind: 'refused', detail: `connection refused on ${host}:${port} — FTP port closed` });
+      else finish({ kind: 'no-ftp', detail: `socket error: ${e?.code ?? e?.message ?? e}` });
+    });
+    socket.on('close', () => finish({ kind: 'no-ftp', detail: `connection closed at stage=${stage}${lastLine ? ` (last reply: ${lastLine})` : ''}` }));
+    socket.on('data', (chunk: Buffer) => {
+      if (settled) return;
+      buf += chunk.toString('latin1');
+      // An FTP reply is complete when a line starts "NNN " (multiline replies
+      // use "NNN-" continuations) — keep buffering until we see one.
+      let code: number | undefined;
+      for (const l of buf.split(/\r?\n/)) {
+        const m = l.match(/^(\d{3}) /);
+        if (m) { code = parseInt(m[1], 10); lastLine = l.slice(0, 120); }
+      }
+      if (code === undefined) return;
+      buf = '';
+      if (stage === 'banner') {
+        if (code !== 220) { finish({ kind: 'no-ftp', detail: `unexpected banner: ${lastLine}` }); return; }
+        stage = 'user';
+        socket.write('USER anonymous\r\n');
+      } else if (stage === 'user') {
+        if (code === 230) { finish({ kind: 'logged-in', detail: `anonymous accepted WITHOUT password: ${lastLine}` }); return; }
+        if (code === 331 || code === 332) { stage = 'pass'; socket.write('PASS guest@\r\n'); return; }
+        if (code >= 400) { finish({ kind: 'rejected', detail: `USER anonymous rejected (${code}): ${lastLine}` }); return; }
+        finish({ kind: 'no-ftp', detail: `unexpected USER reply: ${lastLine}` });
+      } else { // stage === 'pass' — this is the final, decisive reply
+        if (code >= 200 && code < 300) { finish({ kind: 'logged-in', detail: `anonymous/guest@ logged in (${code}): ${lastLine}` }); return; }
+        // 3xx after PASS (e.g. "need account") means anonymous was NOT
+        // granted a session — that's the locked-down outcome we want, same
+        // as an outright 5xx rejection.
+        if (code >= 300 && code < 400) { finish({ kind: 'rejected', detail: `anonymous login not granted (${code}): ${lastLine}` }); return; }
+        if (code >= 400) { finish({ kind: 'rejected', detail: `anonymous login rejected (${code}): ${lastLine}` }); return; }
+        finish({ kind: 'no-ftp', detail: `unexpected PASS reply: ${lastLine}` });
+      }
+    });
+    socket.connect(port, host);
+  });
+}
+
+// SIM40-2227: the box ships an FTP service that grants anonymous login,
+// exposing run artifacts/configs to anyone on the management network. This
+// probe is read-only in effect (a login attempt, no STOR/DELE/RETR ever sent).
+const preflightFtpAnonLocked: CheckDef = {
+  id: 'preflight-ftp-anon-locked',
+  name: 'FTP rejects anonymous login',
+  description: 'Port 21 on the target must not grant anonymous/guest@ FTP access (final reply 230). PASS on 530/connection-refused; SKIP when no FTP service answers.',
+  phase: 'preflight', severity: 'normal',
+  run: async (ctx) => {
+    const base = { id: 'preflight-ftp-anon-locked', name: 'FTP rejects anonymous login', phase: 'preflight' as Phase, severity: 'normal' as Severity, description: 'Port 21 on the target must not grant anonymous/guest@ FTP access (final reply 230). PASS on 530/connection-refused; SKIP when no FTP service answers.' };
+    // systemHost may carry an HTTP port (host:port) — FTP always probes :21.
+    const host = ctx.systemHost.split(':')[0];
+    const t0 = Date.now();
+    try {
+      const o = await probeAnonymousFtp(host);
+      const dur = Date.now() - t0;
+      switch (o.kind) {
+        case 'logged-in':
+          return makeResult(base, 'fail', `anonymous FTP login SUCCEEDED on ${host}:21 — ${o.detail} (SIM40-2227)`, { durationMs: dur });
+        case 'rejected':
+        case 'refused':
+          return makeResult(base, 'pass', o.detail, { durationMs: dur });
+        case 'timeout':
+        case 'no-ftp':
+          return makeResult(base, 'skip', `no usable FTP service on ${host}:21 — ${o.detail}`, { durationMs: dur });
+      }
+    } catch (e: any) {
+      return makeResult(base, 'skip', `FTP probe threw: ${e?.message ?? e}`, { durationMs: Date.now() - t0 });
+    }
+  },
+};
+
 // ── TRIGGER (2) ────────────────────────────────────────────────────────────
 
 const triggerStart: CheckDef = {
@@ -349,14 +470,7 @@ const triggerStart: CheckDef = {
     // start body now returns 500 "No default simulator found". Resolve a
     // simulatorId — the testcase's last-used simulator, else the first
     // registered one.
-    let simulatorId: string | undefined;
-    const lastSim = ctx.testcaseMetadata?.lastExecution?.simulatorId;
-    if (lastSim !== undefined && lastSim !== null && String(lastSim) !== '') simulatorId = String(lastSim);
-    if (!simulatorId) {
-      const sims = await jsonFetch(`${apiBase(ctx.systemHost)}/simulators`, { headers: authHeaders(ctx) });
-      const arr: any[] = sims.body?.items ?? sims.body?.data ?? [];
-      if (arr[0]?.id !== undefined && arr[0]?.id !== null) simulatorId = String(arr[0].id);
-    }
+    const simulatorId = await resolveSimulatorId(ctx);
     const r = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/${encodeURIComponent(ctx.testcaseId)}/executions`, {
       method: 'POST',
       headers: { ...authHeaders(ctx), 'Content-Type': 'application/json' },
@@ -534,6 +648,51 @@ function isVoiceTest(td: any): boolean {
   return profiles.some((p) => /vonr|vinr|volte|vilte|voice/i.test(String(p?.dataType ?? '')));
 }
 
+/** Indicator that the testcase INTENTIONALLY power-cycles / detaches UEs
+ *  (subscriber behaviour profiles with power-cycle, detach, or attach-detach
+ *  semantics). Such tests legitimately pass through zero-UE windows, so
+ *  zero-UE heuristics (zombie detection) must not judge them. Scans the
+ *  subscriber config and any behaviour-profile-shaped subtrees defensively —
+ *  the exact schema has moved between builds — and returns a short
+ *  description of the first matching indicator, or undefined when none. */
+function intentionalUeChurnIndicator(td: any): string | undefined {
+  const re = /power[\s_-]?cycl|attach[\s_-]?detach|detach/i;
+  const disabledRe = /^(false|0|no|none|off|disabled?)$/i;
+  const scopes: Array<[string, any]> = [
+    ['subsConfig', td?.subsConfig],
+    ['behaviourConfig', td?.behaviourConfig],
+    ['behaviorConfig', td?.behaviorConfig],
+    ['ueBehaviourConfig', td?.ueBehaviourConfig],
+    ['ueBehaviorConfig', td?.ueBehaviorConfig],
+  ];
+  const seen = new Set<any>();
+  const walk = (node: any, path: string, depth: number): string | undefined => {
+    if (!node || typeof node !== 'object' || depth > 6 || seen.has(node)) return undefined;
+    seen.add(node);
+    const entries = Array.isArray(node) ? node.map((v, i) => [String(i), v] as const) : Object.entries(node);
+    for (const [k, v] of entries) {
+      if (typeof v === 'string' && re.test(v)) return `${path}${k}="${v.slice(0, 60)}"`;
+      if (re.test(k)) {
+        const enabled = v === true
+          || (typeof v === 'number' && v > 0)
+          || (typeof v === 'string' && v.trim() !== '' && !disabledRe.test(v.trim()))
+          || (v !== null && typeof v === 'object');
+        if (enabled) return `${path}${k}`;
+      }
+      if (v && typeof v === 'object') {
+        const hit = walk(v, `${path}${k}.`, depth + 1);
+        if (hit) return hit;
+      }
+    }
+    return undefined;
+  };
+  for (const [name, scope] of scopes) {
+    const hit = walk(scope, `${name}.`, 0);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 /** True when the testcase configures actual UE movement (not stationary). */
 function hasMobility(td: any): boolean {
   const profiles: any[] = td?.mobilityConfig?.profiles ?? [];
@@ -567,6 +726,42 @@ function ueRowsOf(body: any): any[] {
   return [];
 }
 
+/** Sortable timestamp of a stats row. Accepts epoch numbers (seconds or
+ *  millis — only relative ordering matters), numeric strings, or ISO dates. */
+function rowUtc(row: any): number {
+  const v = row?.utc ?? row?.timestamp ?? row?.time;
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string') {
+    if (/^\d+(\.\d+)?$/.test(v.trim())) return parseFloat(v);
+    const t = Date.parse(v);
+    if (Number.isFinite(t)) return t;
+  }
+  return 0;
+}
+
+/** Collapse the /statistics/ues TIME SERIES to the newest row per UE.
+ *
+ *  ue_data carries one row PER UE PER SAMPLE (verified live on 4.0.0_260609:
+ *  64 UEs × 16 samples = 1024 rows). Counting raw rows therefore over-counts
+ *  by the sample factor the moment UEs attach — 1024 ≥ expected 64 passes
+ *  trivially and MASKS partial attach, mid-run drops, and stuck teardown.
+ *  Every consumer that reasons about "current UE state" must go through this
+ *  dedupe first. Ties / missing utc keep the later row (rows arrive in
+ *  chronological order). Rows with no UE identity at all are kept verbatim
+ *  rather than collapsed into one bogus bucket. */
+function latestPerUe(rows: any[]): any[] {
+  const byUe = new Map<string, any>();
+  const keyless: any[] = [];
+  for (const r of rows) {
+    const rawKey = r?.ue_id ?? r?.ueId ?? r?.imsi ?? r?.id;
+    if (rawKey === undefined || rawKey === null || rawKey === '') { keyless.push(r); continue; }
+    const key = String(rawKey);
+    const prev = byUe.get(key);
+    if (!prev || rowUtc(r) >= rowUtc(prev)) byUe.set(key, r);
+  }
+  return [...byUe.values(), ...keyless];
+}
+
 /** Statistics time window, in SECONDS. The box's statistics endpoints expect
  *  epoch *seconds* for startTime/endTime — passing milliseconds (Date.now())
  *  lands the window ~50,000 years in the future, so every query silently
@@ -591,15 +786,17 @@ function ueAttached(row: any): boolean {
 
 /** Count of attached UEs right now. The `totalUEs` scalar is unreliable
  *  (reads 0 even when ue_data carries 64 real rows — verified live), so we
- *  count distinct attached UE rows instead. */
+ *  count attached UEs from ue_data instead — deduped to the newest row per
+ *  ue_id FIRST, because ue_data is a time series (one row per UE per sample;
+ *  counting raw rows would over-count by the sample factor and trivially
+ *  satisfy any "all N UEs attached" threshold — see latestPerUe). */
 async function fetchTotalUes(ctx: RunCtx): Promise<number | undefined> {
   const { start, end } = statsWindowSec(120);
   const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/ues?startTime=${start}&endTime=${end}`, { headers: authHeaders(ctx) });
   if (f.status !== 200) return undefined;
   const rows = ueRowsOf(f.body);
   if (!rows.length) return undefined;
-  const attached = rows.filter(ueAttached).length;
-  return attached;
+  return latestPerUe(rows).filter(ueAttached).length;
 }
 
 async function fetchCells(ctx: RunCtx): Promise<any[]> {
@@ -614,6 +811,55 @@ async function fetchCells(ctx: RunCtx): Promise<any[]> {
 
 const cellDl = (c: any) => rowNum(c, ['dl_throughput', 'dlThroughput', 'dl_bitrate', 'dl', 'downlinkThroughput']) ?? 0;
 const cellUl = (c: any) => rowNum(c, ['ul_throughput', 'ulThroughput', 'ul_bitrate', 'ul', 'uplinkThroughput']) ?? 0;
+
+/** Collapse the /statistics/cells TIME SERIES to the newest row per cell.
+ *
+ *  /statistics/cells — exactly like /statistics/ues — returns one row PER
+ *  CELL PER SAMPLE (one per second). Any consumer reasoning about the
+ *  "current" per-cell state must dedupe to the newest row per cell first
+ *  (key: row.cell, keep max utc), mirroring latestPerUe. Ties / missing utc
+ *  keep the later row (rows arrive in chronological order); rows with no
+ *  cell identity are kept verbatim rather than collapsed into one bucket. */
+function latestPerCell(rows: any[]): any[] {
+  const byCell = new Map<string, any>();
+  const keyless: any[] = [];
+  for (const r of rows) {
+    const rawKey = r?.cell ?? r?.cell_id ?? r?.cellId;
+    if (rawKey === undefined || rawKey === null || rawKey === '') { keyless.push(r); continue; }
+    const key = String(rawKey);
+    const prev = byCell.get(key);
+    if (!prev || rowUtc(r) >= rowUtc(prev)) byCell.set(key, r);
+  }
+  return [...byCell.values(), ...keyless];
+}
+
+/** AUTHORITATIVE attach counts: /statistics/global → data.ue_state_summary
+ *  { globalNas:{registered,...,deregistered}, globalRrc:{connected,idle,...},
+ *  perCell:{...} }. Verified live on 4.0.0_260609. Window in SECONDS. */
+async function fetchUeStateSummary(ctx: RunCtx): Promise<any | undefined> {
+  const { start, end } = statsWindowSec(120);
+  const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/global?startTime=${start}&endTime=${end}`, { headers: authHeaders(ctx) });
+  if (f.status !== 200) return undefined;
+  const sum = f.body?.data?.ue_state_summary ?? f.body?.ue_state_summary;
+  return sum && typeof sum === 'object' ? sum : undefined;
+}
+
+/** Parse executionTimeCompleted-style values defensively: plain numbers,
+ *  numeric strings, or "HH:MM:SS"/"MM:SS" clocks. Only relative ordering
+ *  matters (we ask "is it advancing?"), so unit ambiguity is harmless. */
+function parseDurationish(v: any): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string') {
+    const hms = v.trim().match(/^(\d+):(\d{2})(?::(\d{2}))?$/);
+    if (hms) {
+      const a = parseInt(hms[1], 10), b = parseInt(hms[2], 10);
+      return hms[3] ? a * 3600 + b * 60 + parseInt(hms[3], 10) : a * 60 + b;
+    }
+    const n = parseFloat(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
 
 /** End of the safe DURING sampling window (avoid colliding with teardown). */
 function duringDeadline(ctx: RunCtx): number {
@@ -687,8 +933,12 @@ const duringThroughputStability: CheckDef = {
     const t0 = Date.now();
     const series: number[] = [];
     while (Date.now() < deadline && !ctx.isCanceled()) {
-      const cells = await fetchCells(ctx);
-      if (cells.length) series.push(cells.reduce((a, c) => a + cellDl(c), 0));
+      // /statistics/cells is a time series: summing every row in the 120s
+      // window would inflate the sample with the row count (cells × seconds
+      // of history). Each poll's sample is the sum of dl over the LATEST
+      // row per cell — the actual instantaneous aggregate.
+      const rows = await fetchCells(ctx);
+      if (rows.length) series.push(latestPerCell(rows).reduce((a, c) => a + cellDl(c), 0));
       await sleep(5000, ctx.isCanceled);
     }
     const dur = Date.now() - t0;
@@ -724,10 +974,14 @@ const duringPerCellTraffic: CheckDef = {
     const timeoutMs = deriveDuringTimeoutMs(ctx);
     // Wait until traffic is established somewhere, then judge the per-cell split.
     const r = await pollUntil(async () => {
-      const cells = await fetchCells(ctx);
-      if (!cells.length) return undefined;
-      const anyTraffic = cells.some((c) => (dirs.dl && cellDl(c) > 0) || (dirs.ul && cellUl(c) > 0));
-      return anyTraffic ? cells : undefined;
+      // /statistics/cells is a TIME SERIES (one row per cell per second) —
+      // judge the LATEST snapshot per cell, not every historical row, or
+      // ramp-up zeros in the window flag perfectly healthy cells.
+      const rows = await fetchCells(ctx);
+      if (!rows.length) return undefined;
+      const latest = latestPerCell(rows);
+      const anyTraffic = latest.some((c) => (dirs.dl && cellDl(c) > 0) || (dirs.ul && cellUl(c) > 0));
+      return anyTraffic ? latest : undefined;
     }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
     if (!r.ok) return makeResult(base, 'skip', 'no traffic observed on any cell in window — covered by during-throughput-flowing', { durationMs: r.elapsedMs });
     const cells = r.value as any[];
@@ -745,6 +999,144 @@ const duringPerCellTraffic: CheckDef = {
     const dirStr = [dirs.dl ? 'DL' : '', dirs.ul ? 'UL' : ''].filter(Boolean).join('+');
     if (problems.length) return makeResult(base, 'fail', `${problems.length} per-cell traffic problem(s) [${dirStr} configured]: ${problems.slice(0, 4).join('; ')}`, { durationMs: r.elapsedMs });
     return makeResult(base, 'pass', `all ${cells.length} cell(s) carry ${dirStr} within tolerance`, { durationMs: r.elapsedMs });
+  },
+};
+
+// SIM40-2303 / SIM40-2309 / SIM40-2310 / SIM40-2305: the box's three stats
+// surfaces (global NAS summary, global RRC summary, per-cell throughput) can
+// drift into mutually impossible states — NAS reporting deregistrations while
+// RRC still shows the full configured fleet connected, or RRC claiming
+// connected UEs while no cell carries a single bit of configured traffic.
+const duringStatsConsistency: CheckDef = {
+  id: 'during-stats-consistency',
+  name: 'Global UE-state summary is self-consistent',
+  description: 'Samples /statistics/global ue_state_summary through the run window: NAS deregistrations must not coexist with a full RRC-connected fleet, and connected UEs with traffic configured must show nonzero cell throughput.',
+  phase: 'during', severity: 'normal',
+  run: async (ctx) => {
+    const base = { id: 'during-stats-consistency', name: 'Global UE-state summary is self-consistent', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'Samples /statistics/global ue_state_summary through the run window: NAS deregistrations must not coexist with a full RRC-connected fleet, and connected UEs with traffic configured must show nonzero cell throughput.' };
+    if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const deadline = Math.min(duringDeadline(ctx), Date.now() + 120_000);
+    if (deadline - Date.now() < 25_000) return makeResult(base, 'skip', 'during window too short to sample global statistics');
+    const expected = expectedUeCount(ctx.testDefinition);
+    const dirs = configuredDirections(ctx.testDefinition);
+    const trafficConfigured = dirs.dl || dirs.ul;
+    const t0 = Date.now();
+    let samples = 0;
+    let cellSamples = 0;
+    let maxConnected = 0;
+    let sawCellTraffic = false;
+    let contradiction: string | undefined;
+    // Streak of CONSECUTIVE contradictory samples (mirrors the
+    // during-zombie-execution streak). A single dereg>0-while-
+    // connected==expected sample can be a legitimate transient — e.g. a UE
+    // deregistering and re-attaching between the two counters' sample
+    // points — so only ≥2 consecutive contradictory samples fail.
+    let contradictionStreak = 0;
+    while (Date.now() < deadline && !ctx.isCanceled()) {
+      const sum = await fetchUeStateSummary(ctx);
+      if (sum) {
+        samples++;
+        const dereg = rowNum(sum.globalNas ?? {}, ['deregistered']) ?? 0;
+        const connected = rowNum(sum.globalRrc ?? {}, ['connected']) ?? 0;
+        maxConnected = Math.max(maxConnected, connected);
+        // (a) NAS says UEs left while RRC still equals the configured fleet —
+        //     both cannot be true at once (SIM40-2303/2309/2310).
+        if (expected > 0 && dereg > 0 && connected === expected) {
+          contradictionStreak++;
+          if (contradictionStreak >= 2) {
+            contradiction = `globalNas.deregistered=${dereg} while globalRrc.connected=${connected} still equals configured ueCount=${expected} (${contradictionStreak} consecutive samples)`;
+            break;
+          }
+        } else {
+          contradictionStreak = 0;
+        }
+      }
+      if (trafficConfigured) {
+        const cells = await fetchCells(ctx);
+        if (cells.length) {
+          cellSamples++;
+          if (cells.some((c) => cellDl(c) + cellUl(c) > 0)) sawCellTraffic = true;
+        }
+      }
+      await sleep(10_000, ctx.isCanceled);
+    }
+    const dur = Date.now() - t0;
+    if (contradiction) return makeResult(base, 'fail', `state-summary contradiction: ${contradiction}`, { durationMs: dur });
+    // (b) UEs RRC-connected, traffic configured, yet EVERY cell sample in the
+    //     window carried 0 dl+ul — connected fleet with no data path
+    //     (SIM40-2305). Require ≥2 cell samples so one unlucky read can't fail.
+    if (trafficConfigured && maxConnected > 0 && cellSamples >= 2 && !sawCellTraffic) {
+      return makeResult(base, 'fail', `globalRrc.connected reached ${maxConnected} but all ${cellSamples} /statistics/cells samples showed 0 dl_bitrate+ul_bitrate with traffic configured — UEs connected but no data path`, { durationMs: dur });
+    }
+    if (samples === 0) return makeResult(base, 'skip', 'no ue_state_summary samples available in window', { durationMs: dur });
+    return makeResult(base, 'pass', `${samples} ue_state_summary sample(s) self-consistent (peak connected=${maxConnected}${trafficConfigured ? `, cell traffic ${sawCellTraffic ? 'seen' : 'not seen'} across ${cellSamples} sample(s)` : ''})`, { durationMs: dur });
+  },
+};
+
+// SIM40-1122 / SIM40-2218-class: "zombie" executions — current/status keeps
+// reporting IN_PROGRESS with the progress clock advancing while the UE fleet
+// is GONE (registered=0 AND connected=0). This is exactly the 2026-06-11 lab
+// outage signature: a dead service under a live progress bar, runs that then
+// auto-PASS empty ("No success criteria configured - auto pass").
+const duringZombieExecution: CheckDef = {
+  id: 'during-zombie-execution',
+  name: 'Progress only advances while UEs exist',
+  description: 'After a 120s attach grace, executions/current/status must not keep advancing executionTimeCompleted while ue_state_summary shows registered=0 and connected=0 for 4+ consecutive ~10s samples.',
+  phase: 'during', severity: 'normal',
+  run: async (ctx) => {
+    const base = { id: 'during-zombie-execution', name: 'Progress only advances while UEs exist', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'After a 120s attach grace, executions/current/status must not keep advancing executionTimeCompleted while ue_state_summary shows registered=0 and connected=0 for 4+ consecutive ~10s samples.' };
+    if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    // Tests that intentionally power-cycle / detach UEs pass through
+    // legitimate zero-UE windows mid-run — the zombie signature
+    // (IN_PROGRESS + advancing clock + zero UEs) is expected there, not a
+    // dead service.
+    const churn = intentionalUeChurnIndicator(ctx.testDefinition);
+    if (churn) return makeResult(base, 'skip', `testcase configures intentional UE power-cycling/detach (${churn}) — zero-UE windows are expected, zombie heuristic not applicable`);
+    const simulatorId = await resolveSimulatorId(ctx);
+    if (!simulatorId) return makeResult(base, 'skip', 'no simulatorId resolvable — cannot query current/status');
+    // Grace: UEs legitimately take a while to attach after trigger. Only
+    // samples taken ≥120s after the trigger count toward the zombie verdict.
+    const graceEnd = (ctx.triggeredAt ?? Date.now()) + 120_000;
+    const deadline = Math.min(duringDeadline(ctx), Date.now() + 180_000);
+    const sampleStart = Math.max(Date.now(), graceEnd);
+    // Need room for 4+ samples at ~10s cadence after the grace.
+    if (deadline - sampleStart < 45_000) return makeResult(base, 'skip', 'during window too short for 4 post-grace samples');
+    const t0 = Date.now();
+    if (Date.now() < graceEnd) await sleep(graceEnd - Date.now(), ctx.isCanceled);
+    let samples = 0;
+    let executionEnded = false;
+    // Streak of consecutive zero-UE samples, with the progress clock at each.
+    let streak: number[] = [];
+    while (Date.now() < deadline && !ctx.isCanceled()) {
+      const cur = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/current/status?simulatorId=${encodeURIComponent(simulatorId)}`, { headers: authHeaders(ctx) });
+      if (cur.status === 404) { executionEnded = true; break; } // idle — run finished, not a zombie
+      const status = String(cur.body?.status ?? '').toUpperCase();
+      const completed = parseDurationish(cur.body?.executionTimeCompleted);
+      if (cur.status === 200 && status === 'IN_PROGRESS' && completed !== undefined) {
+        const sum = await fetchUeStateSummary(ctx);
+        if (sum) {
+          samples++;
+          const registered = rowNum(sum.globalNas ?? {}, ['registered']) ?? 0;
+          const connected = rowNum(sum.globalRrc ?? {}, ['connected']) ?? 0;
+          if (registered === 0 && connected === 0) {
+            streak.push(completed);
+            if (streak.length >= 4 && streak[streak.length - 1] > streak[0]) {
+              return makeResult(base, 'fail',
+                `execution advancing with zero UEs — service likely dead under a live progress bar: ${streak.length} consecutive samples with registered=0/connected=0 while status stayed IN_PROGRESS and executionTimeCompleted advanced ${streak[0]} → ${streak[streak.length - 1]}`,
+                { durationMs: Date.now() - t0 });
+            }
+          } else {
+            streak = [];
+          }
+        }
+      }
+      await sleep(10_000, ctx.isCanceled);
+    }
+    const dur = Date.now() - t0;
+    if (samples === 0) {
+      return makeResult(base, 'skip', executionEnded ? 'execution already finished before any post-grace sample' : 'no usable status+summary samples in window', { durationMs: dur });
+    }
+    return makeResult(base, 'pass', `no zombie signature across ${samples} post-grace sample(s)${executionEnded ? ' (execution ended during sampling)' : ''}`, { durationMs: dur });
   },
 };
 
@@ -838,6 +1230,70 @@ const postLogsExport: CheckDef = {
   },
 };
 
+// SIM40-1585: teardown leaves UEs behind — the run reaches a terminal status
+// but the newest per-UE sample still shows RRC-connected / registered UEs
+// instead of everyone powered off. Polls with a 30s grace so a teardown
+// sample that simply hasn't landed yet doesn't false-fail.
+const postAllUesPowerOff: CheckDef = {
+  id: 'post-all-ues-power-off',
+  name: 'All UEs powered off after the run',
+  description: 'After terminal status, the latest /statistics/ues sample per UE (last ~60s of the run, 30s grace) must show every UE powered off / not RRC-connected.',
+  phase: 'post', severity: 'normal',
+  run: async (ctx) => {
+    const base = { id: 'post-all-ues-power-off', name: 'All UEs powered off after the run', phase: 'post' as Phase, severity: 'normal' as Severity, description: 'After terminal status, the latest /statistics/ues sample per UE (last ~60s of the run, 30s grace) must show every UE powered off / not RRC-connected.' };
+    if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    // A UE is "still up" only when its state fields say so. Rows with no
+    // state fields at all don't count — we never claim a leak we can't see.
+    const stillUp = (row: any): boolean => {
+      const rrc = String(row?.rrc_state ?? '').toLowerCase();
+      const emm = String(row?.emm_state ?? '').toLowerCase();
+      if (rrc) return rrc.includes('connect') && !rrc.includes('disconnect');
+      if (emm) return emm.includes('regist') && !emm.includes('dereg') && !emm.includes('power off');
+      return false;
+    };
+    let sawRows = false;
+    let sawPostTerminal = false;
+    let lastUp: any[] = [];
+    let lastTotal = 0;
+    // Normalize a row timestamp to epoch SECONDS — rowUtc may yield epoch
+    // seconds, epoch millis, or Date.parse millis depending on field shape.
+    const rowUtcSec = (row: any): number => {
+      const v = rowUtc(row);
+      return v >= 1e11 ? v / 1000 : v;
+    };
+    const finishedSec = (ctx.finishedAt ?? Date.now()) / 1000;
+    // Window in SECONDS: from ~60s before the run finished up to "now", so it
+    // always contains the final teardown samples. Re-polled for up to 30s of
+    // grace in case the powered-off sample lags the terminal status.
+    const r = await pollUntil(async () => {
+      const startSec = Math.floor((ctx.finishedAt ?? Date.now()) / 1000) - 60;
+      const endSec = Math.floor(Date.now() / 1000);
+      const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/ues?startTime=${startSec}&endTime=${endSec}`, { headers: authHeaders(ctx) }, 30_000);
+      if (f.status !== 200) return undefined;
+      const rows = ueRowsOf(f.body);
+      if (!rows.length) return undefined;
+      sawRows = true;
+      // Post-terminal-evidence guard: the box may stop storing samples at
+      // termination, leaving only stale mid-run rows in the window. Judging
+      // those would call live mid-run UEs a "teardown leak". Require at
+      // least one row sampled at/after the terminal status (5s tolerance)
+      // before judging; until then keep polling for a fresh sample.
+      const maxUtc = Math.max(...rows.map(rowUtcSec));
+      if (maxUtc < finishedSec - 5) return undefined;
+      sawPostTerminal = true;
+      const latest = latestPerUe(rows); // time series → newest row per UE
+      lastTotal = latest.length;
+      lastUp = latest.filter(stillUp);
+      return lastUp.length === 0 ? latest.length : undefined;
+    }, { intervalMs: 5000, timeoutMs: 30_000, isCanceled: ctx.isCanceled });
+    if (r.ok) return makeResult(base, 'pass', `all ${r.value} UE(s) powered off / disconnected after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs });
+    if (!sawRows) return makeResult(base, 'skip', 'no per-UE rows in the final window — nothing to judge', { durationMs: r.elapsedMs });
+    if (!sawPostTerminal) return makeResult(base, 'skip', 'no post-terminal sample stored — cannot judge teardown', { durationMs: r.elapsedMs });
+    const ids = lastUp.slice(0, 8).map((u) => String(u?.ue_id ?? u?.imsi ?? '?'));
+    return makeResult(base, 'fail', `${lastUp.length} of ${lastTotal} UE(s) still connected/registered ${(r.elapsedMs / 1000).toFixed(0)}s after terminal status (ue_id: ${ids.join(', ')}${lastUp.length > ids.length ? ', …' : ''}) — teardown did not power them off`, { durationMs: r.elapsedMs });
+  },
+};
+
 const postPerUeStatsSane: CheckDef = {
   id: 'post-per-ue-stats-sane',
   name: 'Per-UE statistics are plausible',
@@ -847,15 +1303,20 @@ const postPerUeStatsSane: CheckDef = {
     const base = { id: 'post-per-ue-stats-sane', name: 'Per-UE statistics are plausible', phase: 'post' as Phase, severity: 'normal' as Severity, description: 'After completion, the per-UE stats must not be visibly corrupted: traffic-carrying UEs report nonzero bitrate, SNR is not one constant implausible value, positions move when mobility is configured, and voice tests expose MOS for (nearly) all UEs.' };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
     // Window in SECONDS (the box ignores millisecond epochs — see
-    // statsWindowSec). The /statistics/ues endpoint returns the LATEST sample
-    // per UE within the window, so a window that reaches into teardown shows
-    // every UE powered-off (bitrate 0, rrc disconnected). End the window a few
-    // seconds before the execution finished to capture live mid-run values.
+    // statsWindowSec). /statistics/ues returns a TIME SERIES (one row per UE
+    // per sample), and we judge each UE by its NEWEST row in the window — so
+    // a window that reaches into teardown makes that newest row a powered-off
+    // one (bitrate 0, rrc disconnected). End the window a few seconds before
+    // the execution finished to capture live mid-run values.
     const endSec = ctx.finishedAt ? Math.floor(ctx.finishedAt / 1000) - 8 : Math.floor(Date.now() / 1000);
     const startSec = ctx.triggeredAt ? Math.floor(ctx.triggeredAt / 1000) - 5 : endSec - 3600;
     const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId)}/statistics/ues?startTime=${startSec}&endTime=${endSec}`, { headers: authHeaders(ctx) }, 30_000);
     if (f.status !== 200) return makeResult(base, 'fail', `statistics/ues returned ${f.status}`, { durationMs: f.durationMs });
-    const rows = ueRowsOf(f.body);
+    // Dedupe to the newest row per ue_id BEFORE judging: every fraction-based
+    // threshold below ("60% of UEs report bitrate", "90% of UEs have MOS")
+    // is about UEs, not about time-series rows. Without the dedupe, 64 UEs ×
+    // 16 samples = 1024 rows silently rescale all the percentages.
+    const rows = latestPerUe(ueRowsOf(f.body));
     if (rows.length < 2) return makeResult(base, 'skip', `only ${rows.length} per-UE row(s) — not enough to judge`, { durationMs: f.durationMs });
     // Guard: if the captured snapshot is entirely torn-down (no UE attached),
     // we only saw teardown — skip rather than false-fail on "zero bitrate".
@@ -898,15 +1359,23 @@ const postPerUeStatsSane: CheckDef = {
       }
     }
 
-    // 4. Voice test → MOS must be exposed and populated for (nearly) all UEs.
+    // 4. Voice test → voice KPIs must be exposed and populated.
+    //    SIM40-2306 / SIM40-1416 / SIM40-2305: VoNR runs whose per-UE stats
+    //    carry no MOS/RTP/jitter fields at all (KPIs silently dropped), or
+    //    where most of the fleet is missing a MOS score. Keys are scanned on
+    //    EVERY latest-per-UE row, not just rows[0] — the box has shipped
+    //    builds where only a subset of UEs carry the voice columns.
     if (isVoiceTest(td)) {
-      const mosKeys = Object.keys(rows[0] ?? {}).filter((k) => /mos/i.test(k));
-      if (mosKeys.length === 0) {
-        problems.push('voice test but the per-UE stats expose no MOS field at all');
+      const voiceKeyRe = /mos|rtp|jitter/i;
+      const voiceKeys = new Set<string>();
+      for (const r of rows) for (const k of Object.keys(r ?? {})) if (voiceKeyRe.test(k)) voiceKeys.add(k);
+      if (voiceKeys.size === 0) {
+        problems.push('voice test but no MOS/RTP/jitter-named field exists on any per-UE row — voice KPIs absent entirely');
       } else {
+        const mosKeys = [...voiceKeys].filter((k) => /mos/i.test(k));
         const withMos = rows.filter((r) => mosKeys.some((k) => { const v = typeof r[k] === 'string' ? parseFloat(r[k]) : r[k]; return typeof v === 'number' && Number.isFinite(v) && v > 0; })).length;
         const frac = withMos / rows.length;
-        if (frac < 0.9) problems.push(`only ${withMos}/${rows.length} UEs report a MOS score (voice KPIs missing for the rest)`);
+        if (frac < 0.9) problems.push(`only ${withMos}/${rows.length} UEs report a parseable positive MOS (need ≥90%; voice keys present: ${[...voiceKeys].slice(0, 5).join(', ')})`);
       }
     }
 
@@ -973,6 +1442,105 @@ const uiDuringNoConsoleErrors: CheckDef = {
       if (consoleErrors.length === 0) return makeResult(base, 'pass', '0 console errors');
       const sample = consoleErrors.slice(0, 3).join(' | ');
       return makeResult(base, 'fail', `${consoleErrors.length} console error(s). e.g.: ${sample}`);
+    } finally {
+      await context.close().catch(() => null);
+    }
+  },
+};
+
+// SIM40-2218: the UI's notification widget announces "Completed"/"Success"
+// for a testcase whose execution the API still reports IN_PROGRESS — the
+// notifications and the runtime status disagree about reality.
+const uiDuringNotificationConsistency: CheckDef = {
+  id: 'ui-during-notification-consistency',
+  name: 'Notifications do not claim completion mid-run',
+  description: 'While /v2 executions/current/status reports IN_PROGRESS, the notification bell must not show a Completed/Success row for the running testcase.',
+  phase: 'during', severity: 'normal',
+  requiresBrowser: true,
+  run: async (ctx) => {
+    const base = { id: 'ui-during-notification-consistency', name: 'Notifications do not claim completion mid-run', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'While /v2 executions/current/status reports IN_PROGRESS, the notification bell must not show a Completed/Success row for the running testcase.' };
+    if (!ctx.browser) return makeResult(base, 'skip', 'no browser available');
+    if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const tcName = ctx.testcaseName ?? ctx.testcaseId;
+    // The whole point is a cross-check against the API's runtime view — only
+    // meaningful while the box itself says the run is IN_PROGRESS.
+    const inProgress = async (): Promise<boolean> => {
+      const simulatorId = await resolveSimulatorId(ctx);
+      if (!simulatorId) return false;
+      const cur = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/current/status?simulatorId=${encodeURIComponent(simulatorId)}`, { headers: authHeaders(ctx) });
+      return cur.status === 200 && String(cur.body?.status ?? '').toUpperCase() === 'IN_PROGRESS';
+    };
+    if (!(await inProgress())) return makeResult(base, 'skip', 'execution not IN_PROGRESS (per current/status) — nothing to cross-check');
+    const { context, page } = await newCheckContext(ctx.browser);
+    try {
+      const lr = await loginUI(page, ctx.systemHost, ctx.apiUser, ctx.apiPass);
+      if (!lr.ok) return makeResult(base, 'fail', `UI login: ${lr.detail}`);
+      await page.goto(`http://${ctx.systemHost}/testcase`, { waitUntil: 'domcontentloaded' }).catch(() => null);
+      await sleep(2000, ctx.isCanceled);
+      // Find the notification bell defensively — by aria/role first, class
+      // names last. The widget has moved between builds; skip if absent.
+      const bellSelectors = [
+        '[aria-label*="notification" i]',
+        'button[title*="notification" i]',
+        '[data-testid*="notification" i]',
+        '[role="button"][aria-label*="bell" i]',
+        'button:has(svg[class*="bell" i])',
+        '[class*="notification-bell" i]',
+        '[class*="bell" i]',
+      ];
+      let opened = false;
+      for (const sel of bellSelectors) {
+        const loc = page.locator(sel).first();
+        if (await loc.isVisible().catch(() => false)) {
+          const clicked = await loc.click({ timeout: 5000 }).then(() => true).catch(() => false);
+          if (clicked) { opened = true; break; }
+        }
+      }
+      if (!opened) return makeResult(base, 'skip', 'notification bell/widget not found in the UI — cannot cross-check');
+      await sleep(1500, ctx.isCanceled);
+      // Scrape visible text from likely notification containers.
+      const containers = page.locator('[role="dialog"], [role="menu"], [role="listbox"], [class*="notif" i], [class*="dropdown" i], [class*="popover" i]');
+      const texts: string[] = [];
+      const n = await containers.count().catch(() => 0);
+      for (let i = 0; i < Math.min(n, 8); i++) {
+        const el = containers.nth(i);
+        if (!(await el.isVisible().catch(() => false))) continue;
+        const t = await el.innerText().catch(() => '');
+        if (t.trim()) texts.push(t);
+      }
+      if (!texts.length) return makeResult(base, 'skip', 'notification widget opened but exposed no readable content');
+      // A notification "row" for our testcase: a line containing the current
+      // testcase name; Completed/Success may sit on the same or an adjacent
+      // line depending on the row layout.
+      const lines = texts.join('\n').split('\n').map((l) => l.trim()).filter(Boolean);
+      // When NO scanned line mentions the testcase name at all, passing would
+      // be a false pass — we verified nothing about this run. A generic
+      // Completed/Success row only counts as a failure candidate when the
+      // widget clearly ties it to the running execution (its id); otherwise
+      // skip: the rows simply don't reference the running testcase.
+      if (!lines.some((l) => l.includes(tcName))) {
+        const genericForThisRun = lines.filter((l) =>
+          /completed|success/i.test(l) && !!ctx.executionId && l.includes(ctx.executionId));
+        if (genericForThisRun.length > 0) {
+          // Race guard, same as below: the run may have finished while we scraped.
+          if (!(await inProgress())) return makeResult(base, 'skip', 'execution finished while scraping notifications — cannot distinguish a premature toast from a real one');
+          return makeResult(base, 'fail', `notification claims completion for the running execution (matched by executionId) while current/status is IN_PROGRESS: "${genericForThisRun[0].slice(0, 160)}"${genericForThisRun.length > 1 ? ` (+${genericForThisRun.length - 1} more)` : ''}`);
+        }
+        return makeResult(base, 'skip', 'notification rows do not reference the running testcase');
+      }
+      const offending: string[] = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].includes(tcName)) continue;
+        const neighbourhood = lines.slice(i, i + 3).join(' ');
+        if (/\b(completed|success(ful|fully)?)\b/i.test(neighbourhood)) offending.push(neighbourhood.slice(0, 160));
+      }
+      if (offending.length === 0) {
+        return makeResult(base, 'pass', `no Completed/Success notification for "${tcName}" while IN_PROGRESS (${lines.length} notification line(s) scanned)`);
+      }
+      // Race guard: the run may have legitimately finished while we scraped —
+      // re-check before claiming the UI lied (SIM40-2218 vs. an honest toast).
+      if (!(await inProgress())) return makeResult(base, 'skip', 'execution finished while scraping notifications — cannot distinguish a premature toast from a real one');
+      return makeResult(base, 'fail', `notification claims completion while current/status is IN_PROGRESS: "${offending[0]}"${offending.length > 1 ? ` (+${offending.length - 1} more)` : ''}`);
     } finally {
       await context.close().catch(() => null);
     }
@@ -1093,6 +1661,7 @@ export const ALL_CHECKS: CheckDef[] = [
   preflightTestcaseExists,
   preflightApiResponsive,
   preflightSimulatorsAvailable,
+  preflightFtpAnonLocked,
   // TRIGGER
   triggerStart,
   triggerExecutionDiscovered,
@@ -1104,9 +1673,12 @@ export const ALL_CHECKS: CheckDef[] = [
   duringThroughputFlowing,
   duringThroughputStability,
   duringPerCellTraffic,
+  duringStatsConsistency,
+  duringZombieExecution,
   // DURING (UI)
   uiDuringNo5xx,
   uiDuringNoConsoleErrors,
+  uiDuringNotificationConsistency, // early among UI checks — needs the run still IN_PROGRESS
   uiDuringStopAffordance,
   uiDuringExportButtons,
   // COMPLETION
@@ -1115,6 +1687,7 @@ export const ALL_CHECKS: CheckDef[] = [
   completionVerdictPresent,
   // POST (API)
   postLogsExport,
+  postAllUesPowerOff,
   postPerUeStatsSane,
   // POST (UI)
   uiPostDeepLink,
