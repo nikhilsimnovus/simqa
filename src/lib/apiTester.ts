@@ -1255,6 +1255,94 @@ function defs(): TestDef[] {
     },
   });
 
+  // ---------- testcases-delete-frees-name (SIM40-2293) ----------
+  // Soft-delete keeps the name reserved: create -> delete -> recreate the SAME
+  // name must store the exact name again, not auto-suffix "_copy". Customers
+  // automate create/delete/recreate cycles and then look the case up by name.
+  list.push({
+    id: 'testcases-delete-frees-name', name: 'DELETE frees the testcase name for reuse (create -> delete -> recreate)', category: 'mutating',
+    method: 'POST', endpoint: '/v2/testcases/import (delete/recreate)', severity: 'normal', destructive: true, longRunning: true,
+    run: async (c) => {
+      const base = { id: 'testcases-delete-frees-name', category: 'mutating' as const, method: 'POST' as const, endpoint: '/v2/testcases/import (delete/recreate)', severity: 'normal' as const, destructive: true };
+      const traces: string[] = [];
+      const seedR = await fetchSeedExport(c);
+      if (!seedR.pack) return skip(base.id, base, seedR.err ?? 'no seed');
+
+      const name = `simqa-delfree-${Date.now().toString(36)}`;
+      const expected = `after DELETE, re-importing the same name stores it verbatim ("${name}"), not an auto-suffixed "_copy". Soft-deleted rows must not reserve names (SIM40-2293).`;
+
+      // 1. create
+      const imp1 = await postImport(c.host, c.token, makePack(seedR.pack, { Test_Id: name, Test_Name: name }), `Test_Name=${name}`);
+      traces.push(`create=${imp1.status}`);
+      if (imp1.status < 200 || imp1.status >= 300) return bad(base.id, base, imp1, `initial import returned ${imp1.status}`, expected);
+      const id1 = imp1.landedIds[0] ?? name;
+
+      // 2. delete
+      const del1 = await rawCall(c, 'DELETE', `${tBase(c.host)}/testcases/${encodeURIComponent(id1)}`);
+      traces.push(`delete=${del1.status}`);
+      if (del1.status !== 200 && del1.status !== 204) return bad(base.id, base, del1, `DELETE returned ${del1.status}; ${traces.join(' ')}`, expected);
+
+      // 3. recreate same name + verify the stored name
+      const imp2 = await postImport(c.host, c.token, makePack(seedR.pack, { Test_Id: name, Test_Name: name }), `Test_Name=${name} (recreate)`);
+      traces.push(`recreate=${imp2.status}`);
+      const id2 = imp2.landedIds[0];
+      let storedName: string | undefined;
+      if (id2) {
+        const g = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/${encodeURIComponent(id2)}`);
+        storedName = g.bodyJson?.name;
+        traces.push(`get=${g.status} name="${storedName}"`);
+        // best-effort cleanup of the recreate (the original is already deleted)
+        await rawCall(c, 'DELETE', `${tBase(c.host)}/testcases/${encodeURIComponent(id2)}`).catch(() => null);
+      }
+      if (imp2.status < 200 || imp2.status >= 300) return bad(base.id, base, imp2, `recreate import returned ${imp2.status}; ${traces.join(' ')}`, expected);
+      if (storedName !== name) return bad(base.id, base, imp2, `name NOT freed by delete: recreate stored as "${storedName}" instead of "${name}" (soft-deleted row still reserves it); ${traces.join(' ')}`, expected);
+      return ok(base.id, base, imp2, `${traces.join(' ')} — name reused verbatim`);
+    },
+  });
+
+  // ---------- testcases-nbiot-definition-completeness (SIM40-2311/2312) ----------
+  // NB-IoT definitions must carry the fields the UE config generator needs:
+  // a ueCategory (nb1/nb2) per subscriber group and a deployment/operation
+  // mode (standalone / in-band / guard-band). The GUI currently loses the
+  // deployment mode entirely (SIM40-2312), which downstream produces
+  // unbootable NB-IoT configs (SIM40-2311).
+  list.push({
+    id: 'testcases-nbiot-definition-completeness', name: 'NB-IoT testcase definitions carry ueCategory + deployment mode', category: 'testcases',
+    method: 'GET', endpoint: '/v2/testcases/{id} (nbiot)', severity: 'normal', longRunning: true,
+    run: async (c) => {
+      const base = { id: 'testcases-nbiot-definition-completeness', category: 'testcases' as const, method: 'GET' as const, endpoint: '/v2/testcases/{id} (nbiot)', severity: 'normal' as const };
+      const listR = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=1000`);
+      if (listR.status !== 200) return bad(base.id, base, listR, `testcase list returned ${listR.status}`);
+      const items: any[] = listR.bodyJson?.items ?? [];
+      // Prefer name-matched candidates; fall back to probing a few definitions.
+      const byName = items.filter((x) => /nb-?iot|nbiot|nb[12]\b/i.test(String(x?.name ?? '')));
+      const probeList = (byName.length ? byName : items).slice(0, byName.length ? 5 : 12);
+      const nbiot: Array<{ name: string; td: any }> = [];
+      for (const it of probeList) {
+        const g = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/${encodeURIComponent(it.id)}`);
+        const td = g.bodyJson?.testDefinition;
+        if (String(td?.cellConfig?.master?.ratType ?? '').toLowerCase() === 'nbiot') nbiot.push({ name: it.name, td });
+        if (nbiot.length >= 3) break;
+      }
+      if (!nbiot.length) return skip(base.id, base, 'no NB-IoT testcase on the box to inspect');
+      const expected = 'every NB-IoT definition carries subsConfig.subs[].ueCategory (nb1/nb2) and a cell deployment/operation mode (standalone / in-band / guard-band). Missing mode = SIM40-2312; it downstream yields unbootable UE configs (SIM40-2311).';
+      const problems: string[] = [];
+      for (const { name, td } of nbiot) {
+        const subs: any[] = td?.subsConfig?.subs ?? [];
+        const missingCat = subs.length === 0 || subs.some((s) => !/nb/i.test(String(s?.ueCategory ?? '')));
+        if (missingCat) problems.push(`"${name}": ueCategory missing/non-NB on at least one subscriber group`);
+        const cells: any[] = td?.cellConfig?.cells ?? [];
+        const master = td?.cellConfig?.master ?? {};
+        const hasMode = [master, ...cells].some((o) => Object.entries(o ?? {}).some(([k, v]) =>
+          (/operation|deployment/i.test(k) && v) ||
+          (/^cellType$/i.test(k) && /standalone|in.?band|guard/i.test(String(v)))));
+        if (!hasMode) problems.push(`"${name}": no deployment/operation mode field (standalone/in-band/guard-band) anywhere in the definition`);
+      }
+      if (problems.length) return bad(base.id, base, listR, `${problems.length} NB-IoT definition gap(s): ${problems.slice(0, 4).join('; ')}`, expected);
+      return ok(base.id, base, listR, `${nbiot.length} NB-IoT definition(s) carry ueCategory + deployment mode`);
+    },
+  });
+
   // Distinguish a validation 400 ("Test_Name is required") from a collision
   // 400 ("name already exists") for the validation tests below. A collision
   // 400 means the bad name was previously accepted on this box - which itself

@@ -22,6 +22,10 @@ export interface RunCtx {
   testcaseId: string;
   testcaseName?: string;
   testcaseMetadata?: any;
+  /** Full testDefinition from GET /v2/testcases/{id} — used by DURING/POST
+   *  checks to derive expectations (UE count, traffic directions, mobility,
+   *  voice data types) instead of hard-coding thresholds. */
+  testDefinition?: any;
 
   // ── Mutable state that checks fill in as the run progresses ──
   /** JWT bearer token. Populated by the very first preflight check. */

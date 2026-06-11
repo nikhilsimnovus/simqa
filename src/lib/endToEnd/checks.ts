@@ -116,6 +116,7 @@ const preflightTestcaseExists: CheckDef = {
     if (r.status !== 200) return makeResult(base, 'fail', `got ${r.status}`, { durationMs: r.durationMs });
     ctx.testcaseName = r.body?.name ?? ctx.testcaseId;
     ctx.testcaseMetadata = r.body?.metadata;
+    ctx.testDefinition = r.body?.testDefinition;
 
     // Extract configured duration. Priority order (canonical first):
     //   1. metadata.lastExecution.testDuration / durationSeconds — the
@@ -500,6 +501,237 @@ const duringThroughputFlowing: CheckDef = {
   },
 };
 
+// ── DURING — expectation-driven checks ─────────────────────────────────────
+//
+// These derive their thresholds from the testcase definition instead of
+// hard-coding "≥ 1". Added 2026-06-11 after a QA sweep found real product
+// bugs the catalogue was blind to: partial/mid-run UE deregistration at
+// scale, oscillating or collapsing throughput, a dead per-cell direction
+// (NSA LTE leg carrying no UL), and per-UE statistics corruption (frozen
+// position, constant bogus SNR, missing VoNR KPIs).
+
+/** Sum of configured UEs across subscriber groups. 0 = unknown. */
+function expectedUeCount(td: any): number {
+  const subs: any[] = td?.subsConfig?.subs ?? [];
+  let total = 0;
+  for (const s of subs) {
+    const n = typeof s?.ueCount === 'string' ? parseInt(s.ueCount, 10) : s?.ueCount;
+    if (typeof n === 'number' && n > 0) total += n;
+  }
+  return total;
+}
+
+/** Which traffic directions the user plane configures. */
+function configuredDirections(td: any): { dl: boolean; ul: boolean } {
+  const profiles: any[] = td?.userPlaneConfig?.profiles ?? [];
+  let dl = false, ul = false;
+  for (const p of profiles) {
+    const dir = String(p?.dataDirection ?? '').toLowerCase();
+    const type = String(p?.dataType ?? '').toLowerCase();
+    if (!type || type === 'no data' || type === 'nodata') continue;
+    if (dir === 'both' || dir === 'downlink' || !dir) dl = true;
+    if (dir === 'both' || dir === 'uplink') ul = true;
+    // Voice is inherently bidirectional regardless of dataDirection.
+    if (/vonr|vinr|volte|vilte|voice/.test(type)) { dl = true; ul = true; }
+  }
+  return { dl, ul };
+}
+
+/** True when any user-plane profile is a voice (VoNR/ViNR/VoLTE) type. */
+function isVoiceTest(td: any): boolean {
+  const profiles: any[] = td?.userPlaneConfig?.profiles ?? [];
+  return profiles.some((p) => /vonr|vinr|volte|vilte|voice/i.test(String(p?.dataType ?? '')));
+}
+
+/** True when the testcase configures actual UE movement (not stationary). */
+function hasMobility(td: any): boolean {
+  const profiles: any[] = td?.mobilityConfig?.profiles ?? [];
+  return profiles.some((p) => {
+    const trip = String(p?.tripType ?? '').toLowerCase();
+    const speed = typeof p?.speed === 'string' ? parseFloat(p.speed) : p?.speed;
+    return (trip && trip !== 'stationary' && trip !== 'none') || (typeof speed === 'number' && speed > 0);
+  });
+}
+
+/** First numeric field among candidate names on a stats row. */
+function rowNum(row: any, names: string[]): number | undefined {
+  for (const n of names) {
+    const v = row?.[n];
+    const num = typeof v === 'string' ? parseFloat(v) : v;
+    if (typeof num === 'number' && Number.isFinite(num)) return num;
+  }
+  return undefined;
+}
+
+/** Pull the per-UE rows out of /statistics/ues regardless of envelope shape. */
+function ueRowsOf(body: any): any[] {
+  const d = body?.data ?? body;
+  if (Array.isArray(d?.ue_data)) return d.ue_data;
+  if (Array.isArray(d?.ues)) return d.ues;
+  if (Array.isArray(d?.items)) return d.items;
+  if (Array.isArray(d)) return d;
+  if (d && typeof d === 'object') {
+    for (const v of Object.values(d)) if (Array.isArray(v) && v.length && typeof v[0] === 'object') return v as any[];
+  }
+  return [];
+}
+
+async function fetchTotalUes(ctx: RunCtx): Promise<number | undefined> {
+  const now = Date.now();
+  const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/ues?startTime=${now - 60000}&endTime=${now}`, { headers: authHeaders(ctx) });
+  if (f.status !== 200) return undefined;
+  const direct = f.body?.data?.totalUEs ?? f.body?.totalUEs;
+  if (typeof direct === 'number') return direct;
+  const rows = ueRowsOf(f.body);
+  return rows.length || undefined;
+}
+
+async function fetchCells(ctx: RunCtx): Promise<any[]> {
+  const now = Date.now();
+  const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/cells?startTime=${now - 60000}&endTime=${now}`, { headers: authHeaders(ctx) });
+  if (f.status !== 200) return [];
+  return Array.isArray(f.body?.data?.cells) ? f.body.data.cells
+    : Array.isArray(f.body?.cells) ? f.body.cells
+    : Array.isArray(f.body?.items) ? f.body.items
+    : Array.isArray(f.body) ? f.body : [];
+}
+
+const cellDl = (c: any) => rowNum(c, ['dl_throughput', 'dlThroughput', 'dl_bitrate', 'dl', 'downlinkThroughput']) ?? 0;
+const cellUl = (c: any) => rowNum(c, ['ul_throughput', 'ulThroughput', 'ul_bitrate', 'ul', 'uplinkThroughput']) ?? 0;
+
+/** End of the safe DURING sampling window (avoid colliding with teardown). */
+function duringDeadline(ctx: RunCtx): number {
+  if (ctx.triggeredAt && ctx.configuredDurationSec) return ctx.triggeredAt + ctx.configuredDurationSec * 1000 * 0.85;
+  return Date.now() + 90_000;
+}
+
+const duringAllUesAttach: CheckDef = {
+  id: 'during-all-ues-attach',
+  name: 'ALL configured UEs attach',
+  description: 'totalUEs reaches the ueCount configured in the testcase (not just ≥ 1). Catches partial attach at scale.',
+  phase: 'during', severity: 'normal',
+  run: async (ctx) => {
+    const base = { id: 'during-all-ues-attach', name: 'ALL configured UEs attach', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'totalUEs reaches the ueCount configured in the testcase (not just ≥ 1). Catches partial attach at scale.' };
+    if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const expected = expectedUeCount(ctx.testDefinition);
+    if (!expected) return makeResult(base, 'skip', 'ueCount not derivable from testDefinition');
+    const timeoutMs = deriveDuringTimeoutMs(ctx);
+    let maxSeen = 0;
+    const r = await pollUntil(async () => {
+      const n = await fetchTotalUes(ctx);
+      if (typeof n === 'number') { maxSeen = Math.max(maxSeen, n); if (n >= expected) return n; }
+      return undefined;
+    }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
+    if (!r.ok) return makeResult(base, 'fail', `only ${maxSeen}/${expected} UEs attached after ${(r.elapsedMs / 1000).toFixed(0)}s — partial attach`, { durationMs: r.elapsedMs });
+    return makeResult(base, 'pass', `${r.value}/${expected} UEs attached after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs });
+  },
+};
+
+const duringUeStability: CheckDef = {
+  id: 'during-ue-count-stable',
+  name: 'No UEs drop out mid-run',
+  description: 'Samples totalUEs through the run window; the count must never fall below its peak (silent mid-run deregistration).',
+  phase: 'during', severity: 'normal',
+  run: async (ctx) => {
+    const base = { id: 'during-ue-count-stable', name: 'No UEs drop out mid-run', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'Samples totalUEs through the run window; the count must never fall below its peak (silent mid-run deregistration).' };
+    if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const deadline = Math.min(duringDeadline(ctx), Date.now() + 120_000);
+    if (deadline - Date.now() < 15_000) return makeResult(base, 'skip', 'run too short to sample UE-count stability');
+    const t0 = Date.now();
+    let peak = 0; let minAfterPeak = Infinity; let samples = 0;
+    while (Date.now() < deadline && !ctx.isCanceled()) {
+      const n = await fetchTotalUes(ctx);
+      if (typeof n === 'number') {
+        samples++;
+        if (n > peak) peak = n;
+        else if (peak > 0 && n < peak) minAfterPeak = Math.min(minAfterPeak, n);
+      }
+      await sleep(8000, ctx.isCanceled);
+    }
+    const dur = Date.now() - t0;
+    if (samples < 2 || peak === 0) return makeResult(base, 'skip', `not enough UE-count samples (${samples}) to judge stability`, { durationMs: dur });
+    if (minAfterPeak < peak) {
+      return makeResult(base, 'fail', `UE count dropped from peak ${peak} to ${minAfterPeak} mid-run (${peak - minAfterPeak} UE(s) silently deregistered)`, { durationMs: dur });
+    }
+    return makeResult(base, 'pass', `UE count held at peak ${peak} across ${samples} samples (${(dur / 1000).toFixed(0)}s window)`, { durationMs: dur });
+  },
+};
+
+const duringThroughputStability: CheckDef = {
+  id: 'during-throughput-stability',
+  name: 'DL throughput is stable (not just nonzero)',
+  description: 'Samples total DL throughput; after ramp-up, the minimum must stay ≥ 40% of the established mean and variation must be bounded. Catches oscillation and mid-run collapse.',
+  phase: 'during', severity: 'normal',
+  run: async (ctx) => {
+    const base = { id: 'during-throughput-stability', name: 'DL throughput is stable (not just nonzero)', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'Samples total DL throughput; after ramp-up, the minimum must stay ≥ 40% of the established mean and variation must be bounded. Catches oscillation and mid-run collapse.' };
+    if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const dirs = configuredDirections(ctx.testDefinition);
+    if (!dirs.dl) return makeResult(base, 'skip', 'no DL traffic configured');
+    const deadline = Math.min(duringDeadline(ctx), Date.now() + 120_000);
+    const t0 = Date.now();
+    const series: number[] = [];
+    while (Date.now() < deadline && !ctx.isCanceled()) {
+      const cells = await fetchCells(ctx);
+      if (cells.length) series.push(cells.reduce((a, c) => a + cellDl(c), 0));
+      await sleep(5000, ctx.isCanceled);
+    }
+    const dur = Date.now() - t0;
+    const max = Math.max(0, ...series);
+    if (max <= 0) return makeResult(base, 'skip', `no DL throughput observed in window (${series.length} samples) — covered by during-throughput-flowing`, { durationMs: dur });
+    // Drop the ramp: established = samples from the first one ≥ 50% of max.
+    const startIdx = series.findIndex((v) => v >= max * 0.5);
+    const est = series.slice(startIdx);
+    if (est.length < 5) return makeResult(base, 'skip', `window too short after ramp-up (${est.length} established samples)`, { durationMs: dur });
+    const mean = est.reduce((a, b) => a + b, 0) / est.length;
+    const min = Math.min(...est);
+    const sd = Math.sqrt(est.reduce((a, b) => a + (b - mean) ** 2, 0) / est.length);
+    const cv = mean > 0 ? sd / mean : 0;
+    const fmt = (v: number) => v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(0)}k` : v.toFixed(0);
+    const summary = `mean=${fmt(mean)} min=${fmt(min)} (${((min / mean) * 100).toFixed(0)}% of mean) cv=${cv.toFixed(2)} over ${est.length} samples`;
+    if (min < mean * 0.4 || cv > 0.4) {
+      return makeResult(base, 'fail', `DL throughput unstable: ${summary} — drops/oscillation beyond tolerance`, { durationMs: dur });
+    }
+    return makeResult(base, 'pass', `DL stable: ${summary}`, { durationMs: dur });
+  },
+};
+
+const duringPerCellTraffic: CheckDef = {
+  id: 'during-per-cell-traffic',
+  name: 'Every cell carries the configured traffic directions',
+  description: 'Each cell must show nonzero throughput in every configured direction, and no cell may sit below 2% of the busiest cell. Catches a dead per-cell direction (e.g. an NSA LTE leg with no UL).',
+  phase: 'during', severity: 'normal',
+  run: async (ctx) => {
+    const base = { id: 'during-per-cell-traffic', name: 'Every cell carries the configured traffic directions', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'Each cell must show nonzero throughput in every configured direction, and no cell may sit below 2% of the busiest cell. Catches a dead per-cell direction (e.g. an NSA LTE leg with no UL).' };
+    if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const dirs = configuredDirections(ctx.testDefinition);
+    if (!dirs.dl && !dirs.ul) return makeResult(base, 'skip', 'no traffic configured');
+    const timeoutMs = deriveDuringTimeoutMs(ctx);
+    // Wait until traffic is established somewhere, then judge the per-cell split.
+    const r = await pollUntil(async () => {
+      const cells = await fetchCells(ctx);
+      if (!cells.length) return undefined;
+      const anyTraffic = cells.some((c) => (dirs.dl && cellDl(c) > 0) || (dirs.ul && cellUl(c) > 0));
+      return anyTraffic ? cells : undefined;
+    }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
+    if (!r.ok) return makeResult(base, 'skip', 'no traffic observed on any cell in window — covered by during-throughput-flowing', { durationMs: r.elapsedMs });
+    const cells = r.value as any[];
+    const problems: string[] = [];
+    for (const [label, want, get] of [['DL', dirs.dl, cellDl], ['UL', dirs.ul, cellUl]] as const) {
+      if (!want) continue;
+      const vals = cells.map((c, i) => ({ i, v: get(c) }));
+      const busiest = Math.max(...vals.map((x) => x.v));
+      if (busiest <= 0) { problems.push(`${label}: zero on ALL ${cells.length} cell(s) despite being configured`); continue; }
+      for (const { i, v } of vals) {
+        if (v <= 0) problems.push(`${label}: cell ${i} carries none (busiest cell at ${busiest.toFixed(0)})`);
+        else if (v < busiest * 0.02) problems.push(`${label}: cell ${i} at ${((v / busiest) * 100).toFixed(1)}% of busiest — effectively dead`);
+      }
+    }
+    const dirStr = [dirs.dl ? 'DL' : '', dirs.ul ? 'UL' : ''].filter(Boolean).join('+');
+    if (problems.length) return makeResult(base, 'fail', `${problems.length} per-cell traffic problem(s) [${dirStr} configured]: ${problems.slice(0, 4).join('; ')}`, { durationMs: r.elapsedMs });
+    return makeResult(base, 'pass', `all ${cells.length} cell(s) carry ${dirStr} within tolerance`, { durationMs: r.elapsedMs });
+  },
+};
+
 // ── COMPLETION (3) ─────────────────────────────────────────────────────────
 
 const completionStatusTerminal: CheckDef = {
@@ -587,6 +819,74 @@ const postLogsExport: CheckDef = {
     } catch (e: any) {
       return makeResult(base, 'fail', `logs/export threw: ${e?.message ?? e}`, { durationMs: Date.now() - t0 });
     }
+  },
+};
+
+const postPerUeStatsSane: CheckDef = {
+  id: 'post-per-ue-stats-sane',
+  name: 'Per-UE statistics are plausible',
+  description: 'After completion, the per-UE stats must not be visibly corrupted: traffic-carrying UEs report nonzero bitrate, SNR is not one constant implausible value, positions move when mobility is configured, and voice tests expose MOS for (nearly) all UEs.',
+  phase: 'post', severity: 'normal',
+  run: async (ctx) => {
+    const base = { id: 'post-per-ue-stats-sane', name: 'Per-UE statistics are plausible', phase: 'post' as Phase, severity: 'normal' as Severity, description: 'After completion, the per-UE stats must not be visibly corrupted: traffic-carrying UEs report nonzero bitrate, SNR is not one constant implausible value, positions move when mobility is configured, and voice tests expose MOS for (nearly) all UEs.' };
+    if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const start = ctx.triggeredAt ?? (Date.now() - 3_600_000);
+    const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId)}/statistics/ues?startTime=${start}&endTime=${Date.now()}`, { headers: authHeaders(ctx) }, 30_000);
+    if (f.status !== 200) return makeResult(base, 'fail', `statistics/ues returned ${f.status}`, { durationMs: f.durationMs });
+    const rows = ueRowsOf(f.body);
+    if (rows.length < 2) return makeResult(base, 'skip', `only ${rows.length} per-UE row(s) — not enough to judge`, { durationMs: f.durationMs });
+    const td = ctx.testDefinition;
+    const dirs = configuredDirections(td);
+    const problems: string[] = [];
+
+    // 1. Traffic configured → most UEs must report nonzero bitrate. A run
+    //    where traffic flowed globally but per-UE rows are all zeros is the
+    //    stats pipeline failing, not the radio.
+    if (dirs.dl || dirs.ul) {
+      const withTraffic = rows.filter((r) =>
+        (rowNum(r, ['dl_bitrate', 'dlBitrate', 'dl_throughput']) ?? 0) > 0 ||
+        (rowNum(r, ['ul_bitrate', 'ulBitrate', 'ul_throughput']) ?? 0) > 0).length;
+      const frac = withTraffic / rows.length;
+      if (frac < 0.6) problems.push(`only ${withTraffic}/${rows.length} UEs report any bitrate despite traffic being configured`);
+    }
+
+    // 2. Constant implausible SNR across the fleet (e.g. every UE = 88.9 dB)
+    //    is a known corruption signature, not physics.
+    const snrs = rows.map((r) => rowNum(r, ['snr', 'sinr', 'SNR'])).filter((v): v is number => typeof v === 'number');
+    if (snrs.length >= 8) {
+      const distinct = new Set(snrs.map((v) => v.toFixed(1)));
+      if (distinct.size === 1 && Math.abs(snrs[0]) > 60) {
+        problems.push(`all ${snrs.length} UEs report the identical SNR ${snrs[0].toFixed(1)} dB — implausible constant`);
+      }
+    }
+
+    // 3. Mobility configured → positions must not be frozen at one coordinate.
+    if (hasMobility(td)) {
+      const pos = rows.map((r) => {
+        const p = r?.position ?? {};
+        const x = rowNum(p, ['x']) ?? rowNum(r, ['position_x', 'x']);
+        const y = rowNum(p, ['y']) ?? rowNum(r, ['position_y', 'y']);
+        return x !== undefined || y !== undefined ? `${x ?? 0},${y ?? 0}` : undefined;
+      }).filter(Boolean);
+      if (pos.length >= 4 && new Set(pos).size === 1) {
+        problems.push(`mobility is configured but all ${pos.length} UE positions are frozen at (${pos[0]})`);
+      }
+    }
+
+    // 4. Voice test → MOS must be exposed and populated for (nearly) all UEs.
+    if (isVoiceTest(td)) {
+      const mosKeys = Object.keys(rows[0] ?? {}).filter((k) => /mos/i.test(k));
+      if (mosKeys.length === 0) {
+        problems.push('voice test but the per-UE stats expose no MOS field at all');
+      } else {
+        const withMos = rows.filter((r) => mosKeys.some((k) => { const v = typeof r[k] === 'string' ? parseFloat(r[k]) : r[k]; return typeof v === 'number' && Number.isFinite(v) && v > 0; })).length;
+        const frac = withMos / rows.length;
+        if (frac < 0.9) problems.push(`only ${withMos}/${rows.length} UEs report a MOS score (voice KPIs missing for the rest)`);
+      }
+    }
+
+    if (problems.length) return makeResult(base, 'fail', `${problems.length} per-UE stats problem(s): ${problems.join('; ')}`, { durationMs: f.durationMs });
+    return makeResult(base, 'pass', `${rows.length} per-UE rows look plausible (traffic/SNR/position/voice checks)`, { durationMs: f.durationMs });
   },
 };
 
@@ -774,7 +1074,11 @@ export const ALL_CHECKS: CheckDef[] = [
   // DURING (API)
   duringStatusRunning,
   duringUeAttach,
+  duringAllUesAttach,
+  duringUeStability,
   duringThroughputFlowing,
+  duringThroughputStability,
+  duringPerCellTraffic,
   // DURING (UI)
   uiDuringNo5xx,
   uiDuringNoConsoleErrors,
@@ -786,6 +1090,7 @@ export const ALL_CHECKS: CheckDef[] = [
   completionVerdictPresent,
   // POST (API)
   postLogsExport,
+  postPerUeStatsSane,
   // POST (UI)
   uiPostDeepLink,
 ];
