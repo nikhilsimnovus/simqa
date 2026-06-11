@@ -453,28 +453,13 @@ const duringUeAttach: CheckDef = {
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
     const timeoutMs = deriveDuringTimeoutMs(ctx);
     const r = await pollUntil(async () => {
-      const now = Date.now();
       // Endpoint is `/statistics/ues` (plural, no `-summary`). The
       // `/ue-summary` path 404s on build 4.0.0_260427 (verified live
-      // 2026-05-14). Response shape: { code, message, data: { ue_data,
-      // totalUEs } }. Field names confirmed against 192.168.10.128.
-      const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/ues?startTime=${now - 60000}&endTime=${now}`, { headers: authHeaders(ctx) });
-      if (f.status !== 200) return undefined;
-      // Prefer data.totalUEs (current shape). Keep fallbacks for older
-      // builds and unknown future ones.
-      const candidates = [
-        f.body?.data?.totalUEs,
-        Array.isArray(f.body?.data?.ue_data) ? f.body.data.ue_data.length : undefined,
-        f.body?.totalAttachedUEs,
-        f.body?.totalUEs,
-        f.body?.attached,
-        f.body?.summary?.attached,
-        Array.isArray(f.body?.items) ? f.body.items.length : undefined,
-      ];
-      for (const c of candidates) {
-        if (typeof c === 'number' && c > 0) return c;
-      }
-      return undefined;
+      // 2026-05-14). Response: { code, message, data: { ue_data, totalUEs } }.
+      // Time window MUST be in SECONDS (see statsWindowSec) and totalUEs is
+      // unreliable — count attached ue_data rows.
+      const n = await fetchTotalUes(ctx);
+      return typeof n === 'number' && n > 0 ? n : undefined;
     }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
     if (!r.ok) return makeResult(base, 'fail', `no UE attached after ${(r.elapsedMs / 1000).toFixed(1)}s (poll window ${(timeoutMs / 1000).toFixed(0)}s — scaled from configuredDuration)`, { durationMs: r.elapsedMs });
     return makeResult(base, 'pass', `${r.value} UE(s) attached after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs });
@@ -491,19 +476,13 @@ const duringThroughputFlowing: CheckDef = {
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
     const timeoutMs = deriveDuringTimeoutMs(ctx);
     const r = await pollUntil(async () => {
-      const now = Date.now();
       // Endpoint is `/statistics/cells` (plural, no `-summary`). The
       // `/cells-summary` path returns cell CONFIG (n_rb, pci, antennas),
-      // not throughput stats — surprising but verified live. Use the
-      // `/cells` endpoint instead. Response: { code, message, data: { cells } }.
-      const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/cells?startTime=${now - 60000}&endTime=${now}`, { headers: authHeaders(ctx) });
-      if (f.status !== 200) return undefined;
-      const cells: any[] = Array.isArray(f.body?.data?.cells) ? f.body.data.cells
-        : Array.isArray(f.body?.cells) ? f.body.cells
-        : Array.isArray(f.body?.items) ? f.body.items
-        : Array.isArray(f.body) ? f.body : [];
+      // not throughput stats — verified live. Throughput field is
+      // `dl_bitrate` (bps). Time window MUST be in SECONDS (see fetchCells).
+      const cells = await fetchCells(ctx);
       for (const c of cells) {
-        const dl = c.dl_throughput ?? c.dlThroughput ?? c.dl ?? c.downlinkThroughput ?? c.throughput?.dl;
+        const dl = cellDl(c);
         if (typeof dl === 'number' && dl > 0) return dl;
       }
       return undefined;
@@ -588,19 +567,44 @@ function ueRowsOf(body: any): any[] {
   return [];
 }
 
+/** Statistics time window, in SECONDS. The box's statistics endpoints expect
+ *  epoch *seconds* for startTime/endTime — passing milliseconds (Date.now())
+ *  lands the window ~50,000 years in the future, so every query silently
+ *  returns empty (ue_data:null, totalUEs:0). Verified live on 4.0.0_260609:
+ *  the same eid returns 64 UE rows + 9 cells with a seconds window and null
+ *  with a millis one. lookbackSec controls how far back the window reaches. */
+function statsWindowSec(lookbackSec = 120): { start: number; end: number } {
+  const end = Math.floor(Date.now() / 1000);
+  return { start: end - lookbackSec, end };
+}
+
+/** A UE row is "attached" when it is registered/connected (not torn down).
+ *  Note "disconnected" contains the substring "connect", so test for
+ *  "disconnect" first. Falls back to row presence when no state fields exist. */
+function ueAttached(row: any): boolean {
+  const rrc = String(row?.rrc_state ?? '').toLowerCase();
+  const emm = String(row?.emm_state ?? '').toLowerCase();
+  if (rrc) return rrc.includes('connect') && !rrc.includes('disconnect');
+  if (emm) return (emm.includes('regist') && !emm.includes('dereg')) || emm.includes('power on');
+  return true;
+}
+
+/** Count of attached UEs right now. The `totalUEs` scalar is unreliable
+ *  (reads 0 even when ue_data carries 64 real rows — verified live), so we
+ *  count distinct attached UE rows instead. */
 async function fetchTotalUes(ctx: RunCtx): Promise<number | undefined> {
-  const now = Date.now();
-  const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/ues?startTime=${now - 60000}&endTime=${now}`, { headers: authHeaders(ctx) });
+  const { start, end } = statsWindowSec(120);
+  const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/ues?startTime=${start}&endTime=${end}`, { headers: authHeaders(ctx) });
   if (f.status !== 200) return undefined;
-  const direct = f.body?.data?.totalUEs ?? f.body?.totalUEs;
-  if (typeof direct === 'number') return direct;
   const rows = ueRowsOf(f.body);
-  return rows.length || undefined;
+  if (!rows.length) return undefined;
+  const attached = rows.filter(ueAttached).length;
+  return attached;
 }
 
 async function fetchCells(ctx: RunCtx): Promise<any[]> {
-  const now = Date.now();
-  const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/cells?startTime=${now - 60000}&endTime=${now}`, { headers: authHeaders(ctx) });
+  const { start, end } = statsWindowSec(120);
+  const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/cells?startTime=${start}&endTime=${end}`, { headers: authHeaders(ctx) });
   if (f.status !== 200) return [];
   return Array.isArray(f.body?.data?.cells) ? f.body.data.cells
     : Array.isArray(f.body?.cells) ? f.body.cells
@@ -842,11 +846,20 @@ const postPerUeStatsSane: CheckDef = {
   run: async (ctx) => {
     const base = { id: 'post-per-ue-stats-sane', name: 'Per-UE statistics are plausible', phase: 'post' as Phase, severity: 'normal' as Severity, description: 'After completion, the per-UE stats must not be visibly corrupted: traffic-carrying UEs report nonzero bitrate, SNR is not one constant implausible value, positions move when mobility is configured, and voice tests expose MOS for (nearly) all UEs.' };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
-    const start = ctx.triggeredAt ?? (Date.now() - 3_600_000);
-    const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId)}/statistics/ues?startTime=${start}&endTime=${Date.now()}`, { headers: authHeaders(ctx) }, 30_000);
+    // Window in SECONDS (the box ignores millisecond epochs — see
+    // statsWindowSec). The /statistics/ues endpoint returns the LATEST sample
+    // per UE within the window, so a window that reaches into teardown shows
+    // every UE powered-off (bitrate 0, rrc disconnected). End the window a few
+    // seconds before the execution finished to capture live mid-run values.
+    const endSec = ctx.finishedAt ? Math.floor(ctx.finishedAt / 1000) - 8 : Math.floor(Date.now() / 1000);
+    const startSec = ctx.triggeredAt ? Math.floor(ctx.triggeredAt / 1000) - 5 : endSec - 3600;
+    const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId)}/statistics/ues?startTime=${startSec}&endTime=${endSec}`, { headers: authHeaders(ctx) }, 30_000);
     if (f.status !== 200) return makeResult(base, 'fail', `statistics/ues returned ${f.status}`, { durationMs: f.durationMs });
     const rows = ueRowsOf(f.body);
     if (rows.length < 2) return makeResult(base, 'skip', `only ${rows.length} per-UE row(s) — not enough to judge`, { durationMs: f.durationMs });
+    // Guard: if the captured snapshot is entirely torn-down (no UE attached),
+    // we only saw teardown — skip rather than false-fail on "zero bitrate".
+    if (rows.filter(ueAttached).length === 0) return makeResult(base, 'skip', `only teardown state captured (no attached UE in window) — cannot judge per-UE sanity`, { durationMs: f.durationMs });
     const td = ctx.testDefinition;
     const dirs = configuredDirections(td);
     const problems: string[] = [];
