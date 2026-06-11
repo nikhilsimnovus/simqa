@@ -19,8 +19,15 @@ export type RAT = 'LTE' | 'NR-SA' | 'NR-NSA' | 'NB-IoT';
 export type DataType =
   | 'no_data'
   | 'iperf-both' | 'iperf-dl' | 'iperf-ul'
+  // Single-profile TCP iperf (transportProtocol 'tcp'). Exists to catch the
+  // SIM40-2303..2312 audit class: those 12 bugs went unseen because the bulk
+  // matrix only ever generated the default SA/UDP paths — 'mix-iperf+tcp'
+  // exercises TCP only inside a 2-group mix, never as the lone profile the
+  // GUI's plain TCP flow produces.
+  | 'iperf-tcp'
   // VoLTE / VoNR — IMS-signalled voice calls. LTE uses the volte dataType
-  // body, NR-SA uses the same body with ratTypeP='sa'.
+  // body, NR-SA uses the same body with ratTypeP='sa'. VoNR coverage exists
+  // to catch the SIM40-2306 family (VoNR runs whose per-UE stats vanish).
   | 'volte' | 'vonr'
   // Mixed traffic — subscriber group 0 gets the first profile, group 1
   // the second. Generates a 2-profile userPlaneConfig + 2-row subsConfig.
@@ -39,6 +46,21 @@ export type Fading = FadingLTE | FadingNR;
 
 export type SweepSize = 'quick' | 'moderate' | 'complete';
 
+// NB-IoT-only dimensions. Both exist to catch the NB-IoT audit bugs:
+//   - ue_category nb1 vs nb2 — SIM40-2311: generated NB-IoT testcases shipped
+//     unbootable ue.cfgs with ue_category dropped. Sweeping BOTH categories
+//     makes the drop (and any nb1/nb2 cross-wiring) observable per category;
+//     the old matrix hardcoded nb1, so nb2 paths were never generated at all.
+//   - cellType standalone vs in-band — SIM40-2312: the deployment/operation
+//     mode rides the NB-IoT cell's cellType (standalone / in-band /
+//     guard-band, same contract the apiTester nbiot-definition-completeness
+//     check and the configFidelity nbiotChecker assert). The box silently
+//     reset an in-band cell to standalone; a matrix that only ever generates
+//     standalone can never see the reset.
+export type NbIotUeCategory = 'nb1' | 'nb2';
+// guard-band is deliberately excluded until the /tests/cells cellType enum is verified against the Simnovator API documentation.
+export type NbIotCellType = 'standalone' | 'in-band';
+
 /** A single "slice" of the matrix — covers a band-set within one RAT plus
  *  the variation knobs to multiply against it. */
 export interface MatrixSlice {
@@ -52,6 +74,14 @@ export interface MatrixSlice {
   fading: readonly Fading[];
   /** Only used for NR — sub-carrier spacings in kHz. Empty for LTE. */
   scs?: readonly number[];
+  /** Only used for NB-IoT — ue_category sweep (nb1 / nb2). Omitted ⇒ the
+   *  generator keeps the legacy single 'nb1' body and the variant name stays
+   *  byte-identical to pre-audit runs (resumability). SIM40-2311. */
+  nbUeCategories?: readonly NbIotUeCategory[];
+  /** Only used for NB-IoT — deployment-mode sweep carried by the cell's
+   *  cellType (standalone / in-band). Omitted ⇒ legacy '4g' cellType and
+   *  unchanged variant names. SIM40-2312. */
+  nbCellTypes?: readonly NbIotCellType[];
   /** Soft cap so a single slice can't dominate the total. */
   maxVariants?: number;
 }
@@ -109,9 +139,33 @@ const QUICK_SLICES: readonly MatrixSlice[] = [
   { rat: 'NR-NSA', bands: ['n78'], bandwidths: [100], scs: [30], ueCounts: [1], antennas: [[2, 2]],
     dataTypes: ['no_data', 'iperf-both'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 2 },
 
-  // NB-IoT smoke
+  // NB-IoT smoke — ue_category (nb1/nb2) × deployment mode (standalone/
+  // in-band) sweep. Catches SIM40-2311 (ue_category dropped → unbootable
+  // ue.cfg; nb2 was previously never generated at all) and SIM40-2312
+  // (in-band deployment mode silently reset to standalone — invisible to a
+  // matrix that only generates standalone).
+  { rat: 'NB-IoT', bands: ['8'], bandwidths: [5], ueCounts: [1], antennas: [[1, 1]],
+    dataTypes: ['no_data'], mobility: ['stationary'], fading: ['awgn'],
+    nbUeCategories: ['nb1', 'nb2'], nbCellTypes: ['standalone', 'in-band'], maxVariants: 4 },
+  // NB-IoT legacy coverage canary — the swept cellType 'standalone'/'in-band'
+  // values sent to POST /v2/tests/cells are an UNVERIFIED wire contract and
+  // must be verified against the Simnovator API documentation before trusting
+  // sweep results. This slice deliberately omits nbUeCategories/nbCellTypes so
+  // it keeps the previously-working shape (cellType '4g', ue_category nb1) and
+  // NB-IoT generation can never drop to zero if the new enum 400s.
   { rat: 'NB-IoT', bands: ['8'], bandwidths: [5], ueCounts: [1], antennas: [[1, 1]],
     dataTypes: ['no_data'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 1 },
+
+  // ── Post-audit traffic-profile additions (SIM40-2303..2312 class) ──────
+  // Single-profile TCP iperf per RAT family. The audit bugs went unseen
+  // because only the SA/UDP default paths were ever generated; these keep
+  // the plain TCP path (no mix wrapper) covered on every RAT.
+  { rat: 'LTE', bands: ['3'], bandwidths: [10], ueCounts: [2], antennas: [[2, 1]],
+    dataTypes: ['iperf-tcp'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 1 },
+  { rat: 'NR-SA', bands: ['n78'], bandwidths: [100], scs: [30], ueCounts: [2], antennas: [[2, 2]],
+    dataTypes: ['iperf-tcp'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 1 },
+  { rat: 'NR-NSA', bands: ['n78'], bandwidths: [100], scs: [30], ueCounts: [1], antennas: [[2, 2]],
+    dataTypes: ['iperf-tcp'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 1 },
 ];
 
 // ─── MODERATE sweep — ~200 testcases ─────────────────────────────────────
@@ -143,9 +197,30 @@ const MODERATE_SLICES: readonly MatrixSlice[] = [
   { rat: 'NR-NSA', bands: ['n41', 'n78'], bandwidths: [40, 100], scs: [30],
     ueCounts: [1], antennas: [[2, 2]], dataTypes: ['no_data', 'iperf-both'],
     mobility: ['stationary'], fading: ['awgn'], maxVariants: 8 },
-  // NB-IoT
+  // NB-IoT — full ue_category × deployment-mode sweep across both bands.
+  // SIM40-2311 (dropped ue_category, nb2 never generated) + SIM40-2312
+  // (in-band reset to standalone).
   { rat: 'NB-IoT', bands: ['8', '20'], bandwidths: [5], ueCounts: [1, 2], antennas: [[1, 1]],
-    dataTypes: ['no_data'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 4 },
+    dataTypes: ['no_data'], mobility: ['stationary'], fading: ['awgn'],
+    nbUeCategories: ['nb1', 'nb2'], nbCellTypes: ['standalone', 'in-band'], maxVariants: 16 },
+  // NB-IoT legacy coverage canary — the swept cellType 'standalone'/'in-band'
+  // values sent to POST /v2/tests/cells are an UNVERIFIED wire contract and
+  // must be verified against the Simnovator API documentation before trusting
+  // sweep results. This slice deliberately omits nbUeCategories/nbCellTypes so
+  // it keeps the previously-working shape (cellType '4g', ue_category nb1) and
+  // NB-IoT generation can never drop to zero if the new enum 400s.
+  { rat: 'NB-IoT', bands: ['8'], bandwidths: [5], ueCounts: [1], antennas: [[1, 1]],
+    dataTypes: ['no_data'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 1 },
+
+  // ── Post-audit traffic-profile additions (SIM40-2303..2312 class) ──────
+  // Single-profile TCP iperf — previously TCP only existed inside the
+  // 2-group 'mix-iperf+tcp' wrapper, so the plain TCP path went ungenerated.
+  { rat: 'LTE', bands: ['3', '7'], bandwidths: [10, 20], ueCounts: [2], antennas: [[2, 1]],
+    dataTypes: ['iperf-tcp'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 4 },
+  { rat: 'NR-SA', bands: ['n41', 'n78'], bandwidths: [40, 100], scs: [30], ueCounts: [2], antennas: [[2, 2]],
+    dataTypes: ['iperf-tcp'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 4 },
+  { rat: 'NR-NSA', bands: ['n78'], bandwidths: [100], scs: [30], ueCounts: [1], antennas: [[2, 2]],
+    dataTypes: ['iperf-tcp'], mobility: ['stationary'], fading: ['awgn'], maxVariants: 1 },
 ];
 
 // ─── COMPLETE sweep — full Cartesian, ~1700 testcases ────────────────────
@@ -202,11 +277,49 @@ const COMPLETE_SLICES: readonly MatrixSlice[] = [
     dataTypes: ['no_data', 'iperf-both'], mobility: ['stationary'],
     fading: ['awgn', 'tdla30'], maxVariants: 32,
   },
-  // NB-IoT
+  // NB-IoT — full ue_category × deployment-mode sweep. SIM40-2311 (dropped
+  // ue_category, nb2 never generated before this dimension existed) +
+  // SIM40-2312 (in-band deployment mode silently reset to standalone).
   {
     rat: 'NB-IoT', bands: ['8', '20'], bandwidths: [5], ueCounts: [1, 2],
     antennas: [[1, 1]], dataTypes: ['no_data'], mobility: ['stationary'],
-    fading: ['awgn'], maxVariants: 4,
+    fading: ['awgn'],
+    nbUeCategories: ['nb1', 'nb2'], nbCellTypes: ['standalone', 'in-band'],
+    maxVariants: 16,
+  },
+  // NB-IoT legacy coverage canary — the swept cellType 'standalone'/'in-band'
+  // values sent to POST /v2/tests/cells are an UNVERIFIED wire contract and
+  // must be verified against the Simnovator API documentation before trusting
+  // sweep results. This slice deliberately omits nbUeCategories/nbCellTypes so
+  // it keeps the previously-working shape (cellType '4g', ue_category nb1) and
+  // NB-IoT generation can never drop to zero if the new enum 400s.
+  {
+    rat: 'NB-IoT', bands: ['8'], bandwidths: [5], ueCounts: [1],
+    antennas: [[1, 1]], dataTypes: ['no_data'], mobility: ['stationary'],
+    fading: ['awgn'], maxVariants: 1,
+  },
+
+  // ── Post-audit traffic-profile additions (SIM40-2303..2312 class) ──────
+  // Single-profile TCP iperf per RAT family — the audit bugs hid in
+  // never-generated scenario families; plain TCP (outside the mix wrapper)
+  // was one of them.
+  {
+    rat: 'LTE', bands: ['1', '3', '7'], bandwidths: [10, 20],
+    ueCounts: [2, 4], antennas: [[2, 1]],
+    dataTypes: ['iperf-tcp'], mobility: ['stationary'], fading: ['awgn', 'epa5'],
+    maxVariants: 24,
+  },
+  {
+    rat: 'NR-SA', bands: ['n41', 'n78'], bandwidths: [40, 100], scs: [30],
+    ueCounts: [2, 4], antennas: [[2, 2]],
+    dataTypes: ['iperf-tcp'], mobility: ['stationary'], fading: ['awgn', 'tdla30'],
+    maxVariants: 16,
+  },
+  {
+    rat: 'NR-NSA', bands: ['n41', 'n78'], bandwidths: [40, 100], scs: [30],
+    ueCounts: [1, 2], antennas: [[2, 2]],
+    dataTypes: ['iperf-tcp'], mobility: ['stationary'], fading: ['awgn'],
+    maxVariants: 8,
   },
 ];
 
@@ -240,6 +353,10 @@ export interface BulkTestCaseSpec {
   dataType: DataType;
   mobility: Mobility;
   fading: Fading;
+  /** NB-IoT only — set when the slice sweeps ue_category (SIM40-2311). */
+  nbUeCategory?: NbIotUeCategory;
+  /** NB-IoT only — set when the slice sweeps deployment mode (SIM40-2312). */
+  nbCellType?: NbIotCellType;
   category: 'bulk-lte' | 'bulk-nr-sa' | 'bulk-nr-nsa' | 'bulk-nbiot';
 }
 
@@ -273,6 +390,10 @@ export function specToId(
   fading: string,
   scs: number | undefined,
   seq: number,
+  /** NB-IoT-only dimensions (SIM40-2311/2312). Optional trailing param so
+   *  pre-existing variant names stay byte-identical when a slice doesn't
+   *  sweep them — duplicate-name resumability depends on that. */
+  nb?: { ueCategory?: string; cellType?: string },
 ): string {
   const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
   const ratSlug = slug(rat);
@@ -281,8 +402,10 @@ export function specToId(
   const mobSlug = mobility === 'stationary' ? 'stat' : 'mob';
   const fadeSlug = slug(fading);
   const scsSlug = scs ? `-scs${scs}` : '';
+  // e.g. "-nb1-standalone" / "-nb2-in-band" — only for swept NB-IoT variants.
+  const nbSlug = [nb?.ueCategory, nb?.cellType].filter(Boolean).map(x => `-${slug(String(x))}`).join('');
   const seqStr = String(seq).padStart(4, '0');
-  return `${BULK_NAME_PREFIX}-${ratSlug}-${bandSlug}-bw${bw}${scsSlug}-ue${ueCount}-ant${antennas.dl}x${antennas.ul}-${dataSlug}-${mobSlug}-${fadeSlug}-${seqStr}`;
+  return `${BULK_NAME_PREFIX}-${ratSlug}-${bandSlug}-bw${bw}${scsSlug}-ue${ueCount}-ant${antennas.dl}x${antennas.ul}-${dataSlug}${nbSlug}-${mobSlug}-${fadeSlug}-${seqStr}`;
 }
 
 /** Friendly column-ready summary for a spec (used by report tables). */
@@ -298,5 +421,8 @@ export function describeSpec(s: BulkTestCaseSpec): Record<string, string | numbe
     mobility: s.mobility,
     fading: s.fading,
     scs: s.scs ?? '',
+    // NB-IoT audit dimensions (SIM40-2311/2312) — blank for non-NB variants.
+    nbUeCategory: s.nbUeCategory ?? '',
+    nbCellType: s.nbCellType ?? '',
   };
 }

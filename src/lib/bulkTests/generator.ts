@@ -24,6 +24,8 @@ import {
   type RAT,
   type SweepSize,
   type MatrixSlice,
+  type NbIotUeCategory,
+  type NbIotCellType,
   BULK_NAME_PREFIX,
   BULK_TAG,
   categoryOf,
@@ -73,6 +75,14 @@ export function expandSlices(nr: BandInfoMap, lte: BandInfoMap, slices: readonly
     // For LTE/NB-IoT, the scs dimension doesn't apply — fall through with
     // a single sentinel undefined so the outer loops still iterate once.
     const scsValues: ReadonlyArray<number | undefined> = (slice.scs && slice.scs.length > 0) ? slice.scs : [undefined];
+    // NB-IoT-only dimensions (SIM40-2311 ue_category, SIM40-2312 deployment
+    // mode). Sentinel [undefined] when the slice doesn't sweep them, so
+    // non-NB slices (and legacy NB slices) expand exactly as before and keep
+    // their pre-audit variant names.
+    const nbCatValues: ReadonlyArray<NbIotUeCategory | undefined> =
+      (slice.rat === 'NB-IoT' && slice.nbUeCategories && slice.nbUeCategories.length > 0) ? slice.nbUeCategories : [undefined];
+    const nbCellTypeValues: ReadonlyArray<NbIotCellType | undefined> =
+      (slice.rat === 'NB-IoT' && slice.nbCellTypes && slice.nbCellTypes.length > 0) ? slice.nbCellTypes : [undefined];
 
     outer: for (const band of slice.bands) {
       const bi = ratMap[band];
@@ -90,33 +100,42 @@ export function expandSlices(nr: BandInfoMap, lte: BandInfoMap, slices: readonly
               for (const dataType of slice.dataTypes) {
                 for (const mobility of slice.mobility) {
                   for (const fading of slice.fading) {
-                    added += 1;
-                    const id = specToId(
-                      slice.rat, band, bw, ueCount,
-                      { dl: dlAnt, ul: ulAnt },
-                      dataType, mobility, fading, scs,
-                      added,
-                    );
-                    const isNr = slice.rat === 'NR-SA' || slice.rat === 'NR-NSA';
-                    out.push({
-                      id,
-                      name: id,
-                      rat: slice.rat,
-                      band,
-                      bandwidth: bw,
-                      duplexMode: bi.mode,
-                      earfcnDl: bi.dlFreqRange.centreArfcn,
-                      earfcnUl: !isNr ? bi.ulFreqRange.centreArfcn : undefined,
-                      nrarfcnSsb: isNr ? bi.dlFreqRange.centreArfcn : undefined,
-                      scs: isNr ? (scs ?? bi.scs?.[0] ?? 30) : undefined,
-                      ueCount,
-                      antennas: { dl: dlAnt, ul: ulAnt },
-                      dataType,
-                      mobility,
-                      fading,
-                      category: categoryOf(slice.rat),
-                    });
-                    if (added >= cap) break outer;
+                    // NB-IoT audit dimensions (SIM40-2311/2312) — single
+                    // sentinel iteration for every non-NB slice.
+                    for (const nbCat of nbCatValues) {
+                      for (const nbCellType of nbCellTypeValues) {
+                        added += 1;
+                        const id = specToId(
+                          slice.rat, band, bw, ueCount,
+                          { dl: dlAnt, ul: ulAnt },
+                          dataType, mobility, fading, scs,
+                          added,
+                          { ueCategory: nbCat, cellType: nbCellType },
+                        );
+                        const isNr = slice.rat === 'NR-SA' || slice.rat === 'NR-NSA';
+                        out.push({
+                          id,
+                          name: id,
+                          rat: slice.rat,
+                          band,
+                          bandwidth: bw,
+                          duplexMode: bi.mode,
+                          earfcnDl: bi.dlFreqRange.centreArfcn,
+                          earfcnUl: !isNr ? bi.ulFreqRange.centreArfcn : undefined,
+                          nrarfcnSsb: isNr ? bi.dlFreqRange.centreArfcn : undefined,
+                          scs: isNr ? (scs ?? bi.scs?.[0] ?? 30) : undefined,
+                          ueCount,
+                          antennas: { dl: dlAnt, ul: ulAnt },
+                          dataType,
+                          mobility,
+                          fading,
+                          nbUeCategory: nbCat,
+                          nbCellType,
+                          category: categoryOf(slice.rat),
+                        });
+                        if (added >= cap) break outer;
+                      }
+                    }
                   }
                 }
               }
@@ -150,7 +169,15 @@ function buildCellsBody(spec: BulkTestCaseSpec) {
           turboIteration: 14,
         },
         cells: [{
-          cellType: '4g',
+          // For NB-IoT the cellType field carries the deployment/operation
+          // mode (standalone / in-band / guard-band) — the same contract the
+          // apiTester nbiot-definition-completeness check and the
+          // configFidelity nbiotChecker assert. Sending it explicitly exists
+          // to catch SIM40-2312 (box silently reset an in-band cell to
+          // standalone) and, downstream, SIM40-2311 (unbootable NB-IoT
+          // ue.cfg). When the slice doesn't sweep the dimension we keep the
+          // legacy '4g' so pre-audit variants stay byte-identical.
+          cellType: isNb ? (spec.nbCellType ?? '4g') : '4g',
           syncId: 0,
           duplexMode: spec.duplexMode,
           band: spec.band,
@@ -366,7 +393,11 @@ function buildSubscribersBody(spec: BulkTestCaseSpec) {
           asRelease: 13,
           redCap: false,
           ueCategoryType: 'combined',
-          ueCategory: 'nb1',
+          // ue_category sweep (nb1 / nb2). SIM40-2311: the box shipped
+          // unbootable NB-IoT ue.cfgs with ue_category dropped — generating
+          // BOTH categories makes the drop observable per category, and nb2
+          // was never generated at all while this was hardcoded to nb1.
+          ueCategory: spec.nbUeCategory ?? 'nb1',
           multiTone: true,
           multiCarrier: true,
           twoHarq: false,
@@ -548,6 +579,19 @@ function buildUserPlaneBody(spec: BulkTestCaseSpec) {
     };
   }
 
+  // Single-profile TCP iperf. SIM40-2303..2312 audit class: those bugs went
+  // unseen because the matrix only generated SA/UDP default paths —
+  // 'mix-iperf+tcp' covers TCP only inside a 2-group mix. This branch must
+  // come before the generic fallthrough below, which would otherwise
+  // silently downgrade the variant to UDP.
+  if (spec.dataType === 'iperf-tcp') {
+    return {
+      userPlaneConfig: {
+        profiles: [iperfProfile(0, 'both', 'tcp', spec.ueCount)],
+      },
+    };
+  }
+
   // Single-profile iperf cases.
   const direction =
     spec.dataType === 'iperf-dl' ? 'downlink' :
@@ -672,6 +716,10 @@ export interface CreatedTestcase {
   mobility: string;
   fading: string;
   scs?: number;
+  /** NB-IoT audit dimensions (SIM40-2311/2312) — present only on swept
+   *  NB-IoT variants so reports can pivot on category/deployment mode. */
+  nbUeCategory?: string;
+  nbCellType?: string;
   /** True when this testcase was NOT created this run — it already existed
    *  on the box (same name) and we resolved its boxId so it stays
    *  validatable + reportable. The run's `passed` count excludes these;
@@ -786,6 +834,7 @@ export async function generateBulkTestcases(
         band: v.band, bandwidth: v.bandwidth, duplexMode: v.duplexMode,
         ueCount: v.ueCount, antennas: v.antennas, dataType: v.dataType,
         mobility: v.mobility, fading: v.fading, scs: v.scs,
+        nbUeCategory: v.nbUeCategory, nbCellType: v.nbCellType,
         preexisting: true,
       });
       skips.push({ id: v.id, name: v.name, reason: 'already on box — reusing existing testcase' });
@@ -849,6 +898,7 @@ export async function generateBulkTestcases(
         band: v.band, bandwidth: v.bandwidth, duplexMode: v.duplexMode,
         ueCount: v.ueCount, antennas: v.antennas, dataType: v.dataType,
         mobility: v.mobility, fading: v.fading, scs: v.scs,
+        nbUeCategory: v.nbUeCategory, nbCellType: v.nbCellType,
       });
       progress.passed++; progress.done++;
     } catch (e: any) {

@@ -106,6 +106,9 @@ interface ReportRow {
   traffic: string;
   mobility: string;
   fading: string;
+  /** NB-IoT audit dimensions (SIM40-2311/2312) — blank for non-NB variants. */
+  nbUeCategory?: string;
+  nbCellType?: string;
   generated: boolean;
   apiVerdict: 'pass' | 'fail' | 'not-run';
   fidelityVerdict: 'pass' | 'fail' | 'not-run';
@@ -137,6 +140,8 @@ function buildRows(inputs: BuildReportInputs): ReportRow[] {
       traffic: c.dataType,
       mobility: c.mobility,
       fading: c.fading,
+      nbUeCategory: c.nbUeCategory,
+      nbCellType: c.nbCellType,
       generated: true,
       apiVerdict,
       fidelityVerdict,
@@ -212,11 +217,11 @@ function renderMarkdown(inputs: BuildReportInputs, rows: ReportRow[], tally: Cat
   // / JSON for the rest.
   lines.push('## Sample of per-testcase verdicts (first 20)');
   lines.push('');
-  lines.push('| Name | RAT | Band | BW | SCS | UEs | Ant | Traffic | Mobility | Fading | API | Fidelity |');
-  lines.push('|---|---|---|---:|---:|---:|---|---|---|---|:-:|:-:|');
+  lines.push('| Name | RAT | Band | BW | SCS | UEs | Ant | Traffic | Mobility | Fading | NB Cat | NB CellType | API | Fidelity |');
+  lines.push('|---|---|---|---:|---:|---:|---|---|---|---|---|---|:-:|:-:|');
   for (const r of rows.slice(0, 20)) {
     const tick = (s: ReportRow['apiVerdict']) => s === 'pass' ? '✅' : s === 'fail' ? '❌' : '–';
-    lines.push(`| \`${r.name}\` | ${r.rat} | ${r.band} | ${r.bandwidth} | ${r.scs ?? '–'} | ${r.ueCount} | ${r.antennas} | ${r.traffic} | ${r.mobility} | ${r.fading} | ${tick(r.apiVerdict)} | ${tick(r.fidelityVerdict)} |`);
+    lines.push(`| \`${r.name}\` | ${r.rat} | ${r.band} | ${r.bandwidth} | ${r.scs ?? '–'} | ${r.ueCount} | ${r.antennas} | ${r.traffic} | ${r.mobility} | ${r.fading} | ${r.nbUeCategory ?? '–'} | ${r.nbCellType ?? '–'} | ${tick(r.apiVerdict)} | ${tick(r.fidelityVerdict)} |`);
   }
   lines.push('');
   lines.push('_Full table: `report.html` (filterable) / `report.json` (raw)._');
@@ -295,6 +300,8 @@ function renderHtml(inputs: BuildReportInputs, rows: ReportRow[], tally: Categor
     <th data-sort="traffic">Traffic</th>
     <th data-sort="mobility">Mobility</th>
     <th data-sort="fading">Fading</th>
+    <th data-sort="nbUeCategory">NB Cat</th>
+    <th data-sort="nbCellType">NB CellType</th>
     <th data-sort="apiVerdict">API</th>
     <th data-sort="fidelityVerdict">Fidelity</th>
   </tr></thead>
@@ -359,6 +366,8 @@ function renderHtml(inputs: BuildReportInputs, rows: ReportRow[], tally: Categor
       + '<td>' + r.traffic + '</td>'
       + '<td>' + r.mobility + '</td>'
       + '<td>' + r.fading + '</td>'
+      + '<td>' + (r.nbUeCategory || '–') + '</td>'
+      + '<td>' + (r.nbCellType || '–') + '</td>'
       + tickCell(r.apiVerdict)
       + tickCell(r.fidelityVerdict)
       + '</tr>';
