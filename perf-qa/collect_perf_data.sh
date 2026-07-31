@@ -55,8 +55,33 @@ source "$CONF"
 # executed testcase from the GUI's footer endpoint.
 : "${TEST_CASE_NAME:=LAST_RUN}"
 
-# Defaults for anything the conf might omit
-: "${OUTPUT_DIR:=/tmp/perf_collect}"
+# ---------------------------------------------------------------------------
+# Ad-hoc time-window mode
+#   If LOOKBACK_MINUTES is set (positive integer), skip REST iter resolution
+#   and just collect everything from now-N minutes through now. Useful when
+#   there's no specific test case to anchor against — e.g. "something just
+#   went sideways, grab the last hour". The REST block sees START/END already
+#   populated and skips its own resolution; container/iperf logs use this
+#   window for --since/--until slicing. TEST_CASE_NAME becomes "lookback_<N>m"
+#   so the bundle is obvious in the Logs tab.
+# ---------------------------------------------------------------------------
+LOOKBACK_MINUTES="${LOOKBACK_MINUTES:-}"
+if [[ -n "$LOOKBACK_MINUTES" && "$LOOKBACK_MINUTES" =~ ^[0-9]+$ && "$LOOKBACK_MINUTES" -gt 0 ]]; then
+    END="$(date +%s)"
+    START="$((END - LOOKBACK_MINUTES * 60))"
+    TEST_CASE_NAME="lookback_${LOOKBACK_MINUTES}m"
+    LOOKBACK_ACTIVE=1
+    echo "[setup] LOOKBACK mode: last ${LOOKBACK_MINUTES} min (START=${START} END=${END})" >&2
+else
+    LOOKBACK_ACTIVE=0
+fi
+
+# Defaults for anything the conf might omit. Bundle dir matches the Flask UI's
+# BUNDLE_ROOT (= /var/lib/perf-qa/bundles) so a missing/blank OUTPUT_DIR in
+# setup.conf still produces a bundle the UI can find. Pre-v1.0.4 this defaulted
+# to /tmp/perf_collect, causing "Report FAIL — No bundle produced" even though
+# the bundle was written successfully (just to the wrong place).
+: "${OUTPUT_DIR:=/var/lib/perf-qa/bundles}"
 : "${COLLECTION_LABEL:=perftest}"
 : "${COLLECT_UE:=1}"; : "${COLLECT_SIMNOVATOR:=1}"
 : "${COLLECT_CALLBOX:=1}"; : "${COLLECT_APP_SERVER:=1}"; : "${COLLECT_REST_API:=1}"
@@ -75,6 +100,18 @@ BUNDLE="${OUTPUT_DIR}/.pending_${TS}"
 LOG="${BUNDLE}/collect.log"
 MANIFEST="${BUNDLE}/MANIFEST.txt"
 mkdir -p "$BUNDLE"
+
+# Stamp the manifest header for LOOKBACK mode now (REST block won't run its
+# usual header since there's no resolved iter). For test-case mode, the REST
+# block writes its own header once it knows the iter.
+if [[ "${LOOKBACK_ACTIVE:-0}" == "1" ]]; then
+    {
+      echo "Mode: LOOKBACK (no test case)"
+      echo "Window: last ${LOOKBACK_MINUTES} min (Unix ${START} - ${END})"
+      echo "Window (ISO): $(date -u -d "@${START}" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) - $(date -u -d "@${END}" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"
+      echo "------------------------------------------------------------"
+    } >> "$MANIFEST"
+fi
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -204,6 +241,33 @@ remote_pipe() {  # <host> <user> <port> <outfile> <label> <cmd-string> [password
     else
         rm -f "$target"
         mark "FAILED" "$label (rc=$rc; empty/error - see collect.log)"
+    fi
+}
+
+# Like remote_pipe, but an empty/failed result is SKIPPED rather than FAILED —
+# for optional artifacts that legitimately may not exist (e.g. iperf logs when
+# no iperf run happened in the collection window). Binary-safe stdout.
+remote_pipe_optional() {  # <host> <user> <port> <outfile> <label> <cmd-string> [password]
+    local host="$1" user="$2" port="$3" out="$4" label="$5" cmd="$6" pass="${7:-}"
+    local target="${BUNDLE}/${out}"; mkdir -p "$(dirname "$target")"
+    local rc
+    if [[ -z "$host" ]]; then
+        bash -c "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    elif [[ -n "$pass" ]] && have sshpass; then
+        sshpass -p "$pass" ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
+            -p "$port" "${user}@${host}" "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    elif [[ -z "$pass" ]]; then
+        ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
+            -p "$port" "${user}@${host}" "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    else
+        mark "SKIPPED" "$label (password set for ${host} but sshpass not installed)"; return
+    fi
+    if [[ ${rc:-1} -eq 0 ]] && [[ -s "$target" ]]; then
+        local sz; sz=$(stat -c%s "$target" 2>/dev/null || echo 0)
+        mark "COLLECTED" "$label -> ${out} (${sz} bytes)"
+    else
+        rm -f "$target"
+        mark "SKIPPED" "$label — none in the collected window"
     fi
 }
 
@@ -369,6 +433,63 @@ sim_container_names() {
     fi
 }
 
+# Run an arbitrary shell command on the Simnovator host (remote or local),
+# capturing stdout+stderr to a bundle file. Sibling to sim_podman for the
+# non-podman probes added for quadlet support (systemctl, journalctl, the
+# native `simnovator` CLI).
+sim_run() {  # sim_run <outfile> <label> <shell-cmd>
+    local out="$1" label="$2" cmd="$3"
+    if [[ -n "${SIMNOVATOR_HOST:-}" ]]; then
+        remote_or_local "$SIMNOVATOR_HOST" "${SIMNOVATOR_USER:-sysadmin}" "${SIMNOVATOR_SSH_PORT:-22}" \
+            "$out" "$label" "$cmd" "${SIMNOVATOR_PASS:-}"
+    else
+        bash -c "$cmd" > "${BUNDLE}/${out}" 2>&1 \
+            && mark "COLLECTED" "$label (local) -> ${out}" \
+            || mark "FAILED" "$label (local cmd error)"
+    fi
+}
+
+# Podman quadlets name a container "systemd-<unit>" unless the .container file
+# sets ContainerName= explicitly, so `podman ps` may return either the bare
+# name (podman-compose / explicit) or the systemd-prefixed name (quadlet
+# default). Strip the prefix to get the logical service name used as the key
+# in SIM_APP_LOGS and as the stable bundle path — so the bundle layout is
+# identical on both old and new (quadlet) hosts.
+# Assumes Simnovator's two naming conventions only: pre-quadlet compose names
+# are bare (simnovator-*), quadlet names are systemd-prefixed. Section 6b's
+# matcher tries BOTH forms, so a stripped name still resolves to the right
+# running container regardless.
+sim_logical_name() { echo "${1#systemd-}"; }
+
+# Binary-safe stdout pull from the Simnovator host where MISSING output is a
+# NOTE, not a FAILED. Mirrors remote_pipe's transport but is for best-effort
+# bonus artifacts (the native `simnovator logs` tar) that shouldn't redden the
+# pipeline if engineering's CLI syntax differs from our guess.
+sim_pipe_best_effort() {  # <outfile> <label> <cmd-string>
+    local out="$1" label="$2" cmd="$3"
+    local target="${BUNDLE}/${out}"; mkdir -p "$(dirname "$target")"
+    local host="${SIMNOVATOR_HOST:-}" user="${SIMNOVATOR_USER:-sysadmin}"
+    local port="${SIMNOVATOR_SSH_PORT:-22}" pass="${SIMNOVATOR_PASS:-}" rc
+    if [[ -z "$host" ]]; then
+        bash -c "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    elif [[ -n "$pass" ]] && have sshpass; then
+        sshpass -p "$pass" ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
+            -p "$port" "${user}@${host}" "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    elif [[ -z "$pass" ]]; then
+        ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
+            -p "$port" "${user}@${host}" "$cmd" > "$target" 2>>"$LOG"; rc=$?
+    else
+        mark NOTE "$label (password set but sshpass not installed)"; return
+    fi
+    if [[ ${rc:-1} -eq 0 && -s "$target" ]]; then
+        local sz; sz=$(stat -c%s "$target" 2>/dev/null || echo 0)
+        mark COLLECTED "$label -> ${out} (${sz} bytes)"
+    else
+        rm -f "$target"
+        mark NOTE "$label — not produced (see native_logs/logs_help.txt for the exact supported syntax)"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 log "=== Performance data collection started ==="
 log "Config:  $CONF"
@@ -411,9 +532,15 @@ elif [[ "$COLLECT_UE" == "1" ]]; then
     [[ -n "${NUMA_CONFIG_PATH:-}" ]] && ue_copy_file "$NUMA_CONFIG_PATH" "ue/system/numa_config" "system: numa_config file"
 
     # --- config/ — workload_affinity.json (+ single-array shape sanity check) ---
+    # Optional file — present only on some UE rigs. Capture with a sentinel so a
+    # missing file is SKIPPED, not a red FAILED.
     if [[ -n "${WORKLOAD_AFFINITY_JSON:-}" ]]; then
-        ue_copy_file "$WORKLOAD_AFFINITY_JSON" "ue/config/workload_affinity.json" "workload config"
-        if [[ -s "${UE}/config/workload_affinity.json" ]] && have_python3; then
+        ue_capture "ue/config/workload_affinity.json" "workload config" \
+            "cat '${WORKLOAD_AFFINITY_JSON}' 2>/dev/null || sudo -n cat '${WORKLOAD_AFFINITY_JSON}' 2>/dev/null || echo '__WAF_NOT_FOUND__'"
+        if [[ -f "${UE}/config/workload_affinity.json" ]] && grep -q '__WAF_NOT_FOUND__' "${UE}/config/workload_affinity.json" 2>/dev/null; then
+            rm -f "${UE}/config/workload_affinity.json"
+            mark SKIPPED "workload config (not present at ${WORKLOAD_AFFINITY_JSON})"
+        elif [[ -s "${UE}/config/workload_affinity.json" ]] && have_python3; then
             python3 - "${UE}/config/workload_affinity.json" > "${UE}/config/workload_affinity_check.txt" 2>&1 <<'PYEOF'
 import json, sys
 try:
@@ -481,9 +608,10 @@ BASH
     CPU_AFFINITY_SNIPPET="${CPU_AFFINITY_SNIPPET//__PERF_PROC_NAMES__/${PERF_PROC_NAMES:-}}"
     ue_capture "ue/cpu/cpu_affinity.txt" "cpu: t-cpu/core-alloc/smp-aff" "$CPU_AFFINITY_SNIPPET"
 
-    # top -H snapshot for the first matching perf process
+    # top -H snapshot for the first matching perf process. Guard with :- so a
+    # setup.conf that omits PERF_PROC_NAMES doesn't abort the run under `set -u`.
     ue_capture "ue/cpu/top_threads.txt" "cpu: top -H per-thread" \
-        'p=$(for n in '"${PERF_PROC_NAMES}"'; do pgrep -f "$n" 2>/dev/null | head -1; done | head -1); [[ -n "$p" ]] && top -H -b -n 2 -p "$p" 2>&1 || echo "(no perf process found)"'
+        'p=$(for n in '"${PERF_PROC_NAMES:-}"'; do pgrep -f "$n" 2>/dev/null | head -1; done | head -1); [[ -n "$p" ]] && top -H -b -n 2 -p "$p" 2>&1 || echo "(no perf process found)"'
 
     # --- net/ — NIC offload / ring settings (relevant for throughput tests) ---
     ue_capture "ue/net/ip_link.txt" "net: ip link" "ip -s link"
@@ -516,20 +644,68 @@ elif [[ "$COLLECT_SIMNOVATOR" == "1" ]]; then
         # Live per-container resource snapshot (local proxy for Beszel metrics).
         sim_podman "simnovator/container_stats_snapshot.txt" "simnovator: ${ENGINE} stats snapshot (CPU/mem/net/io)" stats --no-stream
 
+        # Container status + health. With quadlets every service gets a
+        # healthcheck; podman's {{.Status}} shows "Up 5m (healthy|starting|
+        # unhealthy)". This is the fastest way to spot a wedged dependency
+        # (e.g. keycloak stuck "starting" blocking everything downstream).
+        sim_podman "simnovator/container_health.txt" "simnovator: container status/health" \
+            ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.RunningFor}}\t{{.Image}}'
+
+        # systemd unit states — only meaningful once engineering moved to
+        # quadlets (containers run as <unit>.service). Broad grep so we don't
+        # depend on exact unit names; prints a clear sentinel on pre-quadlet
+        # hosts so the bundle records "this host isn't quadlet-managed yet".
+        sim_run "simnovator/systemd_units.txt" "simnovator: systemd unit states (quadlet)" \
+            "systemctl list-units --type=service --all --no-pager 2>/dev/null | grep -iE 'simnovator|keycloak|observe|timescale|redis|valkey|gateway|authenticator|executor|worker|stats|frontend|test-(creator|processor)' || echo '(no matching systemd units — pre-quadlet podman-compose host)'"
+
+        # Disk / storage usage. The product health UI shows per-container CPU/RAM
+        # but no disk; the real hogs are the *volumes* (autosave/timescaledb/
+        # openobserve), which never appear as containers. Capture filesystem %,
+        # per-volume sizes, /var/log, cores, and the executor cleanup cap + last
+        # reading so a filling disk is visible before it causes an outage. (SIM40-2418)
+        sim_run "simnovator/disk_usage.txt" "simnovator: disk + volume usage" '
+          echo "=== filesystem (root) ==="; df -h / | tail -1
+          echo; echo "=== simnovator volumes (disk used) ==="
+          VB="$HOME/.local/share/containers/storage/volumes"
+          [ -d "$VB" ] || VB=/var/lib/containers/storage/volumes
+          du -hs "$VB"/simnovator_* 2>/dev/null | sort -rh
+          echo; echo "=== /var/log (top) ==="; du -hsx /var/log 2>/dev/null
+          du -hx /var/log 2>/dev/null | sort -rh | head -6
+          echo; echo "=== core dumps ==="; du -hs /var/tmp/cores /var/crash 2>/dev/null
+          echo; echo "=== executor cleanup cap + last reading ==="
+          podman inspect simnovator-executor --format "{{range .Config.Env}}{{println .}}{{end}}" 2>/dev/null | grep -i CLEANUP_MAX_DISK
+          journalctl --user -u simnovator-executor --no-pager 2>/dev/null | grep -iE "Disk Usage -|within safe limits|deleting|Entering cleanup" | tail -4'
+
         # Per-container inspect JSON (point-in-time, no window needed). The
         # actual `logs` dump moves to the post-REST section so we can pass
-        # --since=<test start> and capture only test-window output.
+        # --since=<test start> and capture only test-window output. Bundle
+        # filename uses the logical (de-prefixed) name so it's stable across
+        # host generations; the podman target uses the actual name.
         clist="${SIMNOVATOR_CONTAINERS:-}"
         [[ -z "$clist" ]] && clist="$(sim_container_names "$ENGINE")"
         log "  found $(echo "$clist" | wc -w) container(s); inspecting now, logs deferred to post-REST window"
         for c in $clist; do
-            sim_podman "simnovator/container_logs/${c}.inspect.json" "simnovator: inspect ${c}" \
+            lc="$(sim_logical_name "$c")"
+            sim_podman "simnovator/container_logs/${lc}.inspect.json" "simnovator: inspect ${lc}" \
                 inspect "$c" >/dev/null 2>&1 || true
         done
         # Save list for the windowed log pass.
         echo "$clist" > "${BUNDLE}/.sim_containers"
     else
         mark SKIPPED "simnovator: no container engine (podman/docker) detectable on ${SIMNOVATOR_HOST:-localhost}"
+    fi
+
+    # --- Simnovator host setup log: /home/simnovus/master_setup.log ---
+    # The deploy/setup flow writes a master setup log under the simnovus home
+    # (root-owned, hence sudo). Whole file (it's a bounded setup/deploy log, not
+    # something to window). Path overridable via SIM_MASTER_SETUP_LOG. Missing
+    # => SKIPPED (not FAILED) via the sentinel.
+    SIM_MASTER_SETUP_LOG="${SIM_MASTER_SETUP_LOG:-/home/simnovus/master_setup.log}"
+    sim_run "simnovator/master_setup.log" "simnovator: master_setup.log" \
+        "sudo -n cat '${SIM_MASTER_SETUP_LOG}' 2>/dev/null || cat '${SIM_MASTER_SETUP_LOG}' 2>/dev/null || echo '__MSL_NOT_FOUND__'"
+    if [[ -f "${BUNDLE}/simnovator/master_setup.log" ]] && grep -q '__MSL_NOT_FOUND__' "${BUNDLE}/simnovator/master_setup.log" 2>/dev/null; then
+        rm -f "${BUNDLE}/simnovator/master_setup.log"
+        mark SKIPPED "simnovator: master_setup.log not present at ${SIM_MASTER_SETUP_LOG}"
     fi
 
     # --- Beszel container monitoring (historical resource time-series) ---
@@ -543,17 +719,28 @@ elif [[ "$COLLECT_SIMNOVATOR" == "1" ]]; then
           && -n "${BESZEL_PYTHON:-}" && -x "${BESZEL_PYTHON}" \
           && -f "$beszel_helper" && -n "$beszel_target_host" ]]; then
         out="${SN}/beszel_${beszel_target_host//./_}.png"
+        bez_log="$(mktemp 2>/dev/null || echo "${BUNDLE}/.bez.$$")"
         if "$BESZEL_PYTHON" "$beszel_helper" \
               --hub "$BESZEL_HUB_URL" \
               --user "$BESZEL_USER" --password "$BESZEL_PASS" \
               --match-host "$beszel_target_host" \
               --range "${BESZEL_CHART_RANGE:-1h}" \
-              --out "$out" >> "$LOG" 2>&1; then
+              --out "$out" > "$bez_log" 2>&1; then
+            cat "$bez_log" >> "$LOG"
             sz=$(stat -c%s "$out" 2>/dev/null || echo 0)
             mark COLLECTED "simnovator: Beszel screenshot (${BESZEL_CHART_RANGE:-1h} for ${beszel_target_host}) -> simnovator/$(basename "$out") (${sz} bytes)"
         else
-            mark FAILED "simnovator: Beszel screenshot for ${beszel_target_host} (see collect.log) - hub=${BESZEL_HUB_URL}"
+            cat "$bez_log" >> "$LOG"
+            # "no system found" is a hub data/access gap, not a collector failure
+            # — the host just isn't registered (or the viewer lacks access). NOTE,
+            # not FAILED. Genuine errors (hub down, playwright crash) stay FAILED.
+            if grep -qiE 'no system found|no matching|not found' "$bez_log" 2>/dev/null; then
+                mark NOTE "simnovator: Beszel — no system registered for ${beszel_target_host} on the hub (add it / grant viewer access)"
+            else
+                mark FAILED "simnovator: Beszel screenshot for ${beszel_target_host} (see collect.log) - hub=${BESZEL_HUB_URL}"
+            fi
         fi
+        rm -f "$bez_log"
     elif [[ -n "${BESZEL_EXPORT_CMD:-}" ]]; then
         bash -c "$BESZEL_EXPORT_CMD" > "${SN}/beszel_export.txt" 2>&1 \
             && mark COLLECTED "simnovator: Beszel export cmd -> simnovator/beszel_export.txt" \
@@ -659,7 +846,14 @@ fi
 #   - If TEST_CASE_NAME is empty or "LAST_RUN", auto-discover via the
 #     footer endpoint (same one the GUI's LAST RUN TEST widget uses).
 # ===========================================================================
-if [[ "$COLLECT_REST_API" == "1" ]]; then
+if [[ "$COLLECT_REST_API" == "1" && "${LOOKBACK_ACTIVE:-0}" == "1" ]]; then
+    # LOOKBACK mode has no test case to anchor against — the REST API only
+    # exposes per-iteration data (stats/logs/screenshots keyed by iterationId),
+    # none of which applies to an ad-hoc time window. Skip the whole section
+    # (incl. the login) so a slow/non-default API port can't redden the
+    # pipeline for a mode that wouldn't use the data anyway.
+    mark SKIPPED "rest-api: skipped in LOOKBACK mode (no test case; per-iteration data N/A)"
+elif [[ "$COLLECT_REST_API" == "1" ]]; then
     log "--- REST API (test case) ---"
     API="${BUNDLE}/rest_api"; mkdir -p "$API"
 
@@ -719,11 +913,19 @@ PYEOF
         fi
 
         # ----- 2) Resolve iterationId + time window ---------------------------
-        # Precedence: explicit ITERATION_ID > TEST_CASE_NAME lookup > footer auto-discover.
+        # Precedence: LOOKBACK mode > explicit ITERATION_ID > TEST_CASE_NAME lookup > footer auto-discover.
+        # In LOOKBACK mode we already set START/END from now-N..now at script
+        # entry, so leave them alone and skip the iter resolution entirely —
+        # there's no testcase to anchor against.
         ITER="${ITERATION_ID:-}"
-        TC_ID=""; TC_NAME="${TEST_CASE_NAME:-}"; START=""; END=""
+        TC_ID=""; TC_NAME="${TEST_CASE_NAME:-}"
+        if [[ "${LOOKBACK_ACTIVE:-0}" != "1" ]]; then
+            START=""; END=""
+        else
+            mark COLLECTED "rest-api: LOOKBACK mode active — window = last ${LOOKBACK_MINUTES} min (${START}..${END}), skipping iter resolution"
+        fi
 
-        if [[ -n "$TOKEN" && -z "$ITER" ]]; then
+        if [[ -n "$TOKEN" && -z "$ITER" && "${LOOKBACK_ACTIVE:-0}" != "1" ]]; then
             if [[ -z "$TC_NAME" || "$TC_NAME" == "LAST_RUN" ]]; then
                 # Same endpoint the GUI's footer LAST RUN TEST widget uses.
                 code=$(curl -sk "${AUTH_HDR[@]}" -o "${API}/last_run.json" -w '%{http_code}' \
@@ -937,20 +1139,22 @@ if [[ "$COLLECT_SIMNOVATOR" == "1" && -n "${SIMNOVATOR_HOST:-}" && -f "${BUNDLE}
         )
 
         for c in $clist; do
-            sim_podman "simnovator/container_logs/${c}.log" \
-                "simnovator: container log ${c} (windowed)" $log_args "$c"
+            lc="$(sim_logical_name "$c")"
+            sim_podman "simnovator/container_logs/${lc}.log" \
+                "simnovator: container log ${lc} (windowed)" $log_args "$c"
             # Most Simnovator services route their app logs to *files inside
             # the container* (captured below in container_files/), so podman
             # stdout is often empty for the test window. Drop the 0-byte
             # placeholder + replace COLLECTED with a NOTE pointing at the
             # in-container log file. Keeps the bundle visibly clean — only
             # services that actually emit stdout end up with a .log file.
-            f="${BUNDLE}/simnovator/container_logs/${c}.log"
+            # (Quadlet hosts: the systemd journal in 6c is the fuller source.)
+            f="${BUNDLE}/simnovator/container_logs/${lc}.log"
             if [[ -f "$f" && ! -s "$f" ]]; then
                 rm -f "$f"
                 hint=""
-                [[ -n "${SIM_APP_LOGS[$c]:-}" ]] && hint=" (see container_files/${c}/$(basename "${SIM_APP_LOGS[$c]}"))"
-                mark NOTE "simnovator: container log ${c} empty in window — dropped${hint}"
+                [[ -n "${SIM_APP_LOGS[$lc]:-}" ]] && hint=" (see container_files/${lc}/$(basename "${SIM_APP_LOGS[$lc]}"))"
+                mark NOTE "simnovator: container log ${lc} empty in window — dropped${hint}"
             fi
         done
 
@@ -965,19 +1169,145 @@ if [[ "$COLLECT_SIMNOVATOR" == "1" && -n "${SIMNOVATOR_HOST:-}" && -f "${BUNDLE}
         # "No such file or directory" landing in the file — informative either way.
         mkdir -p "${BUNDLE}/simnovator/container_files"
         log "--- Simnovator in-container app logs (tail -n ${DOCKER_LOG_TAIL}) ---"
-        for c in "${!SIM_APP_LOGS[@]}"; do
-            # Only grab if the container is actually running.
-            if ! grep -qw "$c" <<<"$clist"; then
-                mark SKIPPED "simnovator: app log ${c} (container not running)"
+        for key in "${!SIM_APP_LOGS[@]}"; do
+            # Resolve the actual running container name: bare (podman-compose /
+            # explicit ContainerName) or systemd-prefixed (quadlet default).
+            # Bundle path stays keyed on the logical name either way.
+            actual=""
+            if   grep -qw "$key"          <<<"$clist"; then actual="$key"
+            elif grep -qw "systemd-$key"  <<<"$clist"; then actual="systemd-$key"
+            fi
+            if [[ -z "$actual" ]]; then
+                mark SKIPPED "simnovator: app log ${key} (container not running)"
                 continue
             fi
-            rel="${SIM_APP_LOGS[$c]}"
+            rel="${SIM_APP_LOGS[$key]}"
             fname="$(basename "$rel")"
-            mkdir -p "${BUNDLE}/simnovator/container_files/${c}"
-            sim_podman "simnovator/container_files/${c}/${fname}" \
-                "simnovator: app log ${c}:${rel}" \
-                exec "$c" sh -c "tail -n ${DOCKER_LOG_TAIL:-20000} '${rel}' 2>&1"
+            mkdir -p "${BUNDLE}/simnovator/container_files/${key}"
+            # `|| true` so a missing file doesn't hard-FAIL: on the quadlet
+            # release several services log only to stdout (captured in journal/)
+            # and no longer write this app-log FILE. We downgrade those to a
+            # NOTE after the fact instead of reddening the pipeline.
+            sim_podman "simnovator/container_files/${key}/${fname}" \
+                "simnovator: app log ${key}:${rel}" \
+                exec "$actual" sh -c "tail -n ${DOCKER_LOG_TAIL:-20000} '${rel}' 2>&1 || true"
+            af="${BUNDLE}/simnovator/container_files/${key}/${fname}"
+            if [[ -f "$af" ]] && grep -qiE 'no such file or directory|cannot open' "$af" 2>/dev/null; then
+                rm -f "$af"
+                mark NOTE "simnovator: app log ${key} file absent on this release — stdout captured in journal/${key}.journal.log"
+            fi
         done
+
+        # ----- 6c) systemd journal per container ------------------------------
+        # On the quadlet (5.x) release each service runs as a rootless podman
+        # container whose stdout is routed to journald tagged CONTAINER_NAME=
+        # <name>.  NOTE: `journalctl -u <unit>` is EMPTY for rootless user units
+        # under a plain (system) journalctl, so we query by CONTAINER_NAME —
+        # which returns the logs and needs no sudo (verified on the .91 rack).
+        # The journal is the authoritative source on quadlet hosts: it survives
+        # container restarts (podman logs only has the current instance) and
+        # records the conmon health/restart events podman stdout never shows.
+        # Windowed to the test/lookback window. Per-container files mirror the
+        # container_files/ layout so the analyzer can attribute errors.
+        # Pre-quadlet hosts (json-file log driver) return "-- No entries --" and
+        # the file is dropped, so they cost nothing.
+        if [[ -n "${START:-}" && "$START" != "0" ]]; then
+            jwin="--since @${START} --until @${END:-$(date +%s)}"
+        else
+            jwin="-n ${DOCKER_LOG_TAIL:-20000}"
+        fi
+        mkdir -p "${BUNDLE}/simnovator/journal"
+        log "--- Simnovator systemd journal per container (window: ${jwin}) ---"
+        for c in $clist; do
+            lc="$(sim_logical_name "$c")"
+            # Drop the benign "Journal file ... corrupted, ignoring file" notice
+            # journald emits when one rotated user-journal is unreadable.
+            jcmd="journalctl CONTAINER_NAME='${c}' ${jwin} --no-pager 2>&1 | grep -v 'corrupted, ignoring file' || true"
+            sim_run "simnovator/journal/${lc}.journal.log" "simnovator: journal ${lc}" "$jcmd"
+            # Drop files with no real log lines (empty / "-- No entries --" /
+            # "-- Journal begins" only) — same hygiene as the 0-byte podman logs.
+            jf="${BUNDLE}/simnovator/journal/${lc}.journal.log"
+            if [[ -f "$jf" ]] && ! grep -qvE '^[[:space:]]*$|-- No entries --|-- Journal begins|-- Boot' "$jf" 2>/dev/null; then
+                rm -f "$jf"
+                mark NOTE "simnovator: journal ${lc} empty in window — dropped"
+            fi
+        done
+
+        # ----- 6d) native `simnovator logs` archive ---------------------------
+        # The 5.x release ships a built-in log bundler. Confirmed real syntax
+        # (on the .91/.95/.202 racks):
+        #     sudo simnovator logs <since>
+        #   where <since> is a duration (30m / 2h / 60s) or a date (YYYY-MM-DD),
+        #   default 72h. It prints "Logs successfully archived to: <path>" and
+        #   writes /home/simnovus/simnovator-<since>-logs.tar.gz. We:
+        #     1. record CLI presence + `simnovator help` (captures live syntax),
+        #     2. run it for OUR window (minutes, so never the 72h default),
+        #        parse the archived path from its output, stream the .tar.gz
+        #        back binary-safe, then remove it from /home/simnovus.
+        # Best-effort: absent CLI / disabled => NOTE, never FAILED.
+        mkdir -p "${BUNDLE}/simnovator/native_logs"
+        sim_run "simnovator/native_logs/cli.txt" "simnovator: native CLI presence" \
+            "command -v simnovator >/dev/null 2>&1 && echo present || echo 'absent (pre-quadlet release)'"
+        sim_run "simnovator/native_logs/logs_help.txt" "simnovator: 'simnovator' help (live syntax)" \
+            "sudo -n simnovator help 2>&1 || simnovator help 2>&1 || simnovator logs --help 2>&1 || echo '(no help available / CLI absent)'"
+
+        if [[ "${SIM_NATIVE_LOGS:-auto}" == "0" ]]; then
+            mark NOTE "simnovator: native-logs archive disabled (SIM_NATIVE_LOGS=0)"
+        elif grep -qi 'absent' "${BUNDLE}/simnovator/native_logs/cli.txt" 2>/dev/null; then
+            mark NOTE "simnovator: native 'simnovator logs' CLI not present (pre-quadlet release) — podman+journal already captured"
+        else
+            # Window in minutes (>=1). Prefer the explicit lookback, else derive
+            # from START/END, else default 60.
+            if [[ -n "${LOOKBACK_MINUTES:-}" ]]; then
+                nl_mins="$LOOKBACK_MINUTES"
+            elif [[ -n "${START:-}" && "$START" != "0" ]]; then
+                nl_mins=$(( ( ${END:-$(date +%s)} - START + 59 ) / 60 ))
+            else
+                nl_mins=60
+            fi
+            (( nl_mins < 1 )) && nl_mins=1
+            nl_dur="${nl_mins}m"
+            # Remote: run `sudo simnovator logs <dur>`, parse the "archived to:"
+            # path it prints (fall back to newest /home/simnovus/*logs*.tar.gz),
+            # cat the archive to stdout (binary-safe via sim_pipe_best_effort),
+            # then delete it so /home/simnovus doesn't accumulate our test runs.
+            # NOTE: the archive lands in root-owned /home/simnovus, which the
+            # SSH user can't traverse — so every existence test must go through
+            # `sudo -n test -f` (a plain [ -f ] returns false even though the
+            # file is there). cat/rm likewise need sudo.
+            nl_cmd="out=\$(timeout 180 sudo -n simnovator logs ${nl_dur} 2>&1); p=\$(printf '%s\n' \"\$out\" | sed -n 's/.*archived to:[[:space:]]*//p' | tail -1); if [ -z \"\$p\" ] || ! sudo -n test -f \"\$p\"; then p=\$(sudo -n find /home/simnovus -maxdepth 2 -name 'simnovator-*logs*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-); fi; if [ -n \"\$p\" ] && sudo -n test -f \"\$p\"; then sudo -n cat \"\$p\"; sudo -n rm -f \"\$p\"; fi"
+            nl_out="simnovator/native_logs/simnovator-${nl_dur}-logs.tar.gz"
+            sim_pipe_best_effort "$nl_out" "simnovator: native logs archive (last ${nl_dur})" "$nl_cmd"
+        fi
+    fi
+fi
+
+# ===========================================================================
+# 6f) UE-HOST SIMNOVATOR APP MANAGER JOURNAL (time-windowed)
+#     The Simnovator App Manager on the UE-sim host runs as a systemd service
+#     (start_app_manager.sh) and logs to journald — NOT a flat file — so the
+#     UESIM log tar in section 1 never captures it. We grab it here (post-REST,
+#     so START/END is resolved in test-case mode too) over the full test /
+#     lookback window — i.e. the whole run, however long it ran or failed for.
+#     Identifier is overridable via UE_APP_MANAGER_IDENT. Try sudo first, fall
+#     back to plain journalctl (works if the user is in the systemd-journal
+#     group). Empty in window => dropped (host not using journald). The analyzer
+#     scans ue/logs/*.journal.log, so its error/CRITICAL hits land in ANALYSIS.md.
+# ===========================================================================
+if [[ "$COLLECT_UE" == "1" && -n "${UE_HOST:-}" ]]; then
+    AM_IDENT="${UE_APP_MANAGER_IDENT:-start_app_manager.sh}"
+    if [[ -n "${START:-}" && "$START" != "0" ]]; then
+        am_win="--since @${START} --until @${END:-$(date +%s)}"
+    else
+        am_win="-n 50000"
+    fi
+    log "--- UE Simnovator App Manager journal (ident=${AM_IDENT}, window: ${am_win}) ---"
+    ue_capture "ue/logs/app_manager.journal.log" "ue: app-manager journal (${AM_IDENT})" \
+        "{ sudo -n journalctl -t '${AM_IDENT}' ${am_win} --no-pager 2>/dev/null || journalctl -t '${AM_IDENT}' ${am_win} --no-pager 2>&1; } | grep -v 'corrupted, ignoring file' || true"
+    amf="${BUNDLE}/ue/logs/app_manager.journal.log"
+    if [[ -f "$amf" ]] && ! grep -qvE '^[[:space:]]*$|-- No entries --|-- Journal begins|-- Boot' "$amf" 2>/dev/null; then
+        rm -f "$amf"
+        mark NOTE "ue: app-manager journal empty in window (ident=${AM_IDENT}) — dropped"
     fi
 fi
 
@@ -1056,11 +1386,13 @@ if [[ "${COLLECT_IPERF:-1}" == "1" && -n "${IPERF_LOG_DIR:-}" ]]; then
         iperf_cmd="newest=\$(sudo -n ls -1t '${IPERF_LOG_DIR}' 2>/dev/null | head -1); [[ -n \"\$newest\" ]] && sudo -n tar czf - -C '${IPERF_LOG_DIR}' \"\$newest\" || exit 2"
     fi
     mkdir -p "${BUNDLE}/ue/logs"
+    # Optional: a window with no iperf run yields no subdirs (cmd exits 2) — that
+    # is SKIPPED, not FAILED.
     if [[ -n "${UE_HOST:-}" ]]; then
-        remote_pipe "$UE_HOST" "${UE_USER:-sysadmin}" "${UE_SSH_PORT:-22}" \
+        remote_pipe_optional "$UE_HOST" "${UE_USER:-sysadmin}" "${UE_SSH_PORT:-22}" \
             "ue/logs/iperf_logs.tar.gz" "iperf: logs ($desc)" "$iperf_cmd" "${UE_PASS:-}"
     else
-        remote_pipe "" "" "" "ue/logs/iperf_logs.tar.gz" "iperf: logs ($desc)" "$iperf_cmd"
+        remote_pipe_optional "" "" "" "ue/logs/iperf_logs.tar.gz" "iperf: logs ($desc)" "$iperf_cmd"
     fi
 fi
 

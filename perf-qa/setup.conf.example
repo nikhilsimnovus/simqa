@@ -46,6 +46,10 @@ NUMA_CONFIG_PATH=""
 UESIM_LOG_DIR="/var/log/lte /root/ue"   # space-separated dirs are supported
 UESIM_LOG_MAX_MB=200
 PERF_PROC_NAMES="app-manager lteue iperf3"
+# The Simnovator App Manager on the UE host logs to the systemd journal (not a
+# flat file). The collector captures it over the test/lookback window via this
+# journald syslog identifier. Override only if your build tags it differently.
+UE_APP_MANAGER_IDENT="start_app_manager.sh"
 
 # ---- iperf logs (collected from the UE host after the REST section) -------
 IPERF_LOG_DIR="/root/simnovator-app-manager/web/iperf/logs"
@@ -60,6 +64,13 @@ SIMNOVATOR_PASS=""                      # blank = SSH key auth
 CONTAINER_ENGINE=""                     # "" auto-detect (prefers podman)
 SIMNOVATOR_CONTAINERS=""                # blank = all running containers
 DOCKER_LOG_TAIL=20000
+# Quadlet hosts (today's release): the collector auto-detects systemd-managed
+# containers (PODMAN_SYSTEMD_UNIT label) and additionally captures the systemd
+# journal per unit + container health. If the host also ships the native
+# `simnovator logs` CLI, the collector best-effort grabs its windowed tar.
+SIM_NATIVE_LOGS="auto"                  # auto = grab native tar if CLI present; 0 = never
+# Top-level Simnovator setup/deploy log on the Simnovator host (whole file).
+SIM_MASTER_SETUP_LOG="/home/simnovus/master_setup.log"
 
 # ---- Beszel container monitoring ------------------------------------------
 # Optional. Provide a read-only viewer account. Leave BESZEL_HUB_URL blank

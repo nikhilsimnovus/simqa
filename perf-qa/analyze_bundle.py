@@ -60,7 +60,14 @@ NOISE_RE = re.compile(
     r"zero\s+errors?|"
     r"_error\b|"                       # snake_case field names
     r"errCount\b|"
-    r'"error":\s*"?(null|none|0)',
+    r'"error":\s*"?(null|none|0)|'
+    # Structured logs the app itself tags as non-error: a level=info/debug/trace
+    # line is not an error hit even if its message/command contains an error
+    # keyword. (app-manager INFO "Constructed IPerf command ... --rcv-timeout"
+    # matched TIMEOUT and inflated the count by ~80k on a 72h run.)
+    r"level\s*=\s*(?:info|debug|trace)\b|"
+    r'"level"\s*:\s*"(?:info|debug|trace)"|'
+    r"rcv-timeout",                     # iperf flag name, not a timeout error
     re.IGNORECASE,
 )
 
@@ -324,12 +331,29 @@ def analyze_containers(bundle: Path) -> dict | None:
                 if n > d["top_crit_count"]:
                     d["top_crit_msg"], d["top_crit_count"] = msg, n
 
-    # 1) Stdout logs (windowed) — one file per container at container_logs/<c>.log
+    # 1) systemd journal per container (quadlet 5.x hosts) — authoritative
+    #    stdout. Scanned FIRST so we can skip the podman-logs copy of the same
+    #    stdout below: on the quadlet release journald IS podman logs' backing
+    #    store, so container_logs/<c>.log would otherwise double-count the same
+    #    lines. File is "<container>.journal.log".
+    journal_dir = bundle / "simnovator" / "journal"
+    journaled: set[str] = set()
+    if journal_dir.is_dir():
+        for log in sorted(journal_dir.glob("*.journal.log")):
+            name = log.name[: -len(".journal.log")]
+            journaled.add(name)
+            _scan(log, name, f"journal/{log.name}")
+
+    # 2) Stdout logs (windowed) — container_logs/<c>.log. Skip any container
+    #    already covered by its journal (same stdout source -> no double count).
     if logs_dir.is_dir():
         for log in sorted(logs_dir.glob("*.log")):
+            if log.stem in journaled:
+                continue
             _scan(log, log.stem, f"container_logs/{log.name}")
 
-    # 2) In-container app log files — container_files/<c>/<file>.log
+    # 3) In-container app log files — container_files/<c>/<file>.log. Distinct
+    #    content (the services' own log FILES, not stdout) — always scanned.
     if files_dir.is_dir():
         for sub in sorted(p for p in files_dir.iterdir() if p.is_dir()):
             for log in sorted(sub.glob("*.log")):
@@ -349,6 +373,24 @@ def analyze_containers(bundle: Path) -> dict | None:
 
 def analyze_uesim_log(bundle: Path) -> dict | None:
     f = bundle / "ue" / "logs" / "ots.log"
+    if not f.exists():
+        return None
+    try:
+        text = f.read_text(errors="replace")
+    except Exception:  # noqa: BLE001
+        return None
+    crit, err = _count_errors(text)
+    return {"lines": text.count("\n"), "critical": crit, "errors": err}
+
+
+def analyze_app_manager(bundle: Path) -> dict | None:
+    """UE-host Simnovator App Manager journal (ue/logs/app_manager.journal.log).
+
+    Captured from the UE box's systemd journal (the app-manager logs there, not
+    to a flat file). Counts CRITICAL + error hits over the collected window so a
+    failed / long run surfaces app-manager trouble in the summary.
+    """
+    f = bundle / "ue" / "logs" / "app_manager.journal.log"
     if not f.exists():
         return None
     try:
@@ -562,6 +604,40 @@ def _check_disk(infos: dict) -> list[tuple[str, str, str]]:
     return out
 
 
+def _check_sim_volumes(bundle: Path) -> list[tuple[str, str, str]]:
+    """Per-volume disk usage from simnovator/disk_usage.txt. The autosave /
+    timescaledb / openobserve *volumes* are the real disk hogs (not containers,
+    so they never show in the health UI). Also surfaces the executor cleanup cap
+    and how close the tracked total is to it. (SIM40-2418)
+    """
+    p = bundle / "simnovator" / "disk_usage.txt"
+    if not p.exists():
+        return []
+    vols: list[tuple[str, str]] = []   # (name, human-size)
+    cap_mb = total_mb = None
+    for line in p.read_text(errors="replace").splitlines():
+        s = line.strip()
+        m = re.match(r"([\d.]+[KMGT]?)\s+.*/volumes/simnovator_(\S+)", s)
+        if m:
+            vols.append((m.group(2), m.group(1)))
+        m = re.search(r"CLEANUP_MAX_DISK_USAGE_ALLOWED_MB=(\d+)", s)
+        if m:
+            cap_mb = int(m.group(1))
+        m = re.search(r"Total:\s*(\d+)\s*MB", s)
+        if m:
+            total_mb = int(m.group(1))
+    if not vols and total_mb is None:
+        return []
+    bits = [f"{n} {sz}" for n, sz in vols[:5]] or ["(no volumes found)"]
+    st = "OK"
+    if cap_mb:
+        frac = (total_mb or 0) / cap_mb
+        tail = f" (used {(total_mb or 0)/1024:.1f} GiB, {frac*100:.0f}%)" if total_mb is not None else ""
+        bits.append(f"cleanup cap {cap_mb/1024:.0f} GiB{tail}")
+        st = "FAIL" if frac >= 0.9 else ("WARN" if frac >= 0.8 else "OK")
+    return [("Disk [sim volumes]", st, " · ".join(bits))]
+
+
 def _ring_after(label: str, lines: list[str], start: int, limit: int = 10) -> dict:
     """Find RX:/TX: values in the `limit` lines following `start` (label index)."""
     out = {}
@@ -690,6 +766,7 @@ def analyze_deep_checks(bundle: Path) -> list[tuple[str, str, str]]:
     out.extend(_check_swap(infos))
     out.extend(_check_thp(infos))
     out.extend(_check_disk(infos))
+    out.extend(_check_sim_volumes(bundle))
 
     # UE-specific deep checks (config files only collected for UE).
     for role in ("ue",):
@@ -709,7 +786,7 @@ def analyze_deep_checks(bundle: Path) -> list[tuple[str, str, str]]:
 _STATUS_GLYPH = {"OK": "[ OK ]", "WARN": "[WARN]", "FAIL": "[FAIL]", "ERR": "[ERR ]"}
 
 
-def render(test, heat, cpu, containers, uesim, callbox, deep=None) -> str:
+def render(test, heat, cpu, containers, uesim, callbox, deep=None, app_manager=None) -> str:
     rows: list[tuple[str, str, str]] = []   # (label, status, message)
 
     if test:
@@ -754,6 +831,18 @@ def render(test, heat, cpu, containers, uesim, callbox, deep=None) -> str:
         if uesim["critical"]:
             bits.insert(0, f'{uesim["critical"]} CRITICAL')
         rows.append(("UESIM log", st, " · ".join(bits)))
+
+    if app_manager:
+        if app_manager["critical"]:
+            st = "FAIL"
+        elif app_manager["errors"] > 500:
+            st = "WARN"
+        else:
+            st = "OK"
+        bits = [f'{app_manager["errors"]} error hits', f'{app_manager["lines"]:,} lines']
+        if app_manager["critical"]:
+            bits.insert(0, f'{app_manager["critical"]} CRITICAL')
+        rows.append(("App Manager (UE)", st, " · ".join(bits)))
 
     if callbox:
         if not callbox["reachable"]:
@@ -838,10 +927,11 @@ def main() -> int:
     cpu        = analyze_cpu(args.bundle)
     containers = analyze_containers(args.bundle)
     uesim      = analyze_uesim_log(args.bundle)
+    app_manager = analyze_app_manager(args.bundle)
     callbox    = analyze_callbox(args.bundle)
     deep       = analyze_deep_checks(args.bundle)
 
-    report = render(test, heat, cpu, containers, uesim, callbox, deep)
+    report = render(test, heat, cpu, containers, uesim, callbox, deep, app_manager)
     out = args.bundle / "ANALYSIS.md"
     out.write_text(report)
     print(report)
