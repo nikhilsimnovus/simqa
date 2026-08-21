@@ -17,7 +17,7 @@ import { useSearchParams } from 'next/navigation';
 import { Header } from '@/components/Header';
 import { Button, Input, Field, Kicker } from '@/components/ui';
 import {
-  Plus, Trash2, Server, ChevronRight, Layers, AlertTriangle, Check,
+  Plus, Trash2, Server, ChevronRight, Layers, AlertTriangle, Check, KeyRound,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import {
@@ -43,6 +43,28 @@ interface InventorySystem {
   cockpitUser?: string;
   cockpitPassword?: string;
   notes?: string;
+}
+
+interface SshDefaults {
+  username?: string;
+  sshPort?: number;
+  authMode?: 'password' | 'privateKey';
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+  sudoPassword?: string;
+}
+
+/** Mirrors SSH_FIELDS in lib/inventory.ts. */
+const SSH_FIELDS = ['username', 'sshPort', 'authMode', 'password', 'privateKey', 'passphrase', 'sudoPassword'] as const;
+
+function isSet(v: unknown): boolean {
+  return v !== undefined && v !== null && v !== '';
+}
+
+/** SSH fields this system sets for itself rather than inheriting. */
+function ownSshFields(sys: InventorySystem): string[] {
+  return SSH_FIELDS.filter((k) => isSet((sys as any)[k]));
 }
 
 interface TopologyProfile {
@@ -89,12 +111,14 @@ export default function InventoryPage() {
 
 function InventoryEditor() {
   const params = useSearchParams();
-  const [tab, setTab] = useState<'systems' | 'topology'>(
-    params?.get('tab') === 'topology' ? 'topology' : 'systems',
+  const qTab = params?.get('tab');
+  const [tab, setTab] = useState<'systems' | 'topology' | 'credentials'>(
+    qTab === 'topology' ? 'topology' : qTab === 'credentials' ? 'credentials' : 'systems',
   );
 
   const [systems, setSystems]   = useState<InventorySystem[]>([]);
   const [profiles, setProfiles] = useState<TopologyProfile[]>([]);
+  const [sshDefaults, setSshDefaults] = useState<SshDefaults>({});
   const [rest, setRest]         = useState<Record<string, unknown>>({});
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
@@ -103,9 +127,10 @@ function InventoryEditor() {
 
   useEffect(() => {
     fetch('/api/inventory').then((r) => r.json()).then((d) => {
-      const { systems: sys, profiles: pro, ...others } = d ?? {};
+      const { systems: sys, profiles: pro, defaults, ...others } = d ?? {};
       setSystems(sys ?? []);
       setProfiles(pro ?? []);
+      setSshDefaults(defaults?.ssh ?? {});
       // Anything else in the document (suites, …) is round-tripped untouched
       // so saving from this screen can't drop a sibling section.
       setRest(others ?? {});
@@ -123,7 +148,13 @@ function InventoryEditor() {
       const r = await fetch('/api/inventory', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...rest, systems, profiles }),
+        // Drop an all-empty defaults block rather than writing `ssh: {}`.
+        body: JSON.stringify({
+          ...rest,
+          systems,
+          profiles,
+          defaults: Object.values(sshDefaults).some(isSet) ? { ssh: sshDefaults } : undefined,
+        }),
       });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error ?? `HTTP ${r.status}`);
@@ -165,6 +196,7 @@ function InventoryEditor() {
     systems: systems.length,
     topologies: profiles.length,
     broken: profiles.filter((p) => profileIssues(p as any).length > 0).length,
+    overrides: systems.filter((s) => ownSshFields(s).length > 0).length,
   }), [systems, profiles]);
 
   return (
@@ -181,9 +213,11 @@ function InventoryEditor() {
             ) : dirty ? (
               <span className="text-xs text-amber-700">Unsaved changes</span>
             ) : null}
-            <Button size="sm" variant="secondary" onClick={tab === 'systems' ? addSystem : addProfile}>
-              <Plus className="h-4 w-4" />{tab === 'systems' ? 'Add system' : 'Add topology'}
-            </Button>
+            {tab !== 'credentials' ? (
+              <Button size="sm" variant="secondary" onClick={tab === 'systems' ? addSystem : addProfile}>
+                <Plus className="h-4 w-4" />{tab === 'systems' ? 'Add system' : 'Add topology'}
+              </Button>
+            ) : null}
             <Button size="sm" onClick={save} disabled={saving || !dirty}>
               {saving ? 'Saving…' : 'Save'}
             </Button>
@@ -198,6 +232,9 @@ function InventoryEditor() {
           <TabButton active={tab === 'topology'} onClick={() => setTab('topology')}
             icon={Layers} label="Topology" count={counts.topologies}
             warn={counts.broken > 0 ? counts.broken : undefined} />
+          <TabButton active={tab === 'credentials'} onClick={() => setTab('credentials')}
+            icon={KeyRound} label="Credentials" count={counts.overrides}
+            countLabel="overrides" />
         </div>
 
         {loading ? (
@@ -209,13 +246,25 @@ function InventoryEditor() {
             onPatch={(i, patch) => mutSystems((s) => s.map((x, k) => (k === i ? { ...x, ...patch } : x)))}
             onRemove={(i) => mutSystems((s) => s.filter((_, k) => k !== i))}
           />
-        ) : (
+        ) : tab === 'topology' ? (
           <TopologyTab
             profiles={profiles}
             systems={systems}
             onAdd={addProfile}
             onPatch={(i, patch) => mutProfiles((p) => p.map((x, k) => (k === i ? { ...x, ...patch } : x)))}
             onRemove={(i) => mutProfiles((p) => p.filter((_, k) => k !== i))}
+          />
+        ) : (
+          <CredentialsTab
+            defaults={sshDefaults}
+            systems={systems}
+            onPatch={(patch) => { setSshDefaults((d) => ({ ...d, ...patch })); setDirty(true); }}
+            onClearOverride={(idx) => mutSystems((arr) => arr.map((x, k) => {
+              if (k !== idx) return x;
+              const next: any = { ...x };
+              for (const f of SSH_FIELDS) delete next[f];
+              return next;
+            }))}
           />
         )}
       </main>
@@ -233,11 +282,11 @@ function uniqueId(prefix: string, taken: string[]): string {
 // ───────────────────── Tab chrome ─────────────────────
 
 function TabButton({
-  active, onClick, icon: Icon, label, count, warn,
+  active, onClick, icon: Icon, label, count, warn, countLabel,
 }: {
   active: boolean; onClick: () => void;
   icon: React.ComponentType<{ className?: string }>;
-  label: string; count: number; warn?: number;
+  label: string; count: number; warn?: number; countLabel?: string;
 }) {
   return (
     <button
@@ -251,7 +300,7 @@ function TabButton({
     >
       <Icon className="h-3.5 w-3.5" />
       {label}
-      <span className="num text-[11px] text-slate-500">{count}</span>
+      <span className="num text-[11px] text-slate-500" title={countLabel}>{count}</span>
       {warn ? (
         <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
           <AlertTriangle className="h-2.5 w-2.5" />{warn}
@@ -493,9 +542,9 @@ function SystemAdvanced({
 
       <Section
         title="SSH"
-        note={isUesimCapable(sys.type)
-          ? 'Optional — unlocks the cfg patcher, ue.cfg pull and gNB backup'
-          : 'Primary access for this box type'}
+        note={ownSshFields(sys).length === 0
+          ? 'Empty means this system uses the lab default from the Credentials tab. Fill a field only to override it here.'
+          : `Overriding the lab default: ${ownSshFields(sys).join(', ')}`}
       >
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Field label="User">
@@ -538,6 +587,157 @@ function SystemAdvanced({
           )}
         </div>
       </Section>
+    </div>
+  );
+}
+
+// ───────────────────── Credentials tab ─────────────────────
+
+/**
+ * The shared SSH identity, set once for the whole lab.
+ *
+ * One key normally opens every box, so this is the default and each system
+ * inherits it. A system can still override any single field from its own
+ * Advanced → SSH panel; the merge in lib/inventory.ts is per-field, so a box
+ * with a different username still inherits the shared key.
+ */
+function CredentialsTab({
+  defaults, systems, onPatch, onClearOverride,
+}: {
+  defaults: SshDefaults;
+  systems: InventorySystem[];
+  onPatch: (p: Partial<SshDefaults>) => void;
+  onClearOverride: (idx: number) => void;
+}) {
+  const authMode = defaults.authMode ?? 'privateKey';
+  const overriding = systems
+    .map((s, idx) => ({ s, idx, own: ownSshFields(s) }))
+    .filter((x) => x.own.length > 0);
+  const inheriting = systems.length - overriding.length;
+
+  return (
+    <div className="space-y-3">
+      <div className="overflow-hidden rounded-xl border border-line bg-surface">
+        <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+          <span className="grid h-6 w-6 flex-none place-items-center rounded-md bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-500/25">
+            <KeyRound className="h-3.5 w-3.5" />
+          </span>
+          <span className="text-sm font-medium text-slate-900">Lab SSH default</span>
+          <span className="text-[11px] font-light text-slate-500">
+            used by {inheriting} of {systems.length} system{systems.length === 1 ? '' : 's'}
+          </span>
+        </div>
+
+        <div className="space-y-4 p-3">
+          <Section title="Identity" note="applies to every system that does not set its own">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <Field label="SSH user" hint="e.g. sysadmin">
+                <Input
+                  value={defaults.username ?? ''}
+                  onChange={(e) => onPatch({ username: e.target.value || undefined })}
+                  placeholder="sysadmin"
+                />
+              </Field>
+              <Field label="SSH port" hint="default 22">
+                <Input
+                  value={defaults.sshPort?.toString() ?? ''}
+                  onChange={(e) => onPatch({ sshPort: e.target.value ? Number(e.target.value) : undefined })}
+                  placeholder="22"
+                />
+              </Field>
+              <Field label="Auth mode">
+                <select
+                  value={authMode}
+                  onChange={(e) => onPatch({ authMode: e.target.value as 'password' | 'privateKey' })}
+                  className={SELECT_CLS}
+                >
+                  <option value="privateKey">Private key</option>
+                  <option value="password">Password</option>
+                </select>
+              </Field>
+            </div>
+          </Section>
+
+          <Section title={authMode === 'privateKey' ? 'Private key' : 'Password'}>
+            {authMode === 'privateKey' ? (
+              <div className="grid grid-cols-1 gap-3">
+                <Field
+                  label="Key"
+                  hint="paste the key contents, or give a path to the key file on this host"
+                >
+                  <textarea
+                    value={defaults.privateKey ?? ''}
+                    onChange={(e) => onPatch({ privateKey: e.target.value || undefined })}
+                    rows={5}
+                    placeholder={'-----BEGIN OPENSSH PRIVATE KEY-----\n... or a path to the key file'}
+                    className="w-full rounded-lg border border-line-strong bg-surface px-3 py-2 font-mono text-xs text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/25"
+                  />
+                </Field>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <Field label="Key passphrase" hint="only if the key is encrypted">
+                    <Input
+                      type="password"
+                      value={defaults.passphrase ?? ''}
+                      onChange={(e) => onPatch({ passphrase: e.target.value || undefined })}
+                    />
+                  </Field>
+                  <Field label="sudo password" hint="unless the user has NOPASSWD">
+                    <Input
+                      type="password"
+                      value={defaults.sudoPassword ?? ''}
+                      onChange={(e) => onPatch({ sudoPassword: e.target.value || undefined })}
+                    />
+                  </Field>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field label="SSH password" hint="local-lab convenience only">
+                  <Input
+                    type="password"
+                    value={defaults.password ?? ''}
+                    onChange={(e) => onPatch({ password: e.target.value || undefined })}
+                  />
+                </Field>
+                <Field label="sudo password" hint="falls back to the SSH password">
+                  <Input
+                    type="password"
+                    value={defaults.sudoPassword ?? ''}
+                    onChange={(e) => onPatch({ sudoPassword: e.target.value || undefined })}
+                  />
+                </Field>
+              </div>
+            )}
+          </Section>
+        </div>
+      </div>
+
+      {/* Who is NOT using the shared key, and a one-click way back. */}
+      <div className="overflow-hidden rounded-xl border border-line bg-surface">
+        <div className="border-b border-line px-3 py-2">
+          <Kicker>Systems overriding the default</Kicker>
+        </div>
+        {overriding.length === 0 ? (
+          <div className="p-4 text-[13px] text-slate-500">
+            None — every system uses the lab default above.
+          </div>
+        ) : (
+          <ul className="divide-y divide-line">
+            {overriding.map(({ s, idx, own }) => (
+              <li key={idx} className="flex items-center gap-3 px-3 py-2">
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-900">
+                  {s.name || s.id}
+                  <span className="ml-2 font-mono text-[11px] font-normal text-slate-500">{s.host}</span>
+                </span>
+                <span className="num hidden text-[10px] text-slate-500 sm:inline">{own.join(' ')}</span>
+                <Button size="sm" variant="secondary" onClick={() => onClearOverride(idx)}>
+                  Use lab default
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

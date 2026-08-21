@@ -217,10 +217,57 @@ export interface AutomationSuite {
   updatedAt?: string;
 }
 
+/**
+ * Lab-wide SSH credentials.
+ *
+ * In practice one key opens every box in a lab, so re-pasting it into each
+ * system is busywork and drifts. These are the defaults; any system may still
+ * override any single field (see withSshDefaults - the merge is per-field,
+ * not all-or-nothing, so a box with a different username still inherits the
+ * shared key).
+ */
+export interface SshDefaults {
+  username?: string;
+  sshPort?: number;
+  authMode?: SshAuthMode;
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+  sudoPassword?: string;
+}
+
+/** SSH fields a system can inherit from, or override, the lab defaults. */
+export const SSH_FIELDS = [
+  'username', 'sshPort', 'authMode', 'password', 'privateKey', 'passphrase', 'sudoPassword',
+] as const;
+export type SshField = (typeof SSH_FIELDS)[number];
+
 export interface Inventory {
   systems: InventorySystem[];
   profiles: TopologyProfile[];
   suites?: AutomationSuite[];
+  /** Lab-wide fallbacks. Absent on older inventories, which keeps this
+   *  backward compatible: no defaults means the previous per-system behaviour. */
+  defaults?: { ssh?: SshDefaults };
+}
+
+function isSet(v: unknown): boolean {
+  return v !== undefined && v !== null && v !== '';
+}
+
+/** Merge lab SSH defaults UNDER a system's own values, field by field. */
+export function withSshDefaults(s: InventorySystem, d?: SshDefaults): InventorySystem {
+  if (!d) return s;
+  const out: any = { ...s };
+  for (const k of SSH_FIELDS) {
+    if (!isSet(out[k]) && isSet((d as any)[k])) out[k] = (d as any)[k];
+  }
+  return out as InventorySystem;
+}
+
+/** Which SSH fields this system sets for itself (i.e. overrides the default). */
+export function ownSshFields(s: InventorySystem): SshField[] {
+  return SSH_FIELDS.filter((k) => isSet((s as any)[k]));
 }
 
 const DEFAULT_INVENTORY: Inventory = {
@@ -243,7 +290,12 @@ export function inventoryPath(): string {
   return path.join(process.cwd(), 'inventory.yaml');
 }
 
-export function loadInventory(): Inventory {
+/**
+ * The inventory exactly as written on disk - systems keep only the fields
+ * they actually set. Use this when you need to know what is an override
+ * versus what is inherited: the /api/inventory editor, and saving.
+ */
+export function loadInventoryRaw(): Inventory {
   const p = inventoryPath();
   if (!fs.existsSync(p)) {
     saveInventory(DEFAULT_INVENTORY);
@@ -255,7 +307,23 @@ export function loadInventory(): Inventory {
     systems:  Array.isArray(parsed?.systems)  ? parsed.systems  : [],
     profiles: Array.isArray(parsed?.profiles) ? parsed.profiles : [],
     suites:   Array.isArray(parsed?.suites)   ? parsed.suites   : [],
+    defaults: (parsed?.defaults && typeof parsed.defaults === 'object') ? parsed.defaults : undefined,
   };
+}
+
+/**
+ * The inventory as callers should USE it: every system already has the
+ * lab-wide SSH defaults merged in underneath its own values.
+ *
+ * Resolving here rather than at each SSH call site means every consumer -
+ * deploy, config-fidelity, gNB backup, the API routes - inherits the shared
+ * key automatically, and none of them can forget to.
+ */
+export function loadInventory(): Inventory {
+  const inv = loadInventoryRaw();
+  const ssh = inv.defaults?.ssh;
+  if (!ssh) return inv;
+  return { ...inv, systems: inv.systems.map((s) => withSshDefaults(s, ssh)) };
 }
 
 export function getSuite(inv: Inventory, id: string): AutomationSuite | undefined {
