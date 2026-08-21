@@ -90,7 +90,7 @@ export default function PerfQaPage() {
               · + browsers (~267 MB): opt-in — same plus pre-staged
                 Chromium for offline customer installs. Needs the simqa
                 host to have run perf-qa/scripts/fetch-vendor.sh first. */}
-        <div className="absolute top-3 right-9 z-10 flex items-center gap-1 bg-white/85 backdrop-blur rounded-md border border-slate-200 shadow-sm px-1 py-0.5">
+        <div className="absolute top-3 right-9 z-10 flex items-center gap-1 bg-surface/85 backdrop-blur rounded-md border border-slate-200 shadow-sm px-1 py-0.5">
           <a
             href="/api/perf-qa/deploy-build"
             download

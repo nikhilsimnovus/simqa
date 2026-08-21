@@ -405,7 +405,7 @@ export default function UiTestsPage() {
               </Button>
             ) : null}
             {busy ? (
-              <Button size="sm" variant="secondary" onClick={stopRun} className="!bg-red-600 !text-white !border-red-600 hover:!bg-red-700">
+              <Button size="sm" variant="secondary" onClick={stopRun} className="!bg-red-600 !text-on-accent !border-red-600 hover:!bg-red-700">
                 <Square className="h-4 w-4 fill-current" />Stop
               </Button>
             ) : (
@@ -461,7 +461,7 @@ export default function UiTestsPage() {
                   value={targetSystemId}
                   onChange={(e) => setTargetSystemId(e.target.value)}
                   disabled={busy}
-                  className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 bg-white"
+                  className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 bg-surface"
                 >
                   {systems.map((s) => (
                     <option key={s.id} value={s.id}>{s.name} ({s.host}) · {s.type}</option>
@@ -492,8 +492,8 @@ export default function UiTestsPage() {
             <CardHeader className="flex items-center justify-between">
               <CardTitle>Categories</CardTitle>
               <div className="flex items-center gap-1">
-                <button onClick={selectAll}  className="text-[11px] px-2 py-0.5 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50">Select all</button>
-                <button onClick={clearAll}   className="text-[11px] px-2 py-0.5 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50">Clear</button>
+                <button onClick={selectAll}  className="text-[11px] px-2 py-0.5 rounded border border-slate-300 bg-surface text-slate-700 hover:bg-slate-50">Select all</button>
+                <button onClick={clearAll}   className="text-[11px] px-2 py-0.5 rounded border border-slate-300 bg-surface text-slate-700 hover:bg-slate-50">Clear</button>
               </div>
             </CardHeader>
             <CardBody className="space-y-1">
@@ -567,7 +567,7 @@ export default function UiTestsPage() {
             <CardHeader className="flex items-center justify-between">
               <CardTitle>Baseline</CardTitle>
               {data ? (
-                <button onClick={saveAsBaseline} disabled={savingBaseline} className="text-[11px] px-2 py-0.5 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                <button onClick={saveAsBaseline} disabled={savingBaseline} className="text-[11px] px-2 py-0.5 rounded border border-slate-300 bg-surface text-slate-700 hover:bg-slate-50 disabled:opacity-50">
                   {savingBaseline ? 'Saving…' : 'Save current run'}
                 </button>
               ) : null}
@@ -708,11 +708,11 @@ export default function UiTestsPage() {
                     className={
                       'px-3 h-8 text-xs rounded-full border transition-all ' +
                       (active
-                        ? (s === 'failed' ? 'bg-red-600 text-white border-red-600 shadow-sm' :
-                           s === 'passed' ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm' :
-                           s === 'pending' ? 'bg-amber-500 text-white border-amber-500 shadow-sm' :
-                           'bg-slate-900 text-white border-slate-900 shadow-sm')
-                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50')
+                        ? (s === 'failed' ? 'bg-red-600 text-on-accent border-red-600 shadow-sm' :
+                           s === 'passed' ? 'bg-emerald-600 text-on-accent border-emerald-600 shadow-sm' :
+                           s === 'pending' ? 'bg-amber-500 text-on-accent border-amber-500 shadow-sm' :
+                           'bg-slate-900 text-on-accent border-slate-900 shadow-sm')
+                        : 'bg-surface text-slate-700 border-slate-300 hover:bg-slate-50')
                     }
                   >
                     {s.charAt(0).toUpperCase() + s.slice(1)} ({n})
@@ -722,7 +722,7 @@ export default function UiTestsPage() {
               <div className="ml-auto relative w-72">
                 <Search className="h-3.5 w-3.5 absolute left-2.5 top-2.5 text-slate-400 pointer-events-none" />
                 <input
-                  className="w-full pl-8 pr-3 h-8 text-xs rounded-md border border-slate-300 bg-white text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-300"
+                  className="w-full pl-8 pr-3 h-8 text-xs rounded-md border border-slate-300 bg-surface text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-300"
                   placeholder="Search id, name, description, detail…"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
@@ -804,7 +804,7 @@ export default function UiTestsPage() {
                               'inline-flex items-center justify-center h-7 w-7 rounded-md border ' +
                               (busy
                                 ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                                : 'bg-white text-primary-700 border-slate-300 hover:bg-primary-50 hover:border-primary-300 transition-colors opacity-0 group-hover:opacity-100')
+                                : 'bg-surface text-primary-700 border-slate-300 hover:bg-primary-50 hover:border-primary-300 transition-colors opacity-0 group-hover:opacity-100')
                             }
                           >
                             <Play className="h-3.5 w-3.5 fill-current" />
@@ -823,7 +823,7 @@ export default function UiTestsPage() {
                           ) : null}
 
                           {dr.evidence?.screenshotFile && data ? (
-                            <div className="rounded-lg border border-slate-200 overflow-hidden bg-white">
+                            <div className="rounded-lg border border-slate-200 overflow-hidden bg-surface">
                               <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-700 flex items-center gap-2">
                                 <Eye className="h-3 w-3" />Final-state screenshot
                                 <span className="ml-auto text-[10px] text-slate-500 font-mono">{dr.evidence.screenshotFile}</span>
@@ -886,7 +886,7 @@ export default function UiTestsPage() {
 
 function StatCard({ label, value, icon, tone }: { label: string; value: number; icon: React.ReactNode; tone: 'slate' | 'emerald' | 'red' | 'amber' }) {
   const styles: Record<typeof tone, string> = {
-    slate:   'bg-white border-slate-200 text-slate-900',
+    slate:   'bg-surface border-slate-200 text-slate-900',
     emerald: 'bg-emerald-50 border-emerald-200 text-emerald-900',
     red:     'bg-red-50 border-red-200 text-red-900',
     amber:   'bg-amber-50 border-amber-200 text-amber-900',
@@ -909,16 +909,16 @@ function StatCard({ label, value, icon, tone }: { label: string; value: number; 
 }
 
 function StatePill({ state }: { state: 'pass' | 'fail' | 'skip' | 'pending' | 'running' }) {
-  if (state === 'pass') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-emerald-600 text-white">PASS</span>;
-  if (state === 'fail') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-red-600 text-white">FAIL</span>;
-  if (state === 'skip') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-amber-500 text-white">SKIP</span>;
-  if (state === 'running') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-primary-600 text-white animate-pulse">RUNNING</span>;
+  if (state === 'pass') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-emerald-600 text-on-accent">PASS</span>;
+  if (state === 'fail') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-red-600 text-on-accent">FAIL</span>;
+  if (state === 'skip') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-amber-500 text-on-accent">SKIP</span>;
+  if (state === 'running') return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-primary-600 text-on-accent animate-pulse">RUNNING</span>;
   return <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-slate-200 text-slate-600">not run</span>;
 }
 
 function EvidenceLink({ href, label, icon }: { href: string; label: string; icon: React.ReactNode }) {
   return (
-    <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 transition-colors">
+    <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-slate-300 bg-surface hover:bg-slate-50 text-slate-700 transition-colors">
       {icon}<span>{label}</span>
     </a>
   );

@@ -182,8 +182,8 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                     className={
                       'px-3 h-8 text-xs rounded-md border ' +
                       (activeFile === name
-                        ? 'bg-slate-900 text-white border-slate-900'
-                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50')
+                        ? 'bg-slate-900 text-on-accent border-slate-900'
+                        : 'bg-surface text-slate-700 border-slate-300 hover:bg-slate-50')
                     }
                   >
                     {name}
@@ -257,7 +257,7 @@ function DimensionTile({ dim, open, onToggle }: { dim: VerificationDimension; op
 
 function DimensionDetails({ dim }: { dim: VerificationDimension }) {
   return (
-    <div className="rounded-md border border-slate-200 bg-white">
+    <div className="rounded-md border border-slate-200 bg-surface">
       <div className="px-4 py-2 border-b border-slate-100 text-sm font-medium text-slate-800">
         {DIMENSION_LABELS[dim.name] ?? dim.name}
       </div>

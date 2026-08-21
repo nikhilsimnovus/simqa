@@ -114,7 +114,7 @@ export default function AboutPage() {
           {/* Inner glow / gradient ring (Lovable's signature touch) */}
           <div className="absolute -inset-1 rounded-3xl opacity-60 blur-2xl pointer-events-none"
             style={{ background: 'linear-gradient(120deg, rgba(51,66,230,0.18), rgba(21,172,102,0.18), rgba(10,164,235,0.15))' }} />
-          <div className="relative rounded-2xl bg-white border p-10" style={{ borderColor: 'rgb(232 234 237)' }}>
+          <div className="relative rounded-2xl bg-surface border p-10" style={{ borderColor: 'rgb(232 234 237)' }}>
             <div className="inline-flex items-center gap-1.5 mb-5 px-3 py-1 rounded-full text-xs font-medium"
               style={{ background: 'rgba(21,172,102,0.1)', color: 'rgb(21,172,102)' }}>
               <Sparkles className="h-3 w-3" />Internal QA platform · v0.1
@@ -197,7 +197,7 @@ export default function AboutPage() {
         {/* ─────────── 3-LAYER MODEL ─────────── */}
         <section>
           <SectionTitle eyebrow="How field testing works" title="Three layers, three different bugs" />
-          <div className="rounded-2xl bg-white border p-6" style={{ borderColor: 'rgb(232 234 237)' }}>
+          <div className="rounded-2xl bg-surface border p-6" style={{ borderColor: 'rgb(232 234 237)' }}>
             <p className="text-sm leading-relaxed max-w-3xl" style={{ color: 'rgb(97 104 117)' }}>
               For any field where the UI auto-populates based on user input (Band → ARFCN, PRACH → root index, TDD → slot pattern, etc.), QA Ka BAAP runs three independent layers.
               Each layer catches a different class of bug.
@@ -223,7 +223,7 @@ export default function AboutPage() {
         <section>
           <SectionTitle eyebrow="By the numbers" title="What's in the catalog right now" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="rounded-2xl bg-white border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
+            <div className="rounded-2xl bg-surface border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
               <h3 className="text-sm font-semibold mb-3" style={{ color: 'rgb(19 23 32)' }}>By category</h3>
               <div className="space-y-1.5">
                 {Object.entries(byCategory).sort((a, b) => b[1] - a[1]).map(([cat, n]) => (
@@ -239,7 +239,7 @@ export default function AboutPage() {
               </div>
             </div>
 
-            <div className="rounded-2xl bg-white border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
+            <div className="rounded-2xl bg-surface border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
               <h3 className="text-sm font-semibold mb-3" style={{ color: 'rgb(19 23 32)' }}>By severity</h3>
               <div className="grid grid-cols-3 gap-3">
                 <SeverityTile label="Critical" tone="destructive" count={bySeverity.critical ?? 0} desc="must-pass for release" />
@@ -269,7 +269,7 @@ export default function AboutPage() {
         {/* ─────────── REAL IMPACT ─────────── */}
         <section>
           <SectionTitle eyebrow="Impact" title="Real bugs already caught" />
-          <div className="rounded-2xl bg-white border overflow-hidden" style={{ borderColor: 'rgb(232 234 237)' }}>
+          <div className="rounded-2xl bg-surface border overflow-hidden" style={{ borderColor: 'rgb(232 234 237)' }}>
             <div className="px-5 py-3 text-xs border-b" style={{ background: 'rgb(243 244 246)', borderColor: 'rgb(232 234 237)', color: 'rgb(97 104 117)' }}>
               28+ real product bugs filed in SIM40 from QA Ka BAAP runs. A representative sample:
             </div>
@@ -289,7 +289,7 @@ export default function AboutPage() {
         {/* ─────────── ARCHITECTURE ─────────── */}
         <section>
           <SectionTitle eyebrow="Under the hood" title="How it's built" />
-          <div className="rounded-2xl bg-white border p-6" style={{ borderColor: 'rgb(232 234 237)' }}>
+          <div className="rounded-2xl bg-surface border p-6" style={{ borderColor: 'rgb(232 234 237)' }}>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <ArchBox title="Frontend" tone="accent" icon={<MousePointerClick className="h-4 w-4" />}
                 items={['Next.js 15 + React + Tailwind', 'Single-page UI hosted on lab server', 'Live progress + Stop / Re-run / Per-test', 'Self-contained HTML reports']} />
@@ -363,7 +363,7 @@ function HeroStat({ label, value, sub, tone }: { label: string; value: string | 
 function SoftCard({ tone, icon, title, children }: { tone: keyof typeof TONE; icon: React.ReactNode; title: string; children: React.ReactNode }) {
   const t = TONE[tone];
   return (
-    <div className="rounded-2xl bg-white border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
+    <div className="rounded-2xl bg-surface border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
       <div className="flex items-center gap-2 mb-3">
         <span className="inline-flex items-center justify-center h-7 w-7 rounded-lg" style={{ background: t.soft, color: t.on }}>{icon}</span>
         <h3 className="font-semibold" style={{ color: t.on }}>{title}</h3>
@@ -377,7 +377,7 @@ function FeatureTile({ icon, tone, title, count, desc, href }: { icon: React.Rea
   const t = TONE[tone];
   return (
     <Link href={href} className="block group">
-      <div className="rounded-2xl bg-white border p-5 h-full transition-all group-hover:shadow-lg group-hover:-translate-y-0.5" style={{ borderColor: 'rgb(232 234 237)' }}>
+      <div className="rounded-2xl bg-surface border p-5 h-full transition-all group-hover:shadow-lg group-hover:-translate-y-0.5" style={{ borderColor: 'rgb(232 234 237)' }}>
         <div className="flex items-start justify-between mb-3">
           <span className="inline-flex items-center justify-center h-10 w-10 rounded-xl" style={{ background: t.soft, color: t.on }}>{icon}</span>
           <span className="text-2xl font-bold tabular-nums" style={{ color: 'rgb(19 23 32)' }}>{count}</span>
@@ -397,7 +397,7 @@ function LayerCard({ num, tone, title, subtitle, desc, catches }: { num: string;
   return (
     <div className="rounded-xl border p-4" style={{ background: t.soft, borderColor: 'rgb(232 234 237)' }}>
       <div className="flex items-baseline gap-2 mb-2">
-        <span className="inline-flex items-center justify-center h-7 px-2 rounded text-xs font-bold tabular-nums text-white" style={{ background: t.on }}>{num}</span>
+        <span className="inline-flex items-center justify-center h-7 px-2 rounded text-xs font-bold tabular-nums text-on-accent" style={{ background: t.on }}>{num}</span>
         <span className="font-semibold" style={{ color: 'rgb(19 23 32)' }}>{title}</span>
       </div>
       <div className="text-[11px] uppercase tracking-wide mb-2" style={{ color: t.on }}>{subtitle}</div>
@@ -423,7 +423,7 @@ function SeverityTile({ label, tone, count, desc }: { label: string; tone: keyof
 function WorkflowStep({ when, profile, duration, tone, description }: { when: string; profile: string; duration: string; tone: keyof typeof TONE; description: string }) {
   const t = TONE[tone];
   return (
-    <div className="rounded-2xl bg-white border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
+    <div className="rounded-2xl bg-surface border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
       <div className="text-[11px] uppercase tracking-widest font-semibold" style={{ color: t.on }}>{when}</div>
       <div className="flex items-baseline gap-2 mt-2">
         <span className="text-xl font-bold" style={{ color: 'rgb(19 23 32)' }}>{profile}</span>
@@ -467,7 +467,7 @@ function BugRow({ ticket, sev, title, via }: { ticket: string; sev: string; titl
 function ArchBox({ title, tone, icon, items }: { title: string; tone: keyof typeof TONE; icon: React.ReactNode; items: string[] }) {
   const t = TONE[tone];
   return (
-    <div className="rounded-xl border p-4 bg-white" style={{ borderColor: 'rgb(232 234 237)' }}>
+    <div className="rounded-xl border p-4 bg-surface" style={{ borderColor: 'rgb(232 234 237)' }}>
       <div className="flex items-center gap-2 mb-3">
         <span className="inline-flex items-center justify-center h-7 w-7 rounded-lg" style={{ background: t.soft, color: t.on }}>{icon}</span>
         <span className="text-sm font-semibold" style={{ color: 'rgb(19 23 32)' }}>{title}</span>
@@ -487,7 +487,7 @@ function ArchBox({ title, tone, icon, items }: { title: string; tone: keyof type
 function RoadmapTile({ when, tone, items }: { when: string; tone: keyof typeof TONE; items: string[] }) {
   const t = TONE[tone];
   return (
-    <div className="rounded-2xl bg-white border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
+    <div className="rounded-2xl bg-surface border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
       <div className="text-[11px] uppercase tracking-widest font-semibold mb-3" style={{ color: t.on }}>{when}</div>
       <ul className="space-y-2 text-xs" style={{ color: 'rgb(19 23 32)' }}>
         {items.map((it) => (
@@ -504,7 +504,7 @@ function RoadmapTile({ when, tone, items }: { when: string; tone: keyof typeof T
 function CtaCard({ href, icon, title, sub }: { href: string; icon: React.ReactNode; title: string; sub: string }) {
   return (
     <Link href={href} className="block group">
-      <div className="rounded-2xl bg-white border p-4 transition-all group-hover:border-emerald-300 group-hover:shadow-md flex items-center gap-3" style={{ borderColor: 'rgb(232 234 237)' }}>
+      <div className="rounded-2xl bg-surface border p-4 transition-all group-hover:border-emerald-300 group-hover:shadow-md flex items-center gap-3" style={{ borderColor: 'rgb(232 234 237)' }}>
         <span className="inline-flex items-center justify-center h-10 w-10 rounded-lg" style={{ background: 'rgba(21,172,102,0.10)', color: 'rgb(21 172 102)' }}>{icon}</span>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold" style={{ color: 'rgb(19 23 32)' }}>{title}</div>

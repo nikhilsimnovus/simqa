@@ -448,7 +448,7 @@ export default function AutomationSuitePage() {
         )}
 
         {/* Suite list */}
-        <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+        <section className="bg-surface border border-slate-200 rounded-xl p-5 mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-slate-900">Saved suites ({suites.length})</h2>
             <div className="flex items-center gap-3">
@@ -456,7 +456,7 @@ export default function AutomationSuitePage() {
                 <input type="checkbox" checked={collectDiagnostics} onChange={e => setCollectDx(e.target.checked)} />
                 <span>Collect diagnostics (perf-qa) on Run</span>
               </label>
-              <button onClick={openNew} className="rounded-md bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium px-4 py-2">
+              <button onClick={openNew} className="rounded-md bg-orange-500 hover:bg-orange-600 text-on-accent text-sm font-medium px-4 py-2">
                 + New suite
               </button>
             </div>
@@ -491,10 +491,10 @@ export default function AutomationSuitePage() {
                       <td className="px-3 py-2 text-right">{s.items?.length ?? s.testcaseIds.length}</td>
                       <td className="px-3 py-2 text-right text-xs text-slate-500">{s.updatedAt?.slice(0, 19).replace('T', ' ') ?? '–'}</td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">
-                        <button onClick={() => runSuite(s)} disabled={running === s.id} className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white text-xs px-2 py-1 mr-1">
+                        <button onClick={() => runSuite(s)} disabled={running === s.id} className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-on-accent text-xs px-2 py-1 mr-1">
                           {running === s.id ? 'Running…' : 'Run'}
                         </button>
-                        <button onClick={() => historyFor === s.id ? setHistoryFor('') : loadHistory(s.id)} className={`rounded-md text-xs px-2 py-1 mr-1 border ${historyFor === s.id ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300 hover:bg-slate-50'}`}>
+                        <button onClick={() => historyFor === s.id ? setHistoryFor('') : loadHistory(s.id)} className={`rounded-md text-xs px-2 py-1 mr-1 border ${historyFor === s.id ? 'bg-slate-800 text-on-accent border-slate-800' : 'border-slate-300 hover:bg-slate-50'}`}>
                           Runs
                         </button>
                         <button onClick={() => openEdit(s)} className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-2 py-1 mr-1">Edit</button>
@@ -510,7 +510,7 @@ export default function AutomationSuitePage() {
 
         {/* Run history + compare (visible when "Runs" was clicked) */}
         {historyFor && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+          <section className="bg-surface border border-slate-200 rounded-xl p-5 mb-6">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-base font-semibold text-slate-900">
                 Runs for <code>{historyFor}</code> ({history.length})
@@ -520,7 +520,7 @@ export default function AutomationSuitePage() {
                   Check 2 runs to compare ({compareSel.size}/2)
                 </span>
                 <button onClick={runCompare} disabled={compareSel.size !== 2 || compareBusy}
-                  className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white text-xs px-3 py-1">
+                  className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-on-accent text-xs px-3 py-1">
                   {compareBusy ? 'Comparing…' : 'Compare selected'}
                 </button>
                 <button onClick={() => { setHistoryFor(''); setCompareData(null); setCompareSel(new Set()); }}
@@ -586,7 +586,7 @@ export default function AutomationSuitePage() {
                   &nbsp;only-A {compareData.summary.onlyA} ·
                   &nbsp;only-B {compareData.summary.onlyB}
                 </div>
-                <div className="overflow-x-auto border border-slate-200 rounded-md bg-white max-h-96">
+                <div className="overflow-x-auto border border-slate-200 rounded-md bg-surface max-h-96">
                   <table className="min-w-full text-xs">
                     <thead className="bg-slate-50 text-slate-600">
                       <tr>
@@ -629,7 +629,7 @@ export default function AutomationSuitePage() {
 
         {/* Wizard */}
         {showWizard && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+          <section className="bg-surface border border-slate-200 rounded-xl p-5 mb-6">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-base font-semibold text-slate-900">{editingId ? 'Edit suite' : 'New suite'}</h2>
               <button onClick={resetWizard} className="text-sm text-slate-500 hover:text-slate-900">Cancel</button>
@@ -704,7 +704,7 @@ export default function AutomationSuitePage() {
             )}
 
             <div className="flex justify-end mt-4">
-              <button onClick={() => setTab('testcases')} className="rounded-md bg-slate-800 hover:bg-slate-900 text-white text-sm px-4 py-2">Next: Testcases →</button>
+              <button onClick={() => setTab('testcases')} className="rounded-md bg-slate-800 hover:bg-slate-900 text-on-accent text-sm px-4 py-2">Next: Testcases →</button>
             </div>
             </>)}
 
@@ -733,13 +733,13 @@ export default function AutomationSuitePage() {
                   <button type="button" onClick={() => {
                     const n = Math.max(1, Number(massDurInput) || 1);
                     setItems(items.map(it => ({ ...it, durationSec: n })));
-                  }} disabled={items.length === 0} className="rounded-md bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white text-xs px-2 py-1">Apply</button>
+                  }} disabled={items.length === 0} className="rounded-md bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-on-accent text-xs px-2 py-1">Apply</button>
                 </label>
                 <button type="button" onClick={() => setItems(items.map(it => ({ ...it, durationSec: undefined })))} className="text-xs text-slate-500 hover:text-slate-900 underline">clear all overrides</button>
               </div>
 
               {/* Items table — one row = (simnovator tc + callbox cfg + display name + duration) */}
-              <div className="mb-3 border border-slate-200 rounded-md bg-white overflow-x-auto">
+              <div className="mb-3 border border-slate-200 rounded-md bg-surface overflow-x-auto">
                 <table className="min-w-full text-xs">
                   <thead className="bg-slate-50 text-slate-600">
                     <tr>
@@ -856,7 +856,7 @@ export default function AutomationSuitePage() {
                       };
                       setItems([...items, newItem]);
                       setAddTcId(''); setAddCfg('');
-                    }} disabled={!addTcId || (kind === 'uesim+callbox' && !addCfg)} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm px-3 py-1.5">
+                    }} disabled={!addTcId || (kind === 'uesim+callbox' && !addCfg)} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-sm px-3 py-1.5">
                       + Add
                     </button>
                     {kind === 'uesim+callbox' && (
@@ -886,7 +886,7 @@ export default function AutomationSuitePage() {
 
             <div className="flex justify-between mt-4">
               <button onClick={() => setTab('setup')} className="rounded-md border border-slate-300 text-sm px-4 py-2">← Back: Setup</button>
-              <button onClick={() => setTab('results')} className="rounded-md bg-slate-800 hover:bg-slate-900 text-white text-sm px-4 py-2" disabled={!editingId}>Run history →</button>
+              <button onClick={() => setTab('results')} className="rounded-md bg-slate-800 hover:bg-slate-900 text-on-accent text-sm px-4 py-2" disabled={!editingId}>Run history →</button>
             </div>
             </>)}
 
@@ -910,7 +910,7 @@ export default function AutomationSuitePage() {
             {/* Save / Cancel — sticky across all tabs */}
             <div className="flex gap-2 justify-end mt-5 pt-4 border-t border-slate-100">
               <button onClick={resetWizard} className="rounded-md border border-slate-300 text-sm px-4 py-2">Cancel</button>
-              <button onClick={saveSuite} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
+              <button onClick={saveSuite} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-sm font-medium px-4 py-2">
                 {busy ? 'Saving…' : (editingId ? 'Update suite' : 'Save suite')}
               </button>
             </div>
@@ -919,7 +919,7 @@ export default function AutomationSuitePage() {
 
         {/* Run result */}
         {runResult && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5">
+          <section className="bg-surface border border-slate-200 rounded-xl p-5">
             <h2 className="text-base font-semibold text-slate-900 mb-3">
               Run: <code>{runResult.suiteName}</code>{' '}
               <span className="text-sm font-normal">— {runResult.passed}/{runResult.total} pass · {runResult.failed} fail</span>

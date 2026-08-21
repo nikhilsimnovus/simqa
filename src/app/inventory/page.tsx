@@ -80,7 +80,7 @@ function TypeChip({ type }: { type: string }) {
 }
 
 const SELECT_CLS =
-  'h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 ' +
+  'h-9 w-full rounded-md border border-slate-300 bg-surface px-3 text-sm text-slate-900 ' +
   'focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400';
 
 export default function InventoryPage() {
@@ -186,7 +186,7 @@ export default function InventoryPage() {
         }}
       >
         {loading ? (
-          <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">Loading…</div>
+          <div className="rounded-xl border border-slate-200 bg-surface p-6 text-sm text-slate-500 shadow-sm">Loading…</div>
         ) : (
           <>
             {/* How-to-edit hint */}
@@ -195,7 +195,7 @@ export default function InventoryPage() {
               <div className="leading-relaxed">
                 <span className="font-semibold">Editing systems:</span>{' '}
                 click into any field on a card below — ID, Name, Type, Host/IP, credentials — change the value, then click{' '}
-                <span className="rounded bg-white px-1.5 py-0.5 border border-sky-200 font-medium">Save</span>{' '}
+                <span className="rounded bg-surface px-1.5 py-0.5 border border-sky-200 font-medium">Save</span>{' '}
                 at the top-right. Nothing persists to <span className="font-mono">inventory.yaml</span> until you save.{' '}
                 Use the <Trash2 className="inline h-3 w-3" /> on a card to remove a system.
               </div>
@@ -293,7 +293,7 @@ function StatCard({
   } as const;
   const t = tones[tone];
   return (
-    <div className="relative rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div className="relative rounded-xl border border-slate-200 bg-surface p-4 shadow-sm">
       <div className="flex items-center gap-3">
         <div className={`flex h-9 w-9 items-center justify-center rounded-lg ring-1 ${t.bg} ${t.text} ${t.ring}`}>
           <Icon className="h-4 w-4" />
@@ -309,7 +309,7 @@ function StatCard({
 
 function EmptyCard({ icon, title, desc }: { icon: React.ReactNode; title: string; desc: string }) {
   return (
-    <div className="rounded-xl border border-dashed border-slate-300 bg-white/60 p-8 text-center">
+    <div className="rounded-xl border border-dashed border-slate-300 bg-surface/60 p-8 text-center">
       <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-slate-100">
         {icon}
       </div>
@@ -328,7 +328,7 @@ function SystemCard({
 }) {
   const isUesimLike = sys.type === 'SIMNOVATOR' || sys.type === 'UESIM';
   return (
-    <div className="group relative rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+    <div className="group relative rounded-xl border border-slate-200 bg-surface shadow-sm transition-shadow hover:shadow-md">
       {/* Top accent stripe — orange for Simnovator install targets */}
       {sys.type === 'SIMNOVATOR' ? (
         <div className="absolute top-0 left-0 right-0 h-1 rounded-t-xl bg-gradient-to-r from-orange-500 via-orange-400 to-amber-300" />
@@ -489,7 +489,7 @@ function SshCredentialsBlock({
                 onChange={(e) => onPatch({ privateKey: e.target.value })}
                 rows={4}
                 placeholder={'-----BEGIN OPENSSH PRIVATE KEY-----\n... or /home/user/.ssh/id_rsa'}
-                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400"
+                className="w-full rounded-md border border-slate-300 bg-surface px-3 py-2 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400"
               />
             </Field>
           </div>
@@ -514,7 +514,7 @@ function ProfileCard({
   onRemove: () => void;
 }) {
   return (
-    <div className="group relative rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+    <div className="group relative rounded-xl border border-slate-200 bg-surface shadow-sm transition-shadow hover:shadow-md">
       <div className="p-5 space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">

@@ -84,7 +84,7 @@ const TONE_CLASSES: Record<RoleDef['tone'], { bg: string; text: string; ring: st
 };
 
 const SELECT_CLS =
-  'h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 ' +
+  'h-9 w-full rounded-md border border-slate-300 bg-surface px-3 text-sm text-slate-900 ' +
   'focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400';
 
 // ───────────── Page ─────────────
@@ -193,7 +193,7 @@ export default function EndToEndPage() {
       <>
         <Header title="End to End" subtitle="QA Test Setups — bind systems together for a complete test topology" />
         <main className="p-6">
-          <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">Loading…</div>
+          <div className="rounded-xl border border-slate-200 bg-surface p-6 text-sm text-slate-500 shadow-sm">Loading…</div>
         </main>
       </>
     );
@@ -221,7 +221,7 @@ export default function EndToEndPage() {
 
       {/* Tab strip — Test setups vs Run & validate. Sticky just under the
           page header so it's always visible. */}
-      <div className="border-b border-slate-200 bg-white px-6">
+      <div className="border-b border-slate-200 bg-surface px-6">
         <div className="flex gap-1 -mb-px">
           <TabButton active={tab === 'setups'}   onClick={() => setTab('setups')}>Test setups</TabButton>
           <TabButton active={tab === 'validate'} onClick={() => setTab('validate')}>Run &amp; validate</TabButton>
@@ -362,7 +362,7 @@ function Banner({ tone, title, text }: { tone: 'orange' | 'amber'; title: string
 
 function Empty() {
   return (
-    <div className="rounded-xl border border-dashed border-slate-300 bg-white/60 p-10 text-center">
+    <div className="rounded-xl border border-dashed border-slate-300 bg-surface/60 p-10 text-center">
       <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-slate-100">
         <Layers className="h-5 w-5 text-slate-400" />
       </div>
@@ -392,7 +392,7 @@ function SetupCard({
 }) {
   const callboxId = setup.callbox;
   return (
-    <div className="group relative rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+    <div className="group relative rounded-xl border border-slate-200 bg-surface shadow-sm transition-shadow hover:shadow-md">
       <div className="absolute top-0 left-0 right-0 h-1 rounded-t-xl bg-gradient-to-r from-orange-500 via-amber-400 to-sky-400" />
       <div className="p-5">
         <div className="flex items-start justify-between gap-3 mb-4">
@@ -509,7 +509,7 @@ function SetupForm({
   const callbox = lookupSystem(systems, callboxId);
 
   return (
-    <div className="rounded-xl border border-orange-200 bg-white shadow-sm">
+    <div className="rounded-xl border border-orange-200 bg-surface shadow-sm">
       <div className="absolute" />
       <div className="border-b border-slate-100 bg-orange-50/50 px-5 py-3 rounded-t-xl flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm">
@@ -577,7 +577,7 @@ function RoleSelector({
   };
 
   return (
-    <div className={`rounded-xl border border-slate-200 bg-white p-4 transition-colors`}>
+    <div className={`rounded-xl border border-slate-200 bg-surface p-4 transition-colors`}>
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className={`flex h-7 w-7 items-center justify-center rounded-md ${t.bg} ${t.text}`}>

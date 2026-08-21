@@ -257,7 +257,7 @@ export default function BulkTestsPage() {
         </header>
 
         {/* Controls */}
-        <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+        <section className="bg-surface border border-slate-200 rounded-xl p-5 mb-6">
           <div className="flex flex-wrap items-end gap-4">
             <label className="flex flex-col">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Target system</span>
@@ -284,27 +284,27 @@ export default function BulkTestsPage() {
               <span>Also execute (run each testcase + capture ue.cfg)</span>
             </label>
             <div className="flex gap-2 ml-auto">
-              <button onClick={startGenerate} disabled={!!busy || genRunning} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
+              <button onClick={startGenerate} disabled={!!busy || genRunning} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-sm font-medium px-4 py-2">
                 {genRunning ? 'Generating…' : 'Generate'}
               </button>
-              <button onClick={startValidate} disabled={!!busy || valRunning || !(genResult?.created?.length)} className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
+              <button onClick={startValidate} disabled={!!busy || valRunning || !(genResult?.created?.length)} className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-on-accent text-sm font-medium px-4 py-2">
                 {valRunning ? 'Validating…' : 'Validate (API)'}
               </button>
               <label className="flex items-center gap-2 text-xs text-slate-600">
                 <span>UI sample</span>
                 <input type="number" min={1} max={2000} value={uiSampleSize} onChange={e => setUiSampleSize(Number(e.target.value) || 50)} className="border border-slate-300 rounded-md px-2 py-1 w-[80px] text-sm" />
               </label>
-              <button onClick={startValidateUI} disabled={!!busy || uiRunning || !(genResult?.created?.length)} className="rounded-md bg-purple-500 hover:bg-purple-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
+              <button onClick={startValidateUI} disabled={!!busy || uiRunning || !(genResult?.created?.length)} className="rounded-md bg-purple-500 hover:bg-purple-600 disabled:bg-slate-300 text-on-accent text-sm font-medium px-4 py-2">
                 {uiRunning ? 'Validating UI…' : 'Validate (UI)'}
               </button>
               <label className="flex items-center gap-2 text-xs text-slate-600">
                 <span>Exec sample</span>
                 <input type="number" min={1} max={50} value={execSampleSize} onChange={e => setExecSampleSize(Number(e.target.value) || 5)} className="border border-slate-300 rounded-md px-2 py-1 w-[60px] text-sm" />
               </label>
-              <button onClick={startExecute} disabled={!!busy || execRunning || !(genResult?.created?.length)} title="Trigger actual execution + retrieve ue.cfg + capture failure trace from UE-sim" className="rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
+              <button onClick={startExecute} disabled={!!busy || execRunning || !(genResult?.created?.length)} title="Trigger actual execution + retrieve ue.cfg + capture failure trace from UE-sim" className="rounded-md bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-on-accent text-sm font-medium px-4 py-2">
                 {execRunning ? 'Executing…' : 'Execute'}
               </button>
-              <button onClick={startCleanup} disabled={!!busy} className="rounded-md bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
+              <button onClick={startCleanup} disabled={!!busy} className="rounded-md bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-on-accent text-sm font-medium px-4 py-2">
                 Cleanup
               </button>
             </div>
@@ -314,7 +314,7 @@ export default function BulkTestsPage() {
 
         {/* Build summary + report download */}
         {(genResult || valResult) && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+          <section className="bg-surface border border-slate-200 rounded-xl p-5 mb-6">
             <div className="flex flex-wrap items-start gap-6">
               <div className="flex-1 min-w-[300px]">
                 <h2 className="text-base font-semibold text-slate-900 mb-2">Build Report</h2>
@@ -335,7 +335,7 @@ export default function BulkTestsPage() {
                   <button
                     onClick={async () => { await refreshReport(); if (reportHref) window.open(reportHref + '&format=html', '_blank'); }}
                     disabled={!reportHref}
-                    className="rounded-md bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white px-3 py-1.5"
+                    className="rounded-md bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-on-accent px-3 py-1.5"
                   >
                     Open HTML
                   </button>
@@ -389,7 +389,7 @@ export default function BulkTestsPage() {
 
         {/* Generation progress */}
         {genProgress && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+          <section className="bg-surface border border-slate-200 rounded-xl p-5 mb-6">
             <h2 className="text-base font-semibold text-slate-900 mb-3 flex items-center gap-2">
               Generation
               {genRunning && <button onClick={() => abortRun('generation')} className="ml-auto text-xs rounded-md border border-slate-300 px-2 py-1 hover:bg-slate-50">Abort</button>}
@@ -416,7 +416,7 @@ export default function BulkTestsPage() {
 
         {/* Validation progress + per-testcase grid */}
         {valProgress && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+          <section className="bg-surface border border-slate-200 rounded-xl p-5 mb-6">
             <h2 className="text-base font-semibold text-slate-900 mb-3 flex items-center gap-2">
               API validation
               {valRunning && <button onClick={() => abortRun('validation')} className="ml-auto text-xs rounded-md border border-slate-300 px-2 py-1 hover:bg-slate-50">Abort</button>}
@@ -433,9 +433,9 @@ export default function BulkTestsPage() {
               <>
                 <div className="flex items-center gap-2 mt-4 mb-2 text-xs">
                   <span className="text-slate-500">Filter category:</span>
-                  <button onClick={() => setCatFilter('all')} className={`px-2 py-0.5 rounded ${catFilter === 'all' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-700'}`}>all</button>
+                  <button onClick={() => setCatFilter('all')} className={`px-2 py-0.5 rounded ${catFilter === 'all' ? 'bg-slate-800 text-on-accent' : 'bg-slate-100 text-slate-700'}`}>all</button>
                   {categories.map(c => (
-                    <button key={c} onClick={() => setCatFilter(c)} className={`px-2 py-0.5 rounded ${catFilter === c ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-700'}`}>{c}</button>
+                    <button key={c} onClick={() => setCatFilter(c)} className={`px-2 py-0.5 rounded ${catFilter === c ? 'bg-slate-800 text-on-accent' : 'bg-slate-100 text-slate-700'}`}>{c}</button>
                   ))}
                 </div>
                 <div className="overflow-x-auto border border-slate-200 rounded-md">
@@ -506,7 +506,7 @@ export default function BulkTestsPage() {
         )}
         {/* UI validation grid */}
         {uiProgress && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+          <section className="bg-surface border border-slate-200 rounded-xl p-5 mb-6">
             <h2 className="text-base font-semibold text-slate-900 mb-3 flex items-center gap-2">
               UI validation
               {uiRunning && <button onClick={() => abortRun('validation')} className="ml-auto text-xs rounded-md border border-slate-300 px-2 py-1 hover:bg-slate-50">Abort</button>}
@@ -563,7 +563,7 @@ export default function BulkTestsPage() {
         )}
         {/* Execution grid — actual on-box runs with ue.cfg + failure-trace evidence */}
         {execProgress && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+          <section className="bg-surface border border-slate-200 rounded-xl p-5 mb-6">
             <h2 className="text-base font-semibold text-slate-900 mb-3 flex items-center gap-2">
               Execution
               <span className="text-xs text-slate-500 font-normal">— per testcase: trigger → ue.cfg → export → on-fail screen/ots.log capture</span>

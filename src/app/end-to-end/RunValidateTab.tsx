@@ -282,7 +282,7 @@ export function RunValidateTab() {
               <select
                 value={systemId}
                 onChange={(e) => { setSystemId(e.target.value); setTestcaseId(''); }}
-                className="w-full md:w-[420px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-white text-slate-700"
+                className="w-full md:w-[420px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-surface text-slate-700"
               >
                 {systems.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.host}) — {s.type}</option>)}
               </select>
@@ -307,7 +307,7 @@ export function RunValidateTab() {
               <div className="relative w-full md:w-[420px]">
                 <Search className="h-3.5 w-3.5 absolute left-2.5 top-2.5 text-slate-400 pointer-events-none" />
                 <input
-                  className="w-full pl-8 pr-3 h-8 text-xs rounded-md border border-slate-300 bg-white text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-300"
+                  className="w-full pl-8 pr-3 h-8 text-xs rounded-md border border-slate-300 bg-surface text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-300"
                   placeholder="Search testcases by id / name…"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
@@ -320,7 +320,7 @@ export function RunValidateTab() {
               ) : !testcases || testcases.length === 0 ? (
                 <div className="text-xs text-slate-500 bg-slate-100 border border-slate-200 rounded px-3 py-2">No testcases on this system{search ? ` match "${search}"` : ''}.</div>
               ) : (
-                <div className="rounded-lg border border-slate-200 bg-white max-h-72 overflow-y-auto">
+                <div className="rounded-lg border border-slate-200 bg-surface max-h-72 overflow-y-auto">
                   <ul className="divide-y divide-slate-100">
                     {testcases.slice(0, 100).map((t) => (
                       <li key={t.id}>
@@ -388,7 +388,7 @@ export function RunValidateTab() {
             <Button
               onClick={startRun}
               disabled={running || !systemId || (pickMode === 'list' && !testcaseId)}
-              className="bg-primary-600 hover:bg-primary-700 text-white"
+              className="bg-primary-600 hover:bg-primary-700 text-on-accent"
             >
               {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
               <span className="ml-1.5">{running ? 'Running…' : 'Validate'}</span>
@@ -477,7 +477,7 @@ export function RunValidateTab() {
             ) : null}
 
             {/* Per-check rows */}
-            <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-white">
+            <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-surface">
               {(status.checks ?? []).map((c) => <CheckRow key={c.id} row={c} />)}
             </ul>
           </CardBody>
@@ -501,7 +501,7 @@ export function RunValidateTab() {
           ) : pastRuns.length === 0 ? (
             <div className="text-xs text-slate-500">No past validation runs yet. They'll appear here once a run finishes.</div>
           ) : (
-            <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-white">
+            <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-surface">
               {pastRuns.slice(0, 20).map((r) => (
                 <li key={r.runId}>
                   <button
@@ -535,7 +535,7 @@ export function RunValidateTab() {
                               {expandedReport.executionId ? ` · executionId=${expandedReport.executionId}` : ''}
                             </div>
                           ) : null}
-                          <ul className="divide-y divide-slate-100 border border-slate-200 rounded bg-white">
+                          <ul className="divide-y divide-slate-100 border border-slate-200 rounded bg-surface">
                             {(expandedReport.results ?? []).map((c) => <CheckRow key={c.id} row={c} />)}
                           </ul>
                         </div>
@@ -554,7 +554,7 @@ export function RunValidateTab() {
 
 function CountTile({ label, value, tone }: { label: string; value: number; tone: 'slate' | 'emerald' | 'red' | 'amber' }) {
   const tones: Record<typeof tone, string> = {
-    slate:   'border-slate-200 bg-white text-slate-900',
+    slate:   'border-slate-200 bg-surface text-slate-900',
     emerald: 'border-emerald-200 bg-emerald-50 text-emerald-900',
     red:     'border-red-200 bg-red-50 text-red-700',
     amber:   'border-amber-200 bg-amber-50 text-amber-800',
@@ -600,10 +600,10 @@ function CheckRow({ row }: { row: CheckRow }) {
             <span className="font-medium text-slate-900">{row.name}</span>
             <span className={'text-[9px] px-1.5 rounded ' + phaseTone[row.phase]}>{row.phase}</span>
             <span className={'text-[9px] px-1.5 rounded border ' + sevTone[row.severity]}>{row.severity}</span>
-            {row.status === 'pass' ? <span className="text-[10px] px-1.5 rounded bg-emerald-600 text-white font-semibold">PASS</span> : null}
-            {row.status === 'fail' ? <span className="text-[10px] px-1.5 rounded bg-red-600 text-white font-semibold">FAIL</span> : null}
-            {row.status === 'skip' ? <span className="text-[10px] px-1.5 rounded bg-amber-500 text-white font-semibold">SKIP</span> : null}
-            {row.status === 'running' ? <span className="text-[10px] px-1.5 rounded bg-primary-600 text-white font-semibold animate-pulse">RUNNING</span> : null}
+            {row.status === 'pass' ? <span className="text-[10px] px-1.5 rounded bg-emerald-600 text-on-accent font-semibold">PASS</span> : null}
+            {row.status === 'fail' ? <span className="text-[10px] px-1.5 rounded bg-red-600 text-on-accent font-semibold">FAIL</span> : null}
+            {row.status === 'skip' ? <span className="text-[10px] px-1.5 rounded bg-amber-500 text-on-accent font-semibold">SKIP</span> : null}
+            {row.status === 'running' ? <span className="text-[10px] px-1.5 rounded bg-primary-600 text-on-accent font-semibold animate-pulse">RUNNING</span> : null}
           </div>
           <div className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">{row.description}</div>
           {row.detail ? <div className="text-[11px] text-slate-500 mt-0.5 break-all">↳ {row.detail}</div> : null}

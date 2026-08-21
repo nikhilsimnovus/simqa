@@ -126,7 +126,7 @@ export default function RunsPage() {
         </header>
 
         {/* Controls */}
-        <section className="bg-white border border-slate-200 rounded-xl p-4 mb-4 flex flex-wrap items-end gap-3">
+        <section className="bg-surface border border-slate-200 rounded-xl p-4 mb-4 flex flex-wrap items-end gap-3">
           <label className="flex flex-col">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Surface</span>
             <select value={surfaceFilter} onChange={e => setSurfaceFilter(e.target.value)} className="border border-slate-300 rounded-md px-3 py-1.5 text-sm min-w-[180px]">
@@ -152,7 +152,7 @@ export default function RunsPage() {
         </section>
 
         {/* Table */}
-        <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <section className="bg-surface border border-slate-200 rounded-xl overflow-hidden">
           {error && <div className="m-3 p-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded">{error}</div>}
           {entries == null ? (
             <div className="p-6 text-sm text-slate-500">Loading…</div>

@@ -134,8 +134,8 @@ function FilterChips({ filter, setFilter }: { filter: string; setFilter: (s: any
           className={
             'px-3 h-8 text-xs rounded-full border transition-colors ' +
             (filter === c.k
-              ? 'bg-primary-700 text-white border-primary-700'
-              : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50')
+              ? 'bg-primary-700 text-on-accent border-primary-700'
+              : 'bg-surface text-slate-700 border-slate-300 hover:bg-slate-50')
           }
         >
           {c.label}

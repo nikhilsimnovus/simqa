@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import { Sidebar } from '@/components/Sidebar';
+import { THEME_BOOT_SCRIPT } from '@/components/ThemeToggle';
 import { loadInventory, isUesimLike } from '@/lib/inventory';
 import { getSimqaVersion } from '@/lib/version';
 
@@ -17,11 +18,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   // src/lib/version.ts for discovery rules.
   const ver = getSimqaVersion();
   return (
-    <html lang="en">
+    // suppressHydrationWarning: the boot script below stamps data-theme on
+    // <html> before React hydrates, so the server markup deliberately
+    // differs from the client DOM on this one attribute.
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
+      </head>
       <body>
-        <div className="min-h-screen flex">
+        <div className="min-h-screen flex bg-page">
           <Sidebar version={ver.version} versionSource={ver.source} />
-          <div className="flex-1 flex flex-col" data-uesim-host={uesim?.host ?? ''}>
+          <div className="flex-1 flex flex-col min-w-0" data-uesim-host={uesim?.host ?? ''}>
             {children}
           </div>
         </div>

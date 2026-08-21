@@ -10,6 +10,7 @@ import {
   PanelLeftClose, PanelLeftOpen, RefreshCw, Globe,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { ThemeToggle } from '@/components/ThemeToggle';
 
 // ─── Navigation model ─────────────────────────────────────────────────────
 //
@@ -223,21 +224,21 @@ export function Sidebar({ version, versionSource }: SidebarProps = {}) {
   return (
     <aside
       className={cn(
-        'hidden md:flex shrink-0 flex-col border-r border-slate-200 bg-white transition-[width] duration-150 ease-out',
+        'hidden md:flex shrink-0 flex-col border-r border-line bg-surface transition-[width] duration-150 ease-out',
         rail ? 'md:w-[64px]' : 'md:w-60',
       )}
       // Avoid hydration flicker — hide until LS values are read.
       style={{ visibility: hydrated ? 'visible' : 'hidden' }}
     >
       {/* Brand row */}
-      <div className={cn('h-14 flex items-center border-b border-slate-200', rail ? 'justify-center px-2' : 'gap-2 px-4')}>
+      <div className={cn('h-14 flex items-center border-b border-line', rail ? 'justify-center px-2' : 'gap-2 px-4')}>
         <Link href="/" className="shrink-0" title="QA Ka BAAP — home">
           <QaKaBaapLogo size={32} />
         </Link>
         {!rail ? (
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold tracking-tight text-slate-900">QA Ka BAAP</div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-500">Father of QA</div>
+            <div className="text-sm font-semibold tracking-tight text-slate-900">QA Ka <span className="text-primary-700">BAAP</span></div>
+            <div className="font-mono text-[10px] uppercase tracking-label text-slate-500">Father of QA</div>
           </div>
         ) : null}
         {!rail && updateAvailable ? (
@@ -271,16 +272,6 @@ export function Sidebar({ version, versionSource }: SidebarProps = {}) {
         ) : null}
       </div>
 
-      {/* Build version — only in full mode (rail has no room) */}
-      {!rail && version ? (
-        <div
-          className="px-4 py-1.5 text-[10px] font-mono text-slate-500 bg-slate-50 border-b border-slate-100 truncate"
-          title={`build version (source: ${versionSource ?? 'unknown'})`}
-        >
-          build <span className="text-slate-700">{version}</span>
-        </div>
-      ) : null}
-
       {/* Sections */}
       <nav className={cn('flex-1 overflow-y-auto', rail ? 'p-2 space-y-3' : 'p-2 space-y-1')}>
         {rail ? (
@@ -300,21 +291,34 @@ export function Sidebar({ version, versionSource }: SidebarProps = {}) {
       </nav>
 
       {/* Footer */}
-      <div className={cn('border-t border-slate-200', rail ? 'p-2' : 'p-3')}>
+      <div className={cn('border-t border-line', rail ? 'p-2' : 'p-3')}>
         {rail ? (
-          <button
-            type="button"
-            onClick={toggleRail}
-            className="w-full flex items-center justify-center rounded-md p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100"
-            title="Expand sidebar"
-            aria-label="Expand sidebar"
-          >
-            <PanelLeftOpen className="h-4 w-4" />
-          </button>
+          <div className="flex flex-col items-center gap-2">
+            <ThemeToggle compact />
+            <button
+              type="button"
+              onClick={toggleRail}
+              className="w-full flex items-center justify-center rounded-md p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100"
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+            </button>
+          </div>
         ) : (
-          <div className="text-[11px] text-slate-500 flex items-center justify-between gap-2">
-            <span>v0.1.0</span>
-            {version ? <span className="font-mono text-[10px] text-slate-400 truncate" title={`source: ${versionSource ?? 'unknown'}`}>{version}</span> : null}
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0 text-[11px] text-slate-500">
+              <span>v0.1.0</span>
+              {version ? (
+                <span
+                  className="ml-2 font-mono text-[10px] text-slate-400"
+                  title={`build ${version} (source: ${versionSource ?? 'unknown'})`}
+                >
+                  {version}
+                </span>
+              ) : null}
+            </div>
+            <ThemeToggle compact />
           </div>
         )}
       </div>
@@ -360,7 +364,7 @@ function Section({
                 className={cn(
                   'group flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
                   active
-                    ? 'bg-primary-50 text-primary-700 font-medium ring-1 ring-primary-100'
+                    ? 'bg-primary-50 text-primary-700 font-medium ring-1 ring-primary-500/20'
                     : 'text-slate-700 hover:bg-slate-100',
                 )}
               >
@@ -387,7 +391,7 @@ function RailNav({ sections, isActive }: { sections: NavSection[]; isActive: (hr
       {grouped.map((g, idx) => {
         if (g.type === 'divider') {
           if (g.hideFirst) return null;
-          return <div key={g.id} className="h-px bg-slate-200 my-2 mx-2" />;
+          return <div key={g.id} className="h-px bg-line my-2 mx-2" />;
         }
         const Icon = g.item.icon;
         const active = isActive(g.item.href);
@@ -399,13 +403,13 @@ function RailNav({ sections, isActive }: { sections: NavSection[]; isActive: (hr
             className={cn(
               'group flex items-center justify-center rounded-md p-2 transition-colors relative',
               active
-                ? 'bg-primary-50 text-primary-700 ring-1 ring-primary-100'
+                ? 'bg-primary-50 text-primary-700 ring-1 ring-primary-500/20'
                 : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900',
             )}
           >
             <Icon className="h-5 w-5" strokeWidth={2} />
             {/* Floating tooltip on hover (no JS library — CSS-only) */}
-            <span className="pointer-events-none absolute left-full ml-2 z-50 whitespace-nowrap rounded bg-slate-900 text-white text-[11px] px-2 py-1 opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all">
+            <span className="pointer-events-none absolute left-full ml-2 z-50 whitespace-nowrap rounded-md bg-slate-900 text-on-accent text-[11px] px-2 py-1 shadow-glow opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all">
               {g.item.label}
             </span>
           </Link>

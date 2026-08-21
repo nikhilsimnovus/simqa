@@ -32,15 +32,15 @@ export default async function DashboardPage() {
         subtitle="Overview of the test environment and recent activity"
         uesimHost={apiOpts?.host}
       />
-      <main className="p-6 space-y-6">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <main className="p-5 space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <Stat label="UESIM"      value={apiOpts?.host ?? '—'}     hint={reachable ? 'reachable' : 'not configured'} />
           <Stat label="Testcases"  value={tcs.total ?? '—'}          hint={apiOpts ? 'on the box' : 'add a UESIM in Inventory'} />
           <Stat label="Simulators" value={sims.items?.length ?? 0}  hint="registered slots" />
           <Stat label="Inventory"  value={inv.systems.length}        hint={`${inv.profiles.length} topology profile${inv.profiles.length === 1 ? '' : 's'}`} />
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <Card>
             <CardHeader className="flex items-center justify-between">
               <CardTitle>Recent runs</CardTitle>
@@ -48,12 +48,12 @@ export default async function DashboardPage() {
             </CardHeader>
             <CardBody className="p-0">
               {runs.length === 0 ? (
-                <div className="p-5 text-sm text-slate-500">No runs yet. Trigger one from the Test Cases page.</div>
+                <div className="p-4 text-[13px] text-slate-500">No runs yet. Trigger one from the Test Cases page.</div>
               ) : (
-                <ul className="divide-y divide-slate-100">
+                <ul className="divide-y divide-line">
                   {runs.map((r) => (
                     <li key={r.id}>
-                      <Link href={`/runs/${r.id}`} className="block px-5 py-3 hover:bg-slate-50">
+                      <Link href={`/runs/${r.id}`} className="block px-4 py-2.5 hover:bg-slate-50">
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
                             <div className="text-sm font-medium text-slate-900 truncate">{r.testcaseId}</div>
@@ -76,11 +76,11 @@ export default async function DashboardPage() {
             </CardHeader>
             <CardBody className="p-0">
               {(!apiOpts || (sims.items?.length ?? 0) === 0) ? (
-                <div className="p-5 text-sm text-slate-500">{apiOpts ? 'No simulators registered on the box.' : 'Add a UESIM system to inventory.yaml.'}</div>
+                <div className="p-4 text-[13px] text-slate-500">{apiOpts ? 'No simulators registered on the box.' : 'Add a UESIM system to inventory.yaml.'}</div>
               ) : (
-                <ul className="divide-y divide-slate-100">
+                <ul className="divide-y divide-line">
                   {sims.items.map((s: any) => (
-                    <li key={s.id} className="px-5 py-3">
+                    <li key={s.id} className="px-4 py-2.5">
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <div className="text-sm font-medium text-slate-900">{s.name}</div>

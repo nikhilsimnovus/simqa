@@ -147,7 +147,7 @@ function CopyBtn({ text, label }: { text: string; label?: string }) {
   return (
     <button
       onClick={onClick}
-      className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+      className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-surface px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 transition-colors"
       title={`Copy ${label ?? 'command'}`}
     >
       {copied ? <ClipboardCheck className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
@@ -601,7 +601,7 @@ export default function ValidatePage() {
                   <select
                     value={target}
                     onChange={(e) => setTarget(e.target.value)}
-                    className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                    className="h-9 w-full rounded-md border border-slate-300 bg-surface px-3 text-sm text-slate-900"
                   >
                     {simnovators.map((s) => (
                       <option key={s.id} value={s.id}>{s.name || s.id} ({s.host})</option>
@@ -626,7 +626,7 @@ export default function ValidatePage() {
                   <select
                     value={sampleId}
                     onChange={(e) => setSampleId(e.target.value)}
-                    className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                    className="h-9 w-full rounded-md border border-slate-300 bg-surface px-3 text-sm text-slate-900"
                   >
                     <option value="">— pick —</option>
                     {tcs.map((t) => <option key={t.id} value={t.id}>{t.name || t.id}</option>)}
@@ -675,7 +675,7 @@ export default function ValidatePage() {
                       ] as const).map((m) => (
                         <label
                           key={m.id}
-                          className={`flex gap-3 cursor-pointer rounded-lg border px-3 py-2 transition-colors ${sourceMode === m.id ? 'border-primary-500 bg-primary-50/40 ring-1 ring-primary-200' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+                          className={`flex gap-3 cursor-pointer rounded-lg border px-3 py-2 transition-colors ${sourceMode === m.id ? 'border-primary-500 bg-primary-50/40 ring-1 ring-primary-200' : 'border-slate-200 bg-surface hover:bg-slate-50'}`}
                         >
                           <input
                             type="radio"
@@ -798,7 +798,7 @@ export default function ValidatePage() {
                           vmFiles.length === 0 ? (
                             <div className="text-[12px] text-slate-600 italic">No <span className="font-mono">.tar.gz</span> / <span className="font-mono">.tgz</span> files found in those directories.</div>
                           ) : (
-                            <div className="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 max-h-72 overflow-auto">
+                            <div className="rounded-lg border border-slate-200 bg-surface divide-y divide-slate-100 max-h-72 overflow-auto">
                               {vmFiles.map((f) => {
                                 const sizeMB = (f.size / (1024 * 1024)).toFixed(1);
                                 const sizeGB = (f.size / (1024 * 1024 * 1024)).toFixed(2);
@@ -869,7 +869,7 @@ export default function ValidatePage() {
                         // dropdown shows the right entry as selected.
                         const matchedSystemId = candidates.find((s) => s.host === ipValue)?.id ?? '';
                         return (
-                          <div key={f.key} className={`rounded-lg border bg-white px-3 py-2 ${enabled ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
+                          <div key={f.key} className={`rounded-lg border bg-surface px-3 py-2 ${enabled ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
                             <label className="flex items-center justify-between gap-2 text-xs">
                               <span className="flex items-center gap-2">
                                 <input
@@ -908,7 +908,7 @@ export default function ValidatePage() {
                                       }));
                                     }
                                   }}
-                                  className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-[12px] text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
+                                  className="h-8 w-full rounded-md border border-slate-300 bg-surface px-2 text-[12px] text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
                                 >
                                   <option value="">— custom IP below —</option>
                                   {candidates.length > 0 ? (
@@ -936,7 +936,7 @@ export default function ValidatePage() {
                                     value={userValue}
                                     onChange={(e) => setHostUser((o) => ({ ...o, [f.key]: e.target.value }))}
                                     placeholder={INSTALL_USER}
-                                    className="w-24 h-7 rounded-md border border-slate-300 bg-white px-2 text-[12px] font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
+                                    className="w-24 h-7 rounded-md border border-slate-300 bg-surface px-2 text-[12px] font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
                                   />
                                   <span className="text-[11px] text-slate-500 font-mono">@</span>
                                 </>
@@ -945,7 +945,7 @@ export default function ValidatePage() {
                                 value={ipValue}
                                 onChange={(e) => setHostIp((o) => ({ ...o, [f.key]: e.target.value }))}
                                 placeholder={f.ipOnly ? 'IP address' : (matchedSystemId ? '' : '192.168.x.x')}
-                                className="flex-1 h-7 rounded-md border border-slate-300 bg-white px-2 text-[12px] font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
+                                className="flex-1 h-7 rounded-md border border-slate-300 bg-surface px-2 text-[12px] font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
                               />
                             </div>
                           </div>
@@ -965,7 +965,7 @@ export default function ValidatePage() {
                           if (v === '__none__') { setTimezone(''); return; }
                           setTimezone(v);
                         }}
-                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                        className="h-9 w-full rounded-md border border-slate-300 bg-surface px-3 text-sm text-slate-900"
                       >
                         <option value="__none__">— none —</option>
                         {TIMEZONES.map((tz) => (
@@ -1003,7 +1003,7 @@ export default function ValidatePage() {
                     <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">Skip options</div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
                       {SKIP_FLAGS.map((s) => (
-                        <label key={s.key} className={`flex items-center gap-2 rounded-md border bg-white px-2.5 py-1.5 text-[11px] cursor-pointer ${skipFlags[s.key] ? 'border-orange-300 bg-orange-50' : 'border-slate-200'}`}>
+                        <label key={s.key} className={`flex items-center gap-2 rounded-md border bg-surface px-2.5 py-1.5 text-[11px] cursor-pointer ${skipFlags[s.key] ? 'border-orange-300 bg-orange-50' : 'border-slate-200'}`}>
                           <input
                             type="checkbox"
                             checked={!!skipFlags[s.key]}
@@ -1076,7 +1076,7 @@ export default function ValidatePage() {
                       <a
                         href={`/api/build-log?buildId=${encodeURIComponent(installBuildId)}&file=install.log`}
                         target="_blank" rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-surface px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
                         title="Download the full timestamped transcript"
                       >
                         <Download className="h-3 w-3" /> install.log
@@ -1084,7 +1084,7 @@ export default function ValidatePage() {
                       <a
                         href={`/api/build-log?buildId=${encodeURIComponent(installBuildId)}&file=events.ndjson`}
                         target="_blank" rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-surface px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
                         title="Download every event as raw JSON for replay / triage"
                       >
                         <Download className="h-3 w-3" /> events.ndjson
@@ -1150,13 +1150,13 @@ export default function ValidatePage() {
                       <a
                         href={cockpitTerminalUrl}
                         target="_blank" rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-md bg-primary-700 hover:bg-primary-800 px-2.5 py-1 text-[11px] font-medium text-white transition-colors"
+                        className="inline-flex items-center gap-1.5 rounded-md bg-primary-700 hover:bg-primary-800 px-2.5 py-1 text-[11px] font-medium text-on-accent transition-colors"
                       >
                         <Terminal className="h-3.5 w-3.5" /> Open Cockpit Terminal
                         <ExternalLink className="h-3 w-3 opacity-80" />
                       </a>
                     </div>
-                    <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+                    <div className="rounded-lg border border-slate-200 bg-surface p-3 space-y-2">
                       <div className="text-[11px] text-slate-600">Log in with:</div>
                       <div className="grid grid-cols-2 gap-2">
                         <div className="rounded-md bg-slate-50 border border-slate-200 px-2.5 py-1.5 flex items-center justify-between gap-2">

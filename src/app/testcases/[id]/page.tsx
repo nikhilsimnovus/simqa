@@ -123,8 +123,8 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
                     className={
                       'px-3 h-8 text-xs rounded-md border ' +
                       (activeFile === name
-                        ? 'bg-slate-900 text-white border-slate-900'
-                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50')
+                        ? 'bg-slate-900 text-on-accent border-slate-900'
+                        : 'bg-surface text-slate-700 border-slate-300 hover:bg-slate-50')
                     }
                   >
                     <span className="inline-flex items-center gap-1.5">
