@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle,
-  ShieldCheck, Beaker, MousePointerClick, Info, Layers, Wrench, Database,
+  ShieldCheck, Beaker, MousePointerClick, Info, Wrench, Database,
   Rocket, FileCheck2, Activity, ChevronDown, ChevronRight, Boxes,
   PanelLeftClose, PanelLeftOpen, RefreshCw, Globe,
 } from 'lucide-react';
@@ -73,7 +73,9 @@ const SECTIONS: NavSection[] = [
     title: 'Advanced',
     defaultCollapsed: true,
     items: [
-      { href: '/end-to-end', label: 'Topology Setups', icon: Layers },
+      // Topology Setups used to live here and edited the same profiles[] as
+      // Systems Mgmt, with contradicting validation. It is now the Topology
+      // tab on /inventory; /end-to-end redirects there.
       { href: '/automation', label: 'Generate + Push', icon: PlayCircle },
     ],
   },

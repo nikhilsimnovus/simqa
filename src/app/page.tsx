@@ -1,7 +1,19 @@
-// Dashboard. Server-rendered: pulls live from the UESIM box on each request.
+// Dashboard.
+//
+// Performance shape matters here: this page talks to the UESIM box, which in
+// a lab is routinely switched off. It used to `await` those calls before
+// returning any HTML, so an unreachable box held the whole page hostage for
+// the length of a TCP connect timeout.
+//
+// Now the shell renders immediately and each live section streams in under
+// its own <Suspense>. Local data (run history, inventory counts) is on disk
+// and renders in the first flush; only the network-dependent cards show a
+// skeleton. Worst case on a dead box is a slightly delayed card, never a
+// delayed page.
 
+import { Suspense, cache } from 'react';
 import { Header } from '@/components/Header';
-import { Card, CardBody, CardHeader, CardTitle, Stat, Badge } from '@/components/ui';
+import { Card, CardBody, CardHeader, CardTitle, Stat, Badge, Kicker } from '@/components/ui';
 import { loadInventory, uesimApiOptsFromInventory } from '@/lib/inventory';
 import { listTestcases, listSimulators } from '@/lib/uesimClient';
 import { listRuns } from '@/lib/runStore';
@@ -13,17 +25,27 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   try { return await fn(); } catch { return fallback; }
 }
 
-export default async function DashboardPage() {
+/**
+ * One network round to the box per request, shared by every card that needs
+ * it. React's `cache` dedupes across components in the same render, so the
+ * stats row and the simulators card don't each pay for a login.
+ */
+const getLive = cache(async () => {
   const inv = loadInventory();
   const apiOpts = uesimApiOptsFromInventory(inv);
-
-  const [tcs, sims, runs] = await Promise.all([
-    apiOpts ? safe(() => listTestcases(apiOpts, 1, 0), { items: [], total: 0 }) : Promise.resolve({ items: [], total: 0 }),
-    apiOpts ? safe(() => listSimulators(apiOpts), { items: [] as any[] }) : Promise.resolve({ items: [] as any[] }),
-    Promise.resolve(listRuns(5)),
+  if (!apiOpts) return { apiOpts: null, tcs: { items: [], total: 0 }, sims: { items: [] as any[] } };
+  const [tcs, sims] = await Promise.all([
+    safe(() => listTestcases(apiOpts, 1, 0), { items: [], total: 0 }),
+    safe(() => listSimulators(apiOpts), { items: [] as any[] }),
   ]);
+  return { apiOpts, tcs, sims };
+});
 
-  const reachable = !!apiOpts && (sims.items?.length ?? 0) > 0;
+export default function DashboardPage() {
+  // Disk-only — cheap enough to do in the synchronous shell.
+  const inv = loadInventory();
+  const apiOpts = uesimApiOptsFromInventory(inv);
+  const runs = listRuns(5);
 
   return (
     <>
@@ -33,14 +55,12 @@ export default async function DashboardPage() {
         uesimHost={apiOpts?.host}
       />
       <main className="p-5 space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <Stat label="UESIM"      value={apiOpts?.host ?? '—'}     hint={reachable ? 'reachable' : 'not configured'} />
-          <Stat label="Testcases"  value={tcs.total ?? '—'}          hint={apiOpts ? 'on the box' : 'add a UESIM in Inventory'} />
-          <Stat label="Simulators" value={sims.items?.length ?? 0}  hint="registered slots" />
-          <Stat label="Inventory"  value={inv.systems.length}        hint={`${inv.profiles.length} topology profile${inv.profiles.length === 1 ? '' : 's'}`} />
-        </div>
+        <Suspense fallback={<StatsSkeleton host={apiOpts?.host} inv={inv} />}>
+          <StatsRow inv={inv} />
+        </Suspense>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          {/* Local data — no skeleton needed, it is in the first flush. */}
           <Card>
             <CardHeader className="flex items-center justify-between">
               <CardTitle>Recent runs</CardTitle>
@@ -75,28 +95,86 @@ export default async function DashboardPage() {
               <Link href="/inventory" className="text-xs text-primary-700 hover:underline">Manage inventory</Link>
             </CardHeader>
             <CardBody className="p-0">
-              {(!apiOpts || (sims.items?.length ?? 0) === 0) ? (
-                <div className="p-4 text-[13px] text-slate-500">{apiOpts ? 'No simulators registered on the box.' : 'Add a UESIM system to inventory.yaml.'}</div>
-              ) : (
-                <ul className="divide-y divide-line">
-                  {sims.items.map((s: any) => (
-                    <li key={s.id} className="px-4 py-2.5">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-medium text-slate-900">{s.name}</div>
-                          <div className="text-xs text-slate-500">id={s.id} · type={s.type} · {(s as any).nodes?.ipaddress ?? ''}</div>
-                        </div>
-                        <SimulatorBadge connectivity={s.connectivity} stability={s.stability} />
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <Suspense fallback={<div className="p-4 text-[13px] text-slate-500">Checking the box…</div>}>
+                <SimulatorList />
+              </Suspense>
             </CardBody>
           </Card>
         </div>
       </main>
     </>
+  );
+}
+
+// ───────────────────── Live (streamed) sections ─────────────────────
+
+async function StatsRow({ inv }: { inv: ReturnType<typeof loadInventory> }) {
+  const { apiOpts, tcs, sims } = await getLive();
+  const reachable = !!apiOpts && (sims.items?.length ?? 0) > 0;
+  return (
+    <StatsGrid>
+      <Stat label="UESIM"      value={apiOpts?.host ?? '—'}    hint={reachable ? 'reachable' : 'not reachable'} />
+      <Stat label="Testcases"  value={tcs.total ?? '—'}         hint={apiOpts ? 'on the box' : 'add a UESIM in Systems'} />
+      <Stat label="Simulators" value={sims.items?.length ?? 0} hint="registered slots" />
+      <Stat label="Inventory"  value={inv.systems.length}       hint={`${inv.profiles.length} topology profile${inv.profiles.length === 1 ? '' : 's'}`} />
+    </StatsGrid>
+  );
+}
+
+async function SimulatorList() {
+  const { apiOpts, sims } = await getLive();
+  if (!apiOpts || (sims.items?.length ?? 0) === 0) {
+    return (
+      <div className="p-4 text-[13px] text-slate-500">
+        {apiOpts ? 'No simulators registered on the box.' : 'Add a UESIM system in Systems Management.'}
+      </div>
+    );
+  }
+  return (
+    <ul className="divide-y divide-line">
+      {sims.items.map((s: any) => (
+        <li key={s.id} className="px-4 py-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium text-slate-900">{s.name}</div>
+              <div className="text-xs text-slate-500">id={s.id} · type={s.type} · {(s as any).nodes?.ipaddress ?? ''}</div>
+            </div>
+            <SimulatorBadge connectivity={s.connectivity} stability={s.stability} />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// ───────────────────── Shell bits ─────────────────────
+
+function StatsGrid({ children }: { children: React.ReactNode }) {
+  return <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">{children}</div>;
+}
+
+/** Same geometry as the real row, so streaming in causes no layout shift. */
+function StatsSkeleton({ host, inv }: { host?: string; inv: ReturnType<typeof loadInventory> }) {
+  return (
+    <StatsGrid>
+      <Stat label="UESIM"      value={host ?? '—'} hint="checking…" />
+      <PendingStat label="Testcases"  hint="on the box" />
+      <PendingStat label="Simulators" hint="registered slots" />
+      {/* Local — known without the network, so show the real number now. */}
+      <Stat label="Inventory" value={inv.systems.length} hint={`${inv.profiles.length} topology profile${inv.profiles.length === 1 ? '' : 's'}`} />
+    </StatsGrid>
+  );
+}
+
+function PendingStat({ label, hint }: { label: string; hint: string }) {
+  return (
+    <Card accent>
+      <CardBody>
+        <Kicker>{label}</Kicker>
+        <div className="num mt-1.5 text-lg font-bold leading-tight text-slate-300">—</div>
+        <div className="mt-1 text-[11px] font-light text-slate-500">{hint}</div>
+      </CardBody>
+    </Card>
   );
 }
 

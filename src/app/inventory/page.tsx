@@ -1,9 +1,28 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+// Systems Management — the single place lab hardware is registered and wired
+// into topologies.
+//
+// Layout rule: a system row shows NAME and HOST/IP only. Everything else —
+// id, type, REST credentials, Cockpit, SSH — lives behind that row's Advanced
+// disclosure. Most visits are "which boxes do I have", not "let me re-enter an
+// SSH key", so the credential blocks stay collapsed until asked for.
+//
+// The Topology tab absorbed the old /end-to-end "Topology Setups" screen. Both
+// used to edit this same profiles[] array with contradicting validation; the
+// rules now live once, in lib/topology.ts.
+
+import { useEffect, useMemo, useState, useCallback, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Header } from '@/components/Header';
-import { Card, CardBody, CardHeader, CardTitle, Button, Input, Field, Badge } from '@/components/ui';
-import { Plus, Trash2, Server, Radio, Cpu, Network, Globe, Database, ShieldCheck, Layers } from 'lucide-react';
+import { Button, Input, Field, Kicker } from '@/components/ui';
+import {
+  Plus, Trash2, Server, ChevronRight, Layers, AlertTriangle, Check,
+} from 'lucide-react';
+import { cn } from '@/lib/cn';
+import {
+  SYSTEM_TYPES, typeMeta, isUesimCapable, ROLES, profileIssues,
+} from '@/lib/topology';
 
 interface InventorySystem {
   id: string;
@@ -26,14 +45,11 @@ interface InventorySystem {
   notes?: string;
 }
 
-const COCKPIT_DEFAULT_USER = 'simnovus';
-const COCKPIT_DEFAULT_PASSWORD = 'admin@123';
-const COCKPIT_DEFAULT_PORT = 9090;
-
 interface TopologyProfile {
   id: string;
   name: string;
-  uesim: string;
+  simnovator?: string;
+  uesim?: string;
   callbox?: string;
   enb?: string;
   gnb?: string;
@@ -43,464 +59,521 @@ interface TopologyProfile {
   notes?: string;
 }
 
-const PROFILE_ROLES = [
-  // The "uesim" role accepts any UESIM-capable box — Simnovator OR generic UESIM.
-  { key: 'uesim',     label: 'UESIM',      types: ['SIMNOVATOR', 'UESIM'],     required: true },
-  { key: 'callbox',   label: 'Callbox',    types: ['CALLBOX'],                  required: false },
-  { key: 'enb',       label: 'eNB',        types: ['ENB', 'CALLBOX'],           required: false },
-  { key: 'gnb',       label: 'gNB',        types: ['GNB', 'CALLBOX'],           required: false },
-  { key: 'mme',       label: 'MME',        types: ['MME', 'CALLBOX'],           required: false },
-  { key: 'ims',       label: 'IMS',        types: ['IMS', 'CALLBOX'],           required: false },
-  { key: 'appserver', label: 'App server', types: ['APPSERVER', 'CALLBOX'],     required: false },
-] as const;
+const COCKPIT_DEFAULT_USER = 'simnovus';
+const COCKPIT_DEFAULT_PASSWORD = 'admin@123';
+const COCKPIT_DEFAULT_PORT = 9090;
 
-// Order matters — Simnovator first because it's the default install target for Build Check.
-const SYSTEM_TYPES = ['SIMNOVATOR', 'UESIM', 'CALLBOX', 'ENB', 'GNB', 'MME', 'IMS', 'APPSERVER'];
+const SELECT_CLS =
+  'h-9 w-full rounded-lg border border-line-strong bg-surface px-3 text-sm text-slate-900 ' +
+  'transition-colors focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/25';
 
-const TYPE_META: Record<string, { icon: React.ComponentType<{ className?: string }>; ring: string; bg: string; text: string; label: string }> = {
-  SIMNOVATOR: { icon: ShieldCheck, ring: 'ring-orange-200', bg: 'bg-orange-50',   text: 'text-orange-700',   label: 'Simnovator' },
-  UESIM:      { icon: Cpu,         ring: 'ring-sky-200',    bg: 'bg-sky-50',      text: 'text-sky-700',      label: 'UESIM' },
-  CALLBOX:    { icon: Server,      ring: 'ring-violet-200', bg: 'bg-violet-50',   text: 'text-violet-700',   label: 'Callbox' },
-  ENB:        { icon: Radio,       ring: 'ring-slate-200',  bg: 'bg-slate-50',    text: 'text-slate-700',    label: 'eNB' },
-  GNB:        { icon: Radio,       ring: 'ring-slate-200',  bg: 'bg-slate-50',    text: 'text-slate-700',    label: 'gNB' },
-  MME:        { icon: Network,     ring: 'ring-slate-200',  bg: 'bg-slate-50',    text: 'text-slate-700',    label: 'MME' },
-  IMS:        { icon: Globe,       ring: 'ring-slate-200',  bg: 'bg-slate-50',    text: 'text-slate-700',    label: 'IMS' },
-  APPSERVER:  { icon: Database,    ring: 'ring-slate-200',  bg: 'bg-slate-50',    text: 'text-slate-700',    label: 'App Server' },
-};
-
-function TypeChip({ type }: { type: string }) {
-  const m = TYPE_META[type] ?? TYPE_META.UESIM;
-  const Icon = m.icon;
+/**
+ * useSearchParams() opts the subtree out of static prerendering, so Next
+ * requires a Suspense boundary above it — without one `next build` fails on
+ * this route. The fallback renders the page chrome so the shell is stable.
+ */
+export default function InventoryPage() {
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ${m.bg} ${m.text} ring-1 ${m.ring}`}>
-      <Icon className="h-3.5 w-3.5" />
-      <span className="tracking-wide uppercase">{m.label}</span>
-    </span>
+    <Suspense fallback={
+      <>
+        <Header title="Systems Management" subtitle="Lab boxes and the topologies that wire them together" />
+        <main className="p-5">
+          <div className="rounded-xl border border-line bg-surface p-5 text-sm text-slate-500">Loading…</div>
+        </main>
+      </>
+    }>
+      <InventoryEditor />
+    </Suspense>
   );
 }
 
-const SELECT_CLS =
-  'h-9 w-full rounded-md border border-slate-300 bg-surface px-3 text-sm text-slate-900 ' +
-  'focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400';
+function InventoryEditor() {
+  const params = useSearchParams();
+  const [tab, setTab] = useState<'systems' | 'topology'>(
+    params?.get('tab') === 'topology' ? 'topology' : 'systems',
+  );
 
-export default function InventoryPage() {
   const [systems, setSystems]   = useState<InventorySystem[]>([]);
   const [profiles, setProfiles] = useState<TopologyProfile[]>([]);
+  const [rest, setRest]         = useState<Record<string, unknown>>({});
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
-  const [msg, setMsg]           = useState<string | null>(null);
+  const [dirty, setDirty]       = useState(false);
+  const [msg, setMsg]           = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   useEffect(() => {
     fetch('/api/inventory').then((r) => r.json()).then((d) => {
-      setSystems(d.systems ?? []);
-      setProfiles(d.profiles ?? []);
+      const { systems: sys, profiles: pro, ...others } = d ?? {};
+      setSystems(sys ?? []);
+      setProfiles(pro ?? []);
+      // Anything else in the document (suites, …) is round-tripped untouched
+      // so saving from this screen can't drop a sibling section.
+      setRest(others ?? {});
     }).finally(() => setLoading(false));
   }, []);
 
+  const flash = useCallback((kind: 'ok' | 'err', text: string) => {
+    setMsg({ kind, text });
+    window.setTimeout(() => setMsg(null), 2000);
+  }, []);
+
   async function save() {
-    setSaving(true); setMsg(null);
+    setSaving(true);
     try {
       const r = await fetch('/api/inventory', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ systems, profiles }),
+        body: JSON.stringify({ ...rest, systems, profiles }),
       });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error ?? `HTTP ${r.status}`);
-      setMsg('Saved');
-      setTimeout(() => setMsg(null), 1500);
+      setDirty(false);
+      flash('ok', 'Saved to inventory.yaml');
     } catch (e: any) {
-      setMsg(`Error: ${e?.message ?? e}`);
+      flash('err', `${e?.message ?? e}`);
     } finally {
       setSaving(false);
     }
   }
 
-  function addSystem() {
-    setSystems((s) => [
-      ...s,
-      { id: `sys-${s.length + 1}`, type: 'SIMNOVATOR', name: '', host: '' },
-    ]);
-  }
-  function removeSystem(idx: number) {
-    setSystems((s) => s.filter((_, i) => i !== idx));
-  }
-  function patchSystem(idx: number, patch: Partial<InventorySystem>) {
-    setSystems((s) => s.map((x, i) => (i === idx ? { ...x, ...patch } : x)));
-  }
+  // Every mutation funnels through these so `dirty` can't drift out of sync.
+  const mutSystems = useCallback((fn: (s: InventorySystem[]) => InventorySystem[]) => {
+    setSystems(fn); setDirty(true);
+  }, []);
+  const mutProfiles = useCallback((fn: (p: TopologyProfile[]) => TopologyProfile[]) => {
+    setProfiles(fn); setDirty(true);
+  }, []);
 
-  function addProfile() {
-    const uesim = systems.find((s) => s.type === 'SIMNOVATOR' || s.type === 'UESIM');
-    if (!uesim) {
-      setMsg('Add a Simnovator (or UESIM) system first');
-      return;
-    }
-    setProfiles((p) => [
-      ...p,
-      { id: `topo-${p.length + 1}`, name: `Topology ${p.length + 1}`, uesim: uesim.id },
-    ]);
-  }
-  function removeProfile(idx: number) {
-    setProfiles((p) => p.filter((_, i) => i !== idx));
-  }
-  function patchProfile(idx: number, patch: Partial<TopologyProfile>) {
-    setProfiles((p) => p.map((x, i) => (i === idx ? { ...x, ...patch } : x)));
-  }
+  const addSystem = useCallback(() => {
+    mutSystems((s) => [...s, { id: uniqueId('sys', s.map((x) => x.id)), type: 'SIMNOVATOR', name: '', host: '' }]);
+    setTab('systems');
+  }, [mutSystems]);
 
-  // Quick stats banner content
-  const stats = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const s of systems) counts[s.type] = (counts[s.type] ?? 0) + 1;
-    return {
-      total: systems.length,
-      simnovator: counts.SIMNOVATOR ?? 0,
-      uesim: counts.UESIM ?? 0,
-      callbox: counts.CALLBOX ?? 0,
-      profiles: profiles.length,
-    };
-  }, [systems, profiles]);
+  const addProfile = useCallback(() => {
+    mutProfiles((p) => {
+      const sim = systems.find((s) => s.type === 'SIMNOVATOR') ?? systems.find((s) => isUesimCapable(s.type));
+      return [...p, {
+        id: uniqueId('topo', p.map((x) => x.id)),
+        name: `Topology ${p.length + 1}`,
+        ...(sim ? (sim.type === 'SIMNOVATOR' ? { simnovator: sim.id } : { uesim: sim.id }) : {}),
+      }];
+    });
+    setTab('topology');
+  }, [mutProfiles, systems]);
+
+  const counts = useMemo(() => ({
+    systems: systems.length,
+    topologies: profiles.length,
+    broken: profiles.filter((p) => profileIssues(p as any).length > 0).length,
+  }), [systems, profiles]);
 
   return (
     <>
       <Header
         title="Systems Management"
-        subtitle="Lab systems and topology profiles · click any field to edit, then Save"
+        subtitle="Lab boxes and the topologies that wire them together"
         right={
           <div className="flex items-center gap-2">
             {msg ? (
-              <span className={`text-xs ${msg.startsWith('Error') ? 'text-red-600' : 'text-emerald-600'}`}>{msg}</span>
+              <span className={cn('text-xs font-medium', msg.kind === 'err' ? 'text-red-600' : 'text-emerald-600')}>
+                {msg.text}
+              </span>
+            ) : dirty ? (
+              <span className="text-xs text-amber-700">Unsaved changes</span>
             ) : null}
-            <Button size="sm" variant="secondary" onClick={addSystem}><Plus className="h-4 w-4" />Add system</Button>
-            <Button size="sm" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
+            <Button size="sm" variant="secondary" onClick={tab === 'systems' ? addSystem : addProfile}>
+              <Plus className="h-4 w-4" />{tab === 'systems' ? 'Add system' : 'Add topology'}
+            </Button>
+            <Button size="sm" onClick={save} disabled={saving || !dirty}>
+              {saving ? 'Saving…' : 'Save'}
+            </Button>
           </div>
         }
       />
 
-      <main
-        className="relative min-h-[calc(100vh-3.5rem)] p-6 space-y-6"
-        style={{
-          backgroundImage:
-            'radial-gradient(1200px 600px at 80% -10%, rgba(255,106,0,0.06), transparent 60%),' +
-            'radial-gradient(900px 500px at -10% 110%, rgba(56,189,248,0.06), transparent 55%)',
-          backgroundColor: 'rgb(249 250 251)',
-        }}
-      >
+      <main className="p-5 space-y-4">
+        <div className="flex w-max gap-1 rounded-lg border border-line bg-panel p-1">
+          <TabButton active={tab === 'systems'} onClick={() => setTab('systems')}
+            icon={Server} label="Systems" count={counts.systems} />
+          <TabButton active={tab === 'topology'} onClick={() => setTab('topology')}
+            icon={Layers} label="Topology" count={counts.topologies}
+            warn={counts.broken > 0 ? counts.broken : undefined} />
+        </div>
+
         {loading ? (
-          <div className="rounded-xl border border-slate-200 bg-surface p-6 text-sm text-slate-500 shadow-sm">Loading…</div>
+          <div className="rounded-xl border border-line bg-surface p-5 text-sm text-slate-500">Loading…</div>
+        ) : tab === 'systems' ? (
+          <SystemsTab
+            systems={systems}
+            onAdd={addSystem}
+            onPatch={(i, patch) => mutSystems((s) => s.map((x, k) => (k === i ? { ...x, ...patch } : x)))}
+            onRemove={(i) => mutSystems((s) => s.filter((_, k) => k !== i))}
+          />
         ) : (
-          <>
-            {/* How-to-edit hint */}
-            <div className="rounded-xl border border-sky-200 bg-sky-50/70 px-4 py-2.5 flex items-start gap-3 text-[12px] text-sky-900">
-              <div className="mt-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-full bg-sky-100 text-sky-700 font-semibold">?</div>
-              <div className="leading-relaxed">
-                <span className="font-semibold">Editing systems:</span>{' '}
-                click into any field on a card below — ID, Name, Type, Host/IP, credentials — change the value, then click{' '}
-                <span className="rounded bg-surface px-1.5 py-0.5 border border-sky-200 font-medium">Save</span>{' '}
-                at the top-right. Nothing persists to <span className="font-mono">inventory.yaml</span> until you save.{' '}
-                Use the <Trash2 className="inline h-3 w-3" /> on a card to remove a system.
-              </div>
-            </div>
-
-            {/* Stats strip */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <StatCard icon={ShieldCheck} tone="orange" label="Simnovator"   value={stats.simnovator} />
-              <StatCard icon={Cpu}         tone="sky"    label="UESIM"        value={stats.uesim} />
-              <StatCard icon={Server}      tone="violet" label="Callboxes"    value={stats.callbox} />
-              <StatCard icon={Layers}      tone="slate"  label="Topologies"   value={stats.profiles} />
-            </div>
-
-            {/* SYSTEMS */}
-            <section>
-              <div className="flex items-end justify-between mb-3">
-                <div>
-                  <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">Systems</h2>
-                  <p className="text-xs text-slate-500">Mark a box as <span className="text-orange-700 font-medium">Simnovator</span> to allow Build Check to install onto it.</p>
-                </div>
-              </div>
-
-              {systems.length === 0 ? (
-                <EmptyCard
-                  icon={<Server className="h-5 w-5 text-slate-400" />}
-                  title="No systems yet"
-                  desc='Click "Add system" above to register your first lab box.'
-                />
-              ) : (
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                  {systems.map((sys, idx) => (
-                    <SystemCard
-                      key={idx}
-                      sys={sys}
-                      onPatch={(p) => patchSystem(idx, p)}
-                      onRemove={() => removeSystem(idx)}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-
-            {/* TOPOLOGY PROFILES */}
-            <section>
-              <div className="flex items-end justify-between mb-3">
-                <div>
-                  <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">Topology profiles</h2>
-                  <p className="text-xs text-slate-500">Bind one UESIM-capable system to its deploy targets so the runner knows where to push generated cfgs.</p>
-                </div>
-                <Button size="sm" variant="secondary" onClick={addProfile}><Plus className="h-4 w-4" />Add profile</Button>
-              </div>
-
-              {profiles.length === 0 ? (
-                <EmptyCard
-                  icon={<Layers className="h-5 w-5 text-slate-400" />}
-                  title="No profiles yet"
-                  desc="A profile binds one UESIM (Simnovator) with one or more deploy targets — callbox, or separate eNB / MME / IMS / AppServer. The Automation page references profiles to know where to push generated cfgs."
-                />
-              ) : (
-                <div className="grid grid-cols-1 gap-4">
-                  {profiles.map((p, idx) => (
-                    <ProfileCard
-                      key={idx}
-                      profile={p}
-                      systems={systems}
-                      onPatch={(patch) => patchProfile(idx, patch)}
-                      onRemove={() => removeProfile(idx)}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          </>
+          <TopologyTab
+            profiles={profiles}
+            systems={systems}
+            onAdd={addProfile}
+            onPatch={(i, patch) => mutProfiles((p) => p.map((x, k) => (k === i ? { ...x, ...patch } : x)))}
+            onRemove={(i) => mutProfiles((p) => p.filter((_, k) => k !== i))}
+          />
         )}
       </main>
     </>
   );
 }
 
-// ───────────────────── Components ─────────────────────
+/** Stable, collision-free default id for a newly added row. */
+function uniqueId(prefix: string, taken: string[]): string {
+  let n = taken.length + 1;
+  while (taken.includes(`${prefix}-${n}`)) n += 1;
+  return `${prefix}-${n}`;
+}
 
-function StatCard({
-  icon: Icon, tone, label, value,
+// ───────────────────── Tab chrome ─────────────────────
+
+function TabButton({
+  active, onClick, icon: Icon, label, count, warn,
 }: {
+  active: boolean; onClick: () => void;
   icon: React.ComponentType<{ className?: string }>;
-  tone: 'orange' | 'sky' | 'violet' | 'slate';
-  label: string;
-  value: number;
+  label: string; count: number; warn?: number;
 }) {
-  const tones = {
-    orange: { bg: 'bg-orange-50',   text: 'text-orange-700',   ring: 'ring-orange-200' },
-    sky:    { bg: 'bg-sky-50',      text: 'text-sky-700',      ring: 'ring-sky-200' },
-    violet: { bg: 'bg-violet-50',   text: 'text-violet-700',   ring: 'ring-violet-200' },
-    slate:  { bg: 'bg-slate-50',    text: 'text-slate-700',    ring: 'ring-slate-200' },
-  } as const;
-  const t = tones[tone];
   return (
-    <div className="relative rounded-xl border border-slate-200 bg-surface p-4 shadow-sm">
-      <div className="flex items-center gap-3">
-        <div className={`flex h-9 w-9 items-center justify-center rounded-lg ring-1 ${t.bg} ${t.text} ${t.ring}`}>
-          <Icon className="h-4 w-4" />
-        </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-wider text-slate-500">{label}</div>
-          <div className="text-2xl font-semibold text-slate-900 leading-none mt-0.5">{value}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function EmptyCard({ icon, title, desc }: { icon: React.ReactNode; title: string; desc: string }) {
-  return (
-    <div className="rounded-xl border border-dashed border-slate-300 bg-surface/60 p-8 text-center">
-      <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-slate-100">
-        {icon}
-      </div>
-      <div className="text-sm font-medium text-slate-700">{title}</div>
-      <div className="mt-1 text-xs text-slate-500 max-w-md mx-auto">{desc}</div>
-    </div>
-  );
-}
-
-function SystemCard({
-  sys, onPatch, onRemove,
-}: {
-  sys: InventorySystem;
-  onPatch: (p: Partial<InventorySystem>) => void;
-  onRemove: () => void;
-}) {
-  const isUesimLike = sys.type === 'SIMNOVATOR' || sys.type === 'UESIM';
-  return (
-    <div className="group relative rounded-xl border border-slate-200 bg-surface shadow-sm transition-shadow hover:shadow-md">
-      {/* Top accent stripe — orange for Simnovator install targets */}
-      {sys.type === 'SIMNOVATOR' ? (
-        <div className="absolute top-0 left-0 right-0 h-1 rounded-t-xl bg-gradient-to-r from-orange-500 via-orange-400 to-amber-300" />
+    <button
+      type="button"
+      onClick={onClick}
+      aria-selected={active}
+      className={cn(
+        'inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+        active ? 'bg-surface text-slate-900 shadow-glow' : 'text-slate-500 hover:text-slate-900',
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {label}
+      <span className="num text-[11px] text-slate-500">{count}</span>
+      {warn ? (
+        <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+          <AlertTriangle className="h-2.5 w-2.5" />{warn}
+        </span>
       ) : null}
+    </button>
+  );
+}
 
-      <div className="p-5 space-y-4">
-        {/* Header row */}
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
-            <TypeChip type={sys.type} />
-            <span className="text-base font-semibold text-slate-900 truncate">{sys.name || sys.id}</span>
-            {sys.host ? <span className="text-xs font-mono text-slate-500">{sys.host}</span> : null}
-          </div>
-          <button
-            onClick={onRemove}
-            className="opacity-50 group-hover:opacity-100 transition-opacity rounded-md p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-600"
-            aria-label="Remove"
-          ><Trash2 className="h-4 w-4" /></button>
-        </div>
-
-        {/* Identity row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <Field label="ID"><Input value={sys.id} onChange={(e) => onPatch({ id: e.target.value })} /></Field>
-          <Field label="Name"><Input value={sys.name} onChange={(e) => onPatch({ name: e.target.value })} /></Field>
-          <Field label="Type">
-            <select
-              value={sys.type}
-              onChange={(e) => onPatch({ type: e.target.value })}
-              className={SELECT_CLS}
-            >
-              {SYSTEM_TYPES.map((t) => (
-                <option key={t} value={t}>{TYPE_META[t]?.label ?? t}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Host / IP">
-            <Input value={sys.host} onChange={(e) => onPatch({ host: e.target.value })} placeholder="192.168.1.95" />
-          </Field>
-        </div>
-
-        <div className="border-t border-slate-100" />
-
-        {/* ── UESIM REST API credentials ── (SIMNOVATOR + UESIM types) */}
-        {isUesimLike ? (
-          <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">UESIM REST API</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="API user">
-                <Input value={sys.uesim?.username ?? ''} onChange={(e) => onPatch({ uesim: { ...(sys.uesim ?? {}), username: e.target.value } })} placeholder="admin" />
-              </Field>
-              <Field label="API password">
-                <Input type="password" value={sys.uesim?.password ?? ''} onChange={(e) => onPatch({ uesim: { ...(sys.uesim ?? {}), password: e.target.value } })} placeholder="••••" />
-              </Field>
-            </div>
-          </div>
-        ) : null}
-
-        {/* ── Cockpit credentials ── (SIMNOVATOR only) */}
-        {sys.type === 'SIMNOVATOR' ? (
-          <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Cockpit (web admin UI)</div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <Field label="User" hint={`default ${COCKPIT_DEFAULT_USER}`}>
-                <Input
-                  value={sys.cockpitUser ?? ''}
-                  onChange={(e) => onPatch({ cockpitUser: e.target.value || undefined })}
-                  placeholder={COCKPIT_DEFAULT_USER}
-                />
-              </Field>
-              <Field label="Password" hint={`default ${COCKPIT_DEFAULT_PASSWORD}`}>
-                <Input
-                  type="password"
-                  value={sys.cockpitPassword ?? ''}
-                  onChange={(e) => onPatch({ cockpitPassword: e.target.value || undefined })}
-                  placeholder={COCKPIT_DEFAULT_PASSWORD}
-                />
-              </Field>
-              <Field label="Port" hint={`default ${COCKPIT_DEFAULT_PORT}`}>
-                <Input
-                  value={sys.cockpitPort?.toString() ?? ''}
-                  onChange={(e) => onPatch({ cockpitPort: e.target.value ? Number(e.target.value) : undefined })}
-                  placeholder={String(COCKPIT_DEFAULT_PORT)}
-                />
-              </Field>
-            </div>
-            <div className="mt-3 rounded-lg border border-orange-200 bg-orange-50/60 px-3 py-2 text-[11px] text-orange-800 leading-relaxed">
-              <span className="font-medium">Simnovator install target.</span>{' '}
-              Build Check deep-links you into Cockpit Terminal at
-              {' '}<span className="font-mono">https://{sys.host || '<host>'}:{sys.cockpitPort ?? COCKPIT_DEFAULT_PORT}/system/terminal</span>{' '}
-              with the wget + tar + ./install commands pre-filled. The user/password above are shown so you can copy-paste them into the Cockpit login screen — this app never logs in for you.
-            </div>
-          </div>
-        ) : null}
-
-        {/* ── SSH credentials ── always rendered.
-            For non-Simnovator/UESIM types (Callbox, App-server, …) SSH is the
-            primary access surface. For UESIM + SIMNOVATOR it's *optional* but
-            unlocks several features the REST API alone can't do — cfg patcher
-            on the UE-sim box, config-fidelity ue.cfg pull over SSH, gNB/MME
-            cfg backup on callbox-class boxes, container health on Simnovator.
-            Marked "optional" in the label so users know it's not required for
-            the REST happy-path. */}
-        <div>
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
-            SSH credentials{isUesimLike ? ' (optional — needed for cfg patcher, ue.cfg pull, gNB backup)' : ''}
-          </div>
-          <SshCredentialsBlock sys={sys} onPatch={onPatch} />
-        </div>
-      </div>
+function EmptyState({ icon, title, desc, action }: {
+  icon: React.ReactNode; title: string; desc: string; action?: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-dashed border-line-strong bg-surface/60 p-8 text-center">
+      <div className="mx-auto mb-3 grid h-10 w-10 place-items-center rounded-full bg-slate-100">{icon}</div>
+      <div className="text-sm font-medium text-slate-700">{title}</div>
+      <div className="mx-auto mt-1 max-w-md text-xs font-light text-slate-500">{desc}</div>
+      {action ? <div className="mt-4">{action}</div> : null}
     </div>
   );
 }
 
-function SshCredentialsBlock({
+function Section({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="mb-2 flex items-baseline gap-2">
+        <Kicker>{title}</Kicker>
+        {note ? <span className="text-[11px] font-light text-slate-500">{note}</span> : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// ───────────────────── Systems tab ─────────────────────
+
+function SystemsTab({
+  systems, onAdd, onPatch, onRemove,
+}: {
+  systems: InventorySystem[];
+  onAdd: () => void;
+  onPatch: (idx: number, patch: Partial<InventorySystem>) => void;
+  onRemove: (idx: number) => void;
+}) {
+  const [open, setOpen] = useState<Record<number, boolean>>({});
+  if (systems.length === 0) {
+    return (
+      <EmptyState
+        icon={<Server className="h-5 w-5 text-slate-400" />}
+        title="No systems yet"
+        desc="Register a lab box to get started. Only a name and an IP are required — credentials can wait."
+        action={<Button size="sm" onClick={onAdd}><Plus className="h-4 w-4" />Add system</Button>}
+      />
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-xl border border-line bg-surface">
+      {/* Column header mirrors the fields a collapsed row actually shows. */}
+      <div className="hidden grid-cols-[1fr_170px_200px_104px] gap-3 border-b border-line bg-panel px-3 py-2 sm:grid">
+        <Kicker>Name</Kicker>
+        <Kicker>Type</Kicker>
+        <Kicker>Host / IP</Kicker>
+        <Kicker className="text-right">Advanced</Kicker>
+      </div>
+      <ul className="divide-y divide-line">
+        {systems.map((sys, idx) => (
+          <SystemRow
+            key={idx}
+            sys={sys}
+            open={!!open[idx]}
+            onToggle={() => setOpen((o) => ({ ...o, [idx]: !o[idx] }))}
+            onPatch={(p) => onPatch(idx, p)}
+            onRemove={() => onRemove(idx)}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function SystemRow({
+  sys, open, onToggle, onPatch, onRemove,
+}: {
+  sys: InventorySystem; open: boolean; onToggle: () => void;
+  onPatch: (p: Partial<InventorySystem>) => void; onRemove: () => void;
+}) {
+  const meta = typeMeta(sys.type);
+  const Icon = meta.icon;
+  // What is configured beyond the basics — surfaced as a hint so a collapsed
+  // row still tells you whether credentials exist.
+  const extras = [
+    sys.uesim?.username ? 'REST' : null,
+    sys.username ? 'SSH' : null,
+    sys.cockpitUser ? 'Cockpit' : null,
+  ].filter(Boolean) as string[];
+
+  return (
+    <li className={cn('group', open && 'bg-panel')}>
+      <div className="grid grid-cols-1 items-center gap-2 px-3 py-2 sm:grid-cols-[1fr_170px_200px_104px] sm:gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className={cn('inline-flex flex-none items-center rounded-md p-1 ring-1 ring-inset', meta.chip)}
+            title={meta.label}
+          >
+            <Icon className="h-3.5 w-3.5" />
+          </span>
+          <Input
+            value={sys.name}
+            onChange={(e) => onPatch({ name: e.target.value })}
+            placeholder={sys.id}
+            aria-label="System name"
+            className="h-8 border-transparent bg-transparent px-1.5 font-medium hover:border-line-strong focus:bg-surface"
+          />
+        </div>
+
+        {/* What the box IS. Lives in the row rather than behind Advanced —
+            it drives which topology slots the box is eligible for, so it is
+            identity, not configuration. Editable here and ONLY here; keeping
+            a second copy in the Advanced panel would be two editors for one
+            field, which is the trap the topology screens fell into. */}
+        <select
+          value={sys.type}
+          onChange={(e) => onPatch({ type: e.target.value })}
+          aria-label="System type"
+          className="h-8 w-full rounded-md border border-transparent bg-transparent px-1.5 text-[13px] font-medium text-slate-700 transition-colors hover:border-line-strong focus:border-primary-500 focus:bg-surface focus:outline-none focus:ring-2 focus:ring-primary-500/25"
+        >
+          {SYSTEM_TYPES.map((t) => <option key={t} value={t}>{typeMeta(t).label}</option>)}
+        </select>
+
+        <Input
+          value={sys.host}
+          onChange={(e) => onPatch({ host: e.target.value })}
+          placeholder="192.168.1.95"
+          aria-label="Host or IP"
+          className="h-8 border-transparent bg-transparent px-1.5 font-mono text-[13px] hover:border-line-strong focus:bg-surface"
+        />
+
+        <div className="flex items-center justify-end gap-1">
+          {/* Which credential blocks are filled in, so a collapsed row still
+              says what is configured. nowrap + xl-only: it must never wrap
+              onto a second line and stretch the row. */}
+          {!open && extras.length ? (
+            <span
+              className="num hidden whitespace-nowrap text-[10px] text-slate-400 xl:inline"
+              title={`configured: ${extras.join(', ')}`}
+            >
+              {extras.join(' ')}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={open}
+            aria-label={`${open ? 'Hide' : 'Show'} advanced settings for ${sys.name || sys.id}`}
+            className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+            title="Advanced — id, type, credentials"
+          >
+            <ChevronRight className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-90')} />
+          </button>
+          <button
+            type="button"
+            onClick={onRemove}
+            className="rounded-md p-1.5 text-slate-400 opacity-0 transition-opacity hover:bg-red-50 hover:text-red-600 focus:opacity-100 group-hover:opacity-100"
+            aria-label={`Remove ${sys.name || sys.id}`}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {open ? <SystemAdvanced sys={sys} onPatch={onPatch} /> : null}
+    </li>
+  );
+}
+
+/** Everything that is not name or host. Collapsed by default. */
+function SystemAdvanced({
   sys, onPatch,
 }: { sys: InventorySystem; onPatch: (p: Partial<InventorySystem>) => void }) {
   const authMode = sys.authMode ?? 'password';
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-      <Field label="SSH user"><Input value={sys.username ?? ''} onChange={(e) => onPatch({ username: e.target.value })} /></Field>
-      <Field label="SSH port" hint="default 22">
-        <Input value={sys.sshPort?.toString() ?? ''} onChange={(e) => onPatch({ sshPort: e.target.value ? Number(e.target.value) : undefined })} />
-      </Field>
-      <Field label="Auth mode">
-        <select
-          value={authMode}
-          onChange={(e) => onPatch({ authMode: e.target.value as 'password' | 'privateKey' })}
-          className={SELECT_CLS}
-        >
-          <option value="password">Password</option>
-          <option value="privateKey">Private key</option>
-        </select>
-      </Field>
-      <Field label="Vendor">
-        <select
-          value={sys.vendor ?? ''}
-          onChange={(e) => onPatch({ vendor: e.target.value || undefined })}
-          className={SELECT_CLS}
-        >
-          <option value="">—</option>
-          <option value="simnovus">simnovus</option>
-          <option value="amarisoft">amarisoft</option>
-          <option value="srsran">srsran</option>
-          <option value="oai">oai</option>
-          <option value="other">other</option>
-        </select>
-      </Field>
-      {authMode === 'password' ? (
-        <Field label="SSH password" hint="local-lab convenience only">
-          <Input type="password" value={sys.password ?? ''} onChange={(e) => onPatch({ password: e.target.value })} />
-        </Field>
-      ) : (
-        <>
-          <div className="sm:col-span-2 lg:col-span-4">
-            <Field label="Private key" hint="paste contents (-----BEGIN ...) or filesystem path on this host (e.g. ~/.ssh/id_rsa)">
-              <textarea
-                value={sys.privateKey ?? ''}
-                onChange={(e) => onPatch({ privateKey: e.target.value })}
-                rows={4}
-                placeholder={'-----BEGIN OPENSSH PRIVATE KEY-----\n... or /home/user/.ssh/id_rsa'}
-                className="w-full rounded-md border border-slate-300 bg-surface px-3 py-2 text-xs font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400"
-              />
+    <div className="space-y-4 border-t border-line px-3 pb-4 pt-3">
+      {/* Type is deliberately absent here — it is edited in the row itself. */}
+      <Section title="Identity">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label="ID" hint="referenced by topologies">
+            <Input value={sys.id} onChange={(e) => onPatch({ id: e.target.value })} />
+          </Field>
+          <Field label="Vendor">
+            <select value={sys.vendor ?? ''} onChange={(e) => onPatch({ vendor: e.target.value || undefined })} className={SELECT_CLS}>
+              <option value="">—</option>
+              {['simnovus', 'amarisoft', 'srsran', 'oai', 'other'].map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </Field>
+        </div>
+      </Section>
+
+      {isUesimCapable(sys.type) ? (
+        <Section title="UESIM REST API">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="API user">
+              <Input value={sys.uesim?.username ?? ''} placeholder="admin"
+                onChange={(e) => onPatch({ uesim: { ...(sys.uesim ?? {}), username: e.target.value } })} />
+            </Field>
+            <Field label="API password">
+              <Input type="password" value={sys.uesim?.password ?? ''} placeholder="••••"
+                onChange={(e) => onPatch({ uesim: { ...(sys.uesim ?? {}), password: e.target.value } })} />
             </Field>
           </div>
-          <Field label="Key passphrase" hint="if encrypted">
-            <Input type="password" value={sys.passphrase ?? ''} onChange={(e) => onPatch({ passphrase: e.target.value })} />
+        </Section>
+      ) : null}
+
+      {sys.type === 'SIMNOVATOR' ? (
+        <Section title="Cockpit (web admin)">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <Field label="User" hint={`default ${COCKPIT_DEFAULT_USER}`}>
+              <Input value={sys.cockpitUser ?? ''} placeholder={COCKPIT_DEFAULT_USER}
+                onChange={(e) => onPatch({ cockpitUser: e.target.value || undefined })} />
+            </Field>
+            <Field label="Password" hint={`default ${COCKPIT_DEFAULT_PASSWORD}`}>
+              <Input type="password" value={sys.cockpitPassword ?? ''} placeholder={COCKPIT_DEFAULT_PASSWORD}
+                onChange={(e) => onPatch({ cockpitPassword: e.target.value || undefined })} />
+            </Field>
+            <Field label="Port" hint={`default ${COCKPIT_DEFAULT_PORT}`}>
+              <Input value={sys.cockpitPort?.toString() ?? ''} placeholder={String(COCKPIT_DEFAULT_PORT)}
+                onChange={(e) => onPatch({ cockpitPort: e.target.value ? Number(e.target.value) : undefined })} />
+            </Field>
+          </div>
+          <p className="mt-2 text-[11px] font-light leading-relaxed text-slate-500">
+            Build Check deep-links into Cockpit Terminal at{' '}
+            <span className="font-mono text-slate-700">
+              https://{sys.host || '<host>'}:{sys.cockpitPort ?? COCKPIT_DEFAULT_PORT}/system/terminal
+            </span>{' '}
+            with the install commands pre-filled. These credentials are shown so you can paste them
+            into Cockpit yourself — this app never logs in for you.
+          </p>
+        </Section>
+      ) : null}
+
+      <Section
+        title="SSH"
+        note={isUesimCapable(sys.type)
+          ? 'Optional — unlocks the cfg patcher, ue.cfg pull and gNB backup'
+          : 'Primary access for this box type'}
+      >
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Field label="User">
+            <Input value={sys.username ?? ''} onChange={(e) => onPatch({ username: e.target.value })} />
           </Field>
-        </>
-      )}
-      <Field label="sudo password" hint="needed for /root/* mv + systemctl restart unless NOPASSWD">
-        <Input type="password" value={sys.sudoPassword ?? ''} onChange={(e) => onPatch({ sudoPassword: e.target.value })} />
-      </Field>
+          <Field label="Port" hint="default 22">
+            <Input value={sys.sshPort?.toString() ?? ''}
+              onChange={(e) => onPatch({ sshPort: e.target.value ? Number(e.target.value) : undefined })} />
+          </Field>
+          <Field label="Auth mode">
+            <select value={authMode} onChange={(e) => onPatch({ authMode: e.target.value as 'password' | 'privateKey' })} className={SELECT_CLS}>
+              <option value="password">Password</option>
+              <option value="privateKey">Private key</option>
+            </select>
+          </Field>
+          <Field label="sudo password" hint="unless NOPASSWD">
+            <Input type="password" value={sys.sudoPassword ?? ''} onChange={(e) => onPatch({ sudoPassword: e.target.value })} />
+          </Field>
+          {authMode === 'password' ? (
+            <Field label="Password" hint="local-lab convenience only">
+              <Input type="password" value={sys.password ?? ''} onChange={(e) => onPatch({ password: e.target.value })} />
+            </Field>
+          ) : (
+            <>
+              <div className="sm:col-span-2 lg:col-span-4">
+                <Field label="Private key" hint="paste contents, or a path on this host (~/.ssh/id_rsa)">
+                  <textarea
+                    value={sys.privateKey ?? ''}
+                    onChange={(e) => onPatch({ privateKey: e.target.value })}
+                    rows={4}
+                    placeholder={'-----BEGIN OPENSSH PRIVATE KEY-----\n... or /home/user/.ssh/id_rsa'}
+                    className="w-full rounded-lg border border-line-strong bg-surface px-3 py-2 font-mono text-xs text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/25"
+                  />
+                </Field>
+              </div>
+              <Field label="Key passphrase" hint="if encrypted">
+                <Input type="password" value={sys.passphrase ?? ''} onChange={(e) => onPatch({ passphrase: e.target.value })} />
+              </Field>
+            </>
+          )}
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+// ───────────────────── Topology tab ─────────────────────
+
+function TopologyTab({
+  profiles, systems, onAdd, onPatch, onRemove,
+}: {
+  profiles: TopologyProfile[];
+  systems: InventorySystem[];
+  onAdd: () => void;
+  onPatch: (idx: number, patch: Partial<TopologyProfile>) => void;
+  onRemove: (idx: number) => void;
+}) {
+  if (profiles.length === 0) {
+    return (
+      <EmptyState
+        icon={<Layers className="h-5 w-5 text-slate-400" />}
+        title="No topologies yet"
+        desc="A topology binds one UESIM-capable box to the rest of the chain — callbox, or separate eNB / gNB / MME / IMS / app server. Automation reads these to know where to push generated cfgs."
+        action={<Button size="sm" onClick={onAdd}><Plus className="h-4 w-4" />Add topology</Button>}
+      />
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {profiles.map((p, idx) => (
+        <ProfileCard
+          key={idx}
+          profile={p}
+          systems={systems}
+          onPatch={(patch) => onPatch(idx, patch)}
+          onRemove={() => onRemove(idx)}
+        />
+      ))}
     </div>
   );
 }
@@ -513,49 +586,74 @@ function ProfileCard({
   onPatch: (p: Partial<TopologyProfile>) => void;
   onRemove: () => void;
 }) {
+  const issues = profileIssues(profile as any);
+  const filled = ROLES.filter((r) => (profile as any)[r.key]).length;
+
   return (
-    <div className="group relative rounded-xl border border-slate-200 bg-surface shadow-sm transition-shadow hover:shadow-md">
-      <div className="p-5 space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-slate-100 text-slate-600">
-              <Layers className="h-3.5 w-3.5" />
-            </div>
-            <span className="text-base font-semibold text-slate-900 truncate">{profile.name || profile.id}</span>
-          </div>
-          <button
-            onClick={onRemove}
-            className="opacity-50 group-hover:opacity-100 transition-opacity rounded-md p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-600"
-            aria-label="Remove"
-          ><Trash2 className="h-4 w-4" /></button>
-        </div>
+    <div className="group overflow-hidden rounded-xl border border-line bg-surface">
+      <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+        <span className="grid h-6 w-6 flex-none place-items-center rounded-md bg-slate-100 text-slate-600">
+          <Layers className="h-3.5 w-3.5" />
+        </span>
+        <Input
+          value={profile.name}
+          onChange={(e) => onPatch({ name: e.target.value })}
+          placeholder={profile.id}
+          aria-label="Topology name"
+          className="h-8 border-transparent bg-transparent px-1.5 font-medium hover:border-line-strong focus:bg-surface"
+        />
+        {issues.length === 0 ? (
+          <span className="inline-flex flex-none items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-label text-emerald-700 ring-1 ring-inset ring-emerald-600/25">
+            <Check className="h-3 w-3" />{filled} bound
+          </span>
+        ) : (
+          <span
+            className="inline-flex flex-none items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-label text-amber-700 ring-1 ring-inset ring-amber-600/25"
+            title={issues.join(' · ')}
+          >
+            <AlertTriangle className="h-3 w-3" />Incomplete
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={onRemove}
+          className="rounded-md p-1.5 text-slate-400 opacity-0 transition-opacity hover:bg-red-50 hover:text-red-600 focus:opacity-100 group-hover:opacity-100"
+          aria-label={`Remove ${profile.name || profile.id}`}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <Field label="ID"><Input value={profile.id} onChange={(e) => onPatch({ id: e.target.value })} /></Field>
-          <Field label="Name"><Input value={profile.name} onChange={(e) => onPatch({ name: e.target.value })} /></Field>
+      {issues.length ? (
+        <div className="border-b border-line bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800">
+          {issues.join(' · ')}
         </div>
+      ) : null}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          {PROFILE_ROLES.map(({ key, label, types, required }) => {
-            const candidates = systems.filter((s) => (types as readonly string[]).includes(s.type));
-            const value = (profile as any)[key] as string | undefined;
-            return (
-              <Field key={key} label={label + (required ? ' *' : '')} hint={candidates.length === 0 ? `no ${types.join(' / ')} systems yet` : undefined}>
-                <select
-                  value={value ?? ''}
-                  onChange={(e) => onPatch({ [key]: e.target.value || undefined } as any)}
-                  className={SELECT_CLS}
-                  disabled={candidates.length === 0 && !value}
-                >
-                  <option value="">{required ? '— choose —' : '— none —'}</option>
-                  {candidates.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name || s.id} ({s.host})</option>
-                  ))}
-                </select>
-              </Field>
-            );
-          })}
-        </div>
+      <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 lg:grid-cols-4">
+        {ROLES.map(({ key, label, icon: Icon, types, hint }) => {
+          const candidates = systems.filter((s) => types.includes(s.type));
+          const value = (profile as any)[key] as string | undefined;
+          return (
+            <label key={key} className="block">
+              <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-700">
+                <Icon className="h-3.5 w-3.5 text-slate-400" />{label}
+              </span>
+              <select
+                value={value ?? ''}
+                onChange={(e) => onPatch({ [key]: e.target.value || undefined } as any)}
+                className={SELECT_CLS}
+                disabled={candidates.length === 0 && !value}
+                title={hint}
+              >
+                <option value="">{candidates.length === 0 ? `no ${types.join(' / ')} registered` : '— none —'}</option>
+                {candidates.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name || s.id} · {s.host}</option>
+                ))}
+              </select>
+            </label>
+          );
+        })}
       </div>
     </div>
   );
