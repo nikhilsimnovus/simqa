@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import {
-  SYSTEM_TYPES, typeMeta, isUesimCapable, ROLES, profileIssues,
+  SYSTEM_TYPES, typeMeta, isUesimCapable, ROLES, profileIssues, migrateProfile,
 } from '@/lib/topology';
 
 interface InventorySystem {
@@ -72,6 +72,7 @@ interface TopologyProfile {
   name: string;
   simnovator?: string;
   uesim?: string;
+  /** Legacy — migrated into enb/gnb on load, never written back. */
   callbox?: string;
   enb?: string;
   gnb?: string;
@@ -129,7 +130,9 @@ function InventoryEditor() {
     fetch('/api/inventory').then((r) => r.json()).then((d) => {
       const { systems: sys, profiles: pro, defaults, ...others } = d ?? {};
       setSystems(sys ?? []);
-      setProfiles(pro ?? []);
+      // Fold any legacy `callbox` binding into eNB/gNB — the Callbox role no
+      // longer exists, and we don't want that value stranded in the file.
+      setProfiles((pro ?? []).map(migrateProfile));
       setSshDefaults(defaults?.ssh ?? {});
       // Anything else in the document (suites, …) is round-tripped untouched
       // so saving from this screen can't drop a sibling section.

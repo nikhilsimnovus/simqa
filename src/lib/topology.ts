@@ -62,20 +62,29 @@ export interface RoleDef {
   hint: string;
 }
 
-/** The union of every role either legacy screen knew about. Order is the
- *  order they appear in the editor: control plane first, then radio, then
- *  core, then services. */
+/**
+ * Roles a topology can bind, in editor order: control plane, then radio, then
+ * core, then services.
+ *
+ * There is deliberately NO separate "Callbox" role. A callbox IS the eNB and
+ * the gNB, so offering all three made you pick the same box three times for
+ * one thing. Bind the callbox to eNB and/or gNB instead — both accept a
+ * CALLBOX system.
+ *
+ * Nothing is lost by dropping it: planDeployTargets in lib/runner.ts dedupes
+ * by system id, and filesForTarget switches on the system TYPE, so a callbox
+ * reached through the eNB slot still receives the full mme/ims/enb/gnb/ue_db
+ * cfg set. The `callbox` key stays on TopologyProfile for older inventories.
+ */
 export const ROLES: readonly RoleDef[] = [
   { key: 'simnovator', label: 'Simnovator', icon: ShieldCheck, types: ['SIMNOVATOR'],
     hint: 'Controller VM — also the Build Check install target' },
   { key: 'uesim',      label: 'UESIM',      icon: Cpu,         types: ['SIMNOVATOR', 'UESIM'],
     hint: 'UE simulator. On integrated installs this is the Simnovator itself' },
-  { key: 'callbox',    label: 'Callbox',    icon: Server,      types: ['CALLBOX'],
-    hint: 'All-in-one RAN + core box' },
   { key: 'enb',        label: 'eNB',        icon: Radio,       types: ['ENB', 'CALLBOX'],
-    hint: 'LTE radio, if split out from the callbox' },
+    hint: 'LTE radio — pick the callbox here if it is the all-in-one box' },
   { key: 'gnb',        label: 'gNB',        icon: Radio,       types: ['GNB', 'CALLBOX'],
-    hint: '5G NR radio, if split out from the callbox' },
+    hint: '5G NR radio — pick the callbox here if it is the all-in-one box' },
   { key: 'mme',        label: 'MME',        icon: Network,     types: ['MME', 'CALLBOX'],
     hint: 'Core control plane' },
   { key: 'ims',        label: 'IMS',        icon: Globe,       types: ['IMS', 'CALLBOX'],
@@ -93,6 +102,23 @@ export const ROLES: readonly RoleDef[] = [
  * optional: customer-style integrated installs have no separate callbox,
  * MME or app server at all.
  */
+/**
+ * Fold a legacy `callbox` binding into the eNB / gNB slots.
+ *
+ * Older inventories bound the same box to callbox AND enb AND gnb. Now that
+ * the Callbox role is gone, carry that value into whichever radio slots are
+ * empty so nothing is silently orphaned, then drop the key.
+ */
+export function migrateProfile<T extends Record<string, any>>(p: T): T {
+  const legacy = p.callbox;
+  if (!legacy) return p;
+  const out: any = { ...p };
+  if (!out.enb) out.enb = legacy;
+  if (!out.gnb) out.gnb = legacy;
+  delete out.callbox;
+  return out as T;
+}
+
 export function profileIssues(p: Record<string, unknown>): string[] {
   const out: string[] = [];
   if (!p.simnovator && !p.uesim) {
