@@ -255,13 +255,42 @@ function isSet(v: unknown): boolean {
   return v !== undefined && v !== null && v !== '';
 }
 
-/** Merge lab SSH defaults UNDER a system's own values, field by field. */
+/** authMode as implied by what is actually set — deploy defaults an unset
+ *  authMode to 'password', so a bare `password:` entry has always meant
+ *  password auth, and a bare `privateKey:` can only mean key auth. */
+function impliedAuthMode(v: { authMode?: SshAuthMode; password?: string; privateKey?: string }): SshAuthMode | undefined {
+  if (isSet(v.authMode)) return v.authMode;
+  if (isSet(v.password)) return 'password';    // matches deploy's default when both are set
+  if (isSet(v.privateKey)) return 'privateKey';
+  return undefined;
+}
+
+/**
+ * Merge lab SSH defaults UNDER a system's own values, field by field —
+ * but auth-mode aware. Two failure modes this guards against:
+ *
+ *   1. A box that carries only `password:` (authMode implied) must NOT be
+ *      flipped to key auth by a lab default of authMode=privateKey, and
+ *      must not inherit the lab key at all — deploy would silently switch
+ *      identities on it.
+ *   2. The Credentials tab shows "Private key" as the default mode without
+ *      writing authMode until the select is touched, so a defaults block of
+ *      just {username, privateKey} must still resolve to key auth instead
+ *      of failing with "no password set".
+ */
 export function withSshDefaults(s: InventorySystem, d?: SshDefaults): InventorySystem {
   if (!d) return s;
   const out: any = { ...s };
+  const mode = impliedAuthMode(s) ?? impliedAuthMode(d) ?? 'password';
   for (const k of SSH_FIELDS) {
+    // Secrets belong to exactly one auth mode; only inherit the matching one.
+    if (k === 'password' && mode !== 'password') continue;
+    if ((k === 'privateKey' || k === 'passphrase') && mode !== 'privateKey') continue;
     if (!isSet(out[k]) && isSet((d as any)[k])) out[k] = (d as any)[k];
   }
+  // Pin the resolved mode so consumers (deploy defaults to 'password') can't
+  // re-derive a different answer from the merged fields.
+  out.authMode = mode;
   return out as InventorySystem;
 }
 
@@ -304,6 +333,11 @@ export function loadInventoryRaw(): Inventory {
   const raw = fs.readFileSync(p, 'utf8');
   const parsed = YAML.parse(raw) as Partial<Inventory>;
   return {
+    // Spread first: unknown top-level keys must survive a GET → edit → PUT
+    // round-trip through the /inventory editor, which saves this whole
+    // object back. Dropping them here would silently delete hand-written
+    // sections from inventory.yaml on the next Save.
+    ...(parsed && typeof parsed === 'object' ? parsed : {}),
     systems:  Array.isArray(parsed?.systems)  ? parsed.systems  : [],
     profiles: Array.isArray(parsed?.profiles) ? parsed.profiles : [],
     suites:   Array.isArray(parsed?.suites)   ? parsed.suites   : [],

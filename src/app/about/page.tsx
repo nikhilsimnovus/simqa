@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Header } from '@/components/Header';
-import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
+import { Button } from '@/components/ui';
+import { cn } from '@/lib/cn';
 import {
   Activity, Beaker, MousePointerClick, ShieldCheck, GitCompare,
   Layers, Cpu, AlertTriangle, CheckCircle2,
@@ -18,27 +19,14 @@ interface CatalogEntry {
 }
 
 // =============================================================================
-// Design tokens lifted from h1b-insight-explorer.lovable.app
+// Layout adapted from h1b-insight-explorer.lovable.app (oversized hero, soft
+// tone tiles, dot-grid texture) — but every colour goes through the Simnovus
+// token classes in tailwind.config.ts. The original port hardcoded the
+// Lovable light palette as inline rgb() styles, which made the page unreadable
+// in the dark theme (near-black headings on the dark bg-surface cards).
+// Tone mapping: indigo→primary(orange) · emerald→emerald · sky→blue ·
+// amber→amber · red→red · muted→slate.
 // =============================================================================
-//
-// :root tokens (HSL):
-//   --background: 220 25% 98%        rgb(249,249,251)
-//   --foreground: 220 25% 10%        rgb(19,23,32)
-//   --card: 0 0% 100%                white
-//   --card-hover: 220 14% 96%
-//   --primary: 235 78% 55%           rgb(51,66,230)   (indigo-purple)
-//   --primary-soft: 235 100% 96%
-//   --accent: 152 78% 38%            rgb(21,172,102)  (emerald)
-//   --accent-soft: 152 60% 94%
-//   --info: 199 92% 48%              rgb(10,164,235)  (sky)
-//   --warning: 38 92% 48%            rgb(235,152,10)  (amber)
-//   --destructive: 0 78% 52%         rgb(228,37,37)
-//   --muted-foreground: 220 9% 42%   rgb(97,104,117)
-//   --border: 220 14% 89%            rgb(232,234,237)
-//   --radius: 0.75rem
-//
-// Visual signature: dual-accent (indigo + emerald), oversized H1 (72px / 800),
-// subtle dot-grid texture, white cards on cool off-white, pill-shaped tags.
 
 export default function AboutPage() {
   const [catalogCount, setCatalogCount] = useState<number | null>(null);
@@ -76,36 +64,21 @@ export default function AboutPage() {
         }
       />
 
-      {/* Page wrapper carries the Lovable color tokens as CSS vars so children
-          can use rgb(var(--accent)) etc. */}
-      <main
-        className="relative min-h-screen pb-12"
-        style={{
-          backgroundColor: 'rgb(249 249 251)',
-          color: 'rgb(19 23 32)',
-          // Lovable tokens exposed as CSS vars
-          ['--lov-fg' as any]: '19 23 32',
-          ['--lov-muted-fg' as any]: '97 104 117',
-          ['--lov-border' as any]: '232 234 237',
-          ['--lov-primary' as any]: '51 66 230',
-          ['--lov-accent' as any]: '21 172 102',
-          ['--lov-info' as any]: '10 164 235',
-          ['--lov-warning' as any]: '235 152 10',
-          ['--lov-destructive' as any]: '228 37 37',
-        }}
-      >
-        {/* Subtle dot-grid background overlay (Lovable signature) */}
+      <main className="relative min-h-screen pb-12 bg-page text-slate-900">
+        {/* Subtle grid background overlay (Lovable signature). --hero-grid is
+            defined per-theme in globals.css, so the texture follows the theme. */}
         <div
           aria-hidden
           className="absolute inset-0 pointer-events-none opacity-[0.35]"
           style={{
             backgroundImage:
-              'linear-gradient(to right, rgba(223,226,231,0.5) 1px, transparent 1px), linear-gradient(to bottom, rgba(223,226,231,0.5) 1px, transparent 1px)',
+              'linear-gradient(to right, var(--hero-grid) 1px, transparent 1px), linear-gradient(to bottom, var(--hero-grid) 1px, transparent 1px)',
             backgroundSize: '32px 32px',
           }}
         />
-        {/* Soft fade so the grid doesn't extend infinitely */}
-        <div aria-hidden className="absolute inset-x-0 top-0 h-[600px] pointer-events-none" style={{ background: 'linear-gradient(rgba(249,249,251,0), rgba(249,249,251,0.85), rgb(249,249,251))' }} />
+        {/* Soft fade so the grid doesn't extend infinitely. Built from the
+            page token so it fades into whichever background is active. */}
+        <div aria-hidden className="absolute inset-x-0 top-0 h-[600px] pointer-events-none" style={{ background: 'linear-gradient(rgb(var(--c-page) / 0), rgb(var(--c-page) / 0.85), rgb(var(--c-page)))' }} />
 
         <div className="relative p-6 space-y-8 max-w-6xl mx-auto">
 
@@ -113,19 +86,18 @@ export default function AboutPage() {
         <section className="relative">
           {/* Inner glow / gradient ring (Lovable's signature touch) */}
           <div className="absolute -inset-1 rounded-3xl opacity-60 blur-2xl pointer-events-none"
-            style={{ background: 'linear-gradient(120deg, rgba(51,66,230,0.18), rgba(21,172,102,0.18), rgba(10,164,235,0.15))' }} />
-          <div className="relative rounded-2xl bg-surface border p-10" style={{ borderColor: 'rgb(232 234 237)' }}>
-            <div className="inline-flex items-center gap-1.5 mb-5 px-3 py-1 rounded-full text-xs font-medium"
-              style={{ background: 'rgba(21,172,102,0.1)', color: 'rgb(21,172,102)' }}>
+            style={{ background: 'linear-gradient(120deg, rgb(var(--c-primary-500) / 0.18), rgb(var(--c-emerald-500) / 0.18), rgb(var(--c-blue-500) / 0.15))' }} />
+          <div className="relative rounded-2xl bg-surface border border-line p-10">
+            <div className="inline-flex items-center gap-1.5 mb-5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700">
               <Sparkles className="h-3 w-3" />Internal QA platform · v0.1
             </div>
-            <h1 className="text-5xl sm:text-6xl font-extrabold leading-[1.05] tracking-tight" style={{ color: 'rgb(19 23 32)' }}>
+            <h1 className="text-5xl sm:text-6xl font-extrabold leading-[1.05] tracking-tight text-slate-900">
               One QA tool for the entire <br/>
-              <span style={{ background: 'linear-gradient(135deg, rgb(51,66,230), rgb(21,172,102))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+              <span className="bg-gradient-to-br from-primary-500 to-emerald-500 bg-clip-text text-transparent">
                 Simnovator UESIM stack.
               </span>
             </h1>
-            <p className="mt-6 text-lg leading-relaxed max-w-3xl" style={{ color: 'rgb(97 104 117)' }}>
+            <p className="mt-6 text-lg leading-relaxed max-w-3xl text-slate-500">
               Every new build runs through an automated suite that drives the REST API, the management UI, and the
               field-level auto-populate logic against 3GPP-derived golden references. No manual click-through.
               Regressions surface as a one-page diff against the prior baseline.
@@ -144,7 +116,7 @@ export default function AboutPage() {
         <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <SoftCard tone="destructive" icon={<AlertTriangle className="h-4 w-4" />} title="The problem">
             <p>Before QA Ka BAAP, every Simnovator build was QA'd by hand — engineers clicking through the UI, eyeballing testcase results, manually filing tickets when something looked off.</p>
-            <ul className="list-disc list-inside space-y-1.5 mt-2" style={{ color: 'rgb(97 104 117)' }}>
+            <ul className="list-disc list-inside space-y-1.5 mt-2 text-slate-500">
               <li>Regressions slipped through (no systematic comparison vs prior build)</li>
               <li>API-level bugs were invisible without dedicated probing</li>
               <li>Field auto-populate (band → ARFCN) had no spec-level verification</li>
@@ -154,7 +126,7 @@ export default function AboutPage() {
 
           <SoftCard tone="accent" icon={<CheckCircle2 className="h-4 w-4" />} title="What QA Ka BAAP changes">
             <p>One Next.js app on a lab machine. Anyone in the team opens the URL in a browser, picks a profile, clicks Run. ~25 min later: a self-contained HTML report with screenshots, traces, and Jira-ready comments.</p>
-            <ul className="list-disc list-inside space-y-1.5 mt-2" style={{ color: 'rgb(97 104 117)' }}>
+            <ul className="list-disc list-inside space-y-1.5 mt-2 text-slate-500">
               <li>Save any run as a <strong>baseline</strong> → next run shows what regressed</li>
               <li>Tests are <strong>data-driven</strong> from 3GPP / vendor golden references</li>
               <li>Findings auto-link to SIM40 tickets with copy-paste Jira comments</li>
@@ -197,8 +169,8 @@ export default function AboutPage() {
         {/* ─────────── 3-LAYER MODEL ─────────── */}
         <section>
           <SectionTitle eyebrow="How field testing works" title="Three layers, three different bugs" />
-          <div className="rounded-2xl bg-surface border p-6" style={{ borderColor: 'rgb(232 234 237)' }}>
-            <p className="text-sm leading-relaxed max-w-3xl" style={{ color: 'rgb(97 104 117)' }}>
+          <div className="rounded-2xl bg-surface border border-line p-6">
+            <p className="text-sm leading-relaxed max-w-3xl text-slate-500">
               For any field where the UI auto-populates based on user input (Band → ARFCN, PRACH → root index, TDD → slot pattern, etc.), QA Ka BAAP runs three independent layers.
               Each layer catches a different class of bug.
             </p>
@@ -213,7 +185,7 @@ export default function AboutPage() {
                 desc="Drives the SPA: picks band, reads auto-filled DL-ARFCN field, asserts equality."
                 catches="Frontend / form-handler bugs" />
             </div>
-            <div className="mt-5 text-xs" style={{ color: 'rgb(97 104 117)' }}>
+            <div className="mt-5 text-xs text-slate-500">
               Result: a single regression is isolated to the right layer (golden / backend / frontend), not "something somewhere is broken".
             </div>
           </div>
@@ -223,31 +195,31 @@ export default function AboutPage() {
         <section>
           <SectionTitle eyebrow="By the numbers" title="What's in the catalog right now" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="rounded-2xl bg-surface border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
-              <h3 className="text-sm font-semibold mb-3" style={{ color: 'rgb(19 23 32)' }}>By category</h3>
+            <div className="rounded-2xl bg-surface border border-line p-5">
+              <h3 className="text-sm font-semibold mb-3 text-slate-900">By category</h3>
               <div className="space-y-1.5">
                 {Object.entries(byCategory).sort((a, b) => b[1] - a[1]).map(([cat, n]) => (
                   <div key={cat} className="flex items-center gap-3">
-                    <span className="text-xs w-32 truncate" style={{ color: 'rgb(19 23 32)' }}>{prettyCategory(cat)}</span>
-                    <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgb(243 244 246)' }}>
-                      <div className="h-full rounded-full transition-all"
-                        style={{ width: `${(n / Math.max(...Object.values(byCategory))) * 100}%`, background: 'linear-gradient(to right, rgb(51,66,230), rgb(21,172,102))' }} />
+                    <span className="text-xs w-32 truncate text-slate-900">{prettyCategory(cat)}</span>
+                    <div className="flex-1 h-1.5 rounded-full overflow-hidden bg-panel">
+                      <div className="h-full rounded-full transition-all bg-gradient-to-r from-primary-500 to-emerald-500"
+                        style={{ width: `${(n / Math.max(...Object.values(byCategory))) * 100}%` }} />
                     </div>
-                    <span className="text-xs tabular-nums w-10 text-right" style={{ color: 'rgb(97 104 117)' }}>{n}</span>
+                    <span className="text-xs tabular-nums w-10 text-right text-slate-500">{n}</span>
                   </div>
                 ))}
               </div>
             </div>
 
-            <div className="rounded-2xl bg-surface border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
-              <h3 className="text-sm font-semibold mb-3" style={{ color: 'rgb(19 23 32)' }}>By severity</h3>
+            <div className="rounded-2xl bg-surface border border-line p-5">
+              <h3 className="text-sm font-semibold mb-3 text-slate-900">By severity</h3>
               <div className="grid grid-cols-3 gap-3">
                 <SeverityTile label="Critical" tone="destructive" count={bySeverity.critical ?? 0} desc="must-pass for release" />
                 <SeverityTile label="Normal"   tone="warning"     count={bySeverity.normal ?? 0}   desc="strong signal" />
                 <SeverityTile label="Optional" tone="muted"       count={bySeverity.optional ?? 0} desc="nice-to-have" />
               </div>
-              <div className="mt-4 pt-4 border-t text-xs leading-relaxed" style={{ borderColor: 'rgb(232 234 237)', color: 'rgb(97 104 117)' }}>
-                Run profiles let you scope to severity: <strong style={{ color: 'rgb(19 23 32)' }}>Smoke</strong> (critical only, ~3 min), <strong style={{ color: 'rgb(19 23 32)' }}>Regression</strong> (critical+normal, ~15 min), <strong style={{ color: 'rgb(19 23 32)' }}>Full</strong> (everything, ~25 min).
+              <div className="mt-4 pt-4 border-t border-line text-xs leading-relaxed text-slate-500">
+                Run profiles let you scope to severity: <strong className="text-slate-900">Smoke</strong> (critical only, ~3 min), <strong className="text-slate-900">Regression</strong> (critical+normal, ~15 min), <strong className="text-slate-900">Full</strong> (everything, ~25 min).
               </div>
             </div>
           </div>
@@ -269,11 +241,11 @@ export default function AboutPage() {
         {/* ─────────── REAL IMPACT ─────────── */}
         <section>
           <SectionTitle eyebrow="Impact" title="Real bugs already caught" />
-          <div className="rounded-2xl bg-surface border overflow-hidden" style={{ borderColor: 'rgb(232 234 237)' }}>
-            <div className="px-5 py-3 text-xs border-b" style={{ background: 'rgb(243 244 246)', borderColor: 'rgb(232 234 237)', color: 'rgb(97 104 117)' }}>
+          <div className="rounded-2xl bg-surface border border-line overflow-hidden">
+            <div className="px-5 py-3 text-xs border-b border-line bg-panel text-slate-500">
               28+ real product bugs filed in SIM40 from QA Ka BAAP runs. A representative sample:
             </div>
-            <ul className="divide-y" style={{ borderColor: 'rgb(232 234 237)' } as any}>
+            <ul className="divide-y divide-line">
               <BugRow ticket="SIM40-2010" sev="critical" title="POST /v2/testcases/export silently drops 1048 → 77 testcases" via="API count-integrity test" />
               <BugRow ticket="SIM40-2020" sev="critical" title="Stored XSS — Test_Name accepts <script> and returns it unescaped" via="API fuzz pack + UI XSS-render test" />
               <BugRow ticket="SIM40-2021" sev="critical" title="Empty/whitespace Test_Name accepted; creates unreachable ghost record" via="Round-trip + ghost-record probe" />
@@ -289,7 +261,7 @@ export default function AboutPage() {
         {/* ─────────── ARCHITECTURE ─────────── */}
         <section>
           <SectionTitle eyebrow="Under the hood" title="How it's built" />
-          <div className="rounded-2xl bg-surface border p-6" style={{ borderColor: 'rgb(232 234 237)' }}>
+          <div className="rounded-2xl bg-surface border border-line p-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <ArchBox title="Frontend" tone="accent" icon={<MousePointerClick className="h-4 w-4" />}
                 items={['Next.js 15 + React + Tailwind', 'Single-page UI hosted on lab server', 'Live progress + Stop / Re-run / Per-test', 'Self-contained HTML reports']} />
@@ -298,8 +270,8 @@ export default function AboutPage() {
               <ArchBox title="Test execution" tone="warning" icon={<Workflow className="h-4 w-4" />}
                 items={['Playwright drives Chrome/Edge/Firefox', 'Trace + video on failure', 'Network + console capture', 'Slow-mo when watching']} />
             </div>
-            <div className="mt-5 pt-5 border-t text-xs leading-relaxed" style={{ borderColor: 'rgb(232 234 237)', color: 'rgb(97 104 117)' }}>
-              Lives in <code className="px-1.5 py-0.5 rounded font-mono text-[11px]" style={{ background: 'rgb(243 244 246)' }}>projects/simqa/</code> · 3,500 lines of TypeScript · zero external services · runs on any machine with Node 18+ and a modern browser. Deployable as a Windows service, a Linux systemd unit, or a Docker container.
+            <div className="mt-5 pt-5 border-t border-line text-xs leading-relaxed text-slate-500">
+              Lives in <code className="px-1.5 py-0.5 rounded font-mono text-[11px] bg-panel">projects/simqa/</code> · 3,500 lines of TypeScript · zero external services · runs on any machine with Node 18+ and a modern browser. Deployable as a Windows service, a Linux systemd unit, or a Docker container.
             </div>
           </div>
         </section>
@@ -331,20 +303,22 @@ export default function AboutPage() {
 // Inline components
 // =============================================================================
 
-const TONE: Record<string, { rgb: string; soft: string; on: string }> = {
-  primary:     { rgb: '51 66 230',   soft: 'rgba(51,66,230,0.10)',   on: 'rgb(51,66,230)' },
-  accent:      { rgb: '21 172 102',  soft: 'rgba(21,172,102,0.10)',  on: 'rgb(21,172,102)' },
-  info:        { rgb: '10 164 235',  soft: 'rgba(10,164,235,0.10)',  on: 'rgb(10,164,235)' },
-  warning:     { rgb: '235 152 10',  soft: 'rgba(235,152,10,0.10)',  on: 'rgb(235,152,10)' },
-  destructive: { rgb: '228 37 37',   soft: 'rgba(228,37,37,0.10)',   on: 'rgb(228,37,37)' },
-  muted:       { rgb: '97 104 117',  soft: 'rgba(97,104,117,0.10)',  on: 'rgb(97,104,117)' },
+/** Tone → mapped Tailwind classes. `soft` is a tinted fill, `on` the emphatic
+ *  foreground, `solid` a filled chip that takes text-on-accent. */
+const TONE: Record<string, { soft: string; on: string; solid: string }> = {
+  primary:     { soft: 'bg-primary-50', on: 'text-primary-700', solid: 'bg-primary-600' },
+  accent:      { soft: 'bg-emerald-50', on: 'text-emerald-700', solid: 'bg-emerald-600' },
+  info:        { soft: 'bg-blue-50',    on: 'text-blue-700',    solid: 'bg-blue-600' },
+  warning:     { soft: 'bg-amber-50',   on: 'text-amber-700',   solid: 'bg-amber-500' },
+  destructive: { soft: 'bg-red-50',     on: 'text-red-700',     solid: 'bg-red-600' },
+  muted:       { soft: 'bg-slate-100',  on: 'text-slate-500',   solid: 'bg-slate-400' },
 };
 
 function SectionTitle({ eyebrow, title }: { eyebrow: string; title: string }) {
   return (
     <div className="mb-4">
-      <div className="text-xs font-medium uppercase tracking-widest" style={{ color: 'rgb(21 172 102)' }}>{eyebrow}</div>
-      <h2 className="text-2xl font-bold mt-1 tracking-tight" style={{ color: 'rgb(19 23 32)' }}>{title}</h2>
+      <div className="text-xs font-medium uppercase tracking-widest text-emerald-600">{eyebrow}</div>
+      <h2 className="text-2xl font-bold mt-1 tracking-tight text-slate-900">{title}</h2>
     </div>
   );
 }
@@ -352,10 +326,10 @@ function SectionTitle({ eyebrow, title }: { eyebrow: string; title: string }) {
 function HeroStat({ label, value, sub, tone }: { label: string; value: string | number; sub: string; tone: keyof typeof TONE }) {
   const t = TONE[tone];
   return (
-    <div className="rounded-xl border p-4" style={{ background: t.soft, borderColor: 'rgb(232 234 237)' }}>
-      <div className="text-[11px] uppercase tracking-wider font-medium" style={{ color: 'rgb(97 104 117)' }}>{label}</div>
-      <div className="text-3xl font-bold tabular-nums mt-1" style={{ color: t.on }}>{value}</div>
-      <div className="text-[11px] mt-0.5" style={{ color: 'rgb(97 104 117)' }}>{sub}</div>
+    <div className={cn('rounded-xl border border-line p-4', t.soft)}>
+      <div className="text-[11px] uppercase tracking-wider font-medium text-slate-500">{label}</div>
+      <div className={cn('text-3xl font-bold tabular-nums mt-1', t.on)}>{value}</div>
+      <div className="text-[11px] mt-0.5 text-slate-500">{sub}</div>
     </div>
   );
 }
@@ -363,12 +337,12 @@ function HeroStat({ label, value, sub, tone }: { label: string; value: string | 
 function SoftCard({ tone, icon, title, children }: { tone: keyof typeof TONE; icon: React.ReactNode; title: string; children: React.ReactNode }) {
   const t = TONE[tone];
   return (
-    <div className="rounded-2xl bg-surface border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
+    <div className="rounded-2xl bg-surface border border-line p-5">
       <div className="flex items-center gap-2 mb-3">
-        <span className="inline-flex items-center justify-center h-7 w-7 rounded-lg" style={{ background: t.soft, color: t.on }}>{icon}</span>
-        <h3 className="font-semibold" style={{ color: t.on }}>{title}</h3>
+        <span className={cn('inline-flex items-center justify-center h-7 w-7 rounded-lg', t.soft, t.on)}>{icon}</span>
+        <h3 className={cn('font-semibold', t.on)}>{title}</h3>
       </div>
-      <div className="text-sm leading-relaxed space-y-2" style={{ color: 'rgb(19 23 32)' }}>{children}</div>
+      <div className="text-sm leading-relaxed space-y-2 text-slate-900">{children}</div>
     </div>
   );
 }
@@ -377,14 +351,14 @@ function FeatureTile({ icon, tone, title, count, desc, href }: { icon: React.Rea
   const t = TONE[tone];
   return (
     <Link href={href} className="block group">
-      <div className="rounded-2xl bg-surface border p-5 h-full transition-all group-hover:shadow-lg group-hover:-translate-y-0.5" style={{ borderColor: 'rgb(232 234 237)' }}>
+      <div className="rounded-2xl bg-surface border border-line p-5 h-full transition-all group-hover:shadow-lg group-hover:-translate-y-0.5">
         <div className="flex items-start justify-between mb-3">
-          <span className="inline-flex items-center justify-center h-10 w-10 rounded-xl" style={{ background: t.soft, color: t.on }}>{icon}</span>
-          <span className="text-2xl font-bold tabular-nums" style={{ color: 'rgb(19 23 32)' }}>{count}</span>
+          <span className={cn('inline-flex items-center justify-center h-10 w-10 rounded-xl', t.soft, t.on)}>{icon}</span>
+          <span className="text-2xl font-bold tabular-nums text-slate-900">{count}</span>
         </div>
-        <div className="text-base font-semibold mb-2" style={{ color: 'rgb(19 23 32)' }}>{title}</div>
-        <div className="text-xs leading-relaxed" style={{ color: 'rgb(97 104 117)' }}>{desc}</div>
-        <div className="mt-3 inline-flex items-center gap-1 text-xs font-medium" style={{ color: t.on }}>
+        <div className="text-base font-semibold mb-2 text-slate-900">{title}</div>
+        <div className="text-xs leading-relaxed text-slate-500">{desc}</div>
+        <div className={cn('mt-3 inline-flex items-center gap-1 text-xs font-medium', t.on)}>
           Open <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
         </div>
       </div>
@@ -395,15 +369,15 @@ function FeatureTile({ icon, tone, title, count, desc, href }: { icon: React.Rea
 function LayerCard({ num, tone, title, subtitle, desc, catches }: { num: string; tone: keyof typeof TONE; title: string; subtitle: string; desc: string; catches: string }) {
   const t = TONE[tone];
   return (
-    <div className="rounded-xl border p-4" style={{ background: t.soft, borderColor: 'rgb(232 234 237)' }}>
+    <div className={cn('rounded-xl border border-line p-4', t.soft)}>
       <div className="flex items-baseline gap-2 mb-2">
-        <span className="inline-flex items-center justify-center h-7 px-2 rounded text-xs font-bold tabular-nums text-on-accent" style={{ background: t.on }}>{num}</span>
-        <span className="font-semibold" style={{ color: 'rgb(19 23 32)' }}>{title}</span>
+        <span className={cn('inline-flex items-center justify-center h-7 px-2 rounded text-xs font-bold tabular-nums text-on-accent', t.solid)}>{num}</span>
+        <span className="font-semibold text-slate-900">{title}</span>
       </div>
-      <div className="text-[11px] uppercase tracking-wide mb-2" style={{ color: t.on }}>{subtitle}</div>
-      <div className="text-xs leading-relaxed mb-3" style={{ color: 'rgb(19 23 32)' }}>{desc}</div>
-      <div className="text-[11px]" style={{ color: 'rgb(97 104 117)' }}>
-        <span style={{ opacity: 0.7 }}>Catches:</span> <span style={{ color: 'rgb(19 23 32)' }}>{catches}</span>
+      <div className={cn('text-[11px] uppercase tracking-wide mb-2', t.on)}>{subtitle}</div>
+      <div className="text-xs leading-relaxed mb-3 text-slate-900">{desc}</div>
+      <div className="text-[11px] text-slate-500">
+        <span className="opacity-70">Catches:</span> <span className="text-slate-900">{catches}</span>
       </div>
     </div>
   );
@@ -412,10 +386,10 @@ function LayerCard({ num, tone, title, subtitle, desc, catches }: { num: string;
 function SeverityTile({ label, tone, count, desc }: { label: string; tone: keyof typeof TONE; count: number; desc: string }) {
   const t = TONE[tone];
   return (
-    <div className="rounded-xl border p-3" style={{ background: t.soft, borderColor: 'rgb(232 234 237)' }}>
-      <div className="text-2xl font-bold tabular-nums" style={{ color: t.on }}>{count}</div>
-      <div className="text-xs font-semibold mt-1" style={{ color: 'rgb(19 23 32)' }}>{label}</div>
-      <div className="text-[11px]" style={{ color: 'rgb(97 104 117)' }}>{desc}</div>
+    <div className={cn('rounded-xl border border-line p-3', t.soft)}>
+      <div className={cn('text-2xl font-bold tabular-nums', t.on)}>{count}</div>
+      <div className="text-xs font-semibold mt-1 text-slate-900">{label}</div>
+      <div className="text-[11px] text-slate-500">{desc}</div>
     </div>
   );
 }
@@ -423,13 +397,13 @@ function SeverityTile({ label, tone, count, desc }: { label: string; tone: keyof
 function WorkflowStep({ when, profile, duration, tone, description }: { when: string; profile: string; duration: string; tone: keyof typeof TONE; description: string }) {
   const t = TONE[tone];
   return (
-    <div className="rounded-2xl bg-surface border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
-      <div className="text-[11px] uppercase tracking-widest font-semibold" style={{ color: t.on }}>{when}</div>
+    <div className="rounded-2xl bg-surface border border-line p-5">
+      <div className={cn('text-[11px] uppercase tracking-widest font-semibold', t.on)}>{when}</div>
       <div className="flex items-baseline gap-2 mt-2">
-        <span className="text-xl font-bold" style={{ color: 'rgb(19 23 32)' }}>{profile}</span>
-        <span className="text-[11px]" style={{ color: 'rgb(97 104 117)' }}><Clock className="inline h-3 w-3" /> {duration}</span>
+        <span className="text-xl font-bold text-slate-900">{profile}</span>
+        <span className="text-[11px] text-slate-500"><Clock className="inline h-3 w-3" /> {duration}</span>
       </div>
-      <div className="text-xs leading-relaxed mt-2.5" style={{ color: 'rgb(97 104 117)' }}>{description}</div>
+      <div className="text-xs leading-relaxed mt-2.5 text-slate-500">{description}</div>
     </div>
   );
 }
@@ -442,22 +416,20 @@ function BugRow({ ticket, sev, title, via }: { ticket: string; sev: string; titl
   const jiraBase = process.env.NEXT_PUBLIC_JIRA_BASE;
   const ticketHref = jiraBase ? `${jiraBase.replace(/\/$/, '')}/browse/${ticket}` : undefined;
   return (
-    <li className="px-5 py-3 transition-colors hover:bg-slate-50" style={{ borderColor: 'rgb(232 234 237)' }}>
+    <li className="px-5 py-3 transition-colors hover:bg-slate-50">
       <div className="flex items-start gap-3">
         {ticketHref ? (
           <a href={ticketHref} target="_blank" rel="noreferrer"
-             className="text-xs font-mono hover:underline flex items-center gap-1 mt-0.5 whitespace-nowrap"
-             style={{ color: 'rgb(51 66 230)' }}>
+             className="text-xs font-mono hover:underline flex items-center gap-1 mt-0.5 whitespace-nowrap text-primary-700">
             {ticket}<ExternalLink className="h-3 w-3" />
           </a>
         ) : (
-          <span className="text-xs font-mono mt-0.5 whitespace-nowrap" style={{ color: 'rgb(97 104 117)' }}>{ticket}</span>
+          <span className="text-xs font-mono mt-0.5 whitespace-nowrap text-slate-500">{ticket}</span>
         )}
-        <span className="text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded mt-0.5 flex-shrink-0"
-          style={{ background: tone.soft, color: tone.on }}>{sev}</span>
+        <span className={cn('text-[10px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded mt-0.5 flex-shrink-0', tone.soft, tone.on)}>{sev}</span>
         <div className="flex-1 min-w-0">
-          <div className="text-sm leading-snug" style={{ color: 'rgb(19 23 32)' }}>{title}</div>
-          <div className="text-[11px] mt-0.5" style={{ color: 'rgb(97 104 117)' }}>surfaced by · {via}</div>
+          <div className="text-sm leading-snug text-slate-900">{title}</div>
+          <div className="text-[11px] mt-0.5 text-slate-500">surfaced by · {via}</div>
         </div>
       </div>
     </li>
@@ -467,15 +439,15 @@ function BugRow({ ticket, sev, title, via }: { ticket: string; sev: string; titl
 function ArchBox({ title, tone, icon, items }: { title: string; tone: keyof typeof TONE; icon: React.ReactNode; items: string[] }) {
   const t = TONE[tone];
   return (
-    <div className="rounded-xl border p-4 bg-surface" style={{ borderColor: 'rgb(232 234 237)' }}>
+    <div className="rounded-xl border border-line p-4 bg-surface">
       <div className="flex items-center gap-2 mb-3">
-        <span className="inline-flex items-center justify-center h-7 w-7 rounded-lg" style={{ background: t.soft, color: t.on }}>{icon}</span>
-        <span className="text-sm font-semibold" style={{ color: 'rgb(19 23 32)' }}>{title}</span>
+        <span className={cn('inline-flex items-center justify-center h-7 w-7 rounded-lg', t.soft, t.on)}>{icon}</span>
+        <span className="text-sm font-semibold text-slate-900">{title}</span>
       </div>
-      <ul className="space-y-1.5 text-xs" style={{ color: 'rgb(19 23 32)' }}>
+      <ul className="space-y-1.5 text-xs text-slate-900">
         {items.map((it) => (
           <li key={it} className="flex items-start gap-2">
-            <span className="inline-block h-1 w-1 rounded-full mt-1.5 flex-shrink-0" style={{ background: t.on }} />
+            <span className={cn('inline-block h-1 w-1 rounded-full mt-1.5 flex-shrink-0', t.solid)} />
             <span>{it}</span>
           </li>
         ))}
@@ -487,12 +459,12 @@ function ArchBox({ title, tone, icon, items }: { title: string; tone: keyof type
 function RoadmapTile({ when, tone, items }: { when: string; tone: keyof typeof TONE; items: string[] }) {
   const t = TONE[tone];
   return (
-    <div className="rounded-2xl bg-surface border p-5" style={{ borderColor: 'rgb(232 234 237)' }}>
-      <div className="text-[11px] uppercase tracking-widest font-semibold mb-3" style={{ color: t.on }}>{when}</div>
-      <ul className="space-y-2 text-xs" style={{ color: 'rgb(19 23 32)' }}>
+    <div className="rounded-2xl bg-surface border border-line p-5">
+      <div className={cn('text-[11px] uppercase tracking-widest font-semibold mb-3', t.on)}>{when}</div>
+      <ul className="space-y-2 text-xs text-slate-900">
         {items.map((it) => (
           <li key={it} className="flex items-start gap-2">
-            <span className="inline-block h-1.5 w-1.5 rounded-full mt-1.5 flex-shrink-0" style={{ background: t.on }} />
+            <span className={cn('inline-block h-1.5 w-1.5 rounded-full mt-1.5 flex-shrink-0', t.solid)} />
             <span>{it}</span>
           </li>
         ))}
@@ -504,13 +476,13 @@ function RoadmapTile({ when, tone, items }: { when: string; tone: keyof typeof T
 function CtaCard({ href, icon, title, sub }: { href: string; icon: React.ReactNode; title: string; sub: string }) {
   return (
     <Link href={href} className="block group">
-      <div className="rounded-2xl bg-surface border p-4 transition-all group-hover:border-emerald-300 group-hover:shadow-md flex items-center gap-3" style={{ borderColor: 'rgb(232 234 237)' }}>
-        <span className="inline-flex items-center justify-center h-10 w-10 rounded-lg" style={{ background: 'rgba(21,172,102,0.10)', color: 'rgb(21 172 102)' }}>{icon}</span>
+      <div className="rounded-2xl bg-surface border border-line p-4 transition-all group-hover:border-emerald-300 group-hover:shadow-md flex items-center gap-3">
+        <span className="inline-flex items-center justify-center h-10 w-10 rounded-lg bg-emerald-50 text-emerald-700">{icon}</span>
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold" style={{ color: 'rgb(19 23 32)' }}>{title}</div>
-          <div className="text-xs" style={{ color: 'rgb(97 104 117)' }}>{sub}</div>
+          <div className="text-sm font-semibold text-slate-900">{title}</div>
+          <div className="text-xs text-slate-500">{sub}</div>
         </div>
-        <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" style={{ color: 'rgb(97 104 117)' }} />
+        <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5 text-slate-500" />
       </div>
     </Link>
   );

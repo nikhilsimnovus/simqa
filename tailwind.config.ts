@@ -57,6 +57,23 @@ const config: Config = {
         // Likewise `sky-*` was the ad-hoc "info" hue; fold it into the
         // brand's mist/cyan so it themes with everything else.
         sky:     scale('blue'),
+        // Stray hues that predate the re-skin (category chips on /ui-tests,
+        // run-kind badges on /runs, the bulk-tests validate button). None of
+        // them exist in the brand palette; unaliased they resolve to stock
+        // Tailwind hex, which ignores [data-theme] and leaves light pastel
+        // chips glowing on the dark surface. Fold each onto the nearest
+        // brand ramp instead of editing every call site — the chips carry
+        // text labels, so losing hue variety costs nothing.
+        violet:  scale('blue'),
+        indigo:  scale('blue'),
+        cyan:    scale('blue'),
+        teal:    scale('emerald'),
+        lime:    scale('emerald'),
+        yellow:  scale('amber'),
+        rose:    scale('red'),
+        purple:  scale('primary'),
+        fuchsia: scale('primary'),
+        pink:    scale('primary'),
         accent:  { ...scale('emerald'), DEFAULT: 'rgb(var(--c-emerald-500) / <alpha-value>)' },
 
         // Semantic surfaces. `surface` replaces the literal `bg-white` so

@@ -120,6 +120,8 @@ function InventoryEditor() {
   const [systems, setSystems]   = useState<InventorySystem[]>([]);
   const [profiles, setProfiles] = useState<TopologyProfile[]>([]);
   const [sshDefaults, setSshDefaults] = useState<SshDefaults>({});
+  /** Siblings of `defaults.ssh` this screen doesn't edit — round-tripped. */
+  const [defaultsRest, setDefaultsRest] = useState<Record<string, unknown>>({});
   const [rest, setRest]         = useState<Record<string, unknown>>({});
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
@@ -133,7 +135,9 @@ function InventoryEditor() {
       // Fold any legacy `callbox` binding into eNB/gNB — the Callbox role no
       // longer exists, and we don't want that value stranded in the file.
       setProfiles((pro ?? []).map(migrateProfile));
-      setSshDefaults(defaults?.ssh ?? {});
+      const { ssh, ...defaultsOthers } = defaults ?? {};
+      setSshDefaults(ssh ?? {});
+      setDefaultsRest(defaultsOthers);
       // Anything else in the document (suites, …) is round-tripped untouched
       // so saving from this screen can't drop a sibling section.
       setRest(others ?? {});
@@ -147,6 +151,7 @@ function InventoryEditor() {
 
   async function save() {
     setSaving(true);
+    const hasSsh = Object.values(sshDefaults).some(isSet);
     try {
       const r = await fetch('/api/inventory', {
         method: 'PUT',
@@ -156,7 +161,9 @@ function InventoryEditor() {
           ...rest,
           systems,
           profiles,
-          defaults: Object.values(sshDefaults).some(isSet) ? { ssh: sshDefaults } : undefined,
+          defaults: hasSsh || Object.keys(defaultsRest).length
+            ? { ...defaultsRest, ...(hasSsh ? { ssh: sshDefaults } : {}) }
+            : undefined,
         }),
       });
       const j = await r.json();

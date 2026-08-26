@@ -21,24 +21,29 @@ import Link from 'next/link';
 
 export const dynamic = 'force-dynamic';
 
-async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
-  try { return await fn(); } catch { return fallback; }
-}
-
 /**
  * One network round to the box per request, shared by every card that needs
  * it. React's `cache` dedupes across components in the same render, so the
  * stats row and the simulators card don't each pay for a login.
+ *
+ * `reachable` is tracked separately from the payloads: an empty simulator
+ * list is a real answer from a live box, not the same thing as a box that
+ * timed out, and the cards word those two cases differently.
  */
 const getLive = cache(async () => {
   const inv = loadInventory();
   const apiOpts = uesimApiOptsFromInventory(inv);
-  if (!apiOpts) return { apiOpts: null, tcs: { items: [], total: 0 }, sims: { items: [] as any[] } };
-  const [tcs, sims] = await Promise.all([
-    safe(() => listTestcases(apiOpts, 1, 0), { items: [], total: 0 }),
-    safe(() => listSimulators(apiOpts), { items: [] as any[] }),
+  if (!apiOpts) return { apiOpts: null, tcs: { items: [], total: 0 }, sims: { items: [] as any[] }, reachable: false };
+  const [tcsR, simsR] = await Promise.allSettled([
+    listTestcases(apiOpts, 1, 0),
+    listSimulators(apiOpts),
   ]);
-  return { apiOpts, tcs, sims };
+  return {
+    apiOpts,
+    tcs:  tcsR.status  === 'fulfilled' ? tcsR.value  : { items: [], total: 0 },
+    sims: simsR.status === 'fulfilled' ? simsR.value : { items: [] as any[] },
+    reachable: tcsR.status === 'fulfilled' || simsR.status === 'fulfilled',
+  };
 });
 
 export default function DashboardPage() {
@@ -109,8 +114,7 @@ export default function DashboardPage() {
 // ───────────────────── Live (streamed) sections ─────────────────────
 
 async function StatsRow({ inv }: { inv: ReturnType<typeof loadInventory> }) {
-  const { apiOpts, tcs, sims } = await getLive();
-  const reachable = !!apiOpts && (sims.items?.length ?? 0) > 0;
+  const { apiOpts, tcs, sims, reachable } = await getLive();
   return (
     <StatsGrid>
       <Stat label="UESIM"      value={apiOpts?.host ?? '—'}    hint={reachable ? 'reachable' : 'not reachable'} />
@@ -122,11 +126,15 @@ async function StatsRow({ inv }: { inv: ReturnType<typeof loadInventory> }) {
 }
 
 async function SimulatorList() {
-  const { apiOpts, sims } = await getLive();
+  const { apiOpts, sims, reachable } = await getLive();
   if (!apiOpts || (sims.items?.length ?? 0) === 0) {
     return (
       <div className="p-4 text-[13px] text-slate-500">
-        {apiOpts ? 'No simulators registered on the box.' : 'Add a UESIM system in Systems Management.'}
+        {!apiOpts
+          ? 'Add a UESIM system in Systems Management.'
+          : reachable
+            ? 'No simulators registered on the box.'
+            : 'UESIM box not reachable.'}
       </div>
     );
   }

@@ -144,15 +144,25 @@ async function apiGet<T>(opts: ApiOpts, path: string): Promise<T> {
 
 async function apiPost<T>(opts: ApiOpts, path: string, body?: unknown): Promise<T> {
   const token = await ensureToken(opts.host, opts.username, opts.password);
-  const res = await fetch(`http://${opts.host}/v2${path}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(POST_TIMEOUT_MS),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`http://${opts.host}/v2${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(POST_TIMEOUT_MS),
+    });
+  } catch (e) {
+    // Connection refused/reset = box is gone, blacklist like apiGet does.
+    // A timeout is NOT proof of death here: execution start legitimately
+    // runs long (hence the 120s cap), so a slow box must not get 30s of
+    // fast-fails on top of an already-slow run.
+    if (e instanceof TypeError) markUnreachable(opts.host);
+    throw e;
+  }
   if (!res.ok) throw new Error(`UESIM POST ${path}: ${res.status} ${await res.text().catch(() => '')}`);
   return (await res.json()) as T;
 }
@@ -207,6 +217,9 @@ export async function getSimulatorStatus(opts: ApiOpts, simulatorId: string): Pr
  * neither works we return undefined so callers can store "unknown".
  */
 export async function getBoxVersion(opts: ApiOpts): Promise<{ version?: string; build?: string; raw?: any } | undefined> {
+  // The unauthenticated fallback below doesn't go through ensureToken, so
+  // honour the blacklist here or a known-dead box pays the timeout anyway.
+  if (unreachableFor(opts.host) > 0) return undefined;
   const tryFetch = async (auth: 'bearer' | 'none'): Promise<any | undefined> => {
     const headers: Record<string, string> = {};
     if (auth === 'bearer') {
@@ -217,10 +230,19 @@ export async function getBoxVersion(opts: ApiOpts): Promise<{ version?: string; 
     }
     // Bounded like every other call — this one used to be unbounded and could
     // stall a page on an unreachable box.
-    const res = await fetch(`http://${opts.host}/v2/version`, {
-      headers,
-      signal: AbortSignal.timeout(GET_TIMEOUT_MS),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`http://${opts.host}/v2/version`, {
+        headers,
+        signal: AbortSignal.timeout(GET_TIMEOUT_MS),
+      });
+    } catch (e) {
+      // Best-effort contract: this function reports undefined, never throws.
+      // The cached-token path skips ensureToken's reachability check, so a
+      // box that died since login would otherwise leak the raw fetch error.
+      if (isConnectFailure(e)) markUnreachable(opts.host);
+      return undefined;
+    }
     if (!res.ok) return undefined;
     return res.json().catch(() => undefined);
   };
