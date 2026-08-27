@@ -15,6 +15,7 @@ import * as path from 'node:path';
 
 import type { Inventory } from '../inventory';
 import { loadInventory, uesimApiOptsForSystem } from '../inventory';
+import { ensureToken } from '../uesimClient';
 import { ALL_CHECKS, type CheckDef } from './checks';
 import { tryLaunchBrowser } from './browser';
 import type { RunCtx } from './ctx';
@@ -462,20 +463,17 @@ function filterChecks(catalogue: CheckDef[], options: RunOptions, onlyIds?: stri
 
 async function findLastExecutedTestcase(target: ReturnType<typeof uesimApiOptsForSystem>): Promise<string> {
   if (!target) throw new Error('no target');
-  // Login first.
-  const lr = await fetch(`http://${target.host}/v2/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: target.username, password: target.password }),
-  });
-  if (!lr.ok) throw new Error(`login: ${lr.status}`);
-  const lj = await lr.json();
-  const token = lj.access_token ?? lj.token;
+  // Go through the shared client for login rather than a raw fetch: it
+  // carries the timeout, the retry-then-blacklist logic, and the token
+  // cache. The raw fetch here was unbounded — the exact hang class the
+  // client exists to prevent.
+  const token = await ensureToken(target.host, target.username, target.password);
   // Search ordered by most-recently-executed. The API supports POST /v2/testcases/search.
   const sr = await fetch(`http://${target.host}/v2/testcases/search`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ offset: 0, limit: 50 }),
+    signal: AbortSignal.timeout(20_000),
   });
   if (!sr.ok) throw new Error(`search: ${sr.status}`);
   const sj = await sr.json();

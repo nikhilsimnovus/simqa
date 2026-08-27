@@ -86,12 +86,26 @@ export async function ensureToken(host: string, username: string, password: stri
 
   const attempt = (async () => {
     try {
-      const res = await fetch(`http://${host}/v2/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-        signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
-      });
+      // One retry on a connect-class failure before declaring the box dead.
+      // Observed in the field: a single login timed out at the full 6s
+      // against a box that answers curl in 0.5s, and that one blip then
+      // poisoned the blacklist for 30s, cascading 502s across the app. A
+      // transient stall must not be treated as proof of death; a genuinely
+      // dead box just pays 2×6s on the first visit and is then blacklisted.
+      let res: Response;
+      for (let attemptNo = 1; ; attemptNo++) {
+        try {
+          res = await fetch(`http://${host}/v2/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+            signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
+          });
+          break;
+        } catch (e) {
+          if (attemptNo >= 2 || !isConnectFailure(e)) throw e;
+        }
+      }
       if (!res.ok) throw new Error(`UESIM login failed: ${res.status} ${await res.text().catch(() => '')}`);
       const body = (await res.json()) as { access_token: string; expires_in?: number };
       if (!body.access_token) throw new Error('UESIM login: no access_token in response');
@@ -100,8 +114,9 @@ export async function ensureToken(host: string, username: string, password: stri
       clearUnreachable(host);
       return body.access_token;
     } catch (e) {
-      // Only a connect/timeout failure means "box is down". A 401 is the box
-      // answering promptly, and must not blacklist it.
+      // Only a connect/timeout failure means "box is down" — and only after
+      // the retry above has also failed. A 401 is the box answering
+      // promptly, and must not blacklist it.
       if (isConnectFailure(e)) markUnreachable(host);
       throw e;
     } finally {

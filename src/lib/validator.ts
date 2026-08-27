@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { NodeSSH } from 'node-ssh';
+import { connectSsh } from './sshConnect';
 import {
   ensureToken, listTestcases, listSimulators, getTestcase, startExecution,
 } from './uesimClient';
@@ -177,14 +178,13 @@ export async function runValidationPlan(inv: Inventory, req: ValidationPlanReque
 
     const ssh = new NodeSSH();
     try {
-      await ssh.connect({
+      await connectSsh(ssh, {
         host: uesim.host,
         port: uesim.sshPort ?? 22,
         username: uesim.username,
         ...(uesim.authMode === 'privateKey'
           ? { privateKey: resolveKey(uesim.privateKey), passphrase: uesim.passphrase }
           : { password: uesim.password ?? '' }),
-        readyTimeout: 10000,
       });
       const t = await timed(() => ssh.putFile(localPath, buildOut!.targetPath));
       checks.push(check('scp-build', t, `${localPath} -> ${uesim.host}:${buildOut!.targetPath}`));
