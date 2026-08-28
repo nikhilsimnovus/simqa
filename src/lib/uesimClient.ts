@@ -7,6 +7,7 @@
 // remaining as expired and re-login.
 
 import type { UesimTestDefinition } from './cfgGenerator';
+import { getSettings } from './settings';
 
 interface AuthState {
   token: string;
@@ -135,9 +136,11 @@ interface ApiOpts {
 }
 
 // Bounded timeouts so no call can hang a long batch run. Execution start is
-// legitimately slow on some builds, so POST gets a generous cap.
-const GET_TIMEOUT_MS = 20_000;
-const POST_TIMEOUT_MS = 120_000;
+// legitimately slow on some builds, so POST gets a generous cap. Both are
+// user-tunable on /settings; getSettings() is mtime-cached so consulting it
+// per call costs a stat(), not a parse.
+const GET_TIMEOUT_MS  = () => getSettings().uesimGetTimeoutMs;
+const POST_TIMEOUT_MS = () => getSettings().uesimPostTimeoutMs;
 
 async function apiGet<T>(opts: ApiOpts, path: string): Promise<T> {
   const token = await ensureToken(opts.host, opts.username, opts.password);
@@ -145,7 +148,7 @@ async function apiGet<T>(opts: ApiOpts, path: string): Promise<T> {
   try {
     res = await fetch(`http://${opts.host}/v2${path}`, {
       headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(GET_TIMEOUT_MS),
+      signal: AbortSignal.timeout(GET_TIMEOUT_MS()),
     });
   } catch (e) {
     // Cached token but the box has since gone away — record it so the next
@@ -168,7 +171,7 @@ async function apiPost<T>(opts: ApiOpts, path: string, body?: unknown): Promise<
         'Content-Type': 'application/json',
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(POST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(POST_TIMEOUT_MS()),
     });
   } catch (e) {
     // Connection refused/reset = box is gone, blacklist like apiGet does.
@@ -249,7 +252,7 @@ export async function getBoxVersion(opts: ApiOpts): Promise<{ version?: string; 
     try {
       res = await fetch(`http://${opts.host}/v2/version`, {
         headers,
-        signal: AbortSignal.timeout(GET_TIMEOUT_MS),
+        signal: AbortSignal.timeout(GET_TIMEOUT_MS()),
       });
     } catch (e) {
       // Best-effort contract: this function reports undefined, never throws.

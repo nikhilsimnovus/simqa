@@ -4,6 +4,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { THEME_BOOT_SCRIPT } from '@/components/ThemeToggle';
 import { loadInventory, isUesimLike } from '@/lib/inventory';
 import { getSimqaVersion } from '@/lib/version';
+import pkg from '../../package.json';
 
 export const metadata: Metadata = {
   title: 'QA Ka BAAP',
@@ -27,7 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <div className="min-h-screen flex bg-page">
-          <Sidebar version={ver.version} versionSource={ver.source} />
+          <Sidebar version={ver.version} versionSource={ver.source} appVersion={pkg.version} />
           <div className="flex-1 flex flex-col min-w-0" data-uesim-host={uesim?.host ?? ''}>
             {children}
           </div>

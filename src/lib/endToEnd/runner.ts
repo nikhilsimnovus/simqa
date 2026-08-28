@@ -16,6 +16,8 @@ import * as path from 'node:path';
 import type { Inventory } from '../inventory';
 import { loadInventory, uesimApiOptsForSystem } from '../inventory';
 import { ensureToken } from '../uesimClient';
+import { getSettings } from '../settings';
+import { notifyRunFinished } from '../notify';
 import { ALL_CHECKS, type CheckDef } from './checks';
 import { tryLaunchBrowser } from './browser';
 import type { RunCtx } from './ctx';
@@ -87,12 +89,15 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
   const evidenceDir = path.join(process.cwd(), 'data', 'end-to-end', runId);
   fs.mkdirSync(evidenceDir, { recursive: true });
 
+  // Poll cadence and completion grace default from workspace settings
+  // (tunable on /settings); an explicit per-request option still wins.
+  const ws = getSettings();
   const options: RunOptions = {
     apiChecks: true,
     uiChecks: false,
     saveEvidence: true,
-    pollIntervalMs: 5000,
-    completionGraceMs: 5 * 60_000,
+    pollIntervalMs: ws.runnerPollIntervalMs,
+    completionGraceMs: ws.runnerCompletionGraceMs,
     ...(req.options ?? {}),
   };
 
@@ -142,6 +147,14 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
     ar.finalDetail = `runner threw: ${e?.message ?? e}`;
     ar.finishedAt = new Date().toISOString();
     saveReport(ar);
+    void notifyRunFinished({
+      surface: 'end-to-end',
+      runId: ar.runId,
+      ok: false,
+      title: ar.testcaseName ?? ar.testcaseId,
+      detail: ar.finalDetail,
+      host: ar.systemHost,
+    });
   });
 
   return { ok: true, runId };
@@ -345,6 +358,19 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
   // the finished state before it disappears.
   ar.ctx.testcaseName = ar.testcaseName = ar.ctx.testcaseName ?? ar.testcaseId;
   saveReport(ar, results);
+
+  // Fire the run-finished webhook (if configured on /settings). Fire-and-
+  // forget by design: a slow or broken webhook must never delay report
+  // persistence or the status endpoint seeing the finished state.
+  void notifyRunFinished({
+    surface: 'end-to-end',
+    runId: ar.runId,
+    ok: ar.ok === true,
+    title: ar.testcaseName ?? ar.testcaseId,
+    detail: ar.finalDetail,
+    host: ar.systemHost,
+    counts: { total: results.length, passed, failed, skipped },
+  });
 
   // Garbage-collect this run after a delay so listRuns/loadRun can take over.
   setTimeout(() => { activeRuns.delete(ar.runId); }, 60_000);

@@ -113,9 +113,11 @@ function QaKaBaapLogo({ size = 32 }: { size?: number }) {
 interface SidebarProps {
   version?: string;
   versionSource?: string;
+  /** package.json version — the footer used to hardcode v0.1.0. */
+  appVersion?: string;
 }
 
-export function Sidebar({ version, versionSource }: SidebarProps = {}) {
+export function Sidebar({ version, versionSource, appVersion }: SidebarProps = {}) {
   const pathname = usePathname() || '/';
 
   // ── Rail (icons-only) mode + per-section collapsed state ─────────────
@@ -310,7 +312,7 @@ export function Sidebar({ version, versionSource }: SidebarProps = {}) {
         ) : (
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0 text-[11px] text-slate-500">
-              <span>v0.1.0</span>
+              <span>v{appVersion ?? '0.0.0'}</span>
               {version ? (
                 <span
                   className="ml-2 font-mono text-[10px] text-slate-400"
