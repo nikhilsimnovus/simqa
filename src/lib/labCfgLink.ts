@@ -30,6 +30,24 @@ export interface CfgLinkStep {
 
 const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
 
+/** `ln -sfn <target> <dir>/<link>`, privileged, with an unprivileged fallback.
+ *
+ *  Written without `cd` on purpose. /root is 0700 on some callboxes, so
+ *  `cd /root/enb/config && ln …` dies at the cd — the failure the suite
+ *  reported as "bring-up failed: cd: /root/enb/config: Permission denied".
+ *  Passing the link's absolute path sidesteps the directory entirely, while
+ *  the target stays relative so the symlink itself is byte-identical to what
+ *  the old command produced. `-n` keeps sudo non-interactive so a box without
+ *  passwordless sudo falls through instead of hanging on a prompt.
+ *
+ *  `target` and `link` arrive already shell-quoted via q(). */
+export function sudoLink(dir: string, target: string, link: string): string {
+  const linkPath = `${dir}/${link.replace(/^'|'$/g, '')}`;
+  const abs = q(linkPath);
+  return `sudo -n ln -sfn ${target} ${abs} 2>/dev/null || ln -sfn ${target} ${abs}; `
+    + `sudo -n ls -la ${abs} 2>/dev/null || ls -la ${abs}`;
+}
+
 /**
  * Symlink each selected file into place, then restart `lte` once. lte.service
  * runs enb+mme+ims together (see automation/runner.ts's own note on this —
@@ -56,7 +74,11 @@ export async function linkAndRestart(
     if (sel.enb) {
       const t0 = Date.now();
       await withSsh(callbox, async (ssh) => {
-        const r = await ssh.execCommand(`cd /root/enb/config && ln -sfn ${q(sel.enb!)} 'enb.cfg' && ls -la 'enb.cfg'`);
+        // Absolute link path + sudo, no `cd`. On a callbox with /root at 0700
+        // the shell cannot even enter the directory, so `cd … && ln` failed
+        // with "cd: /root/enb/config: Permission denied" before ln ever ran.
+        // The target stays relative so the resulting symlink is unchanged.
+        const r = await ssh.execCommand(sudoLink(`/root/enb/config`, q(sel.enb!), `'enb.cfg'`));
         if (r.code !== 0) throw new Error(r.stderr || r.stdout || `ln exit ${r.code}`);
       });
       stamp('cfg-link:enb', true, `enb.cfg → ${sel.enb}`, t0);
@@ -65,7 +87,7 @@ export async function linkAndRestart(
       if (!name) continue;
       const t0 = Date.now();
       await withSsh(callbox, async (ssh) => {
-        const r = await ssh.execCommand(`cd /root/mme/config && ln -sfn ${q(name)} ${q(`${role}.cfg`)} && ls -la ${q(`${role}.cfg`)}`);
+        const r = await ssh.execCommand(sudoLink(`/root/mme/config`, q(name), q(`${role}.cfg`)));
         if (r.code !== 0) throw new Error(r.stderr || r.stdout || `ln exit ${r.code}`);
       });
       stamp(`cfg-link:${role}`, true, `${role}.cfg → ${name}`, t0);

@@ -21,6 +21,7 @@
 
 import { loadInventory, getSystem, uesimApiOptsForSystem, type AutomationSuite, type SuiteItem } from '../inventory';
 import { withSsh, readCommand } from '../configFidelity/ssh';
+import { sudoLink } from '../labCfgLink';
 import { saveRun, newRunId, type RunRecord } from './runStore';
 import { triggerPerfQaCollection, DEFAULT_PERFQA_URL } from './diagnostics';
 import { duplicateTestcase } from './duplicateTestcase';
@@ -497,7 +498,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
       const t1 = Date.now();
       try {
         await withSsh(sys, async (ssh) => {
-          const r = await ssh.execCommand(`ln -sfn "${target}" "${linkPath}" && ls -la "${linkPath}"`);
+          const r = await ssh.execCommand(`sudo -n ln -sfn "${target}" "${linkPath}" 2>/dev/null || ln -sfn "${target}" "${linkPath}"; sudo -n ls -la "${linkPath}" 2>/dev/null || ls -la "${linkPath}"`);
           if (r.code !== 0) throw new Error(r.stderr || r.stdout || `ln exit ${r.code}`);
           return r.stdout;
         });
@@ -813,7 +814,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           const prev = await ssh.execCommand(`readlink ${q(linkPath)} || true`);
           prevEnbLink = (prev.stdout ?? '').trim();
           const r = await ssh.execCommand(
-            `cd /root/enb/config && ln -sfn ${q(cfg)} 'enb.cfg' && ls -la 'enb.cfg'`);
+            sudoLink('/root/enb/config', q(cfg), 'enb.cfg'));
           if (r.code !== 0) throw new Error(`ln: ${r.stderr || r.stdout || `exit ${r.code}`}`);
         });
         stepDetails.push(`cfg-link: ln -sfn ${cfg} enb.cfg`);
@@ -849,7 +850,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             const prevTarget = (prev.stdout ?? '').trim();
             if (linkName === 'mme.cfg') prevMmeLink = prevTarget; else prevImsLink = prevTarget;
             const r = await ssh.execCommand(
-              `cd /root/mme/config && ln -sfn ${q(pick)} ${q(linkName)} && ls -la ${q(linkName)}`);
+              sudoLink('/root/mme/config', q(pick), linkName));
             if (r.code !== 0) throw new Error(`ln ${linkName}: ${r.stderr || r.stdout || `exit ${r.code}`}`);
           });
           stepDetails.push(`cfg-link: ln -sfn ${pick} ${linkName}`);
