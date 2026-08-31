@@ -164,6 +164,12 @@ const SELECT_CLS =
   'focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-400';
 
 export default function InventoryPage() {
+  /** Systems and Topology were stacked sections, so Topology lived a long
+   *  scroll below a grid of system cards — findable only if you knew it was
+   *  there. Tabs put both one click away and keep the page a screenful.
+   *  The #topology anchor (dashboard tile, /end-to-end redirect) still works:
+   *  the effect below opens the tab instead of scrolling to it. */
+  const [tab, setTab] = useState<'systems' | 'topology'>('systems');
   const [systems, setSystems]   = useState<InventorySystem[]>([]);
   const [profiles, setProfiles] = useState<TopologyProfile[]>([]);
   const [loading, setLoading]   = useState(true);
@@ -189,6 +195,11 @@ export default function InventoryPage() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     setCameFromDashboard(new URLSearchParams(window.location.search).get('from') === 'dashboard');
+    // #topology used to scroll to a section further down the page. Now that
+    // Topology is a tab, the anchor has to OPEN it — otherwise the dashboard
+    // tile and the /end-to-end redirect both land on Systems with nothing to
+    // show for the fragment.
+    if (window.location.hash === '#topology') setTab('topology');
   }, []);
 
   useEffect(() => {
@@ -367,8 +378,34 @@ export default function InventoryPage() {
               <StatCard icon={Layers}      tone="slate"  label="Topology Setups" value={stats.profiles} />
             </div>
 
+            {/* Tabs. Counts sit on the tab itself so you can see there ARE
+                topology setups without switching to find out. */}
+            <div className="flex items-center gap-1 border-b border-line">
+              {([
+                { id: 'systems',  label: 'Systems',  count: systems.length },
+                { id: 'topology', label: 'Topology', count: profiles.length },
+              ] as const).map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTab(t.id)}
+                  className={
+                    'relative px-4 h-9 text-sm font-medium transition-colors -mb-px border-b-2 ' +
+                    (tab === t.id
+                      ? 'border-primary-600 text-slate-900'
+                      : 'border-transparent text-slate-500 hover:text-slate-800')
+                  }
+                >
+                  {t.label}
+                  <span className={'ml-1.5 text-[11px] tabular-nums ' + (tab === t.id ? 'text-slate-500' : 'text-slate-400')}>
+                    {t.count}
+                  </span>
+                </button>
+              ))}
+            </div>
+
             {/* SYSTEMS */}
-            <section>
+            <section className={tab === 'systems' ? '' : 'hidden'}>
               <div className="flex items-end justify-between mb-3">
                 <div>
                   <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">Systems</h2>
@@ -402,7 +439,7 @@ export default function InventoryPage() {
                 consolidated here so there's one place to manage it, but kept
                 its card design rather than the plainer always-editable grid
                 this section had briefly used in between. */}
-            <section id="topology" className="scroll-mt-20">
+            <section id="topology" className={tab === 'topology' ? 'scroll-mt-20' : 'hidden'}>
               <TopologySetupSection
                 systems={systems}
                 profiles={profiles}
