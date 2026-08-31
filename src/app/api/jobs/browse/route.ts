@@ -78,7 +78,11 @@ export async function GET(req: Request) {
     // which is what silently broke this the first time. The escapes below must
     // stay doubled — \t and \n reach find as the two-character sequences its
     // -printf understands; a real tab or newline here would not.
-    const cmd = `find ${spec.dir} -maxdepth 1 -not -type d ! -name '.*' -printf '%T@\t%s\t%f\t%l\n' 2>/dev/null`;
+    // `sudo -n` first, plain find as the fallback — /root is 0700 on some
+    // machines (.122) and readable on others (.106), and without sudo the
+    // former returns an empty list that reads as "this box has no configs".
+    const find = `find ${spec.dir} -maxdepth 1 -not -type d ! -name '.*' -printf '%T@\t%s\t%f\t%l\n'`;
+    const cmd = `sudo -n ${find} 2>/dev/null || ${find} 2>/dev/null`;
     const raw = await readCommand(sys, cmd);
     const files = raw.split('\n').filter(Boolean).map((line) => {
       const [epoch, size, name, target] = line.split('\t');

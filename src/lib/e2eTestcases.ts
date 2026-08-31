@@ -118,7 +118,10 @@ function save(tc: E2ETestcase): void {
  *  basename so it cannot escape the fixed directory. */
 async function readFileB64(sys: InventorySystem, dir: string, name: string): Promise<CapturedFile> {
   if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new Error(`unsafe filename: ${name}`);
-  const out = await readCommand(sys, `base64 -w0 ${dir}/${name} 2>/dev/null`);
+  // sudo first: /root is 0700 on some callboxes, so an unprivileged read comes
+  // back empty and would be captured as "file is empty" rather than "we were
+  // not allowed to read it".
+  const out = await readCommand(sys, `sudo -n base64 -w0 ${dir}/${name} 2>/dev/null || base64 -w0 ${dir}/${name} 2>/dev/null`);
   const content = out.trim();
   if (!content) throw new Error(`${sys.host}:${dir}/${name} is empty or unreadable`);
   return {
@@ -251,7 +254,13 @@ async function pushCaptured(sys: InventorySystem, f: CapturedFile): Promise<void
   await writeRemoteFile(sys, tmp, f.content);
   const out = await readCommand(
     sys,
-    `base64 -d ${tmp} > ${f.dir}/${f.name} && rm -f ${tmp} && echo OK`,
+    // Writing into /root needs the same privilege the read did. `tee` rather
+    // than `sudo … > file`, because the redirect is performed by the calling
+    // shell — which is unprivileged — so `sudo base64 -d > /root/...` fails on
+    // exactly the boxes sudo was added for.
+    `sudo -n sh -c 'base64 -d ${tmp} > ${f.dir}/${f.name}' 2>/dev/null `
+    + `|| sh -c 'base64 -d ${tmp} > ${f.dir}/${f.name}'; rm -f ${tmp}; `
+    + `test -s ${f.dir}/${f.name} && echo OK`,
   );
   if (!/OK/.test(out)) throw new Error(`could not write ${f.dir}/${f.name}: ${out.trim().slice(0, 160)}`);
 }

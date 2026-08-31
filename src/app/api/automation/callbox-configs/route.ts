@@ -41,7 +41,15 @@ export async function GET(req: Request) {
     // this callbox" and "directory is empty" produce the identical empty list,
     // which is exactly the ambiguity that makes an empty picker unexplainable.
     // readCommand appends stderr, so a missing path comes back and is reported.
-    const cmd = `find ${dir} -maxdepth 1 -not -type d ! -name '.*' -printf '%T@\t%s\t%f\n'`;
+    // `sudo -n` first, plain find as the fallback.
+    //
+    // /root is 0700 on some callboxes and readable on others: .106 lists fine
+    // as sysadmin, .122 answers "Permission denied" for the identical path —
+    // which showed up as an empty picker with no explanation. -n keeps it
+    // non-interactive, so a box without passwordless sudo drops straight to the
+    // fallback instead of hanging on a password prompt.
+    const find = `find ${dir} -maxdepth 1 -not -type d ! -name '.*' -printf '%T@\t%s\t%f\n'`;
+    const cmd = `sudo -n ${find} 2>/dev/null || ${find}`;
     const raw = await readCommand(sys, cmd);
     // A find error means the path is not there — say so instead of returning
     // an empty list that reads as "this callbox has no configs".
