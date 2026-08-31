@@ -19,7 +19,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import {
   Check, X, Loader2, ChevronLeft, ChevronRight, Play, AlertTriangle, Search, Plus, Pencil,
   FolderOpen, ExternalLink,
@@ -663,16 +662,20 @@ export function Wizard({ setups, playlists }: { setups: Setup[]; playlists: Play
                     ) : null}
                   </>
                 )}
-                {/* Opens the Test Cases page in a new tab so the draft here is
-                    not lost. Returning and re-selecting the station re-reads
-                    the catalogue, so a newly-created case appears in this list. */}
-                <Link
-                  href={`/testcases?systemId=${encodeURIComponent(setup?.systemId ?? '')}`}
-                  target="_blank"
+                {/* Test cases are authored on the Simnovator itself — SimQA has
+                    no create form, and /testcases is a read-only list, so this
+                    used to be a dead end. Points at the box's own Create Test
+                    Case page instead. Opens in a new tab so the draft here
+                    survives; come back, re-pick the station, and the new case
+                    is in this list. */}
+                <a
+                  href={`http://${setupHost}/testcase/createtestcase`}
+                  target="_blank" rel="noreferrer"
                   className="mt-2 inline-flex items-center gap-1 text-[11px] text-primary-700 hover:underline"
+                  title={`Create a test case on ${setupHost}`}
                 >
-                  <Plus className="h-3 w-3" />Create New Test Case
-                </Link>
+                  <Plus className="h-3 w-3" />Create New Test Case on {setupHost}
+                </a>
               </div>
             </div>
 
