@@ -146,7 +146,7 @@ export default function AutomationPage() {
                 <select
                   value={topologyId}
                   onChange={(e) => setTopologyId(e.target.value)}
-                  className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                  className="h-9 w-full rounded-md border border-slate-300 bg-surface px-3 text-sm text-slate-900"
                 >
                   <option value="">— none —</option>
                   {profiles.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.id})</option>)}

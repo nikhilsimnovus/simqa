@@ -951,7 +951,7 @@ export default function AutomationSuitePage() {
           return (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4"
               onClick={() => setConfirmRun(null)}>
-              <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-md w-full p-5"
+              <div className="bg-surface rounded-xl shadow-xl border border-line max-w-md w-full p-5"
                 onClick={e => e.stopPropagation()}>
                 <h3 className="text-base font-semibold text-slate-900">{title}</h3>
                 <p className="mt-2 text-sm text-slate-600">
@@ -987,7 +987,7 @@ export default function AutomationSuitePage() {
         })()}
 
         {/* Suite list */}
-        <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+        <section className="bg-surface border border-line rounded-xl p-5 mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-slate-900">Saved suites ({suites.length})</h2>
             <div className="flex items-center gap-3">
@@ -1039,7 +1039,7 @@ export default function AutomationSuitePage() {
           {suites.length === 0 ? (
             <div className="text-sm text-slate-500 py-4 text-center">No suites yet, Click on Create New Suite to build one.</div>
           ) : (
-            <div className="overflow-x-auto border border-slate-200 rounded-md">
+            <div className="overflow-x-auto border border-line rounded-md">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-50 text-slate-600">
                   <tr>
@@ -1117,7 +1117,7 @@ export default function AutomationSuitePage() {
                           <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
                             {(s.items ?? []).length} test case{(s.items ?? []).length === 1 ? '' : 's'}
                           </div>
-                          <table className="min-w-full text-xs border border-slate-200 rounded bg-white">
+                          <table className="min-w-full text-xs border border-line rounded bg-surface">
                             <thead className="bg-slate-50 text-slate-500">
                               <tr>
                                 <th className="px-2 py-1 text-left w-6">
@@ -1277,7 +1277,7 @@ export default function AutomationSuitePage() {
 
         {/* Run history + compare (visible when "Runs" was clicked) */}
         {historyFor && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+          <section className="bg-surface border border-line rounded-xl p-5 mb-6">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-base font-semibold text-slate-900">
                 Runs for <code>{historyFor}</code> ({history.length})
@@ -1298,7 +1298,7 @@ export default function AutomationSuitePage() {
             {history.length === 0 ? (
               <div className="text-sm text-slate-500 py-4 text-center">No runs yet for this suite.</div>
             ) : (
-              <div className="overflow-x-auto border border-slate-200 rounded-md">
+              <div className="overflow-x-auto border border-line rounded-md">
                 <table className="min-w-full text-xs">
                   <thead className="bg-slate-50 text-slate-600">
                     <tr>
@@ -1339,7 +1339,7 @@ export default function AutomationSuitePage() {
             )}
 
             {compareData && (
-              <div className="mt-5 border border-slate-200 rounded-md p-3 bg-slate-50/50">
+              <div className="mt-5 border border-line rounded-md p-3 bg-slate-50/50">
                 <div className="text-sm font-semibold text-slate-900 mb-2">
                   Compare: <code>{compareData.a.buildVersion ?? compareData.a.runId.slice(-8)}</code>
                   &nbsp;↔&nbsp;
@@ -1353,7 +1353,7 @@ export default function AutomationSuitePage() {
                   &nbsp;only-A {compareData.summary.onlyA} ·
                   &nbsp;only-B {compareData.summary.onlyB}
                 </div>
-                <div className="overflow-x-auto border border-slate-200 rounded-md bg-white max-h-96">
+                <div className="overflow-x-auto border border-line rounded-md bg-surface max-h-96">
                   <table className="min-w-full text-xs">
                     <thead className="bg-slate-50 text-slate-600">
                       <tr>
@@ -1396,14 +1396,14 @@ export default function AutomationSuitePage() {
 
         {/* Wizard */}
         {showWizard && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+          <section className="bg-surface border border-line rounded-xl p-5 mb-6">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-base font-semibold text-slate-900">{editingId ? 'Edit suite' : 'New suite'}</h2>
               <button onClick={resetWizard} className="text-sm text-slate-500 hover:text-slate-900">Cancel</button>
             </div>
 
             {/* Tab strip — explicit step counter so the user sees the flow */}
-            <div className="flex items-center gap-1 border-b border-slate-200 mb-5">
+            <div className="flex items-center gap-1 border-b border-line mb-5">
               {([
                 { id: 'setup',     label: '① Setup',      hint: 'name · systems · radio config' },
                 { id: 'testcases', label: '② Testcases',  hint: 'pick + durations' },
@@ -1517,12 +1517,12 @@ export default function AutomationSuitePage() {
                   from 1, so the suite name appears once rather than on every
                   row. Execution order within a suite is top to bottom. */}
               {items.length === 0 ? (
-                <div className="mb-3 border border-slate-200 rounded-md bg-white px-3 py-4 text-center text-slate-500 text-xs">
+                <div className="mb-3 border border-line rounded-md bg-surface px-3 py-4 text-center text-slate-500 text-xs">
                   No testcases yet. Add one below.
                 </div>
               ) : itemGroups.map(([groupName, groupItems]) => (
-                <div key={groupName} className="mb-3 border border-slate-200 rounded-md bg-white overflow-x-auto">
-                  <div className="px-3 py-1.5 bg-slate-100 border-b border-slate-200 flex items-baseline gap-2">
+                <div key={groupName} className="mb-3 border border-line rounded-md bg-surface overflow-x-auto">
+                  <div className="px-3 py-1.5 bg-slate-100 border-b border-line flex items-baseline gap-2">
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Suite Name</span>
                     <span className="text-sm font-semibold text-slate-900">{groupName}</span>
                     <span className="text-[11px] text-slate-500">
@@ -1592,7 +1592,7 @@ export default function AutomationSuitePage() {
               ))}
 
               {/* Add-row picker */}
-              <div className="mb-4 border border-slate-200 rounded-md p-3 bg-slate-50/50">
+              <div className="mb-4 border border-line rounded-md p-3 bg-slate-50/50">
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Add a TestCase</div>
                 <div className="grid grid-cols-3 gap-2 items-end">
                   <label className="flex flex-col text-xs">
@@ -1788,7 +1788,7 @@ export default function AutomationSuitePage() {
 
         {/* Run result */}
         {runResult && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5">
+          <section className="bg-surface border border-line rounded-xl p-5">
             <h2 className="text-base font-semibold text-slate-900 mb-3">
               Run: <code>{runResult.suiteName}</code>{' '}
               <span className="text-sm font-normal">— {runResult.passed}/{runResult.total} pass · {runResult.failed} fail</span>
@@ -1798,7 +1798,7 @@ export default function AutomationSuitePage() {
               {runResult.uesimHost   && <> · <span className="text-slate-500">UESIM:</span> {runResult.uesimHost}</>}
               {runResult.callboxHost && <> · <span className="text-slate-500">Callbox:</span> {runResult.callboxHost}</>}
             </div>
-            <div className="overflow-x-auto border border-slate-200 rounded-md">
+            <div className="overflow-x-auto border border-line rounded-md">
               <table className="min-w-full text-xs">
                 <thead className="bg-slate-50 text-slate-600">
                   <tr>

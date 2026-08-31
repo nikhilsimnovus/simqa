@@ -1,41 +1,293 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+/* ══════════════════════════════════════════════════════════════════════
+   SIMNOVUS DESIGN TOKENS  —  petrol #00303F · orange #EC691F
+                              mist #CAE0E7 · slate #889DA3
+   Ported from the Simnovator licensing handout so the QA tool reads as
+   part of the same product family.
 
-:root {
-  --background: 0 0% 100%;
-  --foreground: 222.2 84% 4.9%;
-  --card: 0 0% 100%;
-  --card-foreground: 222.2 84% 4.9%;
-  --muted: 210 40% 96%;
-  --muted-foreground: 215.4 16.3% 46.9%;
-  --border: 214.3 31.8% 91.4%;
-  --input: 214.3 31.8% 91.4%;
+   Every Tailwind colour in tailwind.config.ts resolves to one of these
+   custom properties, so flipping [data-theme] re-skins the whole app —
+   no per-page class edits. Keep the two blocks stop-for-stop identical
+   in shape; only the values invert.
+   ══════════════════════════════════════════════════════════════════════ */
+
+:root, :root[data-theme='light'] {
+  /* slate */
+  --c-slate-50: 244 248 250;
+  --c-slate-100: 233 241 244;
+  --c-slate-200: 219 231 236;
+  --c-slate-300: 194 213 221;
+  --c-slate-400: 147 176 186;
+  --c-slate-500: 92 116 128;
+  --c-slate-600: 77 103 113;
+  --c-slate-700: 58 85 96;
+  --c-slate-800: 22 64 78;
+  --c-slate-900: 0 48 63;
+  --c-slate-950: 0 36 48;
+  /* primary */
+  --c-primary-50: 253 241 234;
+  --c-primary-100: 251 225 210;
+  --c-primary-200: 247 195 166;
+  --c-primary-300: 242 163 119;
+  --c-primary-400: 239 138 79;
+  --c-primary-500: 236 105 31;
+  --c-primary-600: 217 90 17;
+  --c-primary-700: 168 66 10;
+  --c-primary-800: 138 54 10;
+  --c-primary-900: 110 44 8;
+  --c-primary-950: 82 31 5;
+  /* emerald */
+  --c-emerald-50: 234 247 246;
+  --c-emerald-100: 210 238 236;
+  --c-emerald-200: 166 221 219;
+  --c-emerald-300: 111 199 196;
+  --c-emerald-400: 63 193 190;
+  --c-emerald-500: 23 165 162;
+  --c-emerald-600: 14 140 137;
+  --c-emerald-700: 11 111 109;
+  --c-emerald-800: 9 88 87;
+  --c-emerald-900: 7 70 69;
+  --c-emerald-950: 5 52 51;
+  /* red */
+  --c-red-50: 253 240 238;
+  --c-red-100: 250 220 216;
+  --c-red-200: 244 187 180;
+  --c-red-300: 236 144 132;
+  --c-red-400: 224 106 91;
+  --c-red-500: 209 74 57;
+  --c-red-600: 192 57 43;
+  --c-red-700: 156 45 34;
+  --c-red-800: 126 37 28;
+  --c-red-900: 102 30 23;
+  --c-red-950: 77 22 17;
+  /* amber */
+  --c-amber-50: 253 246 233;
+  --c-amber-100: 250 235 203;
+  --c-amber-200: 244 215 154;
+  --c-amber-300: 235 190 99;
+  --c-amber-400: 223 164 58;
+  --c-amber-500: 201 138 30;
+  --c-amber-600: 168 112 22;
+  --c-amber-700: 138 91 19;
+  --c-amber-800: 111 73 16;
+  --c-amber-900: 90 59 13;
+  --c-amber-950: 67 44 10;
+  /* blue */
+  --c-blue-50: 238 246 250;
+  --c-blue-100: 220 234 242;
+  --c-blue-200: 196 220 232;
+  --c-blue-300: 156 198 218;
+  --c-blue-400: 106 169 196;
+  --c-blue-500: 61 141 172;
+  --c-blue-600: 34 104 132;
+  --c-blue-700: 26 82 104;
+  --c-blue-800: 22 74 97;
+  --c-blue-900: 18 60 78;
+  --c-blue-950: 13 44 58;
+  /* semantic */
+  --c-surface: 255 255 255;
+  --c-page: 244 248 250;
+  --c-panel2: 247 251 252;
+  --c-line: 219 231 236;
+  --c-line2: 194 213 221;
+  --c-grid: 0 48 63;
+  --c-onaccent: 255 255 255;
+  --glow: 0 1px 2px rgb(0 48 63 / .05), 0 14px 40px -22px rgb(0 48 63 / .35);
+  --hero-grid: rgb(0 48 63 / .05);
 }
+
+:root[data-theme='dark'] {
+  /* slate */
+  --c-slate-50: 6 43 55;
+  --c-slate-100: 11 53 67;
+  --c-slate-200: 20 65 79;
+  --c-slate-300: 29 76 91;
+  --c-slate-400: 122 152 163;
+  --c-slate-500: 160 187 196;
+  --c-slate-600: 178 203 211;
+  --c-slate-700: 203 223 230;
+  --c-slate-800: 228 239 243;
+  --c-slate-900: 242 249 251;
+  --c-slate-950: 255 255 255;
+  /* primary */
+  --c-primary-50: 56 33 15;
+  --c-primary-100: 74 42 19;
+  --c-primary-200: 107 60 26;
+  --c-primary-300: 143 83 38;
+  --c-primary-400: 196 118 47;
+  --c-primary-500: 236 105 31;
+  --c-primary-600: 243 112 33;
+  --c-primary-700: 255 138 69;
+  --c-primary-800: 255 163 106;
+  --c-primary-900: 255 190 147;
+  --c-primary-950: 255 212 181;
+  /* emerald */
+  --c-emerald-50: 10 47 51;
+  --c-emerald-100: 14 61 64;
+  --c-emerald-200: 20 84 88;
+  --c-emerald-300: 27 111 114;
+  --c-emerald-400: 42 154 151;
+  --c-emerald-500: 63 193 190;
+  --c-emerald-600: 87 208 205;
+  --c-emerald-700: 123 222 219;
+  --c-emerald-800: 163 233 231;
+  --c-emerald-900: 198 242 241;
+  --c-emerald-950: 224 248 247;
+  /* red */
+  --c-red-50: 58 26 22;
+  --c-red-100: 75 33 28;
+  --c-red-200: 103 48 42;
+  --c-red-300: 138 66 57;
+  --c-red-400: 194 92 78;
+  --c-red-500: 229 107 90;
+  --c-red-600: 255 122 107;
+  --c-red-700: 255 150 137;
+  --c-red-800: 255 176 166;
+  --c-red-900: 255 201 194;
+  --c-red-950: 255 222 218;
+  /* amber */
+  --c-amber-50: 58 44 14;
+  --c-amber-100: 74 57 18;
+  --c-amber-200: 101 78 26;
+  --c-amber-300: 134 104 34;
+  --c-amber-400: 183 143 46;
+  --c-amber-500: 221 175 63;
+  --c-amber-600: 239 193 85;
+  --c-amber-700: 247 209 121;
+  --c-amber-800: 251 223 158;
+  --c-amber-900: 253 235 194;
+  --c-amber-950: 254 244 221;
+  /* blue */
+  --c-blue-50: 14 47 59;
+  --c-blue-100: 18 56 71;
+  --c-blue-200: 23 71 90;
+  --c-blue-300: 30 90 113;
+  --c-blue-400: 45 122 149;
+  --c-blue-500: 65 151 181;
+  --c-blue-600: 95 180 208;
+  --c-blue-700: 124 196 220;
+  --c-blue-800: 158 214 232;
+  --c-blue-900: 185 224 238;
+  --c-blue-950: 214 238 246;
+  /* semantic */
+  --c-surface: 0 48 63;
+  --c-page: 0 37 47;
+  --c-panel2: 0 55 74;
+  --c-line: 20 65 79;
+  --c-line2: 29 76 91;
+  --c-grid: 202 224 231;
+  --c-onaccent: 0 48 63;
+  --glow: 0 0 0 1px rgb(202 224 231 / .06), 0 18px 50px -24px rgb(0 0 0 / .85);
+  --hero-grid: rgb(202 224 231 / .055);
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────── */
+
+* { box-sizing: border-box; }
+
+html {
+  /* Native form controls, scrollbars and ::selection follow the theme. */
+  color-scheme: light;
+}
+:root[data-theme='dark'] { color-scheme: dark; }
 
 html, body {
-  font-family: 'Poppins', ui-sans-serif, system-ui, sans-serif;
-  background: hsl(var(--muted));
-  color: hsl(var(--foreground));
+  font-family: 'Poppins', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: rgb(var(--c-page));
+  color: rgb(var(--c-slate-900));
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Subtle scrollbar styling matching Simnovator's flat aesthetic. */
+/* Base copy size for anything not carrying an explicit text-* class.
+   Set on <body>, NOT <html>, on purpose: the root stays at 16px so every
+   rem-based Tailwind size (text-sm, p-4, h-9 …) keeps its intended value.
+   These are dense operational screens — 14px reads better than 16px here. */
+body {
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* Theme flips shouldn't strobe. Opt out under reduced-motion. */
+body { transition: background-color .2s ease, color .2s ease; }
+@media (prefers-reduced-motion: reduce) {
+  body { transition: none; }
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+::selection { background: rgb(var(--c-primary-500) / .25); }
+
+/* ── Scrollbar ────────────────────────────────────────────────────────── */
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 5px; }
-::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--c-slate-300));
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgb(var(--c-slate-400)); }
+
+/* ── Focus ────────────────────────────────────────────────────────────── */
+
+:focus-visible {
+  outline: 2px solid rgb(var(--c-primary-500));
+  outline-offset: 2px;
+}
+
+/* ── Config / log viewer ──────────────────────────────────────────────── */
+/* Always dark — a terminal pane reads as a terminal in either theme. */
 
 pre.cfg {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
-  line-height: 1.5;
-  background: #0f172a;
-  color: #e2e8f0;
+  line-height: 1.55;
+  background: #002430;
+  color: #e2eff3;
   padding: 1rem;
-  border-radius: 0.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgb(var(--c-line));
   overflow: auto;
   max-height: 70vh;
 }
-pre.cfg .comment { color: #64748b; }
+pre.cfg .comment { color: #6d8b96; }
+
+/* ── Reusable brand bits ──────────────────────────────────────────────── */
+
+/* Blueprint grid, faded at the edges — used behind page headers. */
+.hero-grid { position: relative; overflow: hidden; }
+.hero-grid::before {
+  content: '';
+  position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(var(--hero-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--hero-grid) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 90% 120% at 50% 0%, #000 20%, transparent 78%);
+  -webkit-mask-image: radial-gradient(ellipse 90% 120% at 50% 0%, #000 20%, transparent 78%);
+}
+.hero-grid > * { position: relative; z-index: 1; }
+
+/* Orange gradient text, as used for the handout's hero emphasis. */
+.text-gradient {
+  background: linear-gradient(100deg, rgb(var(--c-primary-400)), rgb(var(--c-primary-600)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Monospaced tabular numerals — for metrics, counts, durations. */
+.num {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.03em;
+}

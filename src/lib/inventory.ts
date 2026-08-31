@@ -253,10 +253,86 @@ export interface AutomationSuite {
   updatedAt?: string;
 }
 
+/**
+ * Lab-wide SSH credentials.
+ *
+ * In practice one key opens every box in a lab, so re-pasting it into each
+ * system is busywork and drifts. These are the defaults; any system may still
+ * override any single field (see withSshDefaults - the merge is per-field,
+ * not all-or-nothing, so a box with a different username still inherits the
+ * shared key).
+ */
+export interface SshDefaults {
+  username?: string;
+  sshPort?: number;
+  authMode?: SshAuthMode;
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+  sudoPassword?: string;
+}
+
+/** SSH fields a system can inherit from, or override, the lab defaults. */
+export const SSH_FIELDS = [
+  'username', 'sshPort', 'authMode', 'password', 'privateKey', 'passphrase', 'sudoPassword',
+] as const;
+export type SshField = (typeof SSH_FIELDS)[number];
+
 export interface Inventory {
   systems: InventorySystem[];
   profiles: TopologyProfile[];
   suites?: AutomationSuite[];
+  /** Lab-wide fallbacks. Absent on older inventories, which keeps this
+   *  backward compatible: no defaults means the previous per-system behaviour. */
+  defaults?: { ssh?: SshDefaults };
+}
+
+function isSet(v: unknown): boolean {
+  return v !== undefined && v !== null && v !== '';
+}
+
+/** authMode as implied by what is actually set — deploy defaults an unset
+ *  authMode to 'password', so a bare `password:` entry has always meant
+ *  password auth, and a bare `privateKey:` can only mean key auth. */
+function impliedAuthMode(v: { authMode?: SshAuthMode; password?: string; privateKey?: string }): SshAuthMode | undefined {
+  if (isSet(v.authMode)) return v.authMode;
+  if (isSet(v.password)) return 'password';    // matches deploy's default when both are set
+  if (isSet(v.privateKey)) return 'privateKey';
+  return undefined;
+}
+
+/**
+ * Merge lab SSH defaults UNDER a system's own values, field by field —
+ * but auth-mode aware. Two failure modes this guards against:
+ *
+ *   1. A box that carries only `password:` (authMode implied) must NOT be
+ *      flipped to key auth by a lab default of authMode=privateKey, and
+ *      must not inherit the lab key at all — deploy would silently switch
+ *      identities on it.
+ *   2. The Credentials tab shows "Private key" as the default mode without
+ *      writing authMode until the select is touched, so a defaults block of
+ *      just {username, privateKey} must still resolve to key auth instead
+ *      of failing with "no password set".
+ */
+export function withSshDefaults(s: InventorySystem, d?: SshDefaults): InventorySystem {
+  if (!d) return s;
+  const out: any = { ...s };
+  const mode = impliedAuthMode(s) ?? impliedAuthMode(d) ?? 'password';
+  for (const k of SSH_FIELDS) {
+    // Secrets belong to exactly one auth mode; only inherit the matching one.
+    if (k === 'password' && mode !== 'password') continue;
+    if ((k === 'privateKey' || k === 'passphrase') && mode !== 'privateKey') continue;
+    if (!isSet(out[k]) && isSet((d as any)[k])) out[k] = (d as any)[k];
+  }
+  // Pin the resolved mode so consumers (deploy defaults to 'password') can't
+  // re-derive a different answer from the merged fields.
+  out.authMode = mode;
+  return out as InventorySystem;
+}
+
+/** Which SSH fields this system sets for itself (i.e. overrides the default). */
+export function ownSshFields(s: InventorySystem): SshField[] {
+  return SSH_FIELDS.filter((k) => isSet((s as any)[k]));
 }
 
 const DEFAULT_INVENTORY: Inventory = {
@@ -279,7 +355,12 @@ export function inventoryPath(): string {
   return path.join(process.cwd(), 'inventory.yaml');
 }
 
-export function loadInventory(): Inventory {
+/**
+ * The inventory exactly as written on disk - systems keep only the fields
+ * they actually set. Use this when you need to know what is an override
+ * versus what is inherited: the /api/inventory editor, and saving.
+ */
+export function loadInventoryRaw(): Inventory {
   const p = inventoryPath();
   if (!fs.existsSync(p)) {
     saveInventory(DEFAULT_INVENTORY);
@@ -288,10 +369,31 @@ export function loadInventory(): Inventory {
   const raw = fs.readFileSync(p, 'utf8');
   const parsed = YAML.parse(raw) as Partial<Inventory>;
   return {
+    // Spread first: unknown top-level keys must survive a GET → edit → PUT
+    // round-trip through the /inventory editor, which saves this whole
+    // object back. Dropping them here would silently delete hand-written
+    // sections from inventory.yaml on the next Save.
+    ...(parsed && typeof parsed === 'object' ? parsed : {}),
     systems:  Array.isArray(parsed?.systems)  ? parsed.systems  : [],
     profiles: Array.isArray(parsed?.profiles) ? parsed.profiles : [],
     suites:   Array.isArray(parsed?.suites)   ? parsed.suites   : [],
+    defaults: (parsed?.defaults && typeof parsed.defaults === 'object') ? parsed.defaults : undefined,
   };
+}
+
+/**
+ * The inventory as callers should USE it: every system already has the
+ * lab-wide SSH defaults merged in underneath its own values.
+ *
+ * Resolving here rather than at each SSH call site means every consumer -
+ * deploy, config-fidelity, gNB backup, the API routes - inherits the shared
+ * key automatically, and none of them can forget to.
+ */
+export function loadInventory(): Inventory {
+  const inv = loadInventoryRaw();
+  const ssh = inv.defaults?.ssh;
+  if (!ssh) return inv;
+  return { ...inv, systems: inv.systems.map((s) => withSshDefaults(s, ssh)) };
 }
 
 export function getSuite(inv: Inventory, id: string): AutomationSuite | undefined {

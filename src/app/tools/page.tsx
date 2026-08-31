@@ -151,7 +151,7 @@ export default function ToolsPage() {
                 <select
                   value={selectedId}
                   onChange={(e) => setSelectedId(e.target.value)}
-                  className="w-full md:w-[420px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-white text-slate-700"
+                  className="w-full md:w-[420px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-surface text-slate-700"
                 >
                   {systems.map((s) => (
                     <option key={s.id} value={s.id} disabled={!s.ready}>
@@ -170,7 +170,7 @@ export default function ToolsPage() {
 
             {/* Status panel */}
             {sel?.ready ? (
-              <div className="rounded-lg border border-slate-200 bg-white p-4 space-y-2">
+              <div className="rounded-lg border border-slate-200 bg-surface p-4 space-y-2">
                 <div className="flex items-center justify-between">
                   <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Status</div>
                   <Button onClick={refreshStatus} disabled={busy !== null} variant="ghost" className="h-7 px-2">
@@ -210,7 +210,7 @@ export default function ToolsPage() {
             {/* Action buttons */}
             {sel?.ready ? (
               <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100">
-                <Button onClick={() => runOp('install')} disabled={busy !== null} className="bg-primary-600 hover:bg-primary-700 text-white">
+                <Button onClick={() => runOp('install')} disabled={busy !== null} className="bg-primary-600 hover:bg-primary-700 text-on-accent">
                   {busy === 'install' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
                   <span className="ml-1.5">{status?.running ? 'Re-install + restart' : 'Install + Start'}</span>
                 </Button>
@@ -233,7 +233,7 @@ export default function ToolsPage() {
               }>
                 <span className="font-semibold capitalize">{lastOp.kind}: </span>{lastOp.result.detail}
                 {lastOp.result.output ? (
-                  <pre className="mt-1.5 text-[10px] bg-white/60 rounded p-2 overflow-x-auto max-h-32">{lastOp.result.output}</pre>
+                  <pre className="mt-1.5 text-[10px] bg-surface/60 rounded p-2 overflow-x-auto max-h-32">{lastOp.result.output}</pre>
                 ) : null}
               </div>
             ) : null}

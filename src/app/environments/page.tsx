@@ -219,7 +219,7 @@ export default function EnvironmentsPage() {
         {error && <div className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>}
 
         {/* Upload */}
-        <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+        <section className="bg-surface border border-line rounded-xl p-5 mb-6">
           <h2 className="text-base font-semibold text-slate-900 mb-3">Upload GOLD JSON Configuration</h2>
           <label className="cursor-pointer inline-block rounded-md border border-slate-300 px-4 py-2 hover:bg-slate-50 text-sm">
             {busy === 'upload' ? 'Parsing…' : 'Choose a testcase JSON…'}
@@ -228,7 +228,7 @@ export default function EnvironmentsPage() {
           <span className="text-xs text-slate-500 ml-3">Upload a valid GOLD configuration JSON file.</span>
 
           {draft && (
-            <div className="mt-4 border border-slate-200 rounded-md p-4 bg-slate-50/50">
+            <div className="mt-4 border border-line rounded-md p-4 bg-slate-50/50">
               <div className="flex items-center gap-3 mb-3">
                 <input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} className="border border-slate-300 rounded-md px-3 py-1.5 text-sm flex-1" />
                 <button onClick={saveDraft} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm px-4 py-1.5">Save environment</button>
@@ -261,12 +261,12 @@ export default function EnvironmentsPage() {
         </section>
 
         {/* Saved environments */}
-        <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+        <section className="bg-surface border border-line rounded-xl p-5 mb-6">
           <h2 className="text-base font-semibold text-slate-900 mb-3">Choose Environment ({envs.length})</h2>
           {envs.length === 0 ? <div className="text-sm text-slate-500">No environments yet — upload and Create Test case</div> : (
             <div className="flex flex-wrap gap-2">
               {envs.map(e => (
-                <button key={e.id} onClick={() => setSelected(e)} className={`rounded-md border px-3 py-2 text-sm text-left ${selected?.id === e.id ? 'border-orange-500 bg-orange-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+                <button key={e.id} onClick={() => setSelected(e)} className={`rounded-md border px-3 py-2 text-sm text-left ${selected?.id === e.id ? 'border-orange-500 bg-orange-50' : 'border-line hover:bg-slate-50'}`}>
                   <div className="font-medium">{e.name}</div>
                   <div className="text-[11px] text-slate-500 font-mono">{e.site.rat} · {e.site.cells.length}cell · {e.sourceFilename}</div>
                   <button onClick={ev => { ev.stopPropagation(); deleteEnv(e.id); }} className="text-[10px] text-red-600 hover:underline mt-0.5">delete</button>
@@ -278,7 +278,7 @@ export default function EnvironmentsPage() {
 
         {/* Auto-create matrix */}
         {selected && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+          <section className="bg-surface border border-line rounded-xl p-5 mb-6">
             <h2 className="text-base font-semibold text-slate-900 mb-3">Auto-create matrix for <span className="text-orange-600">{selected.name}</span></h2>
             <div className="grid grid-cols-2 gap-6">
               <div className="space-y-3">
@@ -294,7 +294,7 @@ export default function EnvironmentsPage() {
                     group run concurrently inside the SAME testcase. */}
                 <div className="space-y-2">
                   {ueGroups.map((g, i) => (
-                    <div key={i} className="border border-slate-200 rounded-md p-2.5 bg-slate-50/50">
+                    <div key={i} className="border border-line rounded-md p-2.5 bg-slate-50/50">
                       <div className="flex items-center gap-2 mb-1.5">
                         <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Group {i}</span>
                         <label className="flex items-center gap-1.5 ml-auto">
@@ -303,7 +303,7 @@ export default function EnvironmentsPage() {
                         </label>
                       </div>
                       <div className="flex flex-wrap gap-1.5">{TRAFFIC_OPTIONS.map(t => (
-                        <button key={t} onClick={() => toggleGroupTraffic(i, t)} className={`rounded-md border px-2 py-1 text-xs ${g.traffic.includes(t) ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300 bg-white'}`}>{t}</button>
+                        <button key={t} onClick={() => toggleGroupTraffic(i, t)} className={`rounded-md border px-2 py-1 text-xs ${g.traffic.includes(t) ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300 bg-surface'}`}>{t}</button>
                       ))}</div>
                       {g.traffic.length === 0 && <div className="text-[11px] text-red-600 mt-1">pick at least one traffic type</div>}
                     </div>
@@ -352,7 +352,7 @@ export default function EnvironmentsPage() {
 
         {/* Progress + result */}
         {progress && (
-          <section className="bg-white border border-slate-200 rounded-xl p-5">
+          <section className="bg-surface border border-line rounded-xl p-5">
             <h2 className="text-base font-semibold text-slate-900 mb-3 flex items-center gap-2">Test Case Creation Status
               {running && <button onClick={() => fetch('/api/environments/autocreate-status', { method: 'POST' })} className="ml-auto text-xs rounded-md border border-slate-300 px-2 py-1">Abort</button>}
             </h2>

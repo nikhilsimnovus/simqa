@@ -19,6 +19,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { NodeSSH } from 'node-ssh';
+import { connectSsh } from './sshConnect';
 import type { InventorySystem } from './inventory';
 import { isUesimLike } from './inventory';
 
@@ -77,14 +78,13 @@ async function openSsh(s: InventorySystem): Promise<NodeSSH> {
   const ssh = new NodeSSH();
   const useKey = s.authMode === 'privateKey' && !!s.privateKey;
   const keyText = useKey ? (s.privateKey!.startsWith('-----BEGIN') ? s.privateKey! : fs.readFileSync(s.privateKey!, 'utf-8')) : undefined;
-  await ssh.connect({
+  await connectSsh(ssh, {
     host: s.host,
     port: s.sshPort ?? 22,
     username: s.username,
     ...(useKey
       ? { privateKey: keyText, passphrase: s.passphrase }
       : { password: s.password }),
-    readyTimeout: 20_000,
     keepaliveInterval: 5_000,
   });
   return ssh;

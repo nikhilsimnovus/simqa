@@ -9,6 +9,7 @@
 // and returns a structured log so the UI can show what would have happened.
 
 import { NodeSSH } from 'node-ssh';
+import { connectSsh } from './sshConnect';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -158,12 +159,11 @@ export async function deployModule(
   try {
     const t0 = Date.now();
     const auth = sshAuth(target);
-    await ssh.connect({
+    await connectSsh(ssh, {
       host: target.host,
       port: target.sshPort ?? 22,
       username: String(target.username),
       ...auth,
-      readyTimeout: 10000,
     });
     const authLabel = target.authMode === 'privateKey' ? 'privateKey' : 'password';
     stamp({ step: 'connect', ok: true, detail: `auth=${authLabel}`, ms: Date.now() - t0 });

@@ -305,7 +305,7 @@ export default function ApiTestsPage() {
                   value={targetSystemId}
                   onChange={(e) => setTargetSystemId(e.target.value)}
                   disabled={busy}
-                  className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 bg-white"
+                  className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 bg-surface"
                 >
                   {systems.map((s) => (
                     <option key={s.id} value={s.id}>{s.name} ({s.host})</option>
@@ -321,14 +321,14 @@ export default function ApiTestsPage() {
                 <div className="flex gap-1">
                   <button
                     onClick={selectAll}
-                    className="text-[11px] px-2 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                    className="text-[11px] px-2 py-1 rounded border border-slate-300 bg-surface text-slate-700 hover:bg-slate-50"
                     title="Enable every category (including the destructive / negative / fuzz ones at the bottom)"
                   >
                     Select all
                   </button>
                   <button
                     onClick={clearAll}
-                    className="text-[11px] px-2 py-1 rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                    className="text-[11px] px-2 py-1 rounded border border-slate-300 bg-surface text-slate-700 hover:bg-slate-50"
                     title="Uncheck every category"
                   >
                     Clear
@@ -396,8 +396,8 @@ export default function ApiTestsPage() {
                           className={
                             'px-3 h-8 text-xs rounded-full border transition-colors ' +
                             (statusFilter === s
-                              ? 'bg-primary-700 text-white border-primary-700'
-                              : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50')
+                              ? 'bg-primary-700 text-on-accent border-primary-700'
+                              : 'bg-surface text-slate-700 border-slate-300 hover:bg-slate-50')
                           }
                         >
                           {s === 'all' ? 'All' : s[0].toUpperCase() + s.slice(1)}
@@ -417,7 +417,7 @@ export default function ApiTestsPage() {
                   <select
                     value={sortBy}
                     onChange={(e) => setSortBy(e.target.value as SortBy)}
-                    className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                    className="h-9 rounded-md border border-slate-300 bg-surface px-3 text-sm text-slate-900"
                   >
                     <option value="failed-first">Failed first</option>
                     <option value="passed-first">Passed first</option>

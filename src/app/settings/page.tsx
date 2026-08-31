@@ -1,157 +1,268 @@
-// Settings.
+'use client';
+
+// Workspace settings. Three real sections — appearance, timeouts/polling,
+// run notifications — each backed by something that actually consumes it:
+//   theme     → data-theme attribute + localStorage (same store the sidebar
+//               toggle uses; "system" clears the override)
+//   timeouts  → lib/settings.ts, consulted by uesimClient on every REST call
+//               and by the end-to-end runner for poll/grace defaults
+//   webhook   → lib/notify.ts, fired when an end-to-end run finishes
 //
-// Two honest sections rather than one: what actually works today (Account,
-// Build & Version — both real, both read from the same session/version data
-// every other page uses), and what does not exist yet. The "Coming soon" list
-// was previously the whole page; it is now a clearly-labelled subsection, not
-// something a user could mistake for a working control.
+// Numbers are edited in seconds (grace in minutes) because nobody thinks in
+// milliseconds; the store keeps ms.
 
-import Link from 'next/link';
-import { Users, Bell, Timer, Moon, Info, ArrowRight } from 'lucide-react';
+import { useEffect, useState, useCallback } from 'react';
 import { Header } from '@/components/Header';
-import { Card, CardBody } from '@/components/ui';
-import { currentUser, SESSION_MAX_AGE_SEC } from '@/lib/identity';
-import { getSimqaVersion } from '@/lib/version';
-import { SignOutButton } from './SignOutButton';
+import { Card, CardBody, CardHeader, CardTitle, Button, Input, Field, Kicker } from '@/components/ui';
+import { Monitor, Moon, Sun, Send } from 'lucide-react';
+import { cn } from '@/lib/cn';
+import { THEME_KEY } from '@/components/ThemeToggle';
 
-export const dynamic = 'force-dynamic';
-
-const UPCOMING: Array<{
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  desc: string;
-  tone: 'sky' | 'violet' | 'emerald' | 'slate';
-}> = [
-  {
-    icon: Users, tone: 'sky',
-    title: 'Per-user Workspace',
-    desc: 'Separate saved views and preferences per teammate, for labs more than one person shares.',
-  },
-  {
-    icon: Bell, tone: 'violet',
-    title: 'Run Notifications',
-    desc: 'An email or Slack ping when a run or job finishes — no more polling the page to see if it’s done.',
-  },
-  {
-    icon: Timer, tone: 'emerald',
-    title: 'Default Polling & Timeout',
-    desc: 'Set the poll interval and timeout every new run starts with, instead of the current built-in defaults.',
-  },
-  {
-    icon: Moon, tone: 'slate',
-    title: 'Theme',
-    desc: 'A dark mode to match Simnovator’s own dark UI, for anyone who runs the two side by side.',
-  },
-];
-
-const TONE_CLASSES: Record<string, { bg: string; text: string; ring: string }> = {
-  sky:     { bg: 'bg-sky-50',     text: 'text-sky-600',     ring: 'ring-sky-100' },
-  violet:  { bg: 'bg-violet-50',  text: 'text-violet-600',  ring: 'ring-violet-100' },
-  emerald: { bg: 'bg-emerald-50', text: 'text-emerald-600', ring: 'ring-emerald-100' },
-  slate:   { bg: 'bg-slate-100',  text: 'text-slate-600',   ring: 'ring-slate-200' },
-};
-
-function ComingSoonBadge() {
-  return (
-    <span className="shrink-0 inline-flex items-center rounded-full bg-amber-100 text-amber-800 ring-1 ring-amber-200 px-2 py-0.5 text-[10px] uppercase tracking-wider font-semibold">
-      Coming soon
-    </span>
-  );
+interface SettingsDto {
+  uesimGetTimeoutMs: number;
+  uesimPostTimeoutMs: number;
+  runnerPollIntervalMs: number;
+  runnerCompletionGraceMs: number;
+  notifyWebhookUrl: string;
+  notifyOnSuccess: boolean;
 }
 
-export default async function SettingsPage() {
-  const user = await currentUser();
-  const ver = getSimqaVersion();
-  const sessionDays = Math.round(SESSION_MAX_AGE_SEC / 86400);
+type ThemeChoice = 'light' | 'dark' | 'system';
+
+export default function SettingsPage() {
+  const [s, setS] = useState<SettingsDto | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [theme, setTheme] = useState<ThemeChoice>('system');
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/settings').then((r) => r.json()).then(setS).catch(() => setS(null));
+    try {
+      const stored = window.localStorage.getItem(THEME_KEY);
+      setTheme(stored === 'light' || stored === 'dark' ? stored : 'system');
+    } catch { /* private mode — leave 'system' */ }
+  }, []);
+
+  const flash = useCallback((kind: 'ok' | 'err', text: string) => {
+    setMsg({ kind, text });
+    window.setTimeout(() => setMsg(null), 2500);
+  }, []);
+
+  const patch = useCallback((p: Partial<SettingsDto>) => {
+    setS((cur) => (cur ? { ...cur, ...p } : cur));
+    setDirty(true);
+  }, []);
+
+  // Theme applies instantly — it's a local preference, not a server setting,
+  // so it deliberately bypasses the Save button.
+  const applyTheme = useCallback((t: ThemeChoice) => {
+    setTheme(t);
+    try {
+      if (t === 'system') {
+        window.localStorage.removeItem(THEME_KEY);
+        const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+      } else {
+        window.localStorage.setItem(THEME_KEY, t);
+        document.documentElement.setAttribute('data-theme', t);
+      }
+    } catch { /* private mode */ }
+  }, []);
+
+  async function save() {
+    if (!s) return;
+    setSaving(true);
+    try {
+      const r = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(s),
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error ?? `HTTP ${r.status}`);
+      // Server may have clamped values — reflect what actually stuck.
+      setS(j.settings);
+      setDirty(false);
+      flash('ok', 'Saved');
+    } catch (e: any) {
+      flash('err', `${e?.message ?? e}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function testWebhook() {
+    setTesting(true);
+    try {
+      // Test what's SAVED — that's what the runner will use. Nudge the user
+      // if they typed a URL but haven't saved it yet.
+      if (dirty) { flash('err', 'Save first — the test uses the saved URL'); return; }
+      const r = await fetch('/api/settings/test-notification', { method: 'POST' });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+      flash('ok', 'Test notification sent — check the receiver');
+    } catch (e: any) {
+      flash('err', `${e?.message ?? e}`);
+    } finally {
+      setTesting(false);
+    }
+  }
 
   return (
     <>
-      <Header title="Settings" subtitle="Workspace settings and preferences" />
-      <main className="p-6 flex flex-col gap-8 max-w-4xl">
-        {/* ── Available now ──────────────────────────────────────────── */}
-        <section>
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">
-            Available now
-          </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Card>
-              <CardBody className="p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span className="h-10 w-10 shrink-0 rounded-full bg-orange-100 text-orange-700 text-sm font-bold flex items-center justify-center">
-                      {(user || '?').slice(0, 1).toUpperCase()}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold text-slate-900 truncate">
-                        {user || 'Not signed in'}
-                      </div>
-                      <div className="text-xs text-slate-500">Account</div>
-                    </div>
-                  </div>
-                  <SignOutButton />
-                </div>
-                <p className="mt-3.5 text-xs text-slate-500 leading-relaxed">
-                  This name is attributed to every playlist, testcase and job you create, and to
-                  the stations you last used. Sessions last {sessionDays} days before you need to
-                  sign in again.
-                </p>
-              </CardBody>
-            </Card>
-
-            <Card>
-              <CardBody className="p-5">
-                <div className="flex items-center gap-3">
-                  <span className="h-10 w-10 shrink-0 rounded-full bg-primary-50 text-primary-700 flex items-center justify-center">
-                    <Info className="h-5 w-5" />
-                  </span>
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-slate-900">Build &amp; Version</div>
-                    <div className="text-xs text-slate-500 font-mono truncate">{ver.version}</div>
-                  </div>
-                </div>
-                <Link
-                  href="/about"
-                  className="mt-3.5 inline-flex items-center gap-1 text-xs font-medium text-primary-700 hover:underline"
-                >
-                  Full details on the About page
-                  <ArrowRight className="h-3 w-3" />
-                </Link>
-              </CardBody>
-            </Card>
+      <Header
+        title="Settings"
+        subtitle="Workspace preferences, request timeouts, and run notifications"
+        right={
+          <div className="flex items-center gap-2">
+            {msg ? (
+              <span className={cn('text-xs font-medium', msg.kind === 'err' ? 'text-red-600' : 'text-emerald-600')}>{msg.text}</span>
+            ) : dirty ? (
+              <span className="text-xs text-amber-700">Unsaved changes</span>
+            ) : null}
+            <Button size="sm" onClick={save} disabled={saving || !dirty || !s}>
+              {saving ? 'Saving…' : 'Save'}
+            </Button>
           </div>
-        </section>
+        }
+      />
+      <main className="p-5 space-y-4 max-w-3xl">
+        {/* ── Appearance ── */}
+        <Card>
+          <CardHeader><CardTitle>Appearance</CardTitle></CardHeader>
+          <CardBody>
+            <Kicker className="mb-2">Theme</Kicker>
+            <div className="flex gap-2">
+              {([
+                { v: 'light' as const, label: 'Light', icon: Sun },
+                { v: 'dark' as const, label: 'Dark', icon: Moon },
+                { v: 'system' as const, label: 'System', icon: Monitor },
+              ]).map(({ v, label, icon: Icon }) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => applyTheme(v)}
+                  aria-pressed={theme === v}
+                  className={cn(
+                    'inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition-colors',
+                    theme === v
+                      ? 'border-primary-500 bg-primary-50 text-primary-700'
+                      : 'border-line-strong bg-surface text-slate-600 hover:border-slate-400 hover:text-slate-900',
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" />{label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-[11px] font-light text-slate-500">
+              Applies immediately, per browser. The moon/sun button in the sidebar flips between light and dark;
+              choosing System here follows the OS preference instead.
+            </p>
+          </CardBody>
+        </Card>
 
-        {/* ── Coming soon ────────────────────────────────────────────── */}
-        <section>
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">
-            Coming soon
-          </h2>
-          <Card>
-            <CardBody className="p-0">
-              <ul className="divide-y divide-slate-100">
-                {UPCOMING.map((f) => {
-                  const t = TONE_CLASSES[f.tone];
-                  const Icon = f.icon;
-                  return (
-                    <li key={f.title} className="flex items-start gap-3.5 px-5 py-4">
-                      <span className={`h-9 w-9 shrink-0 rounded-lg flex items-center justify-center ring-1 ${t.bg} ${t.text} ${t.ring}`}>
-                        <Icon className="h-4.5 w-4.5" />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-semibold text-slate-900">{f.title}</span>
-                          <ComingSoonBadge />
-                        </div>
-                        <p className="mt-0.5 text-xs text-slate-500 leading-relaxed">{f.desc}</p>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </CardBody>
-          </Card>
-        </section>
+        {/* ── Timeouts & polling ── */}
+        <Card>
+          <CardHeader><CardTitle>Timeouts &amp; polling</CardTitle></CardHeader>
+          <CardBody>
+            {!s ? (
+              <div className="text-[13px] text-slate-500">Loading…</div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <SecondsField
+                  label="UESIM GET timeout" hint="reads: testcases, simulators, status"
+                  ms={s.uesimGetTimeoutMs} onMs={(v) => patch({ uesimGetTimeoutMs: v })}
+                />
+                <SecondsField
+                  label="UESIM POST timeout" hint="writes: execution start legitimately runs long"
+                  ms={s.uesimPostTimeoutMs} onMs={(v) => patch({ uesimPostTimeoutMs: v })}
+                />
+                <SecondsField
+                  label="Run poll interval" hint="how often the runner polls execution status"
+                  ms={s.runnerPollIntervalMs} onMs={(v) => patch({ runnerPollIntervalMs: v })}
+                />
+                <SecondsField
+                  label="Completion grace" hint="extra wait after the testcase's configured duration" minutes
+                  ms={s.runnerCompletionGraceMs} onMs={(v) => patch({ runnerCompletionGraceMs: v })}
+                />
+              </div>
+            )}
+            <p className="mt-3 text-[11px] font-light text-slate-500">
+              Out-of-range values are clamped on save. Per-run options passed by a page still win over these defaults.
+            </p>
+          </CardBody>
+        </Card>
+
+        {/* ── Notifications ── */}
+        <Card>
+          <CardHeader><CardTitle>Run notifications</CardTitle></CardHeader>
+          <CardBody>
+            {!s ? (
+              <div className="text-[13px] text-slate-500">Loading…</div>
+            ) : (
+              <div className="space-y-3">
+                <Field label="Webhook URL" hint="Slack-compatible payload ({text}) plus a structured run object. Leave empty to disable.">
+                  <Input
+                    value={s.notifyWebhookUrl}
+                    onChange={(e) => patch({ notifyWebhookUrl: e.target.value.trim() })}
+                    placeholder="https://hooks.slack.com/services/…"
+                  />
+                </Field>
+                <label className="flex items-center gap-2 text-[13px] text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={s.notifyOnSuccess}
+                    onChange={(e) => patch({ notifyOnSuccess: e.target.checked })}
+                    className="h-4 w-4 rounded border-line-strong accent-[rgb(var(--c-primary-500))]"
+                  />
+                  Also notify when a run passes (failures always notify)
+                </label>
+                <div>
+                  <Button size="sm" variant="secondary" onClick={testWebhook} disabled={testing || !s.notifyWebhookUrl}>
+                    <Send className="h-3.5 w-3.5" />{testing ? 'Sending…' : 'Send test notification'}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardBody>
+        </Card>
+
+        {/* ── Still on the roadmap ── */}
+        <Card>
+          <CardHeader><CardTitle>Coming up</CardTitle></CardHeader>
+          <CardBody>
+            <ul className="list-inside list-disc space-y-1 text-[13px] text-slate-600">
+              <li>Per-user workspace (multi-user lab support)</li>
+            </ul>
+          </CardBody>
+        </Card>
       </main>
     </>
+  );
+}
+
+/** Numeric field edited in seconds (or minutes), stored in ms. */
+function SecondsField({
+  label, hint, ms, onMs, minutes = false,
+}: {
+  label: string; hint?: string; ms: number; onMs: (ms: number) => void; minutes?: boolean;
+}) {
+  const unit = minutes ? 60_000 : 1_000;
+  const shown = Math.round((ms / unit) * 10) / 10;
+  return (
+    <Field label={`${label} (${minutes ? 'min' : 's'})`} hint={hint}>
+      <Input
+        type="number"
+        min={0}
+        step={minutes ? 0.5 : 1}
+        value={String(shown)}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          if (Number.isFinite(n)) onMs(Math.round(n * unit));
+        }}
+      />
+    </Field>
   );
 }

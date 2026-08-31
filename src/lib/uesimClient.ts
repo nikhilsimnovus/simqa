@@ -7,6 +7,7 @@
 // remaining as expired and re-login.
 
 import type { UesimTestDefinition } from './cfgGenerator';
+import { getSettings } from './settings';
 
 interface AuthState {
   token: string;
@@ -14,6 +15,31 @@ interface AuthState {
 }
 
 const authCache = new Map<string, AuthState>();
+
+/** In-flight logins, keyed like authCache. Two concurrent callers (e.g. the
+ *  dashboard fetching testcases + simulators at once) must share one login
+ *  rather than each opening its own socket to a box that may be down. */
+const loginInflight = new Map<string, Promise<string>>();
+
+/**
+ * Hosts that just failed to connect, and when to stop short-circuiting.
+ *
+ * Without this, every page load re-attempts a box that is switched off and
+ * pays the full connect timeout again. A dead lab box is dead for more than
+ * a few seconds, so we remember briefly and fail fast instead.
+ */
+const unreachableUntil = new Map<string, number>();
+const UNREACHABLE_TTL_MS = 30_000;
+
+/**
+ * Bound on the login round-trip.
+ *
+ * This matters more than the GET/POST caps below: those guard the *second*
+ * request, but every call funnels through ensureToken() first. Leaving that
+ * fetch unbounded meant one unreachable host stalled a page for ~21s — the
+ * OS-level TCP connect timeout — no matter what the other caps said.
+ */
+const LOGIN_TIMEOUT_MS = 6_000;
 
 function cacheKey(host: string, user: string): string {
   return `${host}::${user}`;
@@ -23,64 +49,138 @@ function isAlive(state: AuthState | undefined): state is AuthState {
   return !!state && state.expiresAt - 60_000 > Date.now();
 }
 
+/** True for "could not reach the box" as opposed to "box said no". */
+function isConnectFailure(e: unknown): boolean {
+  const name = (e as any)?.name;
+  return name === 'AbortError' || name === 'TimeoutError' || e instanceof TypeError;
+}
+
+/** Note that `host` is currently unreachable so the next call fails fast. */
+function markUnreachable(host: string): void {
+  unreachableUntil.set(host, Date.now() + UNREACHABLE_TTL_MS);
+}
+
+/** Forget a previous failure — called as soon as a box answers again. */
+export function clearUnreachable(host: string): void {
+  unreachableUntil.delete(host);
+}
+
+/** How long until we retry `host`, or 0 if it is not currently blacklisted. */
+export function unreachableFor(host: string): number {
+  return Math.max(0, (unreachableUntil.get(host) ?? 0) - Date.now());
+}
+
 /** Login (or use cached token) and return a Bearer header value. */
 export async function ensureToken(host: string, username: string, password: string): Promise<string> {
   const k = cacheKey(host, username);
   const cached = authCache.get(k);
   if (isAlive(cached)) return cached.token;
 
-  const url = `http://${host}/v2/login`;
-  // Bounded like every other call. Without this a slow or unreachable box holds
-  // the request open forever; background pollers then stack up hung handlers
-  // until the whole server stops answering.
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-    signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`UESIM login failed: ${res.status} ${await res.text().catch(() => '')}`);
-  const body = (await res.json()) as { access_token: string; expires_in?: number };
-  if (!body.access_token) throw new Error('UESIM login: no access_token in response');
-  const ttl = (body.expires_in ?? 10800) * 1000;
-  authCache.set(k, { token: body.access_token, expiresAt: Date.now() + ttl });
-  return body.access_token;
+  // Recently unreachable — don't pay the connect timeout again.
+  const cooldown = unreachableFor(host);
+  if (cooldown > 0) {
+    throw new Error(`UESIM ${host} unreachable (retrying in ${Math.ceil(cooldown / 1000)}s)`);
+  }
+
+  const pending = loginInflight.get(k);
+  if (pending) return pending;
+
+  const attempt = (async () => {
+    try {
+      // One retry on a connect-class failure before declaring the box dead.
+      // Observed in the field: a single login timed out at the full 6s
+      // against a box that answers curl in 0.5s, and that one blip then
+      // poisoned the blacklist for 30s, cascading 502s across the app. A
+      // transient stall must not be treated as proof of death; a genuinely
+      // dead box just pays 2×6s on the first visit and is then blacklisted.
+      let res: Response;
+      for (let attemptNo = 1; ; attemptNo++) {
+        try {
+          res = await fetch(`http://${host}/v2/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+            signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
+          });
+          break;
+        } catch (e) {
+          if (attemptNo >= 2 || !isConnectFailure(e)) throw e;
+        }
+      }
+      if (!res.ok) throw new Error(`UESIM login failed: ${res.status} ${await res.text().catch(() => '')}`);
+      const body = (await res.json()) as { access_token: string; expires_in?: number };
+      if (!body.access_token) throw new Error('UESIM login: no access_token in response');
+      const ttl = (body.expires_in ?? 10800) * 1000;
+      authCache.set(k, { token: body.access_token, expiresAt: Date.now() + ttl });
+      clearUnreachable(host);
+      return body.access_token;
+    } catch (e) {
+      // Only a connect/timeout failure means "box is down" — and only after
+      // the retry above has also failed. A 401 is the box answering
+      // promptly, and must not blacklist it.
+      if (isConnectFailure(e)) markUnreachable(host);
+      throw e;
+    } finally {
+      loginInflight.delete(k);
+    }
+  })();
+
+  loginInflight.set(k, attempt);
+  return attempt;
 }
 
-export interface ApiOpts {
+interface ApiOpts {
   host: string;
   username: string;
   password: string;
 }
 
 // Bounded timeouts so no call can hang a long batch run. Execution start is
-// legitimately slow on some builds, so POST gets a generous cap.
-const GET_TIMEOUT_MS = 20_000;
-const POST_TIMEOUT_MS = 120_000;
-/** Login is a cheap call — if the box hasn't answered in 15s it isn't going to. */
-const LOGIN_TIMEOUT_MS = 15_000;
+// legitimately slow on some builds, so POST gets a generous cap. Both are
+// user-tunable on /settings; getSettings() is mtime-cached so consulting it
+// per call costs a stat(), not a parse.
+const GET_TIMEOUT_MS  = () => getSettings().uesimGetTimeoutMs;
+const POST_TIMEOUT_MS = () => getSettings().uesimPostTimeoutMs;
 
 async function apiGet<T>(opts: ApiOpts, path: string): Promise<T> {
   const token = await ensureToken(opts.host, opts.username, opts.password);
-  const res = await fetch(`http://${opts.host}/v2${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(GET_TIMEOUT_MS),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`http://${opts.host}/v2${path}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(GET_TIMEOUT_MS()),
+    });
+  } catch (e) {
+    // Cached token but the box has since gone away — record it so the next
+    // caller short-circuits instead of waiting out the timeout again.
+    if (isConnectFailure(e)) markUnreachable(opts.host);
+    throw e;
+  }
   if (!res.ok) throw new Error(`UESIM GET ${path}: ${res.status} ${await res.text().catch(() => '')}`);
   return (await res.json()) as T;
 }
 
 async function apiPost<T>(opts: ApiOpts, path: string, body?: unknown): Promise<T> {
   const token = await ensureToken(opts.host, opts.username, opts.password);
-  const res = await fetch(`http://${opts.host}/v2${path}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(POST_TIMEOUT_MS),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`http://${opts.host}/v2${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(POST_TIMEOUT_MS()),
+    });
+  } catch (e) {
+    // Connection refused/reset = box is gone, blacklist like apiGet does.
+    // A timeout is NOT proof of death here: execution start legitimately
+    // runs long (hence the 120s cap), so a slow box must not get 30s of
+    // fast-fails on top of an already-slow run.
+    if (e instanceof TypeError) markUnreachable(opts.host);
+    throw e;
+  }
   if (!res.ok) throw new Error(`UESIM POST ${path}: ${res.status} ${await res.text().catch(() => '')}`);
   return (await res.json()) as T;
 }
@@ -94,22 +194,8 @@ export interface TestcaseSummary {
   metadata?: any;
 }
 
-/**
- * List testcases.
- *
- * `page` is a PAGE INDEX (0-based), NOT a row offset — despite the box naming
- * the query param `offset`. Verified live against 4.0.0:
- *   limit=200&offset=0 -> rows 0-199    limit=200&offset=1 -> rows 200-204
- *   limit=100&offset=1 -> rows 100-199  limit=100&offset=2 -> rows 200-204
- *   limit=200&offset=2 -> 400 {"message":"requested page 3 out of range"}
- * Passing a row count here (offset += items.length) asks for a page far past
- * the end and the box 400s. `limit` is capped at 1000 by the box.
- *
- * `total` in the response is the whole catalogue size; note pageInfo.totalItems
- * is only the count in THAT page, which reads like a total but isn't.
- */
-export async function listTestcases(opts: ApiOpts, limit = 50, page = 0): Promise<{ items: TestcaseSummary[]; total: number }> {
-  return apiGet(opts, `/testcases?limit=${limit}&offset=${page}`);
+export async function listTestcases(opts: ApiOpts, limit = 50, offset = 0): Promise<{ items: TestcaseSummary[]; total: number }> {
+  return apiGet(opts, `/testcases?limit=${limit}&offset=${offset}`);
 }
 
 export async function getTestcase(opts: ApiOpts, id: string): Promise<TestcaseSummary & { testDefinition: UesimTestDefinition }> {
@@ -149,6 +235,9 @@ export async function getSimulatorStatus(opts: ApiOpts, simulatorId: string): Pr
  * neither works we return undefined so callers can store "unknown".
  */
 export async function getBoxVersion(opts: ApiOpts): Promise<{ version?: string; build?: string; raw?: any } | undefined> {
+  // The unauthenticated fallback below doesn't go through ensureToken, so
+  // honour the blacklist here or a known-dead box pays the timeout anyway.
+  if (unreachableFor(opts.host) > 0) return undefined;
   const tryFetch = async (auth: 'bearer' | 'none'): Promise<any | undefined> => {
     const headers: Record<string, string> = {};
     if (auth === 'bearer') {
@@ -157,7 +246,21 @@ export async function getBoxVersion(opts: ApiOpts): Promise<{ version?: string; 
         headers['Authorization'] = `Bearer ${tok}`;
       } catch { return undefined; }
     }
-    const res = await fetch(`http://${opts.host}/v2/version`, { headers });
+    // Bounded like every other call — this one used to be unbounded and could
+    // stall a page on an unreachable box.
+    let res: Response;
+    try {
+      res = await fetch(`http://${opts.host}/v2/version`, {
+        headers,
+        signal: AbortSignal.timeout(GET_TIMEOUT_MS()),
+      });
+    } catch (e) {
+      // Best-effort contract: this function reports undefined, never throws.
+      // The cached-token path skips ensureToken's reachability check, so a
+      // box that died since login would otherwise leak the raw fetch error.
+      if (isConnectFailure(e)) markUnreachable(opts.host);
+      return undefined;
+    }
     if (!res.ok) return undefined;
     return res.json().catch(() => undefined);
   };

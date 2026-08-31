@@ -5,6 +5,7 @@
 // the generated ue.cfg back, so we add an sftp getFile/read.
 
 import { NodeSSH } from 'node-ssh';
+import { connectSsh } from '../sshConnect';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -26,13 +27,13 @@ function connectConfig(sys: InventorySystem) {
   const auth = sys.authMode === 'privateKey'
     ? { privateKey: resolvePrivateKey(sys.privateKey), passphrase: sys.passphrase }
     : { password: sys.password ?? '' };
-  return { host: sys.host, port: sys.sshPort ?? 22, username: sys.username, ...auth, readyTimeout: 10000 };
+  return { host: sys.host, port: sys.sshPort ?? 22, username: sys.username, ...auth };
 }
 
 export async function withSsh<T>(sys: InventorySystem, fn: (ssh: NodeSSH) => Promise<T>): Promise<T> {
   const ssh = new NodeSSH();
   try {
-    await ssh.connect(connectConfig(sys));
+    await connectSsh(ssh, connectConfig(sys));
     return await fn(ssh);
   } finally {
     try { ssh.dispose(); } catch { /* ignore */ }

@@ -238,7 +238,7 @@ export default function BackupPage() {
             </p>
 
             <div className="flex flex-wrap items-center gap-3">
-              <Button onClick={downloadBackup} disabled={backupBusy} className="bg-primary-600 hover:bg-primary-700 text-white">
+              <Button onClick={downloadBackup} disabled={backupBusy} className="bg-primary-600 hover:bg-primary-700 text-on-accent">
                 {backupBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                 <span className="ml-1.5">Download backup</span>
               </Button>
@@ -247,7 +247,7 @@ export default function BackupPage() {
                 'inline-flex items-center gap-1.5 px-4 h-9 rounded-md text-sm font-medium border cursor-pointer ' +
                 (restoreBusy
                   ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50')
+                  : 'bg-surface text-slate-700 border-slate-300 hover:bg-slate-50')
               }>
                 {restoreBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                 <span>Restore from file…</span>
@@ -328,7 +328,7 @@ export default function BackupPage() {
                   <select
                     value={tcSystem}
                     onChange={(e) => setTcSystem(e.target.value)}
-                    className="w-full md:w-[420px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-white text-slate-700"
+                    className="w-full md:w-[420px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-surface text-slate-700"
                   >
                     {systems.map((s) => (
                       <option key={s.id} value={s.id}>{s.name} ({s.host}) — {s.type}</option>
@@ -337,7 +337,7 @@ export default function BackupPage() {
                 )}
               </div>
 
-              <Button onClick={exportTestcases} disabled={!tcSystem || tcBusy} className="bg-primary-600 hover:bg-primary-700 text-white">
+              <Button onClick={exportTestcases} disabled={!tcSystem || tcBusy} className="bg-primary-600 hover:bg-primary-700 text-on-accent">
                 {tcBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileJson className="h-4 w-4" />}
                 <span className="ml-1.5">Export testcases</span>
               </Button>
@@ -411,7 +411,7 @@ export default function BackupPage() {
                   <select
                     value={gnbSystem}
                     onChange={(e) => setGnbSystem(e.target.value)}
-                    className="w-full md:w-[420px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-white text-slate-700"
+                    className="w-full md:w-[420px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-surface text-slate-700"
                   >
                     {systems.map((s) => (
                       <option key={s.id} value={s.id}>{s.name} ({s.host}) — {s.type}</option>
@@ -420,7 +420,7 @@ export default function BackupPage() {
                 )}
               </div>
 
-              <Button onClick={downloadGnbBackup} disabled={!gnbSystem || gnbBackupBusy} className="bg-primary-600 hover:bg-primary-700 text-white">
+              <Button onClick={downloadGnbBackup} disabled={!gnbSystem || gnbBackupBusy} className="bg-primary-600 hover:bg-primary-700 text-on-accent">
                 {gnbBackupBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                 <span className="ml-1.5">Download backup</span>
               </Button>
@@ -429,7 +429,7 @@ export default function BackupPage() {
                 'inline-flex items-center gap-1.5 px-4 h-9 rounded-md text-sm font-medium border cursor-pointer ' +
                 (gnbRestoreBusy || !gnbSystem
                   ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50')
+                  : 'bg-surface text-slate-700 border-slate-300 hover:bg-slate-50')
               }>
                 {gnbRestoreBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                 <span>Restore from file…</span>
