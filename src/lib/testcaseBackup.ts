@@ -73,9 +73,22 @@ export async function exportTestcases(
   if (!token) throw new Error('login response did not include a token (looked for access_token / token / jwt)');
 
   // 2. Paginate /v2/testcases/search
+  //
+  // The search endpoint pages on pageNumber/pageSize (1-based), NOT
+  // offset/limit — and it does not reject the wrong vocabulary, it answers 200
+  // with page 1 again. This loop sent {offset, limit} and advanced offset by
+  // the row count, so every request after the first re-read page 1 and the
+  // backup filled up with the same testcases repeated until it reached
+  // serverTotal. The manifest then reported a complete pull. Verified on .95:
+  // {offset:50,limit:50} returns byte-identical rows to {offset:0,limit:50},
+  // while {pageNumber:2} returns genuinely different ones.
+  //
+  // Deduping by id is kept as a belt-and-braces guard: this box also returns
+  // the same id twice inside a single page (491 unique of 500 on .95), so an
+  // archive keyed on id would otherwise contain collisions.
   const all: any[] = [];
+  const seenIds = new Set<string>();
   let serverTotal = 0;
-  let offset = 0;
   let page = 0;
   while (page < maxPages) {
     const sr = await fetch(`http://${target.host}/v2/testcases/search`, {
@@ -84,25 +97,33 @@ export async function exportTestcases(
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ offset, limit: pageSize }),
+      body: JSON.stringify({ pageNumber: page + 1, pageSize }),
     });
     if (!sr.ok) {
       const body = await sr.text().catch(() => '');
-      throw new Error(`testcase search failed at offset ${offset}: HTTP ${sr.status} ${body.slice(0, 200)}`);
+      throw new Error(`testcase search failed at page ${page + 1}: HTTP ${sr.status} ${body.slice(0, 200)}`);
     }
     const j: any = await sr.json();
     const items = j.items ?? j.testcases ?? j.data ?? [];
     serverTotal = j.total ?? j.totalCount ?? serverTotal;
     if (!Array.isArray(items) || items.length === 0) break;
-    all.push(...items);
+
+    let fresh = 0;
+    for (const t of items) {
+      const id = String(t?.id ?? '');
+      if (id && seenIds.has(id)) continue;
+      if (id) seenIds.add(id);
+      all.push(t);
+      fresh += 1;
+    }
     page += 1;
     opts.onProgress?.({ pulled: all.length, serverTotal, page });
-    // Stop conditions:
-    //   • server told us a total and we've hit it
-    //   • server returned fewer than we asked for (last page)
-    if (serverTotal > 0 && all.length >= serverTotal) break;
+
+    // A page that adds nothing new means we are re-reading — stop rather than
+    // spin to maxPages. This is the condition that would have caught the
+    // offset/limit bug immediately instead of producing a plausible archive.
+    if (fresh === 0) break;
     if (items.length < pageSize) break;
-    offset += items.length;
   }
 
   return {
