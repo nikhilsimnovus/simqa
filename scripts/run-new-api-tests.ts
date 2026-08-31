@@ -21,7 +21,6 @@ async function main() {
     categories: ['mutating', 'testcases'],
     includeDestructive: true,
     includeLongRunning: true,
-    includeNegative: false,
   });
   const filtered = r.results.filter((x) => TARGET_IDS.has(x.id));
   console.log(`\n=== ${filtered.length} target tests ===\n`);

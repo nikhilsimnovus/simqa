@@ -3,6 +3,7 @@
 
 import { NextResponse } from 'next/server';
 import { listSuites, createSuite } from '@/lib/automation/store';
+import { userFromRequest } from '@/lib/identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,8 +25,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: 'callboxSystemId is required when kind=uesim+callbox' }, { status: 400 });
   }
   try {
+    const by = userFromRequest(req);
     const suite = createSuite({
       name: body.name,
+      // Who made this playlist. Recorded once at creation and never
+      // overwritten by later edits — updatedBy carries those.
+      createdBy: by,
+      updatedBy: by,
       kind,
       uesimSystemId: body.uesimSystemId,
       callboxSystemId: body.callboxSystemId,
@@ -38,7 +44,10 @@ export async function POST(req: Request) {
         id: typeof it.id === 'string' && it.id ? it.id : `item-${Math.random().toString(36).slice(2, 10)}`,
         name: typeof it.name === 'string' && it.name.trim() ? it.name.trim() : it.simnovatorTcId,
         simnovatorTcId: String(it.simnovatorTcId),
+        suiteName: typeof it.suiteName === 'string' && it.suiteName.trim() ? it.suiteName.trim() : undefined,
         callboxCfg: typeof it.callboxCfg === 'string' && it.callboxCfg.trim() ? it.callboxCfg.trim() : undefined,
+        mmeCfg: typeof it.mmeCfg === 'string' && it.mmeCfg.trim() ? it.mmeCfg.trim() : undefined,
+        imsCfg: typeof it.imsCfg === 'string' && it.imsCfg.trim() ? it.imsCfg.trim() : undefined,
         durationSec: typeof it.durationSec === 'number' && it.durationSec > 0 ? it.durationSec : undefined,
       })) : undefined,
       testcaseIds: Array.isArray(body.testcaseIds) ? body.testcaseIds : [],

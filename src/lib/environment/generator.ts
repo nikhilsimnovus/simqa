@@ -22,37 +22,72 @@ export type EnvTraffic =
   // UDP iperf + TCP iperf + VoNR voice, all on the same UEs).
   | 'as-gold';
 
-export interface AutoCreateMatrix {
-  /** Cell counts to generate (each ≥1). Constrained per-RAT in validate(). */
-  cellCounts: number[];
-  /** Traffic profiles to sweep. */
-  trafficTypes: EnvTraffic[];
-  /** Feature toggles — each produces on/off variants when the array has
-   *  both true and false, or a single variant when one value. */
-  carrierAggregation: boolean[];   // e.g. [false] or [true] or [false,true]
-  handover: boolean[];
-  networkSlicing: boolean[];
-  ntn: boolean[];
-  attachDetach: boolean[];         // power-cycle loop
-  powerControl: boolean[];
-  /** Channel modelling: 'off' (awgn no sim), 'all' (one fading model on all
-   *  cells), 'mix' (channelSim on, per-cell distinct fading). */
-  channelMix: Array<'off' | 'all' | 'mix'>;
-  /** Optional rx-to-tx latency values to sweep (cells[].rxToTxLatency). */
-  rxTxLatency?: number[];
-  /** How to derive cells beyond what the GOLD provides. */
-  cellDerivation: 'replicate' | 'distinct';
-  /** UE count per subscriber group (overrides env.defaults.ueCount). */
-  ueCount?: number;
-  /** Cap the total variant count (safety). */
-  maxVariants?: number;
+/** RAT the generated testcase runs as. Defaults to whatever the GOLD was
+ *  parsed as, but the user can override — the box's master.ratType (and the
+ *  subscriber shape that follows from it) is a per-testcase choice, not a
+ *  fixed property of the site. */
+export type RatChoice = 'NR-SA' | 'NR-NSA' | 'NB-IoT' | 'MULTI-RAT' | 'LTE';
+
+/** UI labels, in menu order. */
+export const RAT_CHOICES: Array<{ id: RatChoice; label: string }> = [
+  { id: 'NR-SA',     label: '5G:SA' },
+  { id: 'NR-NSA',    label: '5G:NSA/DSS' },
+  { id: 'NB-IoT',    label: 'NB-IoT' },
+  { id: 'MULTI-RAT', label: 'MULTI-RAT' },
+  { id: 'LTE',       label: '4G:SmartPhone' },
+];
+
+/** Short tag used in the generated testcase name. */
+const RAT_TAG: Record<RatChoice, string> = {
+  'NR-SA': 'SA', 'NR-NSA': 'NSA', 'NB-IoT': 'NBIOT', 'MULTI-RAT': 'MULTIRAT', 'LTE': 'SMARTPHONE',
+};
+
+/** The GOLD's parsed RAT mapped onto a selectable choice (NTN rides on SA). */
+export function defaultRatChoice(env: Environment): RatChoice {
+  return env.site.rat === 'NTN' ? 'NR-SA' : env.site.rat;
 }
 
-/** One materialized variant — a concrete point in the matrix. */
+/** One subscriber group: how many UEs it holds and which traffic runs on it.
+ *  Several traffic entries on one group run CONCURRENTLY — the box accepts
+ *  multiple userPlane profiles bound to the same subscriberGroup, which is
+ *  how a GOLD carries e.g. UDP iperf + VoNR on the same UEs. */
+export interface UeGroupSpec {
+  ueCount: number;
+  traffic: EnvTraffic[];
+}
+
+/** The spec for ONE testcase. Every field is applied directly — nothing is
+ *  cross-producted into on/off variants, so a spec yields exactly one
+ *  testcase. (This replaced a sweep model whose array fields silently turned
+ *  a single selection into several testcases.) */
+export interface AutoCreateMatrix {
+  /** RAT the testcase runs as. Omitted → the GOLD's own RAT. */
+  rat?: RatChoice;
+  /** Cells in the generated testcase (≥1). Constrained per-RAT in validate(). */
+  cellCount: number;
+  /** Subscriber groups, in order. Each becomes one subs[] entry plus its own
+   *  userPlane profiles. */
+  ueGroups: UeGroupSpec[];
+  /** Feature toggles — applied as selected. */
+  carrierAggregation: boolean;
+  handover: boolean;
+  networkSlicing: boolean;
+  ntn: boolean;
+  attachDetach: boolean;           // power-cycle loop
+  powerControl: boolean;
+  /** Channel modelling: 'off' (awgn no sim), 'all' (one fading model on all
+   *  cells), 'mix' (channelSim on, per-cell distinct fading). */
+  channel: 'off' | 'all' | 'mix';
+  /** Optional rx-to-tx latency (cells[].rxToTxLatency). */
+  rxTxLatency?: number;
+}
+
+/** The materialized testcase spec handed to the body builders. */
 export interface EnvVariant {
   id: string;            // stable name pushed to the box
+  rat: RatChoice;
   cellCount: number;
-  traffic: EnvTraffic;
+  ueGroups: UeGroupSpec[];
   ca: boolean;
   ho: boolean;
   slicing: boolean;
@@ -61,82 +96,120 @@ export interface EnvVariant {
   powerControl: boolean;
   channel: 'off' | 'all' | 'mix';
   rxTxLatency?: number;
-  /** How to derive cells beyond the GOLD's plan (carried from the matrix). */
-  derivation: 'replicate' | 'distinct';
 }
 
 // ── Validation / mutual exclusion ─────────────────────────────────────
 
-/** Returns null if the (env, variant) combo is buildable, else a reason. */
-export function variantInvalidReason(env: Environment, v: EnvVariant): string | null {
-  const rat = env.site.rat;
+/** EVERY reason this spec can't be built, not just the first. A spec now maps
+ *  to a single testcase, so a rejection means "you got nothing" — reporting
+ *  one conflict at a time makes the user re-run the preview to discover the
+ *  next. Empty array = buildable. */
+export function variantInvalidReasons(env: Environment, v: EnvVariant): string[] {
+  const rat = v.rat;
+  const allTraffic = v.ueGroups.flatMap(g => g.traffic);
+  const out: string[] = [];
+
+  if (!v.ueGroups.length) out.push('at least one UE group is required');
+  if (v.ueGroups.some(g => !g.traffic.length)) out.push('every UE group needs at least one traffic type');
+  if (v.ueGroups.some(g => !(g.ueCount >= 1))) out.push('every UE group needs a UE count of at least 1');
+
+  // The chosen RAT has to be buildable from the GOLD's actual cell plan — an
+  // n78 NR GOLD carries no LTE band/EARFCN, so it cannot become a 4G testcase.
+  const has4g = env.site.cells.some(c => c.cellType === '4g');
+  const has5g = env.site.cells.some(c => c.cellType === '5g');
+  const ratLabel = RAT_CHOICES.find(r => r.id === rat)?.label ?? rat;
+  if ((rat === 'LTE' || rat === 'NB-IoT') && !has4g) {
+    out.push(`${ratLabel} needs a 4G cell — this GOLD only has 5G cells (no band/EARFCN to build from)`);
+  }
+  if ((rat === 'NR-NSA' || rat === 'MULTI-RAT') && !(has4g && has5g)) {
+    out.push(`${ratLabel} needs both a 4G anchor and a 5G cell — this GOLD has ${has4g ? 'only 4G' : 'only 5G'} cells`);
+  }
+  if (rat === 'NR-SA' && !has5g) {
+    out.push(`${ratLabel} needs a 5G cell — this GOLD only has 4G cells`);
+  }
+
   if (rat === 'NB-IoT') {
-    if (v.cellCount > 1) return 'NB-IoT is single-cell';
-    if (v.ca) return 'NB-IoT cannot do carrier aggregation';
-    if (v.slicing) return 'NB-IoT cannot do network slicing';
-    if (v.ntn && env.site.cells.every(c => !c.ntn)) return 'NB-IoT-NTN needs an NTN GOLD config';
+    if (v.cellCount > 1) out.push('NB-IoT is single-cell');
+    if (v.ca) out.push('NB-IoT cannot do carrier aggregation');
+    if (v.slicing) out.push('NB-IoT cannot do network slicing');
+    if (v.ntn && env.site.cells.every(c => !c.ntn)) out.push('NB-IoT-NTN needs an NTN GOLD config');
   }
-  if (v.ca && v.cellCount < 2) return 'carrier aggregation needs ≥2 cells';
-  if (v.ca && v.ho) return 'CA and handover both pin servingCell — mutually exclusive';
-  if (v.ho && v.cellCount < 2) return 'handover needs ≥2 cells';
+  if (v.ca && v.cellCount < 2) out.push('carrier aggregation needs ≥2 cells — raise cell count to 2+');
+  if (v.ca && v.ho) out.push('carrier aggregation and handover both pin servingCell — turn one off');
+  if (v.ho && v.cellCount < 2) out.push('handover needs ≥2 cells — raise cell count to 2+');
+  if (v.ho && v.ueGroups.length < 2) out.push('handover needs ≥2 UE groups (one per serving cell)');
   if ((v.slicing || v.powerControl) && (rat === 'LTE' || rat === 'NB-IoT')) {
-    return 'network slicing / power control are NR features';
+    out.push('network slicing / power control are NR features');
   }
-  if ((v.traffic === 'volte' || v.traffic === 'vonr') && rat === 'NB-IoT') {
-    return 'voice not supported on NB-IoT';
+  if (allTraffic.some(t => t === 'volte' || t === 'vonr') && rat === 'NB-IoT') {
+    out.push('voice not supported on NB-IoT');
   }
-  return null;
+  return out;
 }
 
-/** Cross-product the matrix into valid variants. */
+/** Returns null if the (env, variant) combo is buildable, else all reasons
+ *  joined — kept for callers that want a single string. */
+export function variantInvalidReason(env: Environment, v: EnvVariant): string | null {
+  const reasons = variantInvalidReasons(env, v);
+  return reasons.length ? reasons.join('; ') : null;
+}
+
+/** Materialize the spec. Returns exactly one variant, or none plus the reason
+ *  the combination can't be built. The `{ variants, skipped }` shape is kept
+ *  so the preview/run callers stay unchanged. */
 export function expandMatrix(env: Environment, m: AutoCreateMatrix): { variants: EnvVariant[]; skipped: Array<{ id: string; reason: string }> } {
-  const variants: EnvVariant[] = [];
-  const skipped: Array<{ id: string; reason: string }> = [];
-  let seq = 0;
-  const cap = m.maxVariants ?? 500;
-  const latencies = (m.rxTxLatency && m.rxTxLatency.length) ? m.rxTxLatency : [undefined];
-
-  outer:
-  for (const cellCount of m.cellCounts)
-  for (const traffic of m.trafficTypes)
-  for (const ca of m.carrierAggregation)
-  for (const ho of m.handover)
-  for (const slicing of m.networkSlicing)
-  for (const ntn of m.ntn)
-  for (const loop of m.attachDetach)
-  for (const powerControl of m.powerControl)
-  for (const channel of m.channelMix)
-  for (const lat of latencies) {
-    seq += 1;
-    const v: EnvVariant = {
-      id: '', cellCount, traffic, ca, ho, slicing, ntn, loop, powerControl, channel,
-      rxTxLatency: lat, derivation: m.cellDerivation,
-    };
-    v.id = variantName(env, v, seq);
-    const reason = variantInvalidReason(env, v);
-    if (reason) { skipped.push({ id: v.id, reason }); continue; }
-    variants.push(v);
-    if (variants.length >= cap) break outer;
-  }
-  return { variants, skipped };
+  const v: EnvVariant = {
+    id: '',
+    rat: m.rat ?? defaultRatChoice(env),
+    cellCount: m.cellCount,
+    ueGroups: m.ueGroups,
+    ca: m.carrierAggregation,
+    ho: m.handover,
+    slicing: m.networkSlicing,
+    ntn: m.ntn,
+    loop: m.attachDetach,
+    powerControl: m.powerControl,
+    channel: m.channel,
+    rxTxLatency: m.rxTxLatency,
+  };
+  v.id = variantName(env, v);
+  // One row per conflict so the UI can list them all at once.
+  const reasons = variantInvalidReasons(env, v);
+  if (reasons.length) return { variants: [], skipped: reasons.map(reason => ({ id: v.id, reason })) };
+  return { variants: [v], skipped: [] };
 }
 
-function variantName(env: Environment, v: EnvVariant, seq: number): string {
-  const rat = env.site.rat.toLowerCase().replace(/[^a-z0-9]+/g, '');
-  const bits = [
-    `${v.cellCount}cell`,
-    v.traffic,
-    v.ca ? 'ca' : '',
-    v.ho ? 'ho' : '',
-    v.slicing ? 'slice' : '',
-    v.ntn ? 'ntn' : '',
-    v.loop ? 'loop' : '',
-    v.powerControl ? 'pc' : '',
-    v.channel !== 'off' ? `ch-${v.channel}` : '',
-    v.rxTxLatency !== undefined ? `lat${v.rxTxLatency}` : '',
+/** Traffic id → the token used in the testcase name. */
+const TRAFFIC_TAG: Record<string, string> = {
+  'as-gold': 'asGold', 'no_data': 'nodata', 'ping': 'ping', 'volte': 'volte', 'vonr': 'vonr',
+  'iperf-dl': 'iperfDL', 'iperf-ul': 'iperfUL', 'iperf-both': 'iperfBoth', 'iperf-tcp': 'iperfTCP',
+};
+
+/** Name reads as RAT_cells_groups_userplane_features, e.g.
+ *    SA_2cell_2UEGroups_nodata_vonr_CarrierAggregation
+ *
+ *  Deterministic, so re-running the same spec is recognised as "already on
+ *  box" instead of creating a duplicate. */
+function variantName(env: Environment, v: EnvVariant): string {
+  const traffic = [...new Set(v.ueGroups.flatMap(g => g.traffic))]
+    .map(t => TRAFFIC_TAG[t] ?? t.replace(/[^a-zA-Z0-9]+/g, ''));
+  const features = [
+    v.ca ? 'CarrierAggregation' : '',
+    v.ho ? 'Handover' : '',
+    v.slicing ? 'NetworkSlicing' : '',
+    v.ntn ? 'NTN' : '',
+    v.loop ? 'AttachDetachLoop' : '',
+    v.powerControl ? 'PowerControl' : '',
+    v.channel === 'all' ? 'ChannelAll' : v.channel === 'mix' ? 'ChannelMix' : '',
+    v.rxTxLatency !== undefined ? `Latency${v.rxTxLatency}` : '',
   ].filter(Boolean);
-  const slug = env.name.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 12);
-  return `env-${slug}-${rat}-${bits.join('-')}-${String(seq).padStart(3, '0')}`;
+  return [
+    RAT_TAG[v.rat],
+    `${v.cellCount}cell`,
+    `${v.ueGroups.length}UEGroups`,
+    ...traffic,
+    ...features,
+  ].join('_');
 }
 
 // ── Cell derivation ───────────────────────────────────────────────────
@@ -175,20 +248,30 @@ function deriveCells(env: Environment, count: number, derivation: 'replicate' | 
 
 // ── Body builders (FLAT write-side) ───────────────────────────────────
 
-function masterRatType(env: Environment, ntn: boolean): string {
-  switch (env.site.rat) {
+/** The box's master.ratType for the RAT the user picked. NTN is not a RAT of
+ *  its own — it rides on SA plus the per-cell NTN flag. */
+function masterRatType(rat: RatChoice): string {
+  switch (rat) {
     case 'NR-SA': return 'sa';
     case 'NR-NSA': return 'nsa';
     case 'NB-IoT': return 'nbiot';
-    case 'NTN': return 'sa';     // NTN rides on SA + the per-cell NTN flag
+    case 'MULTI-RAT': return 'multirat';
     case 'LTE': return 'smartphone';
   }
 }
 
+/** True when the chosen RAT uses the NR subscriber shape (SUPI, nea/nia, …). */
+function isNrRat(rat: RatChoice): boolean {
+  return rat === 'NR-SA' || rat === 'NR-NSA' || rat === 'MULTI-RAT';
+}
+
 export function buildCells(env: Environment, v: EnvVariant): any {
-  const cells = deriveCells(env, v.cellCount, v.derivation);
-  const ratType = masterRatType(env, v.ntn);
-  const isNr = env.site.rat === 'NR-SA' || env.site.rat === 'NR-NSA' || env.site.rat === 'NTN';
+  // Always 'distinct': use the GOLD's real cell plan, padding any extra cells
+  // from cell0 with a stepped ARFCN. (The user-facing "Extra cells" choice was
+  // removed — replicating cell0 when the GOLD has real cells lost site data.)
+  const cells = deriveCells(env, v.cellCount, 'distinct');
+  const ratType = masterRatType(v.rat);
+  const isNr = isNrRat(v.rat);
   const master: any = {
     product: 'UE-SIM',
     carrierAggregation: v.ca,
@@ -196,7 +279,13 @@ export function buildCells(env: Environment, v: EnvVariant): any {
     ratType,
   };
   if (isNr) { master.ldpcIteration = 5; master.pdcchDecodeOpt = false; }
-  else { master.turboIteration = env.site.rat === 'NB-IoT' ? 6 : 14; master.pdcchDecodeOpt = true; master.pdcchDecodeOptThreshold = 0.1; }
+  else if (v.rat === 'NB-IoT') {
+    // NB-IoT GOLDs the box exports ship pdcchDecodeOpt OFF and carry no
+    // threshold at all — the LTE decode-optimisation pair is smartphone-only.
+    master.turboIteration = 6;
+    master.pdcchDecodeOpt = false;
+  }
+  else { master.turboIteration = 14; master.pdcchDecodeOpt = true; master.pdcchDecodeOptThreshold = 0.1; }
 
   const cellsOut = cells.map((c, i) => {
     const cell: any = {
@@ -244,14 +333,16 @@ export function buildCells(env: Environment, v: EnvVariant): any {
   return { cellConfig: { master, cells: cellsOut } };
 }
 
-export function buildSubscribers(env: Environment, v: EnvVariant, ueCount: number): any {
-  const isNr = env.site.rat === 'NR-SA' || env.site.rat === 'NR-NSA' || env.site.rat === 'NTN';
-  // For handover, split into 2 groups starting on different serving cells.
-  // Each group's identity range is pinned to the GOLD start + group*ueCount.
-  const groups = v.ho ? 2 : 1;
+export function buildSubscribers(env: Environment, v: EnvVariant): any {
+  const isNr = isNrRat(v.rat);
+  // One subs[] entry per UE group. Identity ranges are laid end to end from
+  // the GOLD start so groups never overlap, whatever their sizes.
   const subs: any[] = [];
-  for (let g = 0; g < groups; g++) {
-    const startId = env.site.imsiStart + g * ueCount;
+  let startId = env.site.imsiStart;
+  for (let g = 0; g < v.ueGroups.length; g++) {
+    const group = v.ueGroups[g];
+    const ueCount = group.ueCount;
+    // Handover puts each group on its own serving cell.
     const common: any = {
       ueCount,
       servingCell: v.ho ? g : 0,
@@ -281,13 +372,13 @@ export function buildSubscribers(env: Environment, v: EnvVariant, ueCount: numbe
         cipherAlgorithm: ['nea0', 'nea1', 'nea2'],
         integrityAlgorithm: ['nia0', 'nia1', 'nia2'],
         mncDigits: env.site.mncDigits ?? 2,
-        VoNRSupport: v.traffic === 'vonr' || (env.site.voNRSupport ?? false),
+        VoNRSupport: group.traffic.includes('vonr') || (env.site.voNRSupport ?? false),
         protectionScheme: 'null',
         publicKeyId: 0,
         routingIndicator: 1111,
         networkSlicing: v.slicing ? 'enable' : 'disable',
         ...(v.slicing ? { pduSnssai: { pduSNSSAISst: 1, pduSNSSAISd: 1 } } : {}),
-        ratTypeP: masterRatType(env, v.ntn),
+        ratTypeP: masterRatType(v.rat),
         cellTypeP: '5g',
         carrierAggregationP: v.ca,
         channelSimP: v.channel === 'mix' || v.channel === 'all',
@@ -314,17 +405,27 @@ export function buildSubscribers(env: Environment, v: EnvVariant, ueCount: numbe
         asRelease: 13,
         redCap: false,
         ueCategoryType: 'combined',
-        ueCategory: env.site.rat === 'NB-IoT' ? 'nb1' : '6',
-        ueInitiatedEvents: 'tau',
-        eventsInLoop: true,
-        triggerTime: [10],
+        ueCategory: v.rat === 'NB-IoT' ? 'nb1' : '6',
+        // NB-IoT GOLDs use 'none' and carry no event loop; a periodic TAU
+        // trigger is a smartphone behaviour.
+        ...(v.rat === 'NB-IoT'
+          ? { ueInitiatedEvents: 'none' }
+          : { ueInitiatedEvents: 'tau', eventsInLoop: true, triggerTime: [10] }),
         pdnType: 'ipv4',
         defaultApn: '',
         cipherAlgorithm: ['eea0', 'eea1', 'eea2'],
         integrityAlgorithm: ['eia0', 'eia1', 'eia2'],
-        ...(env.site.rat === 'NB-IoT' ? { cellTypeP: '4g', CIOTOpt: 'control', multiTone: true, multiCarrier: false } : {}),
+        // NB-IoT-only flags. CIOTOpt is a BOOL on the box — sending the string
+        // 'control' gets "cannot unmarshal string into Go struct field
+        // PLoadSubscriber.subs.CIOTOpt of type bool". halfDuplex belongs with
+        // it; both match the box-accepted set in lib/bulkTests/generator.ts
+        // and the NB-IoT GOLDs the box itself exports.
+        ...(v.rat === 'NB-IoT'
+          ? { cellTypeP: '4g', CIOTOpt: true, halfDuplex: true, multiTone: true, multiCarrier: false }
+          : {}),
       });
     }
+    startId += ueCount * (env.site.imsiStride || 1);
   }
   return { subsConfig: { subs } };
 }
@@ -354,60 +455,65 @@ function voiceProfile(env: Environment, group: number, kind: 'volte' | 'vonr', s
   };
 }
 
-export function buildUserPlane(env: Environment, v: EnvVariant, ueCount: number): any {
+/** Emit the userPlane profiles for ONE traffic selection, bound to group `g`.
+ *  `as-gold` expands to several profiles (the GOLD's whole concurrent mix);
+ *  every other type yields exactly one. */
+function profilesFor(env: Environment, t: EnvTraffic, g: number, ueCount: number): any[] {
   const serverIp = env.site.iperfServerIp ?? '20.10.10.1';
-  const profiles: any[] = [];
-  const t = v.traffic;
 
-  // as-GOLD: replay the customer's exact concurrent traffic mix. Each
-  // GOLD profile is re-emitted with site IPs re-stamped; subscriberGroup
-  // is preserved ([-1] = every UE → concurrent on the same subscribers).
-  if (t === 'as-gold' && env.site.trafficProfiles?.length) {
-    for (const gp of env.site.trafficProfiles) {
-      const group = gp.subscriberGroup?.[0] ?? 0;   // preserve -1 (all UEs)
-      if (gp.dataType === 'iperf') {
-        const dir = (gp.direction as any) ?? 'both';
-        const proto = (gp.protocol as any) ?? 'udp';
-        const p = iperfProfile(group, dir, proto, ueCount, serverIp);
-        p.subscriberGroup = gp.subscriberGroup ?? [group];
-        profiles.push(p);
-      } else if (gp.dataType === 'volte' || gp.dataType === 'vonr') {
-        const p = voiceProfile(env, group, 'vonr', ueCount);
-        p.subscriberGroup = gp.subscriberGroup ?? [group];
-        if (gp.codec) p.codec = gp.codec;
-        profiles.push(p);
-      } else if (gp.dataType === 'ping') {
-        profiles.push({ subscriberGroup: gp.subscriberGroup ?? [group], dataType: 'ping', pdnType: 'ipv4', apnName: '', startDelay: 5, sessionDuration: 60, serverIpAddress: serverIp });
-      } else {
-        profiles.push({ subscriberGroup: gp.subscriberGroup ?? [group], dataType: 'no_data', pdnType: 'ipv4', apnName: '' });
-      }
+  // as-GOLD: replay the customer's exact concurrent traffic mix, re-stamping
+  // site IPs and binding every profile to THIS group.
+  if (t === 'as-gold') {
+    if (!env.site.trafficProfiles?.length) {
+      return [{ subscriberGroup: [g], dataType: 'no_data', pdnType: 'ipv4', apnName: '' }];
     }
-    return { userPlaneConfig: { profiles } };
+    return env.site.trafficProfiles.map(gp => {
+      if (gp.dataType === 'iperf') {
+        return iperfProfile(g, (gp.direction as any) ?? 'both', (gp.protocol as any) ?? 'udp', ueCount, serverIp);
+      }
+      if (gp.dataType === 'volte' || gp.dataType === 'vonr') {
+        const p = voiceProfile(env, g, 'vonr', ueCount);
+        if (gp.codec) p.codec = gp.codec;
+        return p;
+      }
+      if (gp.dataType === 'ping') {
+        return { subscriberGroup: [g], dataType: 'ping', pdnType: 'ipv4', apnName: '', startDelay: 5, sessionDuration: 60, serverIpAddress: serverIp };
+      }
+      if (gp.raw) {
+        // Any other dataType the box supports (ftp, http, dns, …). We don't
+        // model their type-specific keys, so replay the GOLD profile as-is
+        // and only re-stamp the site's server IP where one is present.
+        // Collapsing these to no_data silently produced traffic-less tests.
+        const p = { ...gp.raw, subscriberGroup: [g] };
+        if (p.serverIpAddress) p.serverIpAddress = serverIp;
+        return p;
+      }
+      return { subscriberGroup: [g], dataType: 'no_data', pdnType: 'ipv4', apnName: '' };
+    });
   }
 
-  if (t === 'no_data' || t === 'as-gold') {
-    profiles.push({ subscriberGroup: [0], dataType: 'no_data', pdnType: 'ipv4', apnName: '' });
-  } else if (t === 'ping') {
-    profiles.push({ subscriberGroup: [0], dataType: 'ping', pdnType: 'ipv4', apnName: '', startDelay: 5, sessionDuration: 60, serverIpAddress: serverIp });
-  } else if (t === 'volte' || t === 'vonr') {
-    profiles.push(voiceProfile(env, 0, t, ueCount));
-  } else {
-    const dir = t === 'iperf-dl' ? 'downlink' : t === 'iperf-ul' ? 'uplink' : 'both';
-    const proto = t === 'iperf-tcp' ? 'tcp' : 'udp';
-    profiles.push(iperfProfile(0, dir as any, proto, ueCount, serverIp));
-  }
-  // Handover splits into 2 groups — give group 1 the same traffic.
-  if (v.ho && t !== 'no_data') {
-    const dir = t === 'iperf-dl' ? 'downlink' : t === 'iperf-ul' ? 'uplink' : 'both';
-    profiles.push(iperfProfile(1, dir as any, t === 'iperf-tcp' ? 'tcp' : 'udp', ueCount, serverIp));
-  } else if (v.ho) {
-    profiles.push({ subscriberGroup: [1], dataType: 'no_data', pdnType: 'ipv4', apnName: '' });
-  }
+  if (t === 'no_data') return [{ subscriberGroup: [g], dataType: 'no_data', pdnType: 'ipv4', apnName: '' }];
+  if (t === 'ping')    return [{ subscriberGroup: [g], dataType: 'ping', pdnType: 'ipv4', apnName: '', startDelay: 5, sessionDuration: 60, serverIpAddress: serverIp }];
+  if (t === 'volte' || t === 'vonr') return [voiceProfile(env, g, t, ueCount)];
+
+  const dir = t === 'iperf-dl' ? 'downlink' : t === 'iperf-ul' ? 'uplink' : 'both';
+  const proto = t === 'iperf-tcp' ? 'tcp' : 'udp';
+  return [iperfProfile(g, dir as any, proto, ueCount, serverIp)];
+}
+
+/** Every traffic type selected on a group becomes its own profile bound to
+ *  that group, so a group with e.g. [no_data, vonr] yields two profiles in
+ *  one testcase rather than two separate testcases. */
+export function buildUserPlane(env: Environment, v: EnvVariant): any {
+  const profiles: any[] = [];
+  v.ueGroups.forEach((group, g) => {
+    for (const t of group.traffic) profiles.push(...profilesFor(env, t, g, group.ueCount));
+  });
   return { userPlaneConfig: { profiles } };
 }
 
 export function buildPowerCycle(env: Environment, v: EnvVariant): any {
-  const groups = v.ho ? 2 : 1;
+  const groups = v.ueGroups.length;
   // A time-based attach/detach loop REQUIRES totalTestDuration > 0, and the
   // box enforces totalTestDuration >= (powerOnTime + powerOffTime) * cycles.
   // Confirmed on 192.168.10.202 (4.0.0_260605): powerOnTime 2000 +
@@ -432,11 +538,10 @@ export function buildPowerCycle(env: Environment, v: EnvVariant): any {
  *    LTE: awgn, epa, eva, etu, mbsfn
  *  Falls back to awgn (always valid) for anything unrecognized — e.g. a
  *  GOLD that carried an LTE model name like "epa5" onto an NR cell. */
-function validFading(env: Environment, requested?: string): string {
+function validFading(rat: RatChoice, requested?: string): string {
   const NR = ['awgn', 'tdla30', 'tdlb100', 'tdlc300', 'tdld', 'tdle'];
   const LTE = ['awgn', 'epa', 'eva', 'etu', 'mbsfn'];
-  const isNr = env.site.rat === 'NR-SA' || env.site.rat === 'NR-NSA' || env.site.rat === 'NTN';
-  const allowed = isNr ? NR : LTE;
+  const allowed = isNrRat(rat) ? NR : LTE;
   const req = (requested ?? '').toLowerCase();
   if (allowed.includes(req)) return req;
   const alias: Record<string, string> = { epa5: 'epa', eva70: 'eva', etu70: 'etu', etu300: 'etu', tdla: 'tdla30', tdlb: 'tdlb100', tdlc: 'tdlc300' };
@@ -449,8 +554,8 @@ export function buildMobility(env: Environment, v: EnvVariant): any | null {
   // variants with channel modelling, we still emit a stationary mobility
   // profile to carry the fading model.
   if (!v.ho && v.channel === 'off') return null;
-  const groups = v.ho ? 2 : 1;
-  const fading = v.channel === 'off' ? 'awgn' : validFading(env, env.defaults.fading);
+  const groups = v.ueGroups.length;
+  const fading = v.channel === 'off' ? 'awgn' : validFading(v.rat, env.defaults.fading);
   // NB: fadingType + mimoCorrelation are FLAT on the profile — confirmed on
   // 192.168.10.202 (4.0.0_260605) that the box validator reads them at the
   // profile top level, NOT nested under a fadingProfile{} object (which the

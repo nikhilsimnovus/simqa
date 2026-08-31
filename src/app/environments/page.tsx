@@ -25,6 +25,11 @@ interface AutoResult { total: number; created: any[]; failures: any[]; skips: an
 
 const TRAFFIC_OPTIONS = ['as-gold', 'no_data', 'iperf-dl', 'iperf-ul', 'iperf-both', 'iperf-tcp', 'volte', 'vonr', 'ping'];
 
+/** One subscriber group in the builder: its UE count + the traffic profiles
+ *  that run concurrently on it. */
+interface UeGroup { ueCount: number; traffic: string[] }
+
+
 /** Parse a fetch Response as JSON, tolerating an empty or non-JSON body.
  *  A truncated/empty body is exactly what arrives when the simqa service is
  *  restarting (e.g. the Update pill) or a proxy/timeout cuts the response —
@@ -61,18 +66,17 @@ export default function EnvironmentsPage() {
   const [error, setError] = useState<string>('');
   const [busy, setBusy] = useState<string>('');
 
-  // Matrix state
-  const [cellCounts, setCellCounts] = useState<number[]>([1]);
-  const [traffic, setTraffic] = useState<string[]>(['as-gold']);
+  // Matrix state — one testcase per spec. Every control below is applied
+  // directly to that single testcase; nothing fans out into variants.
+  const [cellCount, setCellCount] = useState<number>(1);
+  const [ueGroups, setUeGroups] = useState<UeGroup[]>([{ ueCount: 2, traffic: ['as-gold'] }]);
   const [ca, setCa] = useState(false);
   const [ho, setHo] = useState(false);
   const [slicing, setSlicing] = useState(false);
   const [ntn, setNtn] = useState(false);
   const [loop, setLoop] = useState(false);
   const [powerControl, setPowerControl] = useState(false);
-  const [channelMix, setChannelMix] = useState<'off' | 'all' | 'mix'>('off');
-  const [derivation, setDerivation] = useState<'replicate' | 'distinct'>('distinct');
-  const [ueCount, setUeCount] = useState<number>(2);
+  const [channel, setChannel] = useState<'off' | 'all' | 'mix'>('all');
   const [previewCount, setPreviewCount] = useState<number | null>(null);
   const [previewSkips, setPreviewSkips] = useState<any[]>([]);
 
@@ -138,19 +142,18 @@ export default function EnvironmentsPage() {
     await loadEnvs();
   };
 
+  // No `rat` field — the generated testcase always runs as the RAT the GOLD
+  // was parsed as (expandMatrix falls back to defaultRatChoice).
   const matrixBody = () => ({
-    cellCounts,
-    trafficTypes: traffic,
-    carrierAggregation: ca ? [false, true] : [false],
-    handover: ho ? [false, true] : [false],
-    networkSlicing: slicing ? [false, true] : [false],
-    ntn: ntn ? [false, true] : [false],
-    attachDetach: loop ? [false, true] : [false],
-    powerControl: powerControl ? [false, true] : [false],
-    channelMix: [channelMix],
-    cellDerivation: derivation,
-    ueCount,
-    maxVariants: 500,
+    cellCount,
+    ueGroups,
+    carrierAggregation: ca,
+    handover: ho,
+    networkSlicing: slicing,
+    ntn,
+    attachDetach: loop,
+    powerControl,
+    channel,
   });
 
   const doPreview = async () => {
@@ -184,20 +187,32 @@ export default function EnvironmentsPage() {
   };
 
   const running = !!progress && !progress.finishedAt;
-  const toggleCellCount = (n: number) => setCellCounts(cc => cc.includes(n) ? cc.filter(x => x !== n) : [...cc, n].sort());
-  const toggleTraffic = (t: string) => setTraffic(tt => tt.includes(t) ? tt.filter(x => x !== t) : [...tt, t]);
+  // Cell count is a single choice, not a sweep: picking 2 means "one testcase
+  // with 2 cells". It used to accumulate ([1] + click 2 = [1,2]), which
+  // produced a 1-cell AND a 2-cell testcase and read as a duplicate-creation bug.
+  // (Every setter here invalidates the preview via the effect above.)
+  const selectCellCount = (n: number) => setCellCount(n);
+  const setGroupCount = (n: number) => setUeGroups(gs => n <= gs.length ? gs.slice(0, n)
+    : [...gs, ...Array.from({ length: n - gs.length }, () => ({ ueCount: 2, traffic: ['as-gold'] }))]);
+  const setGroupUeCount = (i: number, n: number) =>
+    setUeGroups(gs => gs.map((g, j) => j === i ? { ...g, ueCount: Math.max(1, n) } : g));
+  // Traffic is per group and additive: picking no_data AND vonr puts BOTH
+  // profiles on that group inside one testcase (it used to make two testcases).
+  const toggleGroupTraffic = (i: number, t: string) =>
+    setUeGroups(gs => gs.map((g, j) => j === i
+      ? { ...g, traffic: g.traffic.includes(t) ? g.traffic.filter(x => x !== t) : [...g.traffic, t] }
+      : g));
 
   // Reset preview whenever the matrix changes.
-  useEffect(() => { setPreviewCount(null); setPreviewSkips([]); }, [cellCounts, traffic, ca, ho, slicing, ntn, loop, powerControl, channelMix, derivation, ueCount, selected]);
+  useEffect(() => { setPreviewCount(null); setPreviewSkips([]); }, [cellCount, ueGroups, ca, ho, slicing, ntn, loop, powerControl, channel, selected]);
 
   return (
     <div className="min-h-screen bg-slate-50">
       <div className="max-w-7xl mx-auto px-6 py-8">
         <header className="mb-6">
-          <h1 className="text-2xl font-bold text-slate-900">Environments &amp; Auto-Create</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Auto Test Creation</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Upload a working GOLD-config testcase JSON. The tool extracts the site facts (RF plan, IMSI range, keys, IPs)
-            and auto-creates every testcase you select — zero manual test creation.
+            Upload a GOLD JSON Configuration to generate test cases automatically.
           </p>
         </header>
 
@@ -205,12 +220,12 @@ export default function EnvironmentsPage() {
 
         {/* Upload */}
         <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
-          <h2 className="text-base font-semibold text-slate-900 mb-3">1 · Upload GOLD config</h2>
+          <h2 className="text-base font-semibold text-slate-900 mb-3">Upload GOLD JSON Configuration</h2>
           <label className="cursor-pointer inline-block rounded-md border border-slate-300 px-4 py-2 hover:bg-slate-50 text-sm">
             {busy === 'upload' ? 'Parsing…' : 'Choose a testcase JSON…'}
             <input type="file" accept=".json,application/json" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ''; }} />
           </label>
-          <span className="text-xs text-slate-500 ml-3">Accepts a testcase export pack, a GET /v2/testcases/&lt;id&gt; response, or a bare testDefinition.</span>
+          <span className="text-xs text-slate-500 ml-3">Upload a valid GOLD configuration JSON file.</span>
 
           {draft && (
             <div className="mt-4 border border-slate-200 rounded-md p-4 bg-slate-50/50">
@@ -247,8 +262,8 @@ export default function EnvironmentsPage() {
 
         {/* Saved environments */}
         <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
-          <h2 className="text-base font-semibold text-slate-900 mb-3">2 · Pick an environment ({envs.length})</h2>
-          {envs.length === 0 ? <div className="text-sm text-slate-500">No environments yet — upload + save one above.</div> : (
+          <h2 className="text-base font-semibold text-slate-900 mb-3">Choose Environment ({envs.length})</h2>
+          {envs.length === 0 ? <div className="text-sm text-slate-500">No environments yet — upload and Create Test case</div> : (
             <div className="flex flex-wrap gap-2">
               {envs.map(e => (
                 <button key={e.id} onClick={() => setSelected(e)} className={`rounded-md border px-3 py-2 text-sm text-left ${selected?.id === e.id ? 'border-orange-500 bg-orange-50' : 'border-slate-200 hover:bg-slate-50'}`}>
@@ -264,37 +279,47 @@ export default function EnvironmentsPage() {
         {/* Auto-create matrix */}
         {selected && (
           <section className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
-            <h2 className="text-base font-semibold text-slate-900 mb-3">3 · Auto-create matrix for <span className="text-orange-600">{selected.name}</span></h2>
+            <h2 className="text-base font-semibold text-slate-900 mb-3">Auto-create matrix for <span className="text-orange-600">{selected.name}</span></h2>
             <div className="grid grid-cols-2 gap-6">
               <div className="space-y-3">
                 <div>
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Cell count</div>
-                  <div className="flex gap-2">{[1,2,3,4].map(n => <button key={n} onClick={() => toggleCellCount(n)} className={`rounded-md border px-3 py-1 text-sm ${cellCounts.includes(n) ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300'}`}>{n}</button>)}</div>
+                  <div className="flex gap-2">{[1,2,3,4].map(n => <button key={n} onClick={() => selectCellCount(n)} className={`rounded-md border px-3 py-1 text-sm ${cellCount === n ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300'}`}>{n}</button>)}</div>
                 </div>
                 <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Traffic types</div>
-                  <div className="flex flex-wrap gap-1.5">{TRAFFIC_OPTIONS.map(t => <button key={t} onClick={() => toggleTraffic(t)} className={`rounded-md border px-2 py-1 text-xs ${traffic.includes(t) ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300'}`}>{t}</button>)}</div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">UE groups</div>
+                  <div className="flex gap-2">{[1,2,3,4].map(n => <button key={n} onClick={() => setGroupCount(n)} className={`rounded-md border px-3 py-1 text-sm ${ueGroups.length === n ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300'}`}>{n}</button>)}</div>
                 </div>
-                <div className="flex items-center gap-4 text-sm">
-                  <label className="flex items-center gap-1.5"><span className="text-[11px] uppercase text-slate-500">UE count</span><input type="number" min={1} value={ueCount} onChange={e => setUeCount(Math.max(1, Number(e.target.value) || 1))} className="border border-slate-300 rounded px-2 py-1 w-[70px] text-sm" /></label>
-                  <label className="flex items-center gap-1.5"><span className="text-[11px] uppercase text-slate-500">Extra cells</span>
-                    <select value={derivation} onChange={e => setDerivation(e.target.value as any)} className="border border-slate-300 rounded px-2 py-1 text-sm">
-                      <option value="distinct">use GOLD's cells</option>
-                      <option value="replicate">replicate cell 0</option>
-                    </select>
-                  </label>
+                {/* Per-group UE count + traffic. Several traffic types on one
+                    group run concurrently inside the SAME testcase. */}
+                <div className="space-y-2">
+                  {ueGroups.map((g, i) => (
+                    <div key={i} className="border border-slate-200 rounded-md p-2.5 bg-slate-50/50">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Group {i}</span>
+                        <label className="flex items-center gap-1.5 ml-auto">
+                          <span className="text-[11px] uppercase text-slate-500">UE count</span>
+                          <input type="number" min={1} value={g.ueCount} onChange={e => setGroupUeCount(i, Number(e.target.value) || 1)} className="border border-slate-300 rounded px-2 py-1 w-[70px] text-sm" />
+                        </label>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">{TRAFFIC_OPTIONS.map(t => (
+                        <button key={t} onClick={() => toggleGroupTraffic(i, t)} className={`rounded-md border px-2 py-1 text-xs ${g.traffic.includes(t) ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300 bg-white'}`}>{t}</button>
+                      ))}</div>
+                      {g.traffic.length === 0 && <div className="text-[11px] text-red-600 mt-1">pick at least one traffic type</div>}
+                    </div>
+                  ))}
                 </div>
               </div>
               <div className="space-y-2">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Features (each adds on+off variants)</div>
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Features (applied to the test case)</div>
                 {([['Carrier Aggregation', ca, setCa], ['Handover', ho, setHo], ['Network Slicing', slicing, setSlicing], ['NTN', ntn, setNtn], ['Attach/Detach Loop', loop, setLoop], ['Power Control', powerControl, setPowerControl]] as const).map(([label, val, set]) => (
                   <label key={label} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={val} onChange={e => (set as any)(e.target.checked)} /><span>{label}</span></label>
                 ))}
                 <label className="flex items-center gap-2 text-sm"><span>Channel modelling</span>
-                  <select value={channelMix} onChange={e => setChannelMix(e.target.value as any)} className="border border-slate-300 rounded px-2 py-1 text-sm">
-                    <option value="off">off (AWGN)</option>
+                  <select value={channel} onChange={e => setChannel(e.target.value as any)} className="border border-slate-300 rounded px-2 py-1 text-sm">
                     <option value="all">enabled on all cells</option>
                     <option value="mix">mix per cell</option>
+                    <option value="off">off (AWGN)</option>
                   </select>
                 </label>
               </div>
@@ -307,13 +332,20 @@ export default function EnvironmentsPage() {
                 </select>
               </label>
               <button onClick={doPreview} disabled={!!busy} className="rounded-md border border-slate-300 hover:bg-slate-50 text-sm px-4 py-1.5">Preview</button>
-              <button onClick={doGenerate} disabled={!!busy || running || previewCount === null} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-1.5">{running ? 'Generating…' : 'Generate'}</button>
-              {previewCount !== null && <span className="text-sm text-slate-700"><b>{previewCount}</b> variant{previewCount === 1 ? '' : 's'} will be created{previewSkips.length ? ` · ${previewSkips.length} skipped (invalid combos)` : ''}</span>}
+              {/* Gated on a preview that actually yields a testcase — clicking
+                  Generate on a rejected spec used to silently do nothing. */}
+              <button onClick={doGenerate} disabled={!!busy || running || !previewCount} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-1.5">{running ? 'Generating…' : 'Generate'}</button>
+              {previewCount !== null && previewCount > 0 && <span className="text-sm text-slate-700"><b>{previewCount}</b> test case will be created</span>}
             </div>
-            {previewSkips.length > 0 && previewCount !== null && (
-              <details className="mt-2 text-xs text-slate-500"><summary className="cursor-pointer">{previewSkips.length} skipped combos</summary>
-                <ul className="mt-1 ml-4 list-disc space-y-0.5">{previewSkips.slice(0, 30).map((s, i) => <li key={i}><code>{s.id}</code> — {s.reason}</li>)}</ul>
-              </details>
+            {/* A rejected spec builds NOTHING, so the conflicts are shown in
+                full rather than folded into a <details> the user won't open. */}
+            {previewCount === 0 && previewSkips.length > 0 && (
+              <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2">
+                <div className="text-sm font-semibold text-red-800">This combination can&apos;t be built — nothing will be created.</div>
+                <ul className="mt-1 ml-4 list-disc text-sm text-red-700 space-y-0.5">
+                  {previewSkips.map((s, i) => <li key={i}>{s.reason}</li>)}
+                </ul>
+              </div>
             )}
           </section>
         )}
@@ -321,7 +353,7 @@ export default function EnvironmentsPage() {
         {/* Progress + result */}
         {progress && (
           <section className="bg-white border border-slate-200 rounded-xl p-5">
-            <h2 className="text-base font-semibold text-slate-900 mb-3 flex items-center gap-2">Generation
+            <h2 className="text-base font-semibold text-slate-900 mb-3 flex items-center gap-2">Test Case Creation Status
               {running && <button onClick={() => fetch('/api/environments/autocreate-status', { method: 'POST' })} className="ml-auto text-xs rounded-md border border-slate-300 px-2 py-1">Abort</button>}
             </h2>
             <div className="text-sm text-slate-700 mb-2">{progress.done} / {progress.total} · {progress.created} created · {progress.failed} failed · {progress.skipped} skipped{running && progress.currentName ? ` · current: ${progress.currentName}` : ''}</div>

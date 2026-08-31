@@ -26,6 +26,8 @@ export async function POST(req: Request) {
         startedAt: r.startedAt,
         finishedAt: r.finishedAt,
         targetSystemId: body?.targetSystemId,
+        targetHost: r.targetHost,
+        buildVersion: r.buildVersion,
         total: counts.total,
         passed: counts.passed,
         failed: counts.failed,

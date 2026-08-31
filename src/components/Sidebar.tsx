@@ -5,9 +5,9 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle,
-  ShieldCheck, Beaker, MousePointerClick, Info, Layers, Wrench, Database,
-  Rocket, FileCheck2, Activity, ChevronDown, ChevronRight, Boxes,
-  PanelLeftClose, PanelLeftOpen, RefreshCw, Globe,
+  ShieldCheck, Beaker, MousePointerClick, Info, Wrench, Database,
+  FileCheck2, Activity, ChevronDown, ChevronRight, Boxes,
+  PanelLeftClose, PanelLeftOpen, RefreshCw, Globe, ClipboardList,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
@@ -31,10 +31,10 @@ const SECTIONS: NavSection[] = [
     title: 'Plan',
     items: [
       { href: '/',                  label: 'Dashboard',         icon: LayoutDashboard },
-      { href: '/testcases',         label: 'Test Cases',        icon: FlaskConical },
+      { href: '/job-tracker',       label: 'Job Tracker',       icon: ClipboardList },
+      { href: '/testcases',         label: 'Test Case and Validate', icon: FlaskConical },
       { href: '/automation-suite',  label: 'Automation Suite',  icon: PlayCircle },
-      { href: '/environments',      label: 'Environments',      icon: Globe },
-      { href: '/run-validate',      label: 'Run & Validate',    icon: Rocket },
+      { href: '/environments',      label: 'Auto Test Creation', icon: Globe },
     ],
   },
   {
@@ -53,7 +53,7 @@ const SECTIONS: NavSection[] = [
     id: 'configure',
     title: 'Configure',
     items: [
-      { href: '/inventory', label: 'Systems Mgmt', icon: Server },
+      { href: '/inventory', label: 'Systems Management', icon: Server },
       { href: '/tools',     label: 'Tools',        icon: Wrench },
       { href: '/backup',    label: 'Backup',       icon: Database },
     ],
@@ -63,28 +63,28 @@ const SECTIONS: NavSection[] = [
     title: 'History & Help',
     items: [
       { href: '/runs',     label: 'Run History',      icon: History },
-      { href: '/about',    label: 'About QA Ka BAAP', icon: Info },
+      { href: '/about',    label: 'About SimQA', icon: Info },
       { href: '/settings', label: 'Settings',         icon: Settings2 },
     ],
   },
-  {
-    id: 'advanced',
-    title: 'Advanced',
-    defaultCollapsed: true,
-    items: [
-      { href: '/end-to-end', label: 'Topology Setups', icon: Layers },
-      { href: '/automation', label: 'Generate + Push', icon: PlayCircle },
-    ],
-  },
+  // The "Advanced" section used to live here, holding "Topology Setups"
+  // (retired 2026-08-24 — duplicated Systems Management's Topology Setup
+  // section, see src/app/end-to-end/page.tsx) and "Generate + Push"
+  // (removed from navigation 2026-08-24 at the user's request). The page
+  // behind Generate + Push — /automation, the cfg-generate + SSH-push flow
+  // for distributed labs — was NOT deleted: it is genuinely different from
+  // Automation Suite (REST-trigger only, no cfg generation or SSH push) and
+  // has no replacement elsewhere in the app. It's simply not linked from the
+  // sidebar anymore; reachable directly at /automation if ever needed again.
 ];
 
 const LS_SECTIONS = 'simqa-sidebar-sections-collapsed';
 const LS_RAILMODE = 'simqa-sidebar-rail';
 
-// ─── QA Ka BAAP mascot — unchanged ────────────────────────────────────────
-function QaKaBaapLogo({ size = 32 }: { size?: number }) {
+// ─── SimQA mascot — unchanged artwork ─────────────────────────────────────
+function SimQaLogo({ size = 32 }: { size?: number }) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width={size} height={size} role="img" aria-label="QA Ka BAAP — father doing QA">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width={size} height={size} role="img" aria-label="SimQA">
       <rect x="0" y="0" width="64" height="64" rx="14" fill="#FF6A00" />
       <circle cx="29" cy="27" r="14" fill="#FFD3A5" />
       <path d="M15 26 Q13 16 19 12 Q24 14 22 22 Z" fill="#2D1B0E" />
@@ -110,9 +110,11 @@ function QaKaBaapLogo({ size = 32 }: { size?: number }) {
 interface SidebarProps {
   version?: string;
   versionSource?: string;
+  /** Signed-in name, used to attribute work. '' when nobody has signed in. */
+  user?: string;
 }
 
-export function Sidebar({ version, versionSource }: SidebarProps = {}) {
+export function Sidebar({ version, versionSource, user }: SidebarProps = {}) {
   const pathname = usePathname() || '/';
 
   // ── Rail (icons-only) mode + per-section collapsed state ─────────────
@@ -231,13 +233,13 @@ export function Sidebar({ version, versionSource }: SidebarProps = {}) {
     >
       {/* Brand row */}
       <div className={cn('h-14 flex items-center border-b border-slate-200', rail ? 'justify-center px-2' : 'gap-2 px-4')}>
-        <Link href="/" className="shrink-0" title="QA Ka BAAP — home">
-          <QaKaBaapLogo size={32} />
+        <Link href="/" className="shrink-0" title="SimQA — home">
+          <SimQaLogo size={32} />
         </Link>
         {!rail ? (
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold tracking-tight text-slate-900">QA Ka BAAP</div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-500">Father of QA</div>
+            <div className="text-sm font-semibold tracking-tight text-slate-900">SimQA</div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500">Automated QA for Simnovator</div>
           </div>
         ) : null}
         {!rail && updateAvailable ? (
@@ -312,10 +314,37 @@ export function Sidebar({ version, versionSource }: SidebarProps = {}) {
             <PanelLeftOpen className="h-4 w-4" />
           </button>
         ) : (
-          <div className="text-[11px] text-slate-500 flex items-center justify-between gap-2">
-            <span>v0.1.0</span>
-            {version ? <span className="font-mono text-[10px] text-slate-400 truncate" title={`source: ${versionSource ?? 'unknown'}`}>{version}</span> : null}
-          </div>
+          <>
+            {/* Who work is being attributed to. Sign out returns to /login so a
+                shared lab machine can hand over cleanly. */}
+            {user ? (
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span
+                    className="h-5 w-5 shrink-0 rounded-full bg-orange-100 text-orange-700 text-[10px] font-bold flex items-center justify-center"
+                    aria-hidden
+                  >
+                    {user.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="text-[11px] text-slate-700 truncate" title={`Signed in as ${user}`}>{user}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
+                    window.location.href = '/login';
+                  }}
+                  className="text-[10px] text-slate-400 hover:text-slate-700 hover:underline shrink-0"
+                >
+                  Sign out
+                </button>
+              </div>
+            ) : null}
+            <div className="text-[11px] text-slate-500 flex items-center justify-between gap-2">
+              <span>v0.1.0</span>
+              {version ? <span className="font-mono text-[10px] text-slate-400 truncate" title={`source: ${versionSource ?? 'unknown'}`}>{version}</span> : null}
+            </div>
+          </>
         )}
       </div>
     </aside>

@@ -110,6 +110,12 @@ export interface GoldTrafficProfile {
   protocol?: string;
   /** voice codec (volte/vonr). */
   codec?: string;
+  /** The GOLD profile verbatim. iperf/voice/ping are rebuilt from the fields
+   *  above, but every OTHER dataType the box supports (ftp, http, dns, …)
+   *  carries type-specific keys we don't model — downlinkFilename,
+   *  urlAddress, sessionDuration. Keeping the original body lets "as-GOLD"
+   *  replay those instead of degrading them to no_data. */
+  raw?: any;
 }
 
 /** Scenario knobs the generator may vary; seeded from GOLD, overridable. */

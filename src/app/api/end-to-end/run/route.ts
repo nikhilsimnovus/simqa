@@ -8,6 +8,9 @@
 import { NextResponse } from 'next/server';
 import { startRun } from '@/lib/endToEnd/runner';
 import type { RunRequest } from '@/lib/endToEnd/types';
+import { userFromRequest } from '@/lib/identity';
+import { recordSystemUse } from '@/lib/systemUsage';
+import { loadInventory, getSystem } from '@/lib/inventory';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,5 +27,17 @@ export async function POST(req: Request) {
   }
   const r = await startRun(body);
   if (!r.ok) return NextResponse.json(r, { status: 400 });
+
+  // A validation run executes a real testcase on the box — record who put it
+  // there. Only after startRun succeeds, so a rejected request (busy box, bad
+  // system) doesn't claim the system was used.
+  recordSystemUse({
+    systemId: body.systemId,
+    host: getSystem(loadInventory(), body.systemId)?.host,
+    by: userFromRequest(req),
+    at: new Date().toISOString(),
+    what: 'Run & Validate',
+  });
+
   return NextResponse.json(r);
 }

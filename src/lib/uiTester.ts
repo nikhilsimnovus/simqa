@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import { uesimApiOptsFromInventory, uesimApiOptsForSystem, type Inventory } from './inventory';
 import { bandValidationTests } from './ui-tests/tests/band-validation';
 import { configFidelityTests } from './ui-tests/tests/config-fidelity';
+import { resolveBoxBuild } from './buildVersion';
 
 export type UiTestCategory = 'auth' | 'navigation' | 'testcases' | 'stats' | 'logs' | 'simulators' | 'users' | 'tools' | 'security' | 'errors' | 'patterns' | 'lifecycle' | 'perf' | 'compat' | 'field-band' | 'config-fidelity';
 export type UiTestSeverity = 'critical' | 'normal' | 'optional';
@@ -116,6 +117,9 @@ export interface UiTesterResponse {
   results: UiTestResult[];
   /** Optional diff against a saved baseline. */
   diff?: UiBaselineDiff;
+  /** Box this sweep ran against and its build at the time (Run History). */
+  targetHost?: string;
+  buildVersion?: string;
 }
 
 const DEFAULT_CATEGORIES: UiTestCategory[] = ['auth', 'navigation', 'testcases', 'stats', 'logs', 'simulators', 'users', 'tools', 'security', 'errors', 'patterns', 'lifecycle', 'perf', 'compat', 'field-band', 'config-fidelity'];
@@ -895,15 +899,48 @@ function defs(): UiTestDef[] {
       await page.goto(`http://${ctx.host}/`, { waitUntil: 'domcontentloaded' });
       await page.locator('#username').fill(ctx.username);
       await page.locator('#password').focus();
-      await page.keyboard.press('CapsLock');
-      await page.locator('#password').type('Test');
-      await page.waitForTimeout(800);
-      const capsHint = await page.locator(':text-matches("caps\\s*lock", "i")').count();
-      // Restore Caps Lock state
-      await page.keyboard.press('CapsLock');
+
+      // Apps detect Caps Lock via KeyboardEvent.getModifierState('CapsLock'),
+      // and that modifier is the one thing Playwright cannot produce:
+      // keyboard.press('CapsLock') delivers a keydown for the key itself but
+      // never turns the LOCK state on for subsequent synthetic events, so
+      // getModifierState keeps reporting false. Driving it that way reported a
+      // missing feature on a UI that implements it correctly (verified live
+      // 2026-08-26: dispatching the event below makes .102 render "Caps Lock
+      // is on"). Dispatch a keydown/keyup pair carrying the modifier instead —
+      // that exercises the app's handler, which is the part under test. The
+      // browser's own lock plumbing is Chromium's business, not the product's.
+      // Assert on rendered text rather than Playwright's :text-matches()
+      // pseudo-selector — the warning is a plain <span> whose copy differs by
+      // build ("Caps Lock is on" on 4.0.0), and reading innerText is both
+      // simpler and what was verified by hand against .102.
+      const capsRe = /caps\s*lock/i;
+      const bodyText = async () => (await page.locator('body').innerText().catch(() => '')) ?? '';
+      const before = capsRe.test(await bodyText()) ? 1 : 0;
+      await page.locator('#password').evaluate((el) => {
+        for (const type of ['keydown', 'keyup']) {
+          const ev = new KeyboardEvent(type, { key: 'A', code: 'KeyA', bubbles: true, cancelable: true });
+          Object.defineProperty(ev, 'getModifierState', { value: (k: string) => k === 'CapsLock' });
+          el.dispatchEvent(ev);
+        }
+      });
+      await page.waitForTimeout(600);
+      const afterText = await bodyText();
+      const capsHint = capsRe.test(afterText) ? 1 : 0;
+      // An earlier check in the same browser context may have authenticated,
+      // in which case landing on / bounces straight to /testcase and the
+      // password field this probe targets is gone by the time we sample.
+      // Report where we actually were, so a failure says which of the two
+      // things went wrong instead of just "0".
+      const at = page.url();
+      const stillOnLogin = await page.locator('#password').count();
       return {
-        ok: capsHint > 0,
-        detail: `Caps Lock hint elements visible: ${capsHint}`,
+        ok: capsHint > before,
+        detail: before > 0
+          ? `a "caps lock" match was already present before the probe (${before}); after: ${capsHint} — cannot attribute it to the modifier`
+          : capsHint > 0
+            ? `warning shown: "${(afterText.split('\n').find((l) => capsRe.test(l)) ?? '').trim()}"`
+            : `no caps-lock warning after a keydown carrying getModifierState('CapsLock')=true (url=${at}, #password present=${stillOnLogin > 0})`,
         expected: 'when Caps Lock is on while typing password, a small warning appears so user does not waste a login attempt',
       };
     },
@@ -1004,16 +1041,39 @@ function defs(): UiTestDef[] {
       await page.locator('#username').fill(ctx.username);
       await page.locator('#password').fill('any-password-' + Date.now());
 
-      const btn = page.locator('button:has-text("Login")').first();
-      const beforeText = (await btn.textContent().catch(() => '')) ?? '';
-      const beforeDisabled = await btn.isDisabled().catch(() => false);
+      // Locate by structure, NOT by the button's text, and hold a handle to the
+      // element across the click.
+      //
+      // `button:has-text("Login")` looks reasonable and is a trap: the button's
+      // label becomes "Logging in..." during the request, which does not
+      // contain "Login", so the locator matches NOTHING during exactly the
+      // window this test measures. Playwright then auto-waits on the next
+      // textContent()/isDisabled() call until the request finishes and the
+      // label reverts — reporting the post-request state as if it were the
+      // in-flight state. That produced `text "Login"->"Login" disabled
+      // false->false spinners=0` against a UI that does all three things
+      // correctly (verified live 2026-08-26 on .102: Login -> "Logging in...",
+      // disabled true, one animate-spin node).
+      const btn = await page.locator('form:has(#password) button[type="submit"]').first().elementHandle();
+      if (!btn) return { ok: false, detail: 'no submit button inside the login form', expected: 'a submit button in the form containing #password' };
+      // Read through the handle so sampling never re-resolves a selector (and
+      // so never auto-waits past the state being sampled).
+      const sample = async () => btn.evaluate((el: any) => ({
+        text: (el.textContent || '').trim(),
+        disabled: !!el.disabled,
+        spinners: document.querySelectorAll('[role="progressbar"], [class*="spinner" i], [class*="animate-spin" i]').length,
+      }));
+      const b = await sample();
+      const beforeText = b.text;
+      const beforeDisabled = b.disabled;
 
       await btn.click();
       await page.waitForTimeout(400); // observe ~middle of the throttled request
 
-      const afterText = (await btn.textContent().catch(() => '')) ?? '';
-      const afterDisabled = await btn.isDisabled().catch(() => false);
-      const spinnerCount = await page.locator('[role="progressbar"], [class*="spinner" i], [class*="loading" i], svg[class*="animate" i]').count();
+      const a = await sample();
+      const afterText = a.text;
+      const afterDisabled = a.disabled;
+      const spinnerCount = a.spinners;
 
       const textChanged = afterText.trim() !== beforeText.trim();
       const becameDisabled = afterDisabled && !beforeDisabled;
@@ -1152,7 +1212,9 @@ function defs(): UiTestDef[] {
       const page = bundle.page;
       let postCount = 0;
       await page.route('**/v2/login', async (route) => {
-        postCount++;
+        // Count POSTs only. The old code counted every interception, so a
+        // preflight or a retry would have inflated the tally.
+        if (route.request().method() === 'POST') postCount++;
         await new Promise((r) => setTimeout(r, 1500));
         await route.continue();
       });
@@ -1160,16 +1222,28 @@ function defs(): UiTestDef[] {
       await page.locator('#username').fill(ctx.username);
       await page.locator('#password').fill('any-password-' + Date.now());
 
-      const btn = page.locator('button:has-text("Login")').first();
-      // Two rapid clicks
+      // Structural selector + a held handle, for the reason spelled out in
+      // ui-login-button-loading-state: the label changes to "Logging in..."
+      // in flight, so a text-based locator matches nothing exactly then.
+      const btn = await page.locator('form:has(#password) button[type="submit"]').first().elementHandle();
+      if (!btn) return { ok: false, detail: 'no submit button inside the login form', expected: 'a submit button in the form containing #password' };
+
       await btn.click();
       await page.waitForTimeout(150);
-      await btn.click({ trial: false }).catch(() => null);
-      await page.waitForTimeout(2500); // wait for both potential requests to settle
+      // The second click MUST NOT auto-wait. Playwright's normal click waits
+      // for actionability, so against a correctly-disabled button it simply
+      // blocks until the first request finishes, then clicks the re-enabled
+      // button — recording a second POST and reporting a double-submit bug on
+      // a UI whose guard actually worked. Dispatch the event directly instead:
+      // it bypasses actionability, so a button that is genuinely disabled
+      // swallows it and a button that is not fires a second request.
+      const stateAtSecondClick = await btn.evaluate((el: any) => ({ text: (el.textContent || '').trim(), disabled: !!el.disabled }));
+      await btn.dispatchEvent('click').catch(() => null);
+      await page.waitForTimeout(2500); // let any second request settle
 
       return {
         ok: postCount <= 1,
-        detail: `POST /v2/login fired ${postCount} times after a double-click`,
+        detail: `POST /v2/login fired ${postCount} time(s); at the second click the button was ${stateAtSecondClick.disabled ? 'disabled' : 'ENABLED'} showing "${stateAtSecondClick.text}"`,
         expected: 'after the first click, the button must disable (or be otherwise un-clickable) until the request finishes — exactly 1 POST /v2/login per double-click',
       };
     },
@@ -2512,6 +2586,87 @@ function defs(): UiTestDef[] {
     },
   });
 
+  // Build-drift guard.
+  //
+  // The problem this solves: when Simnovator ships a new build that adds a
+  // section, nothing tells us. The suite keeps passing on the sections it
+  // already knew about and is simply blind to the new one — coverage silently
+  // decays with every release. That is exactly how /tools/network-topology sat
+  // untested (found 2026-08-26: the build declared 7 tools, the suite covered 6).
+  //
+  // It cannot be solved by generating tests automatically: an assertion needs
+  // to know what CORRECT looks like, and inventing one produces the same
+  // vacuous green this suite exists to prevent. What CAN be automated is
+  // noticing. The SPA declares its own Tools menu as a data array
+  // ({name, description, path}), so this reads that array out of whatever
+  // build is deployed and fails when the catalogue has no test touching a
+  // declared path — naming the tool, its description and its route, so the
+  // gap is actionable rather than a number.
+  //
+  // Coverage is derived by scanning each test's own run() source for the path,
+  // not from a hand-kept manifest, so it cannot drift out of sync with reality.
+  list.push({
+    id: 'ui-tools-coverage-matches-build', name: 'Every tool the build declares has a UI test', description: "Reads the deployed SPA's own Tools menu definition and asserts the catalogue exercises every tool route it declares. Fails naming any tool a new build added that nothing tests.",
+    category: 'tools', severity: 'normal', needsAuth: false,
+    run: async ({ ctx }) => {
+      const base = `http://${ctx.host}`;
+      const idx = await fetch(`${base}/`).then((r) => r.text()).catch(() => '');
+      const bundlePath = (idx.match(/\/assets\/index-[A-Za-z0-9_-]+\.js/) ?? [])[0];
+      if (!bundlePath) {
+        return { ok: false, detail: 'could not locate the SPA bundle from /', expected: 'index.html references /assets/index-<hash>.js' };
+      }
+      const src = await fetch(`${base}${bundlePath}`).then((r) => r.text()).catch(() => '');
+      if (!src) return { ok: false, detail: `could not fetch ${bundlePath}`, expected: 'the SPA bundle is retrievable' };
+      const build = (src.match(/VITE_APPVERSION:"([^"]+)"/) ?? [])[1] ?? 'unknown';
+
+      // The Tools landing page declares each card as {name, description, …, path}.
+      const declared: Array<{ name: string; path: string; desc: string }> = [];
+      const re = /name:"([^"]+)",description:"([^"]+)"[^}]*?path:"(\/tools\/[^"]+)"/g;
+      for (let m = re.exec(src); m; m = re.exec(src)) {
+        if (!declared.some((d) => d.path === m![3])) declared.push({ name: m![1], desc: m![2], path: m![3] });
+      }
+      if (!declared.length) {
+        return { ok: false, detail: `build ${build}: no tool cards found in ${bundlePath} — the menu is declared differently in this build, so this guard can no longer see it`, expected: 'the SPA declares its Tools menu as {name, description, path} entries this check can read' };
+      }
+
+      // Coverage = some test's run() source mentions the path.
+      const catalogue = defs();
+      const covers = (p: string) => catalogue.some((t) => t.id !== 'ui-tools-coverage-matches-build' && String(t.run).includes(p));
+      const missing = declared.filter((d) => !covers(d.path));
+      const summary = `build ${build}: ${declared.length} tool(s) declared, ${declared.length - missing.length} covered`;
+      if (missing.length) {
+        return {
+          ok: false,
+          detail: `${summary}. NO TEST TOUCHES: ${missing.map((d) => `${d.path} ("${d.name}" — ${d.desc})`).join('; ')}`,
+          expected: 'every tool the deployed build lists on its Tools page is exercised by at least one UI test. A new build adding a tool should fail here until a test covers it.',
+        };
+      }
+      return { ok: true, detail: `${summary} — ${declared.map((d) => d.path.replace('/tools/', '')).join(', ')}` };
+    },
+  });
+
+  list.push({
+    id: 'ui-tools-network-topology-content', name: 'Network Topology page renders a topology view', description: 'Loads /tools/network-topology and asserts the page renders a diagram surface or node/link controls rather than an empty shell.',
+    category: 'tools', severity: 'optional', needsAuth: true,
+    run: async ({ ctx, bundle }) => {
+      const page = bundle.page;
+      await page.goto(`http://${ctx.host}/tools/network-topology`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2500);
+      const onLogin = (await page.locator('#username').count()) > 0;
+      // A topology view is drawn (canvas/svg) or, failing that, is at least a
+      // populated control surface. Both are accepted so a re-skin doesn't fail
+      // this, but an empty shell — the actual regression worth catching — does.
+      const canvas = await page.locator('canvas, svg').count();
+      const controls = await page.locator('button, select, input').count();
+      const bodyLen = ((await page.locator('body').innerText().catch(() => '')) ?? '').trim().length;
+      return {
+        ok: !onLogin && (canvas > 0 || controls > 0) && bodyLen > 40,
+        detail: `onLogin=${onLogin} canvas/svg=${canvas} controls=${controls} textLen=${bodyLen}`,
+        expected: 'Network Topology page renders a topology surface (canvas/svg) or its controls, not an empty shell',
+      };
+    },
+  });
+
   list.push({
     id: 'ui-tools-spectrum-analyzer-content', name: 'Spectrum Analyzer page renders a plot area', description: 'Loads /tools/spectrum-analyzer and asserts the page renders a plot/canvas area or status panel.',
     category: 'tools', severity: 'optional', needsAuth: true,
@@ -2536,13 +2691,39 @@ function defs(): UiTestDef[] {
     run: async ({ ctx, bundle }) => {
       const page = bundle.page;
       await page.goto(`http://${ctx.host}/tools/sdr-configuration`, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(2500);
+      // This page enumerates SDR cards over the network before it can render
+      // either controls or an empty state, so a fixed sleep races the fetch.
+      // Poll for a settled outcome instead, and only then judge.
+      const emptyState = /not detected|no (sdr )?cards? (found|detected|available)|no sdr|idle|unavailable|could not read|failed to (read|load)/i;
+      let inputs = 0;
+      const deadline = Date.now() + 12_000;
+      while (Date.now() < deadline) {
+        inputs = await page.locator('input, select, textarea').count();
+        const t = ((await page.locator('body').innerText().catch(() => '')) ?? '');
+        if (inputs > 0 || emptyState.test(t)) break;
+        await page.waitForTimeout(750);
+      }
       const onLogin = (await page.locator('#username').count()) > 0;
-      const inputs = await page.locator('input, select, textarea').count();
+      if (onLogin) return { ok: false, detail: 'bounced to the login page', expected: 'SDR Configuration page loads while authenticated' };
+      if (inputs > 0) return { ok: true, detail: `SDR present — ${inputs} config field(s) rendered` };
+      // No inputs is not automatically a defect here. This page enumerates
+      // physical SDR cards ("SDR card <id> not detected or idle" / "Could not
+      // read SDR cards" live in the build), so a box with no SDR fitted has
+      // nothing to render controls for. Failing on that reported a product bug
+      // for a hardware fact. What the page still owes the user in that state
+      // is an explanation rather than a blank panel — assert that instead, so
+      // the check stays meaningful on SDR-less boxes without going vacuous.
+      const text = ((await page.locator('body').innerText().catch(() => '')) ?? '').trim();
+      // `emptyState` deliberately does NOT match the bare word "SDR": the page
+      // heading is "SDR Configuration", so accepting that matched every
+      // possible state and passed unconditionally — a check that could not fail.
+      const explains = emptyState.test(text);
       return {
-        ok: !onLogin && inputs > 0,
-        detail: `onLogin=${onLogin} formFields=${inputs}`,
-        expected: 'SDR Configuration page has at least one input/select for configuration values',
+        ok: explains && text.length > 40,
+        detail: explains
+          ? `no SDR fitted to this box — page explains rather than rendering a blank panel: "${(text.split('\n').find((l) => emptyState.test(l)) ?? '').trim().slice(0, 110)}"`
+          : `no config fields AND no empty-state explanation (textLen=${text.length}); page text starts: "${text.slice(0, 120).replace(/\n/g, ' | ')}"`,
+        expected: 'SDR Configuration shows config fields when an SDR card is fitted, or an explanatory empty state when none is detected — never a blank panel',
       };
     },
   });
@@ -5569,27 +5750,16 @@ function defs(): UiTestDef[] {
     'ui-simulator-management-stats-bar',
     'ui-create-test-case-finds-subscriber-section', // wizard path didn't surface
     'ui-advanced-settings-no-page-reset',           // ditto
-    // /tools page renders no cards for this user (admin-only) — drop the
-    // /tools content checks. Keeping a single /tools nav-only check would be
-    // useful but the per-card tests are noise without admin.
-    'ui-tools-page-renders',
-    'ui-tools-manage-simulators',
-    'ui-tools-sdr-configuration',
-    'ui-tools-spectrum-analyzer',
-    'ui-tools-3gpp-band',
-    'ui-tools-satellite-tracker',
-    'ui-tools-container-health',
-    'ui-tools-manage-simulators-content',
-    'ui-tools-band-info-search',
-    'ui-tools-satellite-tracker-content',
-    'ui-tools-spectrum-analyzer-content',
-    'ui-tools-sdr-configuration-content',
-    'ui-tools-container-health-content',
-    'ui-tools-band-info-search-returns-rows',
-    'ui-tools-spectrum-analyzer-has-canvas-or-chart',
-    'ui-tools-satellite-tracker-rejects-out-of-range-coords',
-    'ui-tools-subpage-breadcrumb-link-back',
-    'ui-compat-tools-page-renders',
+    // The whole /tools block used to be excluded here on the premise that
+    // "/tools page renders no cards for this user (admin-only)". That premise
+    // is stale: on build 4.0.0_2608251705 the tool pages render for the
+    // configured lab user (network-topology returns 28 canvas/svg nodes and
+    // 19 controls). Excluding them meant the Tools section reported one
+    // surviving check while the product shipped seven tools — coverage that
+    // looked deliberate but was an artefact of an old environment.
+    // Re-enabled 2026-08-26; any that genuinely fail should be fixed or fail
+    // loudly, not be hidden here. ui-tools-coverage-matches-build now guards
+    // the breadth so this cannot silently regress again.
     // API-token capture-dependent tests — cookie-only auth means these can't
     // mint a Bearer token to call the API directly.
     'ui-testcase-row-name-matches-api',
@@ -6127,11 +6297,19 @@ export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<
       catch (e: any) { diff = { baselineId: req.baselineId, regressions: [], fixes: [], unchangedFailures: [], newTests: [], removedTests: [], baselineRunDir: '<error: ' + (e?.message ?? String(e)).slice(0, 80) + '>' }; }
     }
 
+    // Which box, and which build of it, produced these numbers. Recorded on
+    // the summary so the Run History row can attribute the sweep — comparing
+    // two UI sweeps without knowing the build is how a fixed regression and a
+    // re-introduced one look identical. Best-effort; never fails the run.
+    const boxBuild = await resolveBoxBuild(target.host, apiOpts.username, apiOpts.password);
+
     const summary: UiTesterResponse = {
       startedAt, finishedAt: new Date().toISOString(),
       ok: counts.failed === 0,
       runDir,
       counts, results, diff,
+      targetHost: target.host,
+      buildVersion: boxBuild?.version,
     };
     fs.writeFileSync(path.join(runDir, 'summary.json'), JSON.stringify(summary, null, 2));
     return summary;

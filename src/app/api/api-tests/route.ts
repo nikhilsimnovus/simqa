@@ -4,6 +4,11 @@ import { loadInventory } from '@/lib/inventory';
 import { appendHistoryEntry } from '@/lib/historyStore';
 
 export const dynamic = 'force-dynamic';
+// A full sweep with long-running exports enabled runs well past the default
+// serverless ceiling. No-op under `next dev`, but without it a built deployment
+// kills the request mid-sweep and the page receives nothing at all.
+export const runtime = 'nodejs';
+export const maxDuration = 900;
 
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as ApiTesterRequest;
@@ -19,6 +24,8 @@ export async function POST(req: Request) {
       startedAt: r.startedAt,
       finishedAt: r.finishedAt,
       targetSystemId: body?.targetSystemId,
+      targetHost: r.targetHost,
+      buildVersion: r.buildVersion,
       total: counts.total,
       passed: counts.passed,
       failed: counts.failed,

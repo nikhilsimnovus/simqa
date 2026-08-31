@@ -22,6 +22,8 @@ interface VerificationReport {
 interface RunDetail {
   id: string;
   testcaseId: string;
+  testcaseName?: string;
+  testcaseResult?: string;
   topology?: string;
   startedAt: string;
   finishedAt?: string;
@@ -82,12 +84,16 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   return (
     <>
       <Header
-        title={run.testcaseId}
-        subtitle={`Run ${run.id} · ${new Date(run.startedAt).toLocaleString()}`}
+        title={run.testcaseName ?? run.testcaseId}
+        subtitle={new Date(run.startedAt).toLocaleString()}
         right={
           <div className="flex items-center gap-2">
-            <Link href="/runs"><Button size="sm" variant="ghost"><ChevronLeft className="h-4 w-4" />All runs</Button></Link>
-            <StatusBadge status={run.status} />
+            <Link href="/runs"><Button size="sm" variant="ghost">All runs</Button></Link>
+            {/* Back to the Test Cases list — where this workflow was started. */}
+            <Link href="/testcases">
+              <Button size="sm" variant="ghost"><ChevronLeft className="h-4 w-4" />Back</Button>
+            </Link>
+            <StatusBadge status={run.testcaseResult ?? run.status} />
           </div>
         }
       />
@@ -101,14 +107,12 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                   <Badge tone="info">{(run.generatorSummary.ratType ?? '').toUpperCase()}</Badge>
                   <Badge>{run.generatorSummary.cells} cell{run.generatorSummary.cells === 1 ? '' : 's'}</Badge>
                   <Badge>{run.generatorSummary.ueCount} UE{run.generatorSummary.ueCount === 1 ? '' : 's'}</Badge>
-                  <Badge>PLMN {run.generatorSummary.plmn}</Badge>
                   {run.generatorSummary.ims ? <Badge tone="success">IMS</Badge> : null}
                   {run.dryRun ? <Badge tone="warning">dry-run</Badge> : null}
                 </div>
               ) : null}
               {run.boxVersion?.version || run.boxVersion?.build ? (
                 <div className="text-xs text-slate-600">
-                  <span className="text-slate-400">box:</span>{' '}
                   <span className="font-mono">{run.boxVersion.version ?? '?'} {run.boxVersion.build ? `(${run.boxVersion.build})` : ''}</span>
                 </div>
               ) : null}
@@ -146,7 +150,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
         ) : null}
 
         <Card>
-          <CardHeader><CardTitle>Pipeline</CardTitle></CardHeader>
+          <CardHeader><CardTitle>Test Workflow</CardTitle></CardHeader>
           <CardBody className="p-0">
             <ol className="divide-y divide-slate-100">
               {run.steps.map((s, i) => (
@@ -155,7 +159,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                     ? <CheckCircle2 className="h-4 w-4 text-success-600 mt-0.5" />
                     : <XCircle    className="h-4 w-4 text-red-600 mt-0.5" />}
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-slate-900">{s.name}</div>
+                    <div className="text-sm font-medium text-slate-900">{stepLabel(s.name)}</div>
                     {s.detail ? <div className="text-xs text-slate-500 mt-0.5 break-all">{s.detail}</div> : null}
                   </div>
                   {typeof s.ms === 'number' ? <span className="text-[11px] text-slate-400 mt-0.5">{s.ms}ms</span> : null}
@@ -165,7 +169,29 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                 <li className="px-5 py-3 flex items-center gap-2 text-sm text-slate-500">
                   <Loader2 className="h-4 w-4 animate-spin" /> running…
                 </li>
-              ) : null}
+              ) : (
+                /* Closing row. Reports the TESTCASE's verdict when the box has
+                   one (PASS / INCOMPLETE / …) — that's the outcome people care
+                   about — and falls back to the workflow's own result, naming
+                   the step that broke, when it doesn't. */
+                <li className="px-5 py-3 flex items-start gap-3 bg-slate-50">
+                  {(run.testcaseResult ?? run.status).toLowerCase() === 'pass'
+                   || (!run.testcaseResult && run.status === 'passed')
+                    ? <CheckCircle2 className="h-4 w-4 text-success-600 mt-0.5" />
+                    : <XCircle className="h-4 w-4 text-red-600 mt-0.5" />}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-slate-900">Status</div>
+                    <div className="text-xs text-slate-500 mt-0.5">
+                      {run.testcaseResult
+                        ? `test case result on the box: ${run.testcaseResult}`
+                        : run.status === 'failed'
+                          ? `failed at ${stepLabel(run.steps.find((s) => !s.ok)?.name ?? 'unknown step')}`
+                          : `all ${run.steps.length} steps passed`}
+                    </div>
+                  </div>
+                  <StatusBadge status={run.testcaseResult ?? run.status} />
+                </li>
+              )}
             </ol>
           </CardBody>
         </Card>
@@ -203,6 +229,24 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
       </main>
     </>
   );
+}
+
+/** Human labels for the runner's internal step names. The stored names are
+ *  matched elsewhere (history folds targetHost out of 'preflight-login'), so
+ *  only the DISPLAY is renamed here. */
+const STEP_LABELS: Record<string, string> = {
+  'preflight-login': 'Login to Server',
+  'preflight':       'Login to Server',
+  'box-version':     'Build Version',
+  'generate':        'Generate',
+  'deploy':          'Deploy',
+  'trigger':         'Trigger',
+  'poll':            'Poll',
+  'verify':          'Verify',
+};
+
+function stepLabel(name: string): string {
+  return STEP_LABELS[name] ?? name;
 }
 
 function StatusBadge({ status }: { status: string }) {

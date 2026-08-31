@@ -1,10 +1,19 @@
 // Parse an uploaded GOLD-config JSON into an Environment.
 //
-// The uploaded JSON can be one of FOUR shapes — detected structurally,
+// The uploaded JSON can be one of FIVE shapes — detected structurally,
 // never by filename:
 //   (a) export pack          { testCases | testcases: [ { testDefinition } ] }
 //   (b) GET /v2/testcases/id  { id, name, testDefinition }
 //   (c) bare testDefinition   { cellConfig, subsConfig, userPlaneConfig, … }
+//   (c2) box Download JSON    { Test_Id, Test_Name, status, Validation_Status,
+//          metadata, Test_Config_Intermediate_Object: { cellConfig, … } }
+//       — what the box's "Download testcase" button emits. Same
+//       testDefinition, one wrapper key deeper. The (a) pack entries can
+//       carry this wrapper too, so unwrapTestDefinition() handles both.
+//   (a2) multi-testcase export { test_case_details: [ { Test_Id, Test_Name,
+//          Config_File, Test_Config_Intermediate_Object } ] } — the same
+//       pack shape under a different key. Entries hold an Amarisoft
+//       Config_File AND the box testDefinition; we take the testDefinition.
 //   (d) Amarisoft sim config  { Config_File: { config: { cell_groups,
 //          global_traffic, ue_list, tx_gain, rx_gain } }, Test_Name }
 //       — the raw radio config a customer site actually runs. Same site
@@ -64,42 +73,73 @@ export interface ParseResult {
 
 export class EnvironmentParseError extends Error {}
 
-/** Step 1 — normalize any of the 3 upload shapes to a single testDefinition
+/** Peel one testcase-shaped object down to its testDefinition. The same three
+ *  wrappers occur both at the top level of a single-testcase upload and inside
+ *  each entry of an export pack, so both call sites share this:
+ *    • `testDefinition`                 — REST API (GET /v2/testcases/<id>)
+ *    • `Test_Config_Intermediate_Object`— the box's Download-testcase JSON,
+ *      which sits alongside Test_Id / Test_Name / Validation_Status / metadata
+ *    • already bare                     — cellConfig at the top level
+ *  Returns undefined when none of them carry a cellConfig. */
+function unwrapTestDefinition(entry: any): any {
+  if (entry == null || typeof entry !== 'object') return undefined;
+  if (entry.testDefinition?.cellConfig) return entry.testDefinition;
+  if (entry.Test_Config_Intermediate_Object?.cellConfig) return entry.Test_Config_Intermediate_Object;
+  if (entry.cellConfig) return entry;
+  return undefined;
+}
+
+/** Name carried beside the testDefinition, whichever wrapper was used. */
+function nameOf(entry: any, td?: any): string | undefined {
+  return entry?.name ?? entry?.Test_Name ?? td?.settings?.test_name;
+}
+
+/** Step 1 — normalize any of the 4 upload shapes to a single testDefinition
  *  + a suggested name. Throws EnvironmentParseError if none match. */
 export function normalizeToTestDefinition(json: any): { testDefinition: any; suggestedName?: string; multiWarning?: string } {
   if (json == null || typeof json !== 'object') {
     throw new EnvironmentParseError('upload is not a JSON object — expected a testcase export, a GET /v2/testcases/<id> response, or a bare testDefinition');
   }
 
-  // (a) export pack — testCases | testcases is a non-empty array
+  // (a) export pack — a non-empty array of testcase entries under any of the
+  // keys the box has used. `test_case_details` is what the multi-testcase
+  // export writes; its entries carry BOTH an Amarisoft Config_File and a
+  // Test_Config_Intermediate_Object, and unwrapTestDefinition() prefers the
+  // latter because it is the box's own richer testDefinition.
   const pack = Array.isArray(json.testCases) ? json.testCases
              : Array.isArray(json.testcases) ? json.testcases
+             : Array.isArray(json.test_case_details) ? json.test_case_details
+             : Array.isArray(json.Test_Case_Details) ? json.Test_Case_Details
              : null;
   if (pack) {
     if (pack.length === 0) throw new EnvironmentParseError('export pack has an empty testcases array');
     const first = pack[0];
-    const td = first?.testDefinition ?? first;
-    if (!td?.cellConfig) throw new EnvironmentParseError('first testcase in the export pack has no cellConfig');
+    const td = unwrapTestDefinition(first);
+    if (!td) throw new EnvironmentParseError('first testcase in the export pack has no cellConfig');
+    const firstName = nameOf(first, td);
     return {
       testDefinition: td,
-      suggestedName: first?.name ?? first?.Test_Name,
-      multiWarning: pack.length > 1 ? `export pack had ${pack.length} testcases; extracted the first ("${first?.name ?? '?'}")` : undefined,
+      suggestedName: firstName,
+      multiWarning: pack.length > 1 ? `export pack had ${pack.length} testcases; extracted the first ("${firstName ?? '?'}")` : undefined,
     };
   }
 
-  // (b) GET /v2/testcases/<id> response — testDefinition object + id/name
-  if (json.testDefinition && typeof json.testDefinition === 'object' && (json.id || json.name)) {
-    if (!json.testDefinition.cellConfig) throw new EnvironmentParseError('testDefinition has no cellConfig');
-    return { testDefinition: json.testDefinition, suggestedName: json.name };
-  }
+  // (b) single testcase — REST response, box Download JSON, or bare definition
+  const td = unwrapTestDefinition(json);
+  if (td) return { testDefinition: td, suggestedName: nameOf(json, td) };
 
-  // (c) bare testDefinition — cellConfig present at top level
-  if (json.cellConfig) {
-    return { testDefinition: json, suggestedName: json?.settings?.test_name };
+  // A recognisable wrapper that is present but hollow gets a pointed error
+  // rather than the generic "unrecognized shape" below.
+  if (json.testDefinition && typeof json.testDefinition === 'object') {
+    throw new EnvironmentParseError('testDefinition has no cellConfig');
+  }
+  if (json.Test_Config_Intermediate_Object && typeof json.Test_Config_Intermediate_Object === 'object') {
+    throw new EnvironmentParseError('Test_Config_Intermediate_Object has no cellConfig');
   }
 
   throw new EnvironmentParseError(
-    'unrecognized JSON shape — looked for `testCases`/`testcases` array, a `testDefinition` object, or a top-level `cellConfig`. ' +
+    'unrecognized JSON shape — looked for a `testCases`/`testcases`/`test_case_details` array, ' +
+    'a `testDefinition` object, a `Test_Config_Intermediate_Object` object, or a top-level `cellConfig`. ' +
     'If this is a ue.cfg (radio config), use the Config Fidelity flow instead — this tab wants a testcase JSON.',
   );
 }
@@ -180,11 +220,20 @@ export function extractFromTestDefinition(td: any, suggestedName?: string): Pars
   });
 
   // ── SIM identity ─────────────────────────────────────────────────────
-  const imsiStart = toNum(pick(sub0, 'subscriberProfileInfo.startingSUPI', 'startingSUPI',
-                                     'subscriberProfileInfo.startingIMSI', 'startingIMSI'));
+  // A testcase can carry BOTH startingIMSI and startingSUPI (the box keeps the
+  // unused one at its default), so the RAT decides which is authoritative:
+  // IMSI for the LTE family, SUPI for NR. Reading SUPI first unconditionally
+  // gave NB-IoT/LTE GOLDs the wrong — often placeholder — SIM range.
+  const lteFamily = rat === 'LTE' || rat === 'NB-IoT';
+  const idPaths = lteFamily
+    ? ['subscriberProfileInfo.startingIMSI', 'startingIMSI', 'subscriberProfileInfo.startingSUPI', 'startingSUPI']
+    : ['subscriberProfileInfo.startingSUPI', 'startingSUPI', 'subscriberProfileInfo.startingIMSI', 'startingIMSI'];
+  const stridePaths = lteFamily
+    ? ['subscriberProfileInfo.nextIMSI', 'nextIMSI', 'subscriberProfileInfo.nextSUPI', 'nextSUPI']
+    : ['subscriberProfileInfo.nextSUPI', 'nextSUPI', 'subscriberProfileInfo.nextIMSI', 'nextIMSI'];
+  const imsiStart = toNum(pick(sub0, ...idPaths));
   if (imsiStart === undefined) warn('subs[0].startingIMSI/startingSUPI', 'absent — SIM range is core site data');
-  const imsiStride = toNum(pick(sub0, 'subscriberProfileInfo.nextSUPI', 'nextSUPI',
-                                       'subscriberProfileInfo.nextIMSI', 'nextIMSI')) ?? 1;
+  const imsiStride = toNum(pick(sub0, ...stridePaths)) ?? 1;
   const algorithm = pick(sub0, 'subscriberProfileInfo.algorithm', 'algorithm')
     ?? (rat === 'LTE' || rat === 'NB-IoT' ? 'milenage' : 'xor');
   const sharedKey = pick(sub0, 'subscriberAuthSecurity.sharedKey', 'subscriberNetworkConfig.sharedKey', 'sharedKey');
@@ -223,6 +272,9 @@ export function extractFromTestDefinition(td: any, suggestedName?: string): Pars
       direction: pick(p, 'dataSessionConfig.dataDirection', 'dataDirection') ?? undefined,
       protocol: pick(p, 'dataSessionConfig.transportProtocol', 'transportProtocol') ?? undefined,
       codec: pick(p, 'codec') ?? undefined,
+      // Verbatim copy — the only source for dataTypes we don't model field
+      // by field (ftp's downlinkFilename, http's urlAddress, …).
+      raw: p,
     };
   }).filter(p => p.dataType);
 

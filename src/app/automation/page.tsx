@@ -211,7 +211,6 @@ export default function AutomationPage() {
                           </td>
                           <td className="px-3 py-3">
                             <div className="font-medium text-slate-900">{tc.name || tc.id}</div>
-                            <div className="text-xs text-slate-500">{tc.id}</div>
                           </td>
                           <td className="px-5 py-3 text-right">
                             {checked ? <Badge tone="info">selected</Badge> : null}

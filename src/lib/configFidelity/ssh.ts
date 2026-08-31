@@ -55,6 +55,19 @@ export async function readRemoteFile(sys: InventorySystem, remotePath: string): 
   });
 }
 
+/** Write a remote text file over SFTP, overwriting it if it already exists. */
+export async function writeRemoteFile(sys: InventorySystem, remotePath: string, content: string): Promise<void> {
+  return withSsh(sys, async (ssh) => {
+    const sftp = await ssh.requestSFTP();
+    await new Promise<void>((resolve, reject) => {
+      const ws = sftp.createWriteStream(remotePath);
+      ws.on('close', () => resolve());
+      ws.on('error', reject);
+      ws.end(Buffer.from(content, 'utf8'));
+    });
+  });
+}
+
 /** Run a command and return stdout (best-effort; empty string on failure). */
 export async function readCommand(sys: InventorySystem, cmd: string): Promise<string> {
   return withSsh(sys, async (ssh) => {

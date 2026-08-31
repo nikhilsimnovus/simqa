@@ -12,6 +12,7 @@
 import { ensureToken } from './uesimClient';
 import type { Inventory } from './inventory';
 import { uesimApiOptsFromInventory, uesimApiOptsForSystem } from './inventory';
+import { fetchBoxBuild } from './buildVersion';
 
 export type ApiTestCategory =
   | 'auth' | 'version' | 'users' | 'admin-users' | 'simulators'
@@ -68,14 +69,19 @@ export interface ApiTestResult {
 }
 
 export interface ApiTesterRequest {
-  /** Categories to run. If omitted, runs the default safe set. */
+  /** Categories to run. If omitted, runs the default safe set. `categories`
+   *  is the ONLY thing that decides which categories run — there is no
+   *  separate per-category override field. (An earlier `includeNegative`
+   *  flag used to force-add the 'negative' category regardless of what the
+   *  caller asked for; it defaulted to true and nothing ever sent it as
+   *  false, so unchecking "Negative tests" in the UI silently did nothing.
+   *  Removed rather than fixed — 'negative' is a category like any other
+   *  and needs no special-casing.) */
   categories?: ApiTestCategory[];
   /** Allow tests that change state. Off by default. */
   includeDestructive?: boolean;
   /** Allow tests that take >10s. Off by default. */
   includeLongRunning?: boolean;
-  /** Include negative tests (401/404/400 verification). Default true. */
-  includeNegative?: boolean;
   /** Inventory system id to test against. If omitted, the first UESIM-capable
    *  system is used (legacy behaviour). Lets two teammates target different
    *  boxes from the same simqa install. */
@@ -90,12 +96,21 @@ export interface ApiTesterResponse {
   results: ApiTestResult[];
   /** Convenience: pass/fail count grouped by category. */
   byCategory: Record<string, { passed: number; failed: number; skipped: number }>;
+  /** Box this sweep ran against, and its build at the time. Recorded so the
+   *  Run History row can say which system and build produced these numbers —
+   *  comparing two sweeps is meaningless without both. */
+  targetHost?: string;
+  buildVersion?: string;
 }
 
+// Every category EXCEPT the "advanced" ones: negative/mutating/fuzz exercise
+// error paths, mutate state, or throw malformed input (noisy for a normal
+// first-look run); the sample-* categories trigger REAL testcase executions
+// on the box. All are opt-in via `categories`. Keep this in sync with
+// src/app/api-tests/page.tsx's DEFAULT_CATEGORIES — same set, same reasoning.
 const DEFAULT_CATEGORIES: ApiTestCategory[] = [
   'auth', 'version', 'users', 'admin-users', 'simulators',
   'system', 'tools', 'testcases', 'test-creator', 'executions', 'statistics', 'logs', 'jobs',
-  'negative', 'fuzz',
 ];
 
 interface RunCtx {
@@ -116,6 +131,12 @@ interface RunCtx {
    *  every sample-matrix test so we don't re-search the box 200+ times in
    *  one sweep. Populated by `ensureTestcaseCatalog(c)`. */
   testcaseCatalog?: Array<{ id: string; name: string }>;
+  /** Memoised answer from `userMgmtDisabled()`. Empty string means "checked,
+   *  and it is enabled" — distinct from undefined, which means "not checked". */
+  userMgmtDisabledReason?: string;
+  /** Memoised per-section subject from `findSectionSubject()`. null means
+   *  "scanned, and no testcase on this box has that section". */
+  sectionSubjects?: Record<string, string | null>;
 }
 
 function tBase(host: string) { return `http://${host}/v2`; }
@@ -155,11 +176,26 @@ interface RawCallResult {
   response?: ApiResponseEvidence;
 }
 
+/** Per-request ceiling. Without one, a box that accepts the connection and then
+ *  never answers hangs the whole sweep with no result and no error — the page
+ *  just sits on "Running…" forever.
+ *
+ *  Two tiers, because the spread is enormous. Plain reads answer in
+ *  milliseconds, but anything that commands the hardware or streams a file does
+ *  not: POST /testcases/{id}/executions measured 26.4s on an idle box (verified
+ *  live 2026-08-26). Timing those out is worse than waiting — the box starts the
+ *  run regardless of whether we are still listening, so an aborted start leaves
+ *  an execution going on real hardware with nothing tracking it. */
+const CALL_TIMEOUT_MS = 30_000;
+const LONG_CALL_TIMEOUT_MS = 180_000;
+/** Endpoints that drive hardware or move files, and so get the long tier. */
+const SLOW_ENDPOINT = /\/(export|executions|import|stop|restart)(\b|\?|\/|$)/;
+
 async function rawCall(
   ctx: RunCtx | null,
   method: string,
   url: string,
-  init: RequestInit & { auth?: 'none' | 'bearer' | 'wrong' } = {},
+  init: RequestInit & { auth?: 'none' | 'bearer' | 'wrong'; timeoutMs?: number } = {},
 ): Promise<RawCallResult> {
   const headers: Record<string, string> = { ...(init.headers as any) };
   const auth = init.auth ?? 'bearer';
@@ -175,8 +211,9 @@ async function rawCall(
     ...(reqBody !== undefined ? { body: truncate(reqBody).body } : {}),
   };
   const t0 = Date.now();
+  const timeoutMs = init.timeoutMs ?? (SLOW_ENDPOINT.test(url) ? LONG_CALL_TIMEOUT_MS : CALL_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { ...init, method, headers });
+    const res = await fetch(url, { ...init, method, headers, signal: AbortSignal.timeout(timeoutMs) });
     const ms = Date.now() - t0;
     const ct = res.headers.get('content-type') ?? '';
     const respHeaders = headersToObject(res.headers);
@@ -199,14 +236,255 @@ async function rawCall(
       response: { status: res.status, statusText: res.statusText, headers: respHeaders, body: bodyOut, bodyTruncated: truncated, contentType: ct, durationMs: ms },
     };
   } catch (e: any) {
+    const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError';
     return {
-      status: 0, ms: Date.now() - t0, error: e?.message ?? String(e),
+      status: 0, ms: Date.now() - t0,
+      error: timedOut ? `no response within ${Math.round(timeoutMs / 1000)}s` : (e?.message ?? String(e)),
       request,
     };
   }
 }
 
 type EvidenceCarrier = { request?: ApiRequestEvidence; response?: ApiResponseEvidence; error?: string };
+
+/** The box ships whole feature areas switched off per build/licence and says so
+ *  explicitly: 403 with `{"code":"FORBIDDEN","message":"This feature is
+ *  disabled."}`. That is a deployment fact, not a defect — a test that demands
+ *  a disabled feature work is asking the wrong question, so these SKIP with the
+ *  box's own wording rather than reporting a red failure the user cannot act on.
+ *  Verified live on 4.0.0 at 192.168.1.102 for POST /v2/simulators, GET /v2/users
+ *  and POST /v2/users/search. */
+/** Describe what an export actually returned. A bare "status 200" told the user
+ *  nothing about whether a real file came back, which is the only thing these
+ *  binary-export tests exist to establish. */
+function exportEvidence(r: RawCallResult): string {
+  const h = r.response?.headers ?? {};
+  const bits = [String(r.status), r.response?.contentType ?? 'unknown type'];
+  const len = h['content-length'];
+  if (len) bits.push(`${Number(len).toLocaleString()} bytes`);
+  else if (r.response?.body) bits.push(`${r.response.body.length.toLocaleString()}+ bytes read`);
+  if (h['content-disposition']) bits.push(h['content-disposition']);
+  bits.push(`${r.ms}ms`);
+  return bits.join(' · ');
+}
+
+function featureDisabled(r: { status: number; bodyJson?: any; bodyText?: string }): boolean {
+  if (r.status !== 403) return false;
+  const code = String(r.bodyJson?.code ?? '').toUpperCase();
+  const msg = String(r.bodyJson?.message ?? r.bodyText ?? '');
+  return code === 'FORBIDDEN' && /feature is disabled/i.test(msg);
+}
+
+/** Walks the whole catalogue at a page size the box's real row count can
+ *  actually exercise, and asserts every row is reachable exactly once.
+ *
+ *  `offset` on this API is a PAGE INDEX, not a row offset (see the paging
+ *  memo on GET /testcases) — so this pages by index and checks three things
+ *  that together prove nothing is stranded: the walk yields `total` distinct
+ *  ids, no id appears on two pages (which would mean the walk both duplicates
+ *  and skips), and the page one past the end comes back empty rather than
+ *  wrapping around to the start. */
+async function smallCatalogueReachVerdict(
+  c: RunCtx,
+  base: { id: string; category: ApiTestCategory; method: string; endpoint: string; severity: ApiTestSeverity; destructive?: boolean },
+  total: number,
+): Promise<ApiTestResult> {
+  const expected = `Paging must reach all ${total} row(s): \`offset\` is a page index, so walking offset=0..n yields every id exactly once, and the page past the end is empty. Rows that no page returns are invisible to backup, audit and sync tooling.`;
+  const pageSize = Math.max(10, Math.min(50, Math.ceil(total / 4))); // ≥4 pages to make paging meaningful
+  const pages = Math.ceil(total / pageSize);
+  const seen = new Map<string, number>();
+  let dupes = 0;
+  let last: RawCallResult | undefined;
+  for (let p = 0; p < pages; p++) {
+    const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=${pageSize}&offset=${p}`);
+    last = r;
+    if (r.status !== 200) return bad(base.id, base, r, `page ${p} (limit=${pageSize}&offset=${p}) returned ${r.status}`, expected);
+    const items: any[] = r.bodyJson?.items ?? [];
+    if (!items.length) return bad(base.id, base, r, `page ${p} of ${pages} is empty while total=${total} — rows from ${p * pageSize} on are unreachable`, expected);
+    for (const it of items) {
+      const id = String(it?.id ?? '');
+      if (!id) continue;
+      if (seen.has(id)) dupes++;
+      else seen.set(id, p);
+    }
+  }
+  const past = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=${pageSize}&offset=${pages}`);
+  const pastRows = (past.bodyJson?.items ?? []).length;
+  if (past.status === 200 && pastRows > 0) {
+    return bad(base.id, base, past, `the page past the end (offset=${pages}) returned ${pastRows} row(s) instead of none — paging wraps or ignores offset, so a walker never terminates`, expected);
+  }
+  if (dupes > 0) {
+    return bad(base.id, base, last!, `${dupes} id(s) appeared on more than one page — paging overlaps, so the walk both repeats rows and misses others`, expected);
+  }
+  if (seen.size < total) {
+    return bad(base.id, base, last!, `walked ${pages} page(s) of ${pageSize} and saw only ${seen.size} distinct id(s) of total=${total} — ${total - seen.size} row(s) unreachable`, expected);
+  }
+  return ok(base.id, base, last!, `all ${seen.size} of ${total} row(s) reachable across ${pages} page(s) of ${pageSize}, no duplicates, page past the end empty (>1000 cap not exercisable at this catalogue size)`);
+}
+
+/** Shared verdict for the three simulator-provisioning tests when the seeding
+ *  create does not succeed. Provisioning is switched off on some builds
+ *  (VITE_DISABLE_MULTI_USER_SIM also gates simulator CRUD), which used to skip
+ *  all three. A disabled build still owes callers a well-formed refusal, so
+ *  that is what gets asserted instead — the lifecycle itself stays unexercised
+ *  either way, but the deployment is no longer unmeasured. Any non-403 failure
+ *  (a 500, a 404, a malformed 403) is still a real failure. */
+function provisioningRefusalVerdict(
+  base: { id: string; category: ApiTestCategory; method: string; endpoint: string; severity: ApiTestSeverity; destructive?: boolean },
+  create: { status: number; ms: number; bodyJson?: any } & EvidenceCarrier,
+  cannot: string,
+): ApiTestResult {
+  const violation = disabledContractViolation(create);
+  if (violation) {
+    return bad(base.id, base, create, `simulator provisioning unavailable and the refusal is malformed: ${violation}`,
+      'Either 200/201 creating the throwaway simulator, or — when provisioning is disabled for the build — 403 { code: "FORBIDDEN", message: <why> }. A 404 or 5xx here is a defect.');
+  }
+  return ok(base.id, base, create, `provisioning off; refused cleanly — 403 ${create.bodyJson?.code} "${create.bodyJson?.message}" (${cannot}, but the refusal is correct)`);
+}
+
+/** Size of whatever collection a body carries, or -1 if it isn't one. */
+function collectionSize(b: any): number {
+  for (const k of ['items', 'users', 'data', 'results']) if (Array.isArray(b?.[k])) return b[k].length;
+  return Array.isArray(b) ? b.length : -1;
+}
+
+/** A switched-off capability still has a contract, and it is worth testing.
+ *
+ *  The failure mode that matters is 200-with-an-empty-list: a client reading
+ *  that concludes "this box has no users" when the truth is "user management
+ *  is off". That is the same vacuous green as a box PASS verdict on a run
+ *  where nothing ever attached — technically a success response, carrying no
+ *  information, and actively misleading. 404 is nearly as bad in the other
+ *  direction: it makes a deliberate deployment choice look like a missing
+ *  route, sending whoever debugs it after a phantom API-version problem.
+ *
+ *  So the refusal must be 403, machine-readable, explained, and free of
+ *  internals. Returns undefined when well-formed, else why it isn't. */
+function disabledContractViolation(r: { status: number; bodyJson?: any; bodyText?: string }): string | undefined {
+  if (r.status === 404) return '404 — a disabled feature must still answer 403, or clients cannot tell it apart from a route that was never deployed';
+  if (r.status >= 500) return `${r.status} — server error instead of a clean refusal`;
+  if (r.status !== 403) return `expected 403, got ${r.status}`;
+  const code = String(r.bodyJson?.code ?? '');
+  const msg  = String(r.bodyJson?.message ?? '');
+  if (!code) return '403 carried no machine-readable `code` — clients would have to string-match the message to branch on it';
+  if (code.toUpperCase() !== 'FORBIDDEN') return `403 with code="${code}", expected "FORBIDDEN"`;
+  if (!msg.trim()) return '403 with an empty `message` — nothing tells an operator why it refused';
+  if (/\bat [A-Za-z$_][\w$.]*\s*\(|\/(usr|home|opt|var)\/|node_modules|Traceback|SELECT .+ FROM /i.test(msg)) {
+    return `403 message leaks internals: ${JSON.stringify(msg.slice(0, 120))}`;
+  }
+  return undefined;
+}
+
+/** Resolve the testcase + recent-execution ids the Executions, Statistics, Logs
+ *  and Test-creator checks need. These used to be populated purely as a side
+ *  effect of `testcases-list`, so selecting any of those categories WITHOUT
+ *  also selecting Test cases skipped the whole lot with "no testcase id
+ *  available" — a category that silently depends on another ticking is not
+ *  something the UI ever communicated. Idempotent; safe to call from anywhere.
+ *
+ *  The execution id is validated before being handed out. metadata.lastExecution
+ *  can name an execution the box has since garbage-collected, and /logs is the
+ *  strict probe for that (unlike /statistics/global, which answers 200 with an
+ *  empty payload even for an id that never existed). */
+async function ensureTestcaseContext(c: RunCtx): Promise<void> {
+  if (c.someTestcaseId) return;
+  const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=50&offset=0`);
+  const items: any[] = r.bodyJson?.items ?? [];
+  if (!items.length) return;
+  c.someTestcaseId = items[0].id;
+  if (c.recentExecutionId) return;
+  const candidate = items.find((it) => it.metadata?.lastExecution?.executionId)?.metadata?.lastExecution?.executionId;
+  if (!candidate) return;
+  const probe = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(candidate)}/logs?limit=1`);
+  if (probe.status === 200 || probe.status === 202) c.recentExecutionId = candidate;
+}
+
+/** The simulator id the execution endpoints need. It is normally populated as a
+ *  side effect of `simulators-list`, but that only runs when the Simulators
+ *  category is selected — so running Executions on its own left it undefined,
+ *  the stop URL lost its `?simulatorId=`, stop 400'd, and the un-stopped run
+ *  then 409'd every later execution test. Fetch it on demand instead of
+ *  depending on which categories the user happened to tick. */
+async function ensureSimulatorId(c: RunCtx): Promise<string | undefined> {
+  if (c.recentSimulatorId) return c.recentSimulatorId;
+  const r = await rawCall(c, 'GET', `${tBase(c.host)}/simulators`);
+  const id = r.bodyJson?.items?.[0]?.id;
+  if (id) c.recentSimulatorId = String(id);
+  return c.recentSimulatorId;
+}
+
+/** Wait for the simulator to go idle before starting an execution. Consecutive
+ *  execution tests otherwise race their predecessor's teardown and 409. */
+async function waitForSimulatorFree(c: RunCtx, timeoutMs = 60_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const r = await rawCall(c, 'GET', `${tBase(c.host)}/simulators`);
+    const items: any[] = r.bodyJson?.items ?? [];
+    if (items.length === 0) return true;
+    if (items.some((s) => String(s.availability ?? '').toUpperCase() === 'AVAILABLE')) return true;
+    await new Promise((res) => setTimeout(res, 3000));
+  }
+  return false;
+}
+
+/** Start an execution, retrying while the box says it is not ready yet.
+ *  `availability: AVAILABLE` is necessary but NOT sufficient — for a while after
+ *  a stop the box still answers a start with 503 (or 409), so the check that
+ *  runs immediately after another execution test would fail on a transient
+ *  state rather than a defect. Retries only the two "come back later" codes;
+ *  every other status is returned as-is for the caller to judge. */
+async function startExecution(c: RunCtx, testcaseId: string, attempts = 4): Promise<RawCallResult> {
+  let last!: RawCallResult;
+  for (let i = 0; i < attempts; i++) {
+    last = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/${encodeURIComponent(testcaseId)}/executions`, {
+      headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    if (last.status !== 503 && last.status !== 409) return last;
+    if (i < attempts - 1) {
+      await new Promise((res) => setTimeout(res, 10_000));
+      await waitForSimulatorFree(c, 30_000);
+    }
+  }
+  return last;
+}
+
+/** Find a testcase that actually HAS the given /tests/{id}/{slug} section.
+ *  Optional sections — mobility above all — only exist on cases authored with
+ *  them, so pinning every section test to one arbitrary testcase made them skip
+ *  on a box holding plenty of valid subjects. Bounded scan, memoised per slug;
+ *  only ever reached when the primary subject 404s.
+ *
+ *  The scan depth matters more than it looks. Listings come back newest-first
+ *  and this suite's own destructive tests add throwaway cases at the top, so a
+ *  real subject drifts deeper every sweep: at scan=25 the mobility case on
+ *  sys-4 was found one run and missed the next, purely because the catalogue
+ *  had grown by a dozen rows in between. */
+async function findSectionSubject(c: RunCtx, slug: string, scan = 100): Promise<string | undefined> {
+  c.sectionSubjects = c.sectionSubjects ?? {};
+  if (slug in c.sectionSubjects) return c.sectionSubjects[slug] ?? undefined;
+  const lst = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=${scan}&offset=0`);
+  for (const it of (lst.bodyJson?.items ?? []) as any[]) {
+    if (!it?.id) continue;
+    const r = await rawCall(c, 'GET', `${tBase(c.host)}/tests/${encodeURIComponent(it.id)}/${slug}`);
+    if (r.status === 200) { c.sectionSubjects[slug] = it.id; return it.id; }
+  }
+  c.sectionSubjects[slug] = null;
+  return undefined;
+}
+
+/** Whether the user-management surface is reachable at all on this build.
+ *  Cached per run: several tests need the answer and it cannot change mid-run. */
+async function userMgmtDisabled(c: RunCtx): Promise<string | undefined> {
+  if (c.userMgmtDisabledReason !== undefined) {
+    return c.userMgmtDisabledReason || undefined;
+  }
+  const probe = await rawCall(c, 'GET', `${tBase(c.host)}/users`);
+  const reason = featureDisabled(probe)
+    ? `user management is disabled on this build (GET /v2/users -> 403 "${probe.bodyJson?.message}")`
+    : '';
+  c.userMgmtDisabledReason = reason;
+  return reason || undefined;
+}
 
 function ok(name: string, base: { id: string; category: ApiTestCategory; method: string; endpoint: string; severity: ApiTestSeverity; destructive?: boolean }, r: { status: number; ms: number } & EvidenceCarrier, detail: string): ApiTestResult {
   return { ...base, name, ok: true, status: r.status, durationMs: r.ms, detail, destructive: !!base.destructive, request: r.request, response: r.response, ranAt: new Date().toISOString() };
@@ -372,14 +650,49 @@ function defs(): TestDef[] {
   });
 
   // ---------- ADMIN USERS ----------
+  // The user list lives at GET /v2/users — the same call the box's own admin UI
+  // makes. This test used to hit /v2/admin/users, a path that is registered
+  // nowhere on the box (the string appears zero times in its shipped frontend
+  // bundle) and so always 404'd. Note the box distinguishes the two cases
+  // precisely: 404 "Not Found" = no such route, 403 FORBIDDEN "This feature is
+  // disabled." = route exists but multi-user is switched off for this
+  // deployment (env-config.js: VITE_DISABLE_MULTI_USER_SIM=true).
+  //
+  // On a box with multi-user off this used to skip. It no longer does: the
+  // disabled state has its own contract (403 + code + message, NOT 200-with-
+  // empty-list and NOT 404) and that contract is what gets asserted instead.
+  // A skip would have reported nothing about a deployment we can still hold
+  // to a standard. Verified 2026-08-26 against .102 (multi-user off).
   list.push({
-    id: 'admin-users-list', name: 'GET /admin/users', category: 'admin-users',
-    method: 'GET', endpoint: '/v2/admin/users', severity: 'normal',
+    id: 'admin-users-list', name: 'GET /users (user list)', category: 'admin-users',
+    method: 'GET', endpoint: '/v2/users', severity: 'normal',
     run: async (c) => {
-      const base = { id: 'admin-users-list', category: 'admin-users' as const, method: 'GET', endpoint: '/v2/admin/users', severity: 'normal' as const };
-      const r = await rawCall(c, 'GET', `${tBase(c.host)}/admin/users`);
-      if (r.status === 200) return ok(base.id, base, r, `users=${r.bodyJson?.users?.length ?? r.bodyJson?.total ?? '?'}`);
-      return bad(base.id, base, r, `expected 200, got ${r.status}`);
+      const base = { id: 'admin-users-list', category: 'admin-users' as const, method: 'GET', endpoint: '/v2/users', severity: 'normal' as const };
+      const r = await rawCall(c, 'GET', `${tBase(c.host)}/users`);
+      if (r.status === 200) {
+        const n = collectionSize(r.bodyJson);
+        if (n < 0) return bad(base.id, base, r, '200 but the body carries no user collection (no items/users/data array)',
+          '200 with a user collection under items[] or users[].');
+        // This request is authenticated as `admin`, so admin is necessarily a
+        // user of this box — a 200 listing nobody cannot be a true answer. It
+        // is the shape a half-disabled feature produces, and it is worse than
+        // a 403 because it reads as the fact "this box has no users" instead
+        // of "you may not ask". Caught here rather than in
+        // disabledContractViolation, which only ever sees non-200 responses.
+        if (n === 0) return bad(base.id, base, r, '200 with an empty user list — impossible while authenticated as admin; a disabled feature must refuse with 403, not answer 200 with nobody in it',
+          'Either 200 listing at least the authenticated admin, or 403 { code: "FORBIDDEN", message: <why> } if multi-user is off. 200 with an empty collection is indistinguishable from "this box genuinely has no users".');
+        return ok(base.id, base, r, `multi-user enabled — users=${n}`);
+      }
+      // Multi-user is off on this deployment. That is not a defect, but the
+      // way the box announces it is still testable — and worth testing,
+      // because the plausible-looking wrong answers (200 + empty list, or a
+      // bare 404) are both actively misleading. See disabledContractViolation.
+      const violation = disabledContractViolation(r);
+      if (violation) {
+        return bad(base.id, base, r, `multi-user is off, but the refusal is malformed: ${violation}`,
+          'When a capability is disabled the box must answer 403 with { code: "FORBIDDEN", message: <why> } — never 200 with an empty list (indistinguishable from "no users exist"), never 404 (indistinguishable from an undeployed route), never 5xx.');
+      }
+      return ok(base.id, base, r, `multi-user off; refusal well-formed — 403 ${r.bodyJson?.code} "${r.bodyJson?.message}" (distinguishable from an empty list and from a missing route)`);
     },
   });
 
@@ -388,32 +701,65 @@ function defs(): TestDef[] {
     method: 'POST', endpoint: '/v2/admin/users (combo)', severity: 'normal', destructive: true,
     run: async (c) => {
       const base = { id: 'admin-users-full-lifecycle', category: 'mutating' as const, method: 'POST', endpoint: '/v2/admin/users (combo)', severity: 'normal' as const, destructive: true };
+      // The box exposes user management under /v2/users, NOT /v2/admin/users:
+      // grepping its shipped frontend bundle for "/v2/admin/" returns zero
+      // hits, and POST /v2/admin/users answers 404 "Not Found" while POST
+      // /v2/users answers 403 "This feature is disabled." The real verbs are
+      // POST /v2/users, PATCH /v2/users/{id}, PUT /v2/users/{id}/role,
+      // POST /v2/users/{id}/reset-password, DELETE /v2/users/{id}. This test
+      // used to drive the invented /admin/ paths, so on a box WITH multi-user
+      // enabled it would have failed at step 1 against a route that does not
+      // exist. Corrected 2026-08-26 (same defect class as admin-users-list).
+      const disabled = await userMgmtDisabled(c);
+      if (disabled) {
+        // Cannot create a user, but the refusal is still a contract: creation
+        // must be declined with a clean 403, not a 404 (which would read as
+        // "this API version has no user management") and not a 200 that
+        // pretends to have created something.
+        const create = await rawCall(c, 'POST', `${tBase(c.host)}/users`, {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: `simqa-probe-${Date.now().toString(36)}`, role: 'user' }),
+        });
+        if (create.status === 200 || create.status === 201) {
+          return bad(base.id, base, create, `multi-user is off (GET /v2/users refuses) yet POST /v2/users answered ${create.status} — a user may now exist that nothing will clean up`,
+            'With multi-user disabled, user creation must be refused with 403, not accepted.');
+        }
+        const violation = disabledContractViolation(create);
+        if (violation) {
+          return bad(base.id, base, create, `user creation is off, but the refusal is malformed: ${violation}`,
+            'When user management is disabled, POST /v2/users must answer 403 { code: "FORBIDDEN", message: <why> }.');
+        }
+        return ok(base.id, base, create, `user management off; creation refused cleanly — 403 ${create.bodyJson?.code} "${create.bodyJson?.message}" (lifecycle not exercisable, but the refusal is correct)`);
+      }
       const username = `simqa-tester-${Date.now().toString(36)}`;
       const traces: string[] = [];
       const trace = (label: string, r: { status: number }) => traces.push(`${label}=${r.status}`);
 
-      // 1. POST /admin/users
-      const create = await rawCall(c, 'POST', `${tBase(c.host)}/admin/users`, {
+      // 1. POST /v2/users
+      const create = await rawCall(c, 'POST', `${tBase(c.host)}/users`, {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, first_name: 'simqa', last_name: 'tester', email: `${username}@example.invalid`, role: 'user' }),
       });
       trace('create', create);
       if (create.status !== 201 && create.status !== 200) return bad(base.id, base, create, `create returned ${create.status}`);
+      // Subsequent verbs address the user by the id the create returned, falling
+      // back to the username when the box echoes no id.
+      const uid = String(create.bodyJson?.id ?? create.bodyJson?.userId ?? username);
 
-      // 2. POST /admin/users/{name}/reset-password
-      const reset = await rawCall(c, 'POST', `${tBase(c.host)}/admin/users/${encodeURIComponent(username)}/reset-password`, {
+      // 2. POST /v2/users/{id}/reset-password
+      const reset = await rawCall(c, 'POST', `${tBase(c.host)}/users/${encodeURIComponent(uid)}/reset-password`, {
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ new_password: 'TmpSimqa123!' }),
       });
       trace('reset', reset);
 
-      // 3. PUT /admin/users/{name}/role
-      const role = await rawCall(c, 'PUT', `${tBase(c.host)}/admin/users/${encodeURIComponent(username)}/role`, {
+      // 3. PUT /v2/users/{id}/role
+      const role = await rawCall(c, 'PUT', `${tBase(c.host)}/users/${encodeURIComponent(uid)}/role`, {
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: 'user' }),
       });
       trace('role', role);
 
-      // 4. PATCH /users/{name}: update first_name on the throwaway.
-      const patch = await rawCall(c, 'PATCH', `${tBase(c.host)}/users/${encodeURIComponent(username)}`, {
+      // 4. PATCH /v2/users/{id}: update first_name on the throwaway.
+      const patch = await rawCall(c, 'PATCH', `${tBase(c.host)}/users/${encodeURIComponent(uid)}`, {
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ first_name: 'simqa-renamed' }),
       });
       trace('patch', patch);
@@ -423,18 +769,18 @@ function defs(): TestDef[] {
       let assignTrace = 'assign=skipped';
       let revokeTrace = 'revoke=skipped';
       if (c.recentSimulatorId) {
-        const assign = await rawCall(c, 'POST', `${tBase(c.host)}/simulators/${encodeURIComponent(c.recentSimulatorId)}/users/${encodeURIComponent(username)}`);
+        const assign = await rawCall(c, 'POST', `${tBase(c.host)}/simulators/${encodeURIComponent(c.recentSimulatorId)}/users/${encodeURIComponent(uid)}`);
         assignTrace = `assign=${assign.status}`;
         traces.push(assignTrace);
-        const revoke = await rawCall(c, 'DELETE', `${tBase(c.host)}/simulators/${encodeURIComponent(c.recentSimulatorId)}/users/${encodeURIComponent(username)}`);
+        const revoke = await rawCall(c, 'DELETE', `${tBase(c.host)}/simulators/${encodeURIComponent(c.recentSimulatorId)}/users/${encodeURIComponent(uid)}`);
         revokeTrace = `revoke=${revoke.status}`;
         traces.push(revokeTrace);
       } else {
         traces.push(assignTrace, revokeTrace);
       }
 
-      // 7. DELETE /admin/users/{name}: cleanup.
-      const del = await rawCall(c, 'DELETE', `${tBase(c.host)}/admin/users/${encodeURIComponent(username)}`);
+      // 7. DELETE /v2/users/{id}: cleanup.
+      const del = await rawCall(c, 'DELETE', `${tBase(c.host)}/users/${encodeURIComponent(uid)}`);
       trace('delete', del);
       if (del.status !== 204 && del.status !== 200) return bad(base.id, base, del, `delete returned ${del.status} for ${username}`);
       return ok(base.id, base, create, `${username}: ${traces.join(' ')}`);
@@ -604,7 +950,8 @@ function defs(): TestDef[] {
     method: 'GET', endpoint: '/v2/testcases/{id}', severity: 'critical',
     run: async (c) => {
       const base = { id: 'testcases-get-one', category: 'testcases' as const, method: 'GET', endpoint: '/v2/testcases/{id}', severity: 'critical' as const };
-      if (!c.someTestcaseId) return skip(base.id, base, 'no testcase id (run testcases-list first)');
+      await ensureTestcaseContext(c);
+      if (!c.someTestcaseId) return skip(base.id, base, 'no testcases exist on this box');
       const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/${encodeURIComponent(c.someTestcaseId)}`);
       if (r.status === 200 && r.bodyJson?.testDefinition) return ok(base.id, base, r, `id=${r.bodyJson.id} has testDefinition`);
       return bad(base.id, base, r, `got ${r.status}`);
@@ -628,13 +975,13 @@ function defs(): TestDef[] {
     method: 'POST', endpoint: '/v2/testcases/export', severity: 'optional', longRunning: true,
     run: async (c) => {
       const base = { id: 'testcases-export', category: 'testcases' as const, method: 'POST', endpoint: '/v2/testcases/export', severity: 'optional' as const };
-      if (!c.includeLongRunning) return skip(base.id, base, 'long-running (binary export); enable Long-running in opts');
-      if (!c.someTestcaseId) return skip(base.id, base, 'no testcase id');
+      await ensureTestcaseContext(c);
+      if (!c.someTestcaseId) return skip(base.id, base, 'no testcases exist on this box');
       const r = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/export`, {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ testCaseIds: [c.someTestcaseId], output: { type: 'json' } }),
       });
-      if (r.status === 200 || r.status === 202) return ok(base.id, base, r, `status ${r.status}`);
+      if (r.status === 200 || r.status === 202) return ok(base.id, base, r, exportEvidence(r));
       return bad(base.id, base, r, `got ${r.status}`);
     },
   });
@@ -650,7 +997,6 @@ function defs(): TestDef[] {
     longRunning: true,
     run: async (c) => {
       const base = { id: 'testcases-export-count-integrity', category: 'testcases' as const, method: 'POST' as const, endpoint: '/v2/testcases/export', severity: 'critical' as const };
-      if (!c.includeLongRunning) return skip(base.id, base, 'long-running (full export); enable Long-running in opts');
 
       // Fetch a batch of ids to exercise the endpoint with realistic load.
       const list = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=200&offset=0`);
@@ -702,7 +1048,8 @@ function defs(): TestDef[] {
     method: 'GET', endpoint: '/v2/testcases/executions/{eid}/statistics/global', severity: 'normal',
     run: async (c) => {
       const base = { id: 'stats-global', category: 'statistics' as const, method: 'GET', endpoint: '/v2/testcases/executions/{eid}/statistics/global', severity: 'normal' as const };
-      if (!c.recentExecutionId) return skip(base.id, base, 'no execution id available');
+      await ensureTestcaseContext(c);
+      if (!c.recentExecutionId) return skip(base.id, base, 'this box has no recent execution to read statistics from — run a test first');
       const end = Math.floor(Date.now() / 1000);
       const start = end - 24 * 3600;
       const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/statistics/global?startTime=${start}&endTime=${end}`);
@@ -716,7 +1063,8 @@ function defs(): TestDef[] {
     method: 'GET', endpoint: '/v2/testcases/executions/{eid}/statistics/cells-summary', severity: 'normal',
     run: async (c) => {
       const base = { id: 'stats-cells-summary', category: 'statistics' as const, method: 'GET', endpoint: '/v2/testcases/executions/{eid}/statistics/cells-summary', severity: 'normal' as const };
-      if (!c.recentExecutionId) return skip(base.id, base, 'no execution id available');
+      await ensureTestcaseContext(c);
+      if (!c.recentExecutionId) return skip(base.id, base, 'this box has no recent execution to read statistics from — run a test first');
       const end = Math.floor(Date.now() / 1000);
       const start = end - 24 * 3600;
       const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/statistics/cells-summary?startTime=${start}&endTime=${end}`);
@@ -726,23 +1074,67 @@ function defs(): TestDef[] {
     },
   });
 
-  // Three more statistics endpoints from the spec — same path-fix (no /api/ prefix).
-  for (const slug of ['cells', 'ues', 'ue-summary']) {
+  // GET-shaped statistics endpoints (no /api/ prefix). 'ue-summary' is NOT one
+  // of these — it is a POST and is tested separately below.
+  for (const slug of ['cells', 'ues']) {
     list.push({
       id: `stats-${slug}`, name: `GET /testcases/executions/{eid}/statistics/${slug}`, category: 'statistics',
       method: 'GET', endpoint: `/v2/testcases/executions/{eid}/statistics/${slug}`, severity: 'normal',
       run: async (c) => {
         const base = { id: `stats-${slug}`, category: 'statistics' as const, method: 'GET' as const, endpoint: `/v2/testcases/executions/{eid}/statistics/${slug}`, severity: 'normal' as const };
-        if (!c.recentExecutionId) return skip(base.id, base, 'no execution id available');
+        await ensureTestcaseContext(c);
+        if (!c.recentExecutionId) return skip(base.id, base, 'this box has no recent execution to read statistics from — run a test first');
         const end = Math.floor(Date.now() / 1000);
         const start = end - 24 * 3600;
         const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/statistics/${slug}?startTime=${start}&endTime=${end}`);
         if (r.status === 200) return ok(base.id, base, r, JSON.stringify(r.bodyJson).slice(0, 100));
-        if (r.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale — no recent execution to validate against). Run a test and re-try.');
+        if (r.status === 404) {
+          // This used to be reported as "eid stale". It cannot be: the box
+          // answers a completely nonexistent execution id with 200 and an empty
+          // payload (verified live 2026-08-26 against an all-zero uuid), so a
+          // 404 never means "no such execution" — it means the ROUTE is absent.
+          // Prove it by asking a sibling slug for the SAME execution id.
+          const control = slug === 'ues' ? 'cells' : 'ues';
+          const sib = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId!)}/statistics/${control}?startTime=${start}&endTime=${end}`);
+          if (sib.status === 200) {
+            return skip(base.id, base, `/statistics/${slug} is not served on this build — 404, while /statistics/${control} returns 200 for the same execution id, so the route is missing rather than the execution`);
+          }
+          return bad(base.id, base, r, `got 404, and the sibling /statistics/${control} also returned ${sib.status} — statistics look unreachable for this execution`,
+            `200 with a statistics payload. Both /statistics/${slug} and /statistics/${control} failing points at the execution or the stats service, not one missing route.`);
+        }
         return bad(base.id, base, r, `got ${r.status}`);
       },
     });
   }
+
+  // ue-summary is the odd one out: it is a POST with a JSON body, not a GET
+  // with a query string like its siblings. Calling it as a GET hits no route
+  // and returns the generic 404, which this suite spent a long time
+  // misdiagnosing — first as a stale execution id, then as an endpoint missing
+  // from the build. It is neither; the box's own UI posts to it. Paging here
+  // uses `offset` as a 1-BASED page number (the box's third paging vocabulary).
+  list.push({
+    id: 'stats-ue-summary', name: 'POST /testcases/executions/{eid}/statistics/ue-summary', category: 'statistics',
+    method: 'POST', endpoint: '/v2/testcases/executions/{eid}/statistics/ue-summary', severity: 'normal',
+    run: async (c) => {
+      const base = { id: 'stats-ue-summary', category: 'statistics' as const, method: 'POST' as const, endpoint: '/v2/testcases/executions/{eid}/statistics/ue-summary', severity: 'normal' as const };
+      await ensureTestcaseContext(c);
+      if (!c.recentExecutionId) return skip(base.id, base, 'this box has no recent execution to read statistics from — run a test first');
+      const end = Math.floor(Date.now() / 1000);
+      const start = end - 24 * 3600;
+      const r = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/statistics/ue-summary`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startTime: start, endTime: end, offset: 1, limit: 50 }),
+      });
+      if (r.status === 200) {
+        const rows = Array.isArray(r.bodyJson?.data?.ue_data) ? r.bodyJson.data.ue_data.length : 0;
+        return ok(base.id, base, r, `${rows} ue_data row(s) in the last 24h window`);
+      }
+      if (r.status === 404) return bad(base.id, base, r, 'POST returned 404 — the ue-summary route is not served on this build',
+        '200 with { data: { ue_data: [...] } }. This endpoint is a POST with a JSON body ({startTime, endTime, offset, limit}); a GET on the same path legitimately 404s.');
+      return bad(base.id, base, r, `expected 200, got ${r.status}`);
+    },
+  });
 
   // Statistics + log exports (binary, long-running by default).
   for (const slug of ['cells', 'ues']) {
@@ -751,10 +1143,11 @@ function defs(): TestDef[] {
       method: 'GET', endpoint: `/v2/testcases/executions/{eid}/statistics/${slug}/export`, severity: 'optional', longRunning: true,
       run: async (c) => {
         const base = { id: `stats-${slug}-export`, category: 'statistics' as const, method: 'GET' as const, endpoint: `/v2/testcases/executions/{eid}/statistics/${slug}/export`, severity: 'optional' as const };
-        if (!c.recentExecutionId) return skip(base.id, base, 'no execution id available');
+        await ensureTestcaseContext(c);
+        if (!c.recentExecutionId) return skip(base.id, base, 'this box has no recent execution to read statistics from — run a test first');
         const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/statistics/${slug}/export?format=zip`);
-        if (r.status === 200 || r.status === 202) return ok(base.id, base, r, `status ${r.status}`);
-        if (r.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale — no recent execution to validate against). Run a test and re-try.');
+        if (r.status === 200 || r.status === 202) return ok(base.id, base, r, exportEvidence(r));
+        if (r.status === 404) return skip(base.id, base, `/statistics/${slug}/export is not served on this build (404) — a nonexistent execution id returns 200 here, so a 404 means the route is missing, not the execution`);
         return bad(base.id, base, r, `got ${r.status}`);
       },
     });
@@ -766,7 +1159,8 @@ function defs(): TestDef[] {
     method: 'GET', endpoint: '/v2/testcases/executions/{eid}/logs', severity: 'normal',
     run: async (c) => {
       const base = { id: 'logs-fetch', category: 'logs' as const, method: 'GET', endpoint: '/v2/testcases/executions/{eid}/logs', severity: 'normal' as const };
-      if (!c.recentExecutionId) return skip(base.id, base, 'no execution id available');
+      await ensureTestcaseContext(c);
+      if (!c.recentExecutionId) return skip(base.id, base, 'this box has no recent execution to read statistics from — run a test first');
       const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/logs?limit=10`);
       if (r.status === 200) return ok(base.id, base, r, JSON.stringify(r.bodyJson).slice(0, 100));
       if (r.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale — no recent execution to validate against). Run a test and re-try.');
@@ -778,10 +1172,11 @@ function defs(): TestDef[] {
     method: 'GET', endpoint: '/v2/testcases/executions/{eid}/logs/export', severity: 'optional', longRunning: true,
     run: async (c) => {
       const base = { id: 'logs-export', category: 'logs' as const, method: 'GET' as const, endpoint: '/v2/testcases/executions/{eid}/logs/export', severity: 'optional' as const };
-      if (!c.recentExecutionId) return skip(base.id, base, 'no execution id available');
+      await ensureTestcaseContext(c);
+      if (!c.recentExecutionId) return skip(base.id, base, 'this box has no recent execution to read statistics from — run a test first');
       const r = await rawCall(c, 'GET', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/logs/export?format=zip`);
-      if (r.status === 200 || r.status === 202) return ok(base.id, base, r, `status ${r.status}`);
-      if (r.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale — no recent execution to validate against). Run a test and re-try.');
+      if (r.status === 200 || r.status === 202) return ok(base.id, base, r, exportEvidence(r));
+      if (r.status === 404) return skip(base.id, base, '/logs/export is not served on this build (404) — a nonexistent execution id returns 200 here, so a 404 means the route is missing, not the execution');
       return bad(base.id, base, r, `got ${r.status}`);
     },
   });
@@ -973,13 +1368,21 @@ function defs(): TestDef[] {
     },
   });
 
-  // SIM40-(to-be-filed) enumeration cap, found 2026-06-10: GET /v2/testcases
-  // caps a single response at 1000 rows AND offsets near/past 1000 return
-  // EMPTY pages, so rows beyond 1000 are unreachable through the list API.
-  // (POST /testcases/search ignores offset too — see search-offset-honoured —
-  // so there is NO API path to enumerate a box with >1000 testcases.)
+  // Enumeration reach: GET /v2/testcases caps a single response at 1000 rows,
+  // so a box holding more than that can only be enumerated by paging. This
+  // check walks to the LAST page and requires it to come back.
+  //
+  // Careful with the paging vocabulary — it is not what it looks like. On this
+  // firmware `offset` is a ZERO-BASED PAGE INDEX and `limit` is the page size
+  // (verified live 2026-08-26: limit=5&offset=10 returns row 50, not row 10;
+  // limit=100&offset=1 returns rows 100-199). An out-of-range page returns
+  // 400 {"code":"BAD_REQUEST","message":"requested page N out of range"}, not
+  // the empty page this check's first version expected. It used to compute a
+  // ROW offset (total - 5) and treat a 400 as proof of an enumeration cap —
+  // on any box with >1000 testcases that would have reported a product bug
+  // that isn't there.
   list.push({
-    id: 'testcases-list-cap-documented', name: 'GET /testcases offset near total — rows beyond 1000 must be reachable', category: 'testcases',
+    id: 'testcases-list-cap-documented', name: 'GET /testcases — the last page of a >1000-row catalogue is reachable', category: 'testcases',
     method: 'GET', endpoint: '/v2/testcases?offset=&limit=', severity: 'normal',
     run: async (c) => {
       const base = { id: 'testcases-list-cap-documented', category: 'testcases' as const, method: 'GET' as const, endpoint: '/v2/testcases?offset=&limit=', severity: 'normal' as const };
@@ -987,23 +1390,29 @@ function defs(): TestDef[] {
       if (head.status !== 200) return bad(base.id, base, head, `pre-step list returned ${head.status}`);
       const total = Number(head.bodyJson?.total ?? NaN);
       if (!Number.isFinite(total)) return skip(base.id, base, 'list response carries no numeric total — cannot locate the cap');
-      if (total <= 1000) return skip(base.id, base, `total=${total} <= 1000 — enumeration cap not reachable on this box`);
-      const offset = Math.max(0, total - 5);
-      const expected = `200 with 5 items at offset=${offset} (total=${total}). The box currently returns an EMPTY page for offsets near/past 1000, making every testcase beyond row 1000 unreachable via the API — backup, audit and sync tooling silently sees a partial catalogue.`;
-      const tail = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=5&offset=${offset}`);
-      if (tail.status !== 200) return bad(base.id, base, tail, `offset=${offset} returned ${tail.status}`, expected);
+      // Below 1000 rows the >1000 reach cannot be exercised — but the paging
+      // contract this test exists to protect can be, at whatever scale the box
+      // actually holds. The failure this guards against (rows silently
+      // unreachable, so backup / audit / sync tooling sees a partial
+      // catalogue) shows up identically at 240 rows if paging is broken, so
+      // skipping here left the real risk unmeasured on every box we own.
+      if (total <= 1000) return smallCatalogueReachVerdict(c, base, total);
+      const pageSize = 1000;
+      const lastPage = Math.floor((total - 1) / pageSize);
+      const wantRows = total - lastPage * pageSize;
+      const expected = `200 with ${wantRows} item(s) on the last page (limit=${pageSize}&offset=${lastPage}, total=${total}). \`offset\` is a page index on this API. If the last page cannot be fetched, every testcase beyond row ${pageSize} is unreachable and backup / audit / sync tooling silently sees a partial catalogue.`;
+      const tail = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=${pageSize}&offset=${lastPage}`);
+      if (tail.status !== 200) return bad(base.id, base, tail, `last page (limit=${pageSize}&offset=${lastPage}) returned ${tail.status}: ${String(tail.bodyJson?.message ?? '').slice(0, 120)}`, expected);
       const rows = Array.isArray(tail.bodyJson?.items) ? tail.bodyJson.items.length : 0;
-      if (rows > 0) return ok(base.id, base, tail, `offset=${offset} returned ${rows} row(s) — rows beyond 1000 reachable`);
-      return bad(base.id, base, tail, `enumeration cap CONFIRMED: total=${total} but offset=${offset} returns an empty page — rows beyond 1000 are unreachable via the list API`, expected);
+      if (rows === 0) return bad(base.id, base, tail, `enumeration cap CONFIRMED: total=${total} but the last page (offset=${lastPage}) is empty — rows beyond ${pageSize} are unreachable via the list API`, expected);
+      return ok(base.id, base, tail, `last page (offset=${lastPage}) returned ${rows} row(s) of an expected ${wantRows} — the full ${total}-row catalogue is reachable`);
     },
   });
 
-  // Same family as the enumeration cap above (SIM40-to-be-filed, found
-  // 2026-06-10): POST /testcases/search IGNORES `offset`, so search cannot be
-  // used to page past the GET cap either. Two non-overlapping pages must
-  // return different ids.
+  // Search must be able to reach past its first page, so a caller can walk the
+  // whole catalogue when GET /testcases hits its enumeration cap above.
   list.push({
-    id: 'search-offset-honoured', name: 'POST /testcases/search honours offset (page 0 vs page 1 differ)', category: 'testcases',
+    id: 'search-offset-honoured', name: 'POST /testcases/search can paginate (page 1 vs page 2 differ)', category: 'testcases',
     method: 'POST', endpoint: '/v2/testcases/search (paging)', severity: 'normal',
     run: async (c) => {
       const base = { id: 'search-offset-honoured', category: 'testcases' as const, method: 'POST' as const, endpoint: '/v2/testcases/search (paging)', severity: 'normal' as const };
@@ -1012,21 +1421,29 @@ function defs(): TestDef[] {
       const total = Number(head.bodyJson?.total ?? NaN);
       if (!Number.isFinite(total)) return skip(base.id, base, 'list response carries no numeric total — cannot size the paging probe');
       if (total < 10) return skip(base.id, base, `total=${total} < 10 — not enough testcases to compare two pages`);
-      const page = (offset: number) => rawCall(c, 'POST', `${tBase(c.host)}/testcases/search`, {
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ offset, limit: 5 }),
-      });
-      const p0 = await page(0);
-      const p1 = await page(5);
-      if (p0.status !== 200 || p1.status !== 200) return bad(base.id, base, p1, `search returned ${p0.status}/${p1.status} for the two pages`);
       const idsOf = (r: RawCallResult): string[] =>
         ((r.bodyJson?.items ?? r.bodyJson?.data ?? []) as any[]).map((x) => String(x?.id ?? '')).filter(Boolean);
-      const a = idsOf(p0);
-      const b = idsOf(p1);
+      const search = (body: any) => rawCall(c, 'POST', `${tBase(c.host)}/testcases/search`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      // POST /testcases/search pages on pageNumber (1-BASED) + pageSize — NOT
+      // offset/limit, which is GET /testcases' vocabulary. This test used to
+      // send {offset, limit}; the box ignores unknown fields, served the same
+      // default page twice, and the test concluded "search can never page past
+      // the first page" and filed it as a product bug. It is not one: asked
+      // properly, the box pages correctly. The sibling `testcases-search` test
+      // already used pageNumber/pageSize — only this one had it wrong.
+      const p1 = await search({ pageNumber: 1, pageSize: 5 });
+      const p2 = await search({ pageNumber: 2, pageSize: 5 });
+      if (p1.status !== 200 || p2.status !== 200) return bad(base.id, base, p2, `search returned ${p1.status}/${p2.status} for the two pages`);
+      const a = idsOf(p1);
+      const b = idsOf(p2);
       if (a.length === 0 || b.length === 0) return skip(base.id, base, `search returned ${a.length}/${b.length} ids despite total=${total} — cannot compare pages`);
-      const expected = `{offset:5,limit:5} must return the NEXT 5 rows, not the same leading rows as {offset:0,limit:5}. The box currently ignores offset entirely (the "page" param is ignored too), so search can never reach past the first page.`;
-      if (a.join(',') === b.join(',')) return bad(base.id, base, p1, `offset IGNORED: {offset:0} and {offset:5} returned identical id lists (${a.slice(0, 3).join(', ')}…)`, expected);
-      return ok(base.id, base, p1, `offset honoured: page0 starts ${a[0]}, page1 starts ${b[0]}`);
+      const overlap = a.filter((id) => b.includes(id));
+      const expected = `{pageNumber:2,pageSize:5} must return the NEXT 5 rows, sharing no ids with {pageNumber:1,pageSize:5}. With total=${total}, a page index that does not advance leaves every row past the first page unreachable through search.`;
+      if (overlap.length > 0) return bad(base.id, base, p2, `pageNumber IGNORED: pages 1 and 2 share ${overlap.length}/${a.length} ids (${overlap.slice(0, 3).join(', ')}…)`, expected);
+      return ok(base.id, base, p2, `pageNumber honoured: page1 starts ${a[0].slice(0, 13)}…, page2 starts ${b[0].slice(0, 13)}… (no overlap, totalPages=${p2.bodyJson?.totalPages ?? '?'})`);
     },
   });
 
@@ -1041,69 +1458,71 @@ function defs(): TestDef[] {
     method: 'GET', endpoint: '/v2/testcases/executions/{eid}/statistics/ues', severity: 'optional',
     run: async (c) => {
       const base = { id: 'stats-window-seconds-contract', category: 'statistics' as const, method: 'GET' as const, endpoint: '/v2/testcases/executions/{eid}/statistics/ues', severity: 'optional' as const };
-      let eid = c.recentExecutionId;
-      let executedOnSec: number | undefined;
-      let durationSec: number | undefined;
-      if (!eid) {
-        // Self-discover: any testcase carrying metadata.lastExecution will do
-        // (the statistics category can run without the testcases category).
-        const lst = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=100&offset=0`);
-        for (const it of (lst.bodyJson?.items ?? []) as any[]) {
-          const last = it?.metadata?.lastExecution;
-          if (last?.executionId) {
-            eid = String(last.executionId);
-            // Anchor the query window to THIS execution (same row): executedOn
-            // may arrive as epoch seconds, epoch millis or an ISO string.
-            const rawOn = last?.executedOn;
-            if (rawOn !== undefined && rawOn !== null) {
-              const n = typeof rawOn === 'number' ? rawOn : Number(rawOn);
-              if (Number.isFinite(n) && n > 0) {
-                executedOnSec = n > 1e11 ? Math.floor(n / 1000) : Math.floor(n);
-              } else {
-                const parsed = Date.parse(String(rawOn));
-                if (Number.isFinite(parsed)) executedOnSec = Math.floor(parsed / 1000);
-              }
-            }
-            const dur = Number(last?.durationSeconds ?? last?.testDuration ?? NaN);
-            if (Number.isFinite(dur) && dur > 0) durationSec = dur;
-            break;
+      // Candidate executions, best-first. c.recentExecutionId is deliberately
+      // NOT trusted on its own: during a full sweep the Executions category
+      // runs before this one and leaves behind a start/stop execution that
+      // never had a UE attach, so anchoring to it found zero rows and the
+      // probe skipped — on a box holding 75 historical executions that DO
+      // carry ue_data. Collect candidates, then probe until one has data.
+      const MARGIN_SEC = 60;
+      type Cand = { eid: string; executedOnSec?: number; durationSec?: number };
+      const cands: Cand[] = [];
+      if (c.recentExecutionId) cands.push({ eid: String(c.recentExecutionId) });
+      const lst = await rawCall(c, 'GET', `${tBase(c.host)}/testcases?limit=100&offset=0`);
+      for (const it of (lst.bodyJson?.items ?? []) as any[]) {
+        const last = it?.metadata?.lastExecution;
+        if (!last?.executionId) continue;
+        // executedOn may arrive as epoch seconds, epoch millis or an ISO string.
+        let executedOnSec: number | undefined;
+        const rawOn = last?.executedOn;
+        if (rawOn !== undefined && rawOn !== null) {
+          const n = typeof rawOn === 'number' ? rawOn : Number(rawOn);
+          if (Number.isFinite(n) && n > 0) executedOnSec = n > 1e11 ? Math.floor(n / 1000) : Math.floor(n);
+          else {
+            const parsed = Date.parse(String(rawOn));
+            if (Number.isFinite(parsed)) executedOnSec = Math.floor(parsed / 1000);
           }
         }
+        const dur = Number(last?.durationSeconds ?? last?.testDuration ?? NaN);
+        cands.push({ eid: String(last.executionId), executedOnSec, durationSec: Number.isFinite(dur) && dur > 0 ? dur : undefined });
       }
-      if (!eid) return skip(base.id, base, 'no execution id available (no testcase carries metadata.lastExecution)');
-      const statsUrl = `${tBase(c.host)}/testcases/executions/${encodeURIComponent(eid)}/statistics/ues`;
-      // Window anchored to the discovered execution when executedOn is known;
-      // last-24h fallback otherwise.
-      const MARGIN_SEC = 60;
-      let start: number;
-      let end: number;
-      let windowDesc: string;
-      if (executedOnSec !== undefined) {
-        start = executedOnSec - MARGIN_SEC;
-        end = executedOnSec + (durationSec ?? 3600) + MARGIN_SEC;
-        windowDesc = `execution-anchored window (executedOn=${executedOnSec}s, duration=${durationSec ?? 3600}s, margin=${MARGIN_SEC}s)`;
-      } else {
-        end = Math.floor(Date.now() / 1000);
-        start = end - 24 * 3600;
-        windowDesc = 'last-24h fallback window (executedOn not available)';
-      }
-      const secs = await rawCall(c, 'GET', `${statsUrl}?startTime=${start}&endTime=${end}`);
-      if (secs.status === 404) return skip(base.id, base, 'execution not found on this system (eid stale) — cannot probe the window contract');
-      if (secs.status !== 200) return skip(base.id, base, `seconds-window call returned ${secs.status} — documentation-grade probe, not failing hard`);
-      const millis = await rawCall(c, 'GET', `${statsUrl}?startTime=${start * 1000}&endTime=${end * 1000}`);
+      if (!cands.length) return skip(base.id, base, 'no execution id available (no testcase carries metadata.lastExecution)');
+
       const rowsOf = (r: RawCallResult): number => Array.isArray(r.bodyJson?.data?.ue_data) ? r.bodyJson.data.ue_data.length : 0;
-      const sRows = rowsOf(secs);
-      const mRows = millis.status === 200 ? rowsOf(millis) : 0;
-      if (sRows > 0 && millis.status >= 400) {
-        return ok(base.id, base, millis, `seconds window -> ${sRows} ue_data rows; identical window in milliseconds -> ${millis.status}: box now rejects millisecond windows explicitly (${windowDesc})`);
+      const windowFor = (k: Cand) => k.executedOnSec !== undefined
+        ? { start: k.executedOnSec - MARGIN_SEC, end: k.executedOnSec + (k.durationSec ?? 3600) + MARGIN_SEC, desc: `execution-anchored window (executedOn=${k.executedOnSec}s, duration=${k.durationSec ?? 3600}s, margin=${MARGIN_SEC}s)` }
+        : { start: Math.floor(Date.now() / 1000) - 24 * 3600, end: Math.floor(Date.now() / 1000), desc: 'last-24h fallback window (executedOn not available)' };
+
+      // Probe until an execution with retained ue_data turns up. Bounded so a
+      // box of stale ids cannot turn this into a hundred-call crawl.
+      const MAX_PROBES = 12;
+      let probed = 0;
+      let lastDesc = '';
+      let lastS = 0;
+      let lastM = -1;
+      for (const k of cands.slice(0, MAX_PROBES)) {
+        probed++;
+        const { start, end, desc } = windowFor(k);
+        lastDesc = desc;
+        const statsUrl = `${tBase(c.host)}/testcases/executions/${encodeURIComponent(k.eid)}/statistics/ues`;
+        const secs = await rawCall(c, 'GET', `${statsUrl}?startTime=${start}&endTime=${end}`);
+        if (secs.status !== 200) continue;           // stale id / not found — try the next
+        const sRows = rowsOf(secs);
+        lastS = sRows;
+        if (sRows === 0) continue;                   // nothing retained for this one
+        const millis = await rawCall(c, 'GET', `${statsUrl}?startTime=${start * 1000}&endTime=${end * 1000}`);
+        const mRows = millis.status === 200 ? rowsOf(millis) : 0;
+        lastM = mRows;
+        const via = `eid=${k.eid.slice(0, 8)}… after ${probed} probe(s); ${desc}`;
+        if (millis.status >= 400) {
+          return ok(base.id, base, millis, `seconds window -> ${sRows} ue_data rows; identical window in milliseconds -> ${millis.status}: box now rejects millisecond windows explicitly (${via})`);
+        }
+        if (mRows === 0) {
+          return ok(base.id, base, millis, `CONTRACT CONFIRMED (silent empty payload): seconds window -> ${sRows} ue_data rows; identical window in milliseconds -> 200 with EMPTY payload (no 400). startTime/endTime are epoch SECONDS; millis fail silently (${via}).`);
+        }
+        return ok(base.id, base, millis, `lenient parser on this build: seconds (${sRows} rows) AND milliseconds (${mRows} rows) windows both return data (${via})`);
       }
-      if (sRows > 0 && millis.status === 200 && mRows === 0) {
-        return ok(base.id, base, millis, `CONTRACT CONFIRMED (silent empty payload): seconds window -> ${sRows} ue_data rows; identical window in milliseconds -> 200 with EMPTY payload (no 400). startTime/endTime are epoch SECONDS; millis fail silently (${windowDesc}).`);
-      }
-      if (sRows > 0 && mRows > 0) {
-        return ok(base.id, base, millis, `lenient parser on this build: seconds (${sRows} rows) AND milliseconds (${mRows} rows) windows both return data (${windowDesc})`);
-      }
-      return skip(base.id, base, `cannot demonstrate the unit contract in the queried window (${windowDesc}; seconds rows=${sRows}, millis status=${millis.status} rows=${mRows}) — re-run after an execution with attached UEs`);
+      return skip(base.id, base, `probed ${probed} execution(s) of ${cands.length} candidate(s); none had retained ue_data to compare windows with (last: ${lastDesc}, seconds rows=${lastS}, millis rows=${lastM < 0 ? 'n/a' : lastM}) — statistics retention has aged out`);
     },
   });
 
@@ -1116,11 +1535,24 @@ function defs(): TestDef[] {
     destructive: true, longRunning: true,
     run: async (c) => {
       const base = { id: 'exec-start-stop', category: 'executions' as const, method: 'POST' as const, endpoint: '/v2/testcases/{id}/executions', severity: 'optional' as const, destructive: true };
-      if (!c.someTestcaseId) return skip(base.id, base, 'no testcase id available');
-      const start = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/${encodeURIComponent(c.someTestcaseId)}/executions`, {
-        headers: { 'Content-Type': 'application/json' }, body: '{}',
-      });
-      if (start.status !== 200 && start.status !== 201) return bad(base.id, base, start, `start returned ${start.status}`);
+      await ensureTestcaseContext(c);
+      if (!c.someTestcaseId) return skip(base.id, base, 'no testcases exist on this box');
+      await ensureSimulatorId(c);
+      if (!await waitForSimulatorFree(c)) return skip(base.id, base, 'simulator still BUSY after 60s — another execution is running, refusing to queue on top of it');
+      const start = await startExecution(c, c.someTestcaseId);
+      if (start.status !== 200 && start.status !== 201) {
+        // status 0 means WE gave up waiting, not that the box declined. The box
+        // starts the run anyway, so bailing straight out strands an execution on
+        // real hardware with nothing tracking it. Always try to stop first.
+        if (start.status === 0) {
+          const rescue = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/executions/current/stop${c.recentSimulatorId ? `?simulatorId=${encodeURIComponent(c.recentSimulatorId)}` : ''}`, {
+            headers: { 'Content-Type': 'application/json' }, body: '{}',
+          });
+          return bad(base.id, base, start, `start did not answer (${start.error}); issued a precautionary stop which returned ${rescue.status}`,
+            'a start that we stop listening to may still be running on the box — the follow-up stop must land, or the simulator is left busy.');
+        }
+        return bad(base.id, base, start, `start returned ${start.status}`);
+      }
       // Give the box a beat then issue stop with executionId="current" + simulatorId.
       await new Promise((r) => setTimeout(r, 2000));
       const stop = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/executions/current/stop${c.recentSimulatorId ? `?simulatorId=${encodeURIComponent(c.recentSimulatorId)}` : ''}`, {
@@ -1136,12 +1568,36 @@ function defs(): TestDef[] {
     destructive: true, longRunning: true,
     run: async (c) => {
       const base = { id: 'exec-restart', category: 'executions' as const, method: 'POST' as const, endpoint: '/v2/testcases/executions/{eid}/restart', severity: 'optional' as const, destructive: true };
-      if (!c.recentExecutionId) return skip(base.id, base, 'no execution id available');
-      const r = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(c.recentExecutionId)}/restart`, {
+      // Restart only applies to a LIVE execution: the box rejects a finished one
+      // with 400 "Execution is not in a restartable state (current status:
+      // Completed)". Pointing this at c.recentExecutionId — which is whatever
+      // historical execution the catalogue scan happened to surface, long since
+      // Completed — asserted 200 against a state the box is right to refuse, so
+      // it failed on correct behaviour. Start our own execution, restart THAT,
+      // then stop it. Same start/stop calls exec-start-stop already proves.
+      await ensureTestcaseContext(c);
+      if (!c.someTestcaseId) return skip(base.id, base, 'no testcases exist on this box to start a restartable execution');
+      await ensureSimulatorId(c);
+      if (!await waitForSimulatorFree(c)) return skip(base.id, base, 'simulator still BUSY after 60s — cannot start the execution this check needs to restart');
+      const start = await startExecution(c, c.someTestcaseId);
+      if (start.status !== 200 && start.status !== 201) {
+        return bad(base.id, base, start, `could not start an execution to restart (${start.status})`,
+          '200/201 from POST /v2/testcases/{id}/executions — restart cannot be exercised without a live execution.');
+      }
+      const eid = start.bodyJson?.executionId ?? c.recentExecutionId;
+      const stopAll = async () => rawCall(c, 'POST', `${tBase(c.host)}/testcases/executions/current/stop${c.recentSimulatorId ? `?simulatorId=${encodeURIComponent(c.recentSimulatorId)}` : ''}`, {
         headers: { 'Content-Type': 'application/json' }, body: '{}',
       });
-      if (r.status === 200 || r.status === 202) return ok(base.id, base, r, `restart=${r.status}`);
-      return bad(base.id, base, r, `expected 200/202, got ${r.status}`);
+      if (!eid) { await stopAll(); return bad(base.id, base, start, 'start succeeded but returned no executionId to restart'); }
+      await new Promise((r) => setTimeout(r, 3000));
+      const r = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/executions/${encodeURIComponent(eid)}/restart`, {
+        headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      // Always tear the run back down, whatever restart answered.
+      const stop = await stopAll();
+      if (r.status === 200 || r.status === 202) return ok(base.id, base, r, `restart=${r.status} on live eid=${eid.slice(0, 8)}… (stopped after: ${stop.status})`);
+      return bad(base.id, base, r, `expected 200/202 restarting a RUNNING execution, got ${r.status}: ${String(r.bodyJson?.message ?? '').slice(0, 120)}`,
+        '200/202 — the execution was started moments earlier and is live, so restart must be accepted.');
     },
   });
 
@@ -1158,13 +1614,22 @@ function defs(): TestDef[] {
     destructive: true, longRunning: true,
     run: async (c) => {
       const base = { id: 'exec-stop-by-eid', category: 'executions' as const, method: 'POST' as const, endpoint: '/v2/testcases/executions/{eid}/stop', severity: 'optional' as const, destructive: true };
-      if (!c.someTestcaseId) return skip(base.id, base, 'no testcase id available');
+      await ensureTestcaseContext(c);
+      if (!c.someTestcaseId) return skip(base.id, base, 'no testcases exist on this box');
+      await ensureSimulatorId(c);
+      if (!await waitForSimulatorFree(c)) return skip(base.id, base, 'simulator still BUSY after 60s — another execution is running, refusing to queue on top of it');
 
       // 1. Start a fresh execution.
-      const start = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/${encodeURIComponent(c.someTestcaseId)}/executions`, {
-        headers: { 'Content-Type': 'application/json' }, body: '{}',
-      });
+      const start = await startExecution(c, c.someTestcaseId);
       if (start.status !== 200 && start.status !== 201) {
+        // Same rescue as exec-start-stop: a start we stopped waiting on may
+        // still be running on the box, so never leave without trying to stop.
+        if (start.status === 0) {
+          const rescue = await rawCall(c, 'POST', `${tBase(c.host)}/testcases/executions/current/stop${c.recentSimulatorId ? `?simulatorId=${encodeURIComponent(c.recentSimulatorId)}` : ''}`, {
+            headers: { 'Content-Type': 'application/json' }, body: '{}',
+          });
+          return bad(base.id, base, start, `start did not answer (${start.error}); issued a precautionary stop which returned ${rescue.status}`);
+        }
         return bad(base.id, base, start, `start returned ${start.status} (system likely busy)`);
       }
 
@@ -1196,24 +1661,112 @@ function defs(): TestDef[] {
     },
   });
 
-  // ---------- INTENTIONALLY-SKIPPED ENDPOINTS (documented in the audit) ----------
-  // We surface these as test rows so coverage is visible — but they always
-  // skip because executing them safely needs context we don't have:
+  // ---------- ENDPOINTS THAT CANNOT BE DRIVEN TO SUCCESS ----------
+  // These used to be hardcoded skip rows — permanent placeholders that
+  // reported nothing on any box. The constraint that made each unsafe to
+  // drive to SUCCESS is real and still respected; what changed is that each
+  // now asserts the part of its contract that IS reachable (rejection paths,
+  // auth gates, catalogue discovery) instead of asserting nothing at all.
+  // The `skipDef` factory that produced the placeholders is gone with them.
+
+  // Password rotation used to be an unconditional skip: rotating the admin
+  // password has no safe rollback, and getting it wrong locks everyone out of
+  // a shared lab box. That constraint is real, so the happy path stays
+  // untested deliberately — but the endpoint's REJECTION path can be exercised
+  // with zero risk, and that is where the interesting bugs live anyway.
   //
-  //   POST /users/update-password    rotates the admin password; cannot revert.
-  //   POST /testcases/import         requires a pre-built binary pack.
-  //   POST /simulators (create) /
-  //   PATCH /simulators/{id}         no DELETE endpoint -> can't tear down.
-  //   PUT /simulators/{id}/log-settings  needs an existing log-setting id.
-  const skipDef = (id: string, name: string, ep: string, method: 'POST'|'PUT'|'PATCH'|'GET'|'DELETE', reason: string, category: ApiTestCategory = 'mutating'): TestDef => ({
-    id, name, category, method, endpoint: ep, severity: 'optional', destructive: true,
-    run: async () => ({
-      id, name, category, method, endpoint: ep, severity: 'optional',
-      destructive: true, ok: true, skipped: true, skippedReason: reason,
-    }),
+  // Every probe below names a user that does not exist. Even if the box had a
+  // validation gap as bad as the one this suite already found on Test_Id
+  // (empty value silently accepted), the worst outcome is a password change on
+  // a nonexistent account. The admin credential is never a parameter, so it
+  // cannot be rotated by this test under any failure mode.
+  list.push({
+    id: 'update-password-rejects-bad-input', name: 'POST /users/update-password rejects bad credentials (admin never touched)', category: 'mutating',
+    method: 'POST', endpoint: '/v2/users/update-password', severity: 'normal', destructive: true,
+    run: async (c) => {
+      const base = { id: 'update-password-rejects-bad-input', category: 'mutating' as const, method: 'POST', endpoint: '/v2/users/update-password', severity: 'normal' as const, destructive: true };
+      const ghost = `simqa-nonexistent-${Date.now().toString(36)}`;
+      const post = (body: any) => rawCall(c, 'POST', `${tBase(c.host)}/users/update-password`, {
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const expected = 'A 4xx refusal with a JSON envelope { code, message }. A 200 would mean the endpoint rotates passwords without verifying the current one — full account takeover for anyone who can reach the API. A 5xx means it crashed on input it should simply reject.';
+
+      // 1. Unknown user + wrong current password.
+      const unknown = await post({ username: ghost, current_password: 'not-the-password', new_password: 'Simqa!Tmp123' });
+      if (unknown.status === 200) {
+        return bad(base.id, base, unknown, `200 for user "${ghost}" that does not exist — the endpoint does not verify the account or the current password`, expected);
+      }
+      if (unknown.status >= 500) return bad(base.id, base, unknown, `${unknown.status} — crashed instead of rejecting an unknown user`, expected);
+      if (unknown.status < 400) return bad(base.id, base, unknown, `expected a 4xx refusal, got ${unknown.status}`, expected);
+      const code = String(unknown.bodyJson?.code ?? '');
+      const msg  = String(unknown.bodyJson?.message ?? '');
+      if (!code || !msg) return bad(base.id, base, unknown, `${unknown.status} but the body carries no { code, message } envelope`, expected);
+
+      // 2. Missing new_password entirely — must be a validation error, and
+      //    must NOT be treated as "set the password to empty".
+      const noNew = await post({ username: ghost, current_password: 'not-the-password' });
+      if (noNew.status === 200) return bad(base.id, base, noNew, '200 with no new_password supplied — the endpoint accepts an incomplete rotation', expected);
+      if (noNew.status >= 500) return bad(base.id, base, noNew, `${noNew.status} — crashed on a payload missing new_password`, expected);
+
+      // 3. Unauthenticated — the endpoint must not be reachable without a token.
+      const anon = await rawCall(c, 'POST', `${tBase(c.host)}/users/update-password`, {
+        auth: 'none', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: ghost, current_password: 'x', new_password: 'Simqa!Tmp123' }),
+      });
+      if (anon.status === 200) return bad(base.id, base, anon, '200 WITHOUT a bearer token — password rotation is unauthenticated', 'A 401/403 without credentials. A 200 here is a critical auth bypass.');
+
+      return ok(base.id, base, unknown, `unknown user -> ${unknown.status} ${code} "${msg}"; missing new_password -> ${noNew.status}; unauthenticated -> ${anon.status} (admin credential never sent)`);
+    },
   });
-  list.push(skipDef('skip-update-password',     'POST /users/update-password',    '/v2/users/update-password',                  'POST', 'rotates admin password; no safe rollback'));
-  list.push(skipDef('skip-sim-log-settings',    'PUT /simulators/{id}/log-settings', '/v2/simulators/{id}/log-settings',         'PUT', 'needs an existing log-setting id; trigger via /system/log-settings flow'));
+
+  // Assigning a log-settings profile to a simulator used to skip for want of a
+  // settings id. The ids are discoverable — GET /v2/system/log-settings lists
+  // them — so discovery is now asserted for real. The PUT itself is still not
+  // driven to success on purpose: there is no GET /v2/simulators/{id}/log-settings
+  // (verified 404 on build 4.0.0_2608181819), so the current profile cannot be
+  // read back, and a successful PUT would be an unrestorable change to shared
+  // lab configuration. What IS safe is the rejection path — a syntactically
+  // valid but nonexistent settings id must be refused, and if the box wrongly
+  // accepts it the test repairs the simulator by pointing it at a real profile.
+  list.push({
+    id: 'sim-log-settings-contract', name: 'PUT /simulators/{id}/log-settings — catalogue discoverable, bad id refused', category: 'mutating',
+    method: 'PUT', endpoint: '/v2/simulators/{id}/log-settings', severity: 'normal', destructive: true,
+    run: async (c) => {
+      const base = { id: 'sim-log-settings-contract', category: 'mutating' as const, method: 'PUT', endpoint: '/v2/simulators/{id}/log-settings', severity: 'normal' as const, destructive: true };
+      const cat = await rawCall(c, 'GET', `${tBase(c.host)}/system/log-settings`);
+      if (cat.status !== 200) return bad(base.id, base, cat, `GET /v2/system/log-settings returned ${cat.status} — the profile catalogue the PUT references is unreachable`,
+        '200 listing the log-settings profiles. Without it, nothing can assign a profile to a simulator.');
+      const profiles: any[] = cat.bodyJson?.items ?? [];
+      if (!profiles.length) return bad(base.id, base, cat, 'log-settings catalogue is empty — there is no profile any simulator could be pointed at',
+        'At least one profile (the box ships system presets such as debug / error / disable).');
+      const known = profiles.find((p) => p?.id);
+      if (!known) return bad(base.id, base, cat, `catalogue returned ${profiles.length} profile(s) but none carries an id`, 'Each profile exposes an id usable as logSettingsId.');
+
+      // Resolve on demand — c.recentSimulatorId is only populated by the
+      // Simulators category, so reading it directly made this test fail
+      // whenever Mutating was run without Simulators ticked.
+      const simId = await ensureSimulatorId(c);
+      if (!simId) return bad(base.id, base, cat, 'GET /v2/simulators returned no simulator to address the PUT', 'At least one simulator, so a log-settings profile has something to be assigned to.');
+      const put = (logSettingsId: string) => rawCall(c, 'PUT', `${tBase(c.host)}/simulators/${encodeURIComponent(simId)}/log-settings`, {
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ logSettingsId }),
+      });
+
+      // Well-formed UUID that names no profile. Correct behaviour: refuse.
+      const ghostId = '00000000-0000-4000-8000-0000000ffake';
+      const r = await put(ghostId);
+      if (r.status === 200 || r.status === 204) {
+        // Wrongly accepted — the simulator now references a profile that does
+        // not exist. Repair it immediately rather than leaving the lab box in
+        // that state, then report the validation gap.
+        const repair = await put(String(known.id));
+        return bad(base.id, base, r, `${r.status} — a nonexistent logSettingsId was accepted (validation gap); simulator repaired by reassigning profile "${known.name ?? known.id}" (repair=${repair.status})`,
+          'A logSettingsId that matches no profile must be refused with 400/404. Accepting it leaves the simulator pointing at nothing, and there is no GET on this path to notice.');
+      }
+      if (r.status >= 500) return bad(base.id, base, r, `${r.status} — crashed on an unknown logSettingsId instead of refusing it`,
+        'A 400/404 naming the unknown profile.');
+      return ok(base.id, base, r, `catalogue lists ${profiles.length} profile(s) (e.g. "${known.name ?? known.id}"); unknown logSettingsId refused with ${r.status} — active profile left untouched`);
+    },
+  });
 
   // Simulator full lifecycle: POST + GET status + PATCH + DELETE.
   // (Spec doesn't document DELETE /v2/simulators/{id} but the box implements it.)
@@ -1231,7 +1784,7 @@ function defs(): TestDef[] {
         body: JSON.stringify({ simulatorName: simName, ipAddress: '10.255.255.254', type: 'UE' }),
       });
       traces.push(`create=${create.status}`);
-      if (create.status !== 201 && create.status !== 200) return bad(base.id, base, create, `create returned ${create.status}`);
+      if (create.status !== 200 && create.status !== 201) return provisioningRefusalVerdict(base, create, 'nothing to create, patch or delete');
 
       // Extract the new id (response shape: { success, data: { id, ... } } per spec)
       const newId = create.bodyJson?.data?.id ?? create.bodyJson?.id;
@@ -1275,7 +1828,7 @@ function defs(): TestDef[] {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ simulatorName: name1, ipAddress: sharedIp, type: 'UE' }),
       });
-      if (create1.status !== 200 && create1.status !== 201) return bad(base.id, base, create1, `seed create returned ${create1.status} — cannot test duplicate-IP rejection without a baseline sim`);
+      if (create1.status !== 200 && create1.status !== 201) return provisioningRefusalVerdict(base, create1, 'duplicate-IP rejection cannot be exercised');
       const id1 = create1.bodyJson?.data?.id ?? create1.bodyJson?.id;
       // Now attempt a second create with the SAME IP — must be rejected.
       const create2 = await rawCall(c, 'POST', `${tBase(c.host)}/simulators`, {
@@ -1309,7 +1862,7 @@ function defs(): TestDef[] {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ simulatorName: name, ipAddress: '10.255.255.252', type: 'UE' }),
       });
-      if (create.status !== 200 && create.status !== 201) return bad(base.id, base, create, `seed create returned ${create.status}`);
+      if (create.status !== 200 && create.status !== 201) return provisioningRefusalVerdict(base, create, 'no throwaway sim can be seeded to delete');
       const id = create.bodyJson?.data?.id ?? create.bodyJson?.id;
       if (!id) return bad(base.id, base, create, 'seed create succeeded but no id in response');
 
@@ -1511,11 +2064,25 @@ function defs(): TestDef[] {
         'export must return the testcase we just imported (one entry in test_case_details)');
 
       const detailSent = (pack as any).test_case_details[0];
-      const tdDiffs = deepDiff(detailSent.Test_Config_Intermediate_Object, detailBack.Test_Config_Intermediate_Object, 'Test_Config_Intermediate_Object');
+      // The pack we uploaded carries the SEED's name in settings.test_name /
+      // .testCaseName — makePack only overrides the top-level Test_Name. The box
+      // then syncs those nested fields to the new name on import, which is
+      // correct: the nested settings name is what the box surfaces as the
+      // testcase's own name. Diffing raw would report that propagation as
+      // "silent mutation" and fail a rename test *for renaming*. So expect the
+      // propagation explicitly — everything else must still be byte-identical.
+      const expectSent = JSON.parse(JSON.stringify(detailSent.Test_Config_Intermediate_Object ?? {}));
+      const nameSynced: string[] = [];
+      if (expectSent?.settings && typeof expectSent.settings === 'object') {
+        for (const k of ['test_name', 'testCaseName']) {
+          if (k in expectSent.settings) { expectSent.settings[k] = newName; nameSynced.push(`settings.${k}`); }
+        }
+      }
+      const tdDiffs = deepDiff(expectSent, detailBack.Test_Config_Intermediate_Object, 'Test_Config_Intermediate_Object');
       if (tdDiffs.length > 0) return bad(base.id, base, expBack, `Test_Config_Intermediate_Object diverged across round-trip: ${tdDiffs.slice(0, 3).join(' | ')}`,
-        'every field of Test_Config_Intermediate_Object that we uploaded comes back byte-identical when re-exported');
+        `every field of Test_Config_Intermediate_Object that we uploaded comes back byte-identical when re-exported, except the name fields (${nameSynced.join(', ') || 'none present'}) which must track the renamed Test_Name ("${newName}")`);
 
-      return ok(base.id, base, imp, `${landedId}: ${traces.join(' ')}, deep-equal OK`);
+      return ok(base.id, base, imp, `${landedId}: ${traces.join(' ')}, deep-equal OK${nameSynced.length ? ` (${nameSynced.join('+')} correctly tracked the rename)` : ''}`);
     },
   });
 
@@ -1753,7 +2320,8 @@ function defs(): TestDef[] {
     method: 'GET', endpoint: '/v2/tests/{id}/cells', severity: 'normal',
     run: async (c) => {
       const base = { id: 'tc-cells-get', category: 'test-creator' as const, method: 'GET' as const, endpoint: '/v2/tests/{id}/cells', severity: 'normal' as const };
-      if (!c.someTestcaseId) return skip(base.id, base, 'no testcase id (run testcases-list first)');
+      await ensureTestcaseContext(c);
+      if (!c.someTestcaseId) return skip(base.id, base, 'no testcases exist on this box');
       const r = await rawCall(c, 'GET', `${tBase(c.host)}/tests/${encodeURIComponent(c.someTestcaseId)}/cells`);
       if (r.status === 200 && r.bodyJson?.cellConfig) return ok(base.id, base, r, `cellConfig present (${r.bodyJson.cellConfig?.cells?.length ?? '?'} cell(s))`);
       return bad(base.id, base, r, `expected 200 with cellConfig, got ${r.status}`);
@@ -1765,12 +2333,22 @@ function defs(): TestDef[] {
       method: 'GET', endpoint: `/v2/tests/{id}/${slug}`, severity: 'optional',
       run: async (c) => {
         const base = { id: `tc-${slug}-get`, category: 'test-creator' as const, method: 'GET' as const, endpoint: `/v2/tests/{id}/${slug}`, severity: 'optional' as const };
-        if (!c.someTestcaseId) return skip(base.id, base, 'no testcase id (run testcases-list first)');
+        await ensureTestcaseContext(c);
+        if (!c.someTestcaseId) return skip(base.id, base, 'no testcases exist on this box');
         const r = await rawCall(c, 'GET', `${tBase(c.host)}/tests/${encodeURIComponent(c.someTestcaseId)}/${slug}`);
         if (r.status === 200) return ok(base.id, base, r, JSON.stringify(r.bodyJson).slice(0, 100));
-        // A case created without this optional section returns 404 "section not
-        // found" — expected, not a failure.
-        if (r.status === 404) return skip(base.id, base, `this test case has no '${slug}' section`);
+        if (r.status === 404) {
+          // 404 means THIS case was authored without the optional section, not
+          // that the endpoint is broken. Look for a case that does have it
+          // rather than skipping — the box holds hundreds, and skipping on the
+          // first arbitrary subject left the endpoint untested.
+          const alt = await findSectionSubject(c, slug);
+          if (alt) {
+            const r2 = await rawCall(c, 'GET', `${tBase(c.host)}/tests/${encodeURIComponent(alt)}/${slug}`);
+            if (r2.status === 200) return ok(base.id, base, r2, `via testcase ${alt.slice(0, 8)}… (the default subject has no '${slug}' section): ${JSON.stringify(r2.bodyJson).slice(0, 80)}`);
+          }
+          return skip(base.id, base, `no testcase on this box carries a '${slug}' section — nothing to read it from`);
+        }
         return bad(base.id, base, r, `expected 200 or 404, got ${r.status}`);
       },
     });
@@ -1869,19 +2447,53 @@ function defs(): TestDef[] {
   });
 
   // ---------- USERS SEARCH ----------
-  // Spec documents POST /users/search. On the lab box the /users* routes exist
-  // but reject the master-realm admin token with 403 (search role not mapped),
-  // while /admin/users* 404s — so 403 here means "route present, authz
-  // enforced", which we accept as covered; 404 means the route is missing.
+  // Spec documents POST /users/search. On this box the route is registered but
+  // answers 403 FORBIDDEN "This feature is disabled." — multi-user is switched
+  // off for the deployment (env-config.js: VITE_DISABLE_MULTI_USER_SIM=true),
+  // NOT a role-mapping problem as this comment used to claim. The distinction
+  // matters: 403 proves the route exists (an unregistered path under /v2/users
+  // returns 404), so a disabled feature is a deployment fact rather than a
+  // defect; a 404 would mean the route is genuinely missing.
+  //
+  // Rather than skip on a disabled box, this asserts two things that still
+  // hold there: the refusal is well-formed, and it AGREES with GET /v2/users.
+  // The agreement half is the part neither endpoint can check alone.
   list.push({
     id: 'users-search', name: 'POST /users/search', category: 'admin-users',
     method: 'POST', endpoint: '/v2/users/search', severity: 'optional',
     run: async (c) => {
       const base = { id: 'users-search', category: 'admin-users' as const, method: 'POST' as const, endpoint: '/v2/users/search', severity: 'optional' as const };
+      // Ask the deployment's state first (memoised probe of GET /v2/users), so
+      // the two user endpoints can be held to the SAME answer. A box that
+      // refuses the list while search quietly serves rows — or vice versa — is
+      // a real bug that neither endpoint reveals when tested on its own.
+      const disabled = await userMgmtDisabled(c);
       const r = await rawCall(c, 'POST', `${tBase(c.host)}/users/search`, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pageNumber: 1, pageSize: 10 }) });
-      if (r.status === 200) return ok(base.id, base, r, `items=${r.bodyJson?.items?.length ?? r.bodyJson?.users?.length ?? '?'}`);
-      if (r.status === 403) return ok(base.id, base, r, 'route present; admin token forbidden (403) — search role not mapped for this deployment');
-      return bad(base.id, base, r, `expected 200 (or 403 if authz-gated), got ${r.status}`, '200 with a paged user list per spec; 404 means the /users/search route is not deployed');
+
+      if (!disabled) {
+        if (r.status === 200) {
+          // Unfiltered search (page 1, no criteria) must at minimum return the
+          // admin we are authenticated as. Zero rows here means the search
+          // path is broken even though the list endpoint works.
+          const n = collectionSize(r.bodyJson);
+          if (n <= 0) return bad(base.id, base, r, `multi-user is enabled but an unfiltered search returned ${n < 0 ? 'no collection' : '0 rows'}`,
+            'An unfiltered POST /v2/users/search returns at least the authenticated admin.');
+          return ok(base.id, base, r, `multi-user enabled — items=${n}`);
+        }
+        return bad(base.id, base, r, `multi-user is enabled (GET /v2/users answered 200) but search returned ${r.status}`,
+          'With multi-user on, POST /v2/users/search returns 200 with a paged user list.');
+      }
+
+      if (r.status === 200) {
+        return bad(base.id, base, r, `inconsistent: GET /v2/users refuses as disabled, yet search answered 200 with ${collectionSize(r.bodyJson)} row(s)`,
+          'Both user endpoints must agree on whether multi-user is enabled. One refusing while the other serves data means a client sees a different answer depending on which it calls.');
+      }
+      const violation = disabledContractViolation(r);
+      if (violation) {
+        return bad(base.id, base, r, `multi-user is off, but search's refusal is malformed: ${violation}`,
+          'When a capability is disabled the box must answer 403 with { code: "FORBIDDEN", message: <why> } — never 404, never 5xx.');
+      }
+      return ok(base.id, base, r, `multi-user off; search refuses consistently with GET /v2/users — 403 ${r.bodyJson?.code} "${r.bodyJson?.message}"`);
     },
   });
 
@@ -2077,9 +2689,12 @@ export async function runApiTests(inv: Inventory, req: ApiTesterRequest): Promis
   }
 
   const wanted = new Set<ApiTestCategory>(req.categories ?? DEFAULT_CATEGORIES);
-  const includeNegative = req.includeNegative ?? true;
+  // 'mutating' is entirely destructive tests, so opting into destructive
+  // tests implies wanting this category even if its checkbox wasn't ticked
+  // separately — unlike 'negative' (see ApiTesterRequest doc), there's no
+  // conflicting UI control this could override: nothing lets a caller ask
+  // for includeDestructive=true while deliberately excluding 'mutating'.
   if (req.includeDestructive) wanted.add('mutating');
-  if (includeNegative)        wanted.add('negative');
 
   // Preflight: log in once.
   let token = '';
@@ -2106,18 +2721,39 @@ export async function runApiTests(inv: Inventory, req: ApiTesterRequest): Promis
   const results: ApiTestResult[] = [];
   for (const def of defs()) {
     if (!wanted.has(def.category)) continue;
-    if (def.destructive && !req.includeDestructive) {
-      results.push({ id: def.id, name: def.name, category: def.category, method: def.method, endpoint: def.endpoint, severity: def.severity, destructive: true, ok: true, skipped: true, skippedReason: 'destructive (enable Include destructive tests)' });
+    const row = { id: def.id, name: def.name, category: def.category, method: def.method, endpoint: def.endpoint, severity: def.severity, destructive: !!def.destructive };
+    // Both gates are evaluated together and reported together. Previously the
+    // destructive gate returned first, so every test that is BOTH destructive
+    // and long-running claimed it only needed "Include destructive tests" —
+    // most long-running tests are in that set, so ticking "Include
+    // long-running" alone appeared to do nothing at all.
+    const needDestructive = def.destructive && !req.includeDestructive;
+    const needLongRunning = def.longRunning && !req.includeLongRunning;
+    if (needDestructive || needLongRunning) {
+      const parts = [needDestructive ? 'Include destructive tests' : '', needLongRunning ? 'Include long-running' : ''].filter(Boolean);
+      results.push({ ...row, ok: true, skipped: true, skippedReason: `requires ${parts.join(' AND ')}` });
       continue;
     }
-    if (def.longRunning && !req.includeLongRunning) {
-      results.push({ id: def.id, name: def.name, category: def.category, method: def.method, endpoint: def.endpoint, severity: def.severity, destructive: !!def.destructive, ok: true, skipped: true, skippedReason: 'long-running (enable Include long-running tests)' });
-      continue;
-    }
+    // Hard per-test deadline so one stalled export cannot swallow the whole
+    // sweep: without it a hung call returns nothing at all to the page, which
+    // reads as "I pressed Run and nothing came back".
+    const deadlineMs = def.longRunning ? 300_000 : 60_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      results.push(await def.run(ctx));
+      const timedOut = Symbol('timeout');
+      const result = await Promise.race([
+        def.run(ctx),
+        new Promise<typeof timedOut>((res) => { timer = setTimeout(() => res(timedOut), deadlineMs); }),
+      ]);
+      if (result === timedOut) {
+        results.push({ ...row, ok: false, detail: `timed out after ${Math.round(deadlineMs / 1000)}s`, ranAt: new Date().toISOString() });
+      } else {
+        results.push(result as ApiTestResult);
+      }
     } catch (e: any) {
-      results.push({ id: def.id, name: def.name, category: def.category, method: def.method, endpoint: def.endpoint, severity: def.severity, destructive: !!def.destructive, ok: false, detail: `threw: ${e?.message ?? String(e)}`, ranAt: new Date().toISOString() });
+      results.push({ ...row, ok: false, detail: `threw: ${e?.message ?? String(e)}`, ranAt: new Date().toISOString() });
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -2136,13 +2772,25 @@ export async function runApiTests(inv: Inventory, req: ApiTesterRequest): Promis
     else           byCategory[k].failed++;
   }
 
+  // Stamp which box and which build this sweep actually ran against, so the
+  // Run History row can be attributed. Done here rather than in the route
+  // because the token is already in hand — the route would have to log in a
+  // second time. Best-effort: a missing build never affects the sweep result.
+  const boxBuild = await fetchBoxBuild(apiOpts.host, token);
+
   return {
     startedAt, finishedAt: new Date().toISOString(),
     ok: counts.failed === 0,
     counts, results, byCategory,
+    targetHost: apiOpts.host,
+    buildVersion: boxBuild?.version,
   };
 }
 
 export function listAllCategories(): ApiTestCategory[] {
-  return ['auth', 'version', 'users', 'admin-users', 'simulators', 'system', 'tools', 'testcases', 'test-creator', 'executions', 'statistics', 'logs', 'jobs', 'negative', 'mutating', 'fuzz'];
+  return [
+    'auth', 'version', 'users', 'admin-users', 'simulators', 'system', 'tools', 'testcases',
+    'test-creator', 'executions', 'statistics', 'logs', 'jobs', 'negative', 'mutating', 'fuzz',
+    'sample-sa', 'sample-lte', 'sample-nsa', 'sample-nbiot',
+  ];
 }

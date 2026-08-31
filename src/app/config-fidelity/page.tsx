@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Header } from '@/components/Header';
+import { BackToRunHistory } from '@/components/BackToRunHistory';
 import { Card, CardBody, CardHeader, CardTitle, Button, Badge, Input, Field, Stat } from '@/components/ui';
 import { FileCheck2, Play, Square, ChevronRight, ChevronDown, AlertTriangle } from 'lucide-react';
 
@@ -94,6 +95,7 @@ export default function ConfigFidelityPage() {
   return (
     <>
       <Header title="Config Fidelity" subtitle="Create → execute → retrieve ue.cfg → prove every JSON parameter is honoured" uesimHost={report?.targetHost}
+        left={<BackToRunHistory />}
         right={<div className="flex items-center gap-2">
           <a href="/runs?surface=config-fidelity" className="text-sm rounded-md border border-slate-300 px-3 py-1.5 text-slate-700 hover:bg-slate-50 whitespace-nowrap">Past runs →</a>
           {busy ? <Button variant="danger" size="sm" onClick={abort}><Square className="h-4 w-4" /> Abort</Button>

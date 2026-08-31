@@ -118,8 +118,6 @@ export async function runAutoCreate(
   const PUT  = (path: string, body: any) => fetch(`http://${opts.host}${path}`, { method: 'PUT',  headers: H, body: JSON.stringify(body) });
   const DEL  = (path: string)            => fetch(`http://${opts.host}${path}`, { method: 'DELETE', headers: H });
 
-  const ueCount = matrix.ueCount ?? env.defaults.ueCount ?? 1;
-
   for (const v of variants) {
     if (signal?.aborted) { progress.aborted = true; break; }
     progress.currentName = v.id;
@@ -142,8 +140,8 @@ export async function runAutoCreate(
       boxId = cellsJ.testCaseId;
 
       const steps: Array<[string, () => Promise<Response>]> = [
-        ['subscribers', () => POST(`/v2/tests/${encodeURIComponent(boxId)}/subscribers`, buildSubscribers(env, v, ueCount))],
-        ['user-plane',  () => POST(`/v2/tests/${encodeURIComponent(boxId)}/user-plane`,  buildUserPlane(env, v, ueCount))],
+        ['subscribers', () => POST(`/v2/tests/${encodeURIComponent(boxId)}/subscribers`, buildSubscribers(env, v))],
+        ['user-plane',  () => POST(`/v2/tests/${encodeURIComponent(boxId)}/user-plane`,  buildUserPlane(env, v))],
         ['power-cycle', () => POST(`/v2/tests/${encodeURIComponent(boxId)}/power-cycle`, buildPowerCycle(env, v))],
       ];
       const mob = buildMobility(env, v);

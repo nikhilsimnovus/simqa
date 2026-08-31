@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { listRuns } from '@/lib/runStore';
 import { executeRun, type RunRequest } from '@/lib/runner';
-import { loadInventory } from '@/lib/inventory';
+import { loadInventory, getSystem, uesimApiOptsForSystem } from '@/lib/inventory';
+import { userFromRequest } from '@/lib/identity';
+import { recordSystemUse } from '@/lib/systemUsage';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +11,7 @@ export async function GET() {
   const runs = listRuns(100).map((r) => ({
     id: r.id,
     testcaseId: r.testcaseId,
+    testcaseName: r.testcaseName,
     topology: r.topology,
     startedAt: r.startedAt,
     finishedAt: r.finishedAt,
@@ -25,6 +28,23 @@ export async function POST(req: Request) {
   const body = (await req.json()) as RunRequest;
   if (!body?.testcaseId) return NextResponse.json({ error: 'testcaseId required' }, { status: 400 });
   const inv = loadInventory();
+
+  // Attribute the station to whoever submitted this testcase. Resolved the same
+  // way the runner picks its target, so the name lands on the box the test
+  // actually runs against rather than whatever is first in inventory.
+  const target = uesimApiOptsForSystem(inv, body.systemId);
+  if (target) {
+    recordSystemUse({
+      systemId: target.systemId,
+      host: getSystem(inv, target.systemId)?.host,
+      by: userFromRequest(req),
+      at: new Date().toISOString(),
+      // RunRequest carries only the id — the name is resolved later, inside the
+      // runner, from the box itself.
+      what: 'testcase run',
+    });
+  }
+
   // Kick off without awaiting so the caller gets a runId quickly. The run state
   // is persisted to disk as it progresses; the UI polls /api/runs/<id>.
   const initial = await executeRunInBackground(inv, body);

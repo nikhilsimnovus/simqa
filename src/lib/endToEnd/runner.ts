@@ -14,13 +14,16 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import type { Inventory } from '../inventory';
-import { loadInventory, uesimApiOptsForSystem } from '../inventory';
+import { loadInventory, uesimApiOptsForSystem, getSystem } from '../inventory';
+import { findBusy } from '../executions';
 import { ALL_CHECKS, type CheckDef } from './checks';
 import { tryLaunchBrowser } from './browser';
 import type { RunCtx } from './ctx';
 import type {
   CheckResult, FinalReport, RunOptions, RunRequest, RunStatusSnapshot,
 } from './types';
+import { appendHistoryEntry } from '../historyStore';
+import { resolveBoxBuild } from '../buildVersion';
 
 // ───────────── Active-runs registry ─────────────
 
@@ -63,10 +66,30 @@ const activeRuns: Map<string, ActiveRun> = __sg.__simqaEndToEndActive ?? (__sg._
 
 // ───────────── Public entry points ─────────────
 
+/** The callbox bound to a Simnovator via its topology profile — same lookup
+ *  callbox-configs/route.ts and automation/runner.ts's ueSystemForSimnovator
+ *  already do, for the callbox instead of the UE. */
+function callboxForSimnovator(inv: Inventory, simnovatorId: string) {
+  const profile = inv.profiles.find((p) => p.simnovator === simnovatorId);
+  return profile?.callbox ? getSystem(inv, profile.callbox) : undefined;
+}
+
 export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: string; error?: string }> {
   const inv = loadInventory();
   const target = uesimApiOptsForSystem(inv, req.systemId);
   if (!target) return { ok: false, error: `system "${req.systemId}" not found or not UESIM-capable` };
+
+  // The box runs one testcase at a time. Triggering into an already-busy
+  // simulator doesn't queue — it 409s, and the run reports a failed critical
+  // check for a reason that has nothing to do with the testcase being
+  // validated. Catching it here means "not right now" instead of a red run.
+  try {
+    const busy = await findBusy(target);
+    if (busy) {
+      const name = busy.testCaseName ?? busy.testCaseId ?? 'a test case';
+      return { ok: false, error: `A test case is already executing on ${target.host} — "${name}". Wait for it to finish before starting a validation run.` };
+    }
+  } catch { /* best-effort — an unreachable box surfaces its own error at trigger */ }
 
   // Resolve testcaseId. Two paths:
   //   • req.testcaseId provided → use it
@@ -111,6 +134,8 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
     apiPass: target.password,
     testcaseId,
     evidenceDir,
+    cfgSelection: req.cfgSelection,
+    callbox: callboxForSimnovator(inv, target.systemId),
     isCanceled: () => activeRuns.get(runId)?.canceled === true,
     emit: () => { /* runner manages liveStatus directly; checks don't need to emit */ },
   };
@@ -164,7 +189,11 @@ export function abortRun(runId: string): boolean {
   return true;
 }
 
-export function listRuns(): Array<{ runId: string; startedAt: string; finishedAt?: string; ok?: boolean; systemId: string; testcaseId: string; counts?: { total: number; passed: number; failed: number; skipped: number } }> {
+export function listRuns(): Array<{
+  runId: string; startedAt: string; finishedAt?: string; ok?: boolean;
+  systemId: string; systemHost?: string; testcaseId: string; testcaseName?: string;
+  counts?: { total: number; passed: number; failed: number; skipped: number };
+}> {
   const root = path.join(process.cwd(), 'data', 'end-to-end');
   if (!fs.existsSync(root)) return [];
   const dirs = fs.readdirSync(root).filter((n) => /^run-\d{8}-\d{6}-/.test(n));
@@ -180,7 +209,12 @@ export function listRuns(): Array<{ runId: string; startedAt: string; finishedAt
           finishedAt: r.finishedAt,
           ok: r.ok,
           systemId: r.systemId,
+          // Both were already saved on the full report — the summary just
+          // wasn't passing them through, so the list showed the raw
+          // testcase UUID and the inventory system id instead of a name/IP.
+          systemHost: r.systemHost,
           testcaseId: r.testcaseId,
+          testcaseName: r.testcaseName,
           counts: r.counts,
         };
       } catch { return null; }
@@ -238,21 +272,21 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
   let preflightCriticalFailed = false;
   let cascadeReason: string | undefined;
 
-  for (const c of planned) {
+  /** Run one check: cancel/pre-skip/cascade-skip handling, live-status
+   *  bookkeeping, and the try/catch around c.run(). Factored out of the loop
+   *  below unchanged so it can be called either one at a time (every phase
+   *  except During) or concurrently (During — see below). */
+  async function runOne(c: CheckDef): Promise<CheckResult> {
     if (ar.canceled) {
       ar.liveStatus.set(c.id, { status: 'skip' });
-      results.push({
+      return {
         id: c.id, name: c.name, phase: c.phase, severity: c.severity, description: c.description,
         status: 'skip', skippedReason: 'run aborted', ranAt: new Date().toISOString(),
-      });
-      continue;
+      };
     }
     // Pre-skipped (e.g. browser launch failed earlier).
     const pre = ar.liveStatus.get(c.id);
-    if (pre?.status === 'skip' && pre.result) {
-      results.push(pre.result);
-      continue;
-    }
+    if (pre?.status === 'skip' && pre.result) return pre.result;
     // Cascade-skip everything past preflight when a critical preflight failed.
     if (preflightCriticalFailed && c.phase !== 'preflight') {
       const skipResult: CheckResult = {
@@ -262,20 +296,19 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
         ranAt: new Date().toISOString(),
       };
       ar.liveStatus.set(c.id, { status: 'skip', result: skipResult });
-      results.push(skipResult);
-      continue;
+      return skipResult;
     }
 
     ar.liveStatus.set(c.id, { status: 'running' });
     try {
       const r = await c.run(ar.ctx);
       ar.liveStatus.set(c.id, { status: r.status, result: r });
-      results.push(r);
       // Latch the cascade flag the moment a critical preflight check fails.
       if (c.phase === 'preflight' && c.severity === 'critical' && r.status === 'fail') {
         preflightCriticalFailed = true;
         if (!cascadeReason) cascadeReason = r.detail ?? `${c.id} failed`;
       }
+      return r;
     } catch (e: any) {
       const fail: CheckResult = {
         id: c.id, name: c.name, phase: c.phase, severity: c.severity, description: c.description,
@@ -284,11 +317,38 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
         ranAt: new Date().toISOString(),
       };
       ar.liveStatus.set(c.id, { status: 'fail', result: fail });
-      results.push(fail);
       if (c.phase === 'preflight' && c.severity === 'critical') {
         preflightCriticalFailed = true;
         if (!cascadeReason) cascadeReason = fail.detail;
       }
+      return fail;
+    }
+  }
+
+  // Every During-phase REST check independently polls the same live
+  // execution (cell/UE stats) for up to ~60-120s of its own. Run that whole
+  // batch concurrently instead of one after another — sequential polling
+  // here was the single biggest contributor to a run's wall-clock time
+  // (11 checks x up to 120s each could add 20+ minutes on top of a test
+  // that itself runs for a few minutes). Every other phase keeps its exact
+  // one-at-a-time order, since those DO have real dependencies (trigger
+  // needs preflight settled, completion needs the execution to actually
+  // finish, etc). UI-driven during checks are excluded from the batch and
+  // stay sequential: they share one Playwright page via ctx, which two
+  // checks navigating at once would corrupt.
+  let i = 0;
+  while (i < planned.length) {
+    const c = planned[i];
+    if (c.phase === 'during' && !c.requiresBrowser) {
+      const batch: CheckDef[] = [];
+      while (i < planned.length && planned[i].phase === 'during' && !planned[i].requiresBrowser) {
+        batch.push(planned[i]);
+        i++;
+      }
+      results.push(...await Promise.all(batch.map((bc) => runOne(bc))));
+    } else {
+      results.push(await runOne(c));
+      i++;
     }
   }
 
@@ -380,6 +440,34 @@ function saveReport(ar: ActiveRun, results?: CheckResult[]): void {
   } catch (e: any) {
     console.error('[end-to-end] could not save report:', e?.message ?? e);
   }
+  // Record the run in the cross-surface history. This surface never did,
+  // so Test Case validations were invisible on the Run History page even
+  // though they are the runs QA cares about most. Written here (terminal
+  // state) rather than at trigger time so a row only exists for a run that
+  // actually finished, matching every other surface. Side-channel: a
+  // failure to record must not affect the run.
+  // saveReport stays synchronous (callers rely on it completing inline), so
+  // the build lookup runs detached — the row is written a moment later.
+  void (async () => {
+    try {
+      const build = await resolveBoxBuild(ar.ctx.systemHost, ar.ctx.apiUser, ar.ctx.apiPass);
+      appendHistoryEntry({
+        surface: 'end-to-end',
+        label: `Test Case · ${ar.testcaseName ?? ar.ctx.testcaseId} · ${passed} pass / ${failed} fail${skipped ? ` / ${skipped} skip` : ''}`,
+        startedAt: report.startedAt,
+        finishedAt: report.finishedAt,
+        targetSystemId: ar.ctx.systemId,
+        targetHost: ar.ctx.systemHost,
+        buildVersion: build?.version,
+        total: all.length,
+        passed, failed, skipped,
+        detailPath: `data/end-to-end/${ar.runId}/report.json`,
+        meta: { runId: ar.runId, testcaseId: ar.ctx.testcaseId, testcaseName: ar.testcaseName, executionId: ar.ctx.executionId },
+      });
+    } catch (e: any) {
+      console.error('[end-to-end] could not record history:', e?.message ?? e);
+    }
+  })();
 }
 
 function snapshotOf(r: ActiveRun): RunStatusSnapshot {
@@ -408,9 +496,11 @@ function snapshotOf(r: ActiveRun): RunStatusSnapshot {
     systemId: r.systemId,
     systemHost: r.systemHost,
     testcaseId: r.testcaseId,
+    testcaseName: r.ctx.testcaseName ?? r.testcaseName,
     executionId: r.ctx.executionId,
     startedAt: r.startedAt,
     phase,
+    configuredDurationSec: r.ctx.configuredDurationSec,
     checks,
     counts: { total: checks.length, passed, failed, skipped, pending },
     ok: r.ok,

@@ -1,6 +1,6 @@
 # simqa — Linux install
 
-One-shot installer for putting **simqa (QA Ka BAAP)** on a fresh Ubuntu/Debian or RHEL/CentOS host with a systemd service + the GitHub-based self-update plumbing.
+One-shot installer for putting **SimQA** on a fresh Ubuntu/Debian or RHEL/CentOS host with a systemd service + the GitHub-based self-update plumbing.
 
 The Update pill in the sidebar topbar runs `sudo -n /usr/local/sbin/simqa-update`, which downloads the latest `main.tar.gz` from `github.com/nikhilsimnovus/simqa` and re-runs this same `install.sh` from the new tree. Mirrors the OneClick (perf-qa) update pattern.
 

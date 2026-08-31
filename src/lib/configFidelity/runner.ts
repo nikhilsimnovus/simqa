@@ -18,6 +18,8 @@ import { createTestCase, deleteTestCase, CreateError, type ApiOpts } from './tes
 import { generateAndRetrieveUeCfg } from './ueCfg';
 import { validateConfig, detectConfigErrors } from './validate';
 import { buildCoverage, rollupCounts, compareToBaseline, type MatrixReport } from './report';
+import { appendHistoryEntry } from '../historyStore';
+import { resolveBoxBuild } from '../buildVersion';
 
 export interface CfRunRequest extends MatrixRequest {
   targetSystemId?: string;   // API target (Simnovator). Defaults to first UESIM-like.
@@ -149,6 +151,38 @@ async function runLoop(active: ActiveRun, apiOpts: ApiOpts, ueSim: InventorySyst
     if (base) report.baseline = compareToBaseline(report.cases, base.cases, req.baselineRunId);
   }
   persist(report);
+
+  // Record the run on the cross-surface Run History timeline. Config Fidelity
+  // never did, so its runs were absent from the one page meant to show every
+  // execution. Written at terminal state so only finished runs appear, and
+  // detached + swallowed because history is a side-channel: failing to record
+  // a row must never affect the run that produced it.
+  void (async () => {
+    try {
+      const build = await resolveBoxBuild(apiOpts.host, apiOpts.username, apiOpts.password);
+      const c = report.counts;
+      appendHistoryEntry({
+        surface: 'config-fidelity',
+        label: `Config Fidelity · ${c.total} case(s) · ${c.passed} pass / ${c.failed + c.error} fail${c.skipped ? ` / ${c.skipped} skip` : ''}`,
+        startedAt: report.startedAt,
+        finishedAt: report.finishedAt ?? new Date().toISOString(),
+        targetSystemId: report.targetSystemId,
+        targetHost: report.targetHost,
+        buildVersion: build?.version,
+        total: c.total,
+        // `error` cases are failures for roll-up purposes — a case that blew up
+        // did not pass, and folding it into fail keeps Total = Pass+Fail+Skip.
+        passed: c.passed,
+        failed: c.failed + c.error,
+        skipped: c.skipped,
+        detailPath: `data/config-fidelity/${report.runId}/report.json`,
+        meta: { runId: report.runId, mode: report.mode, status: report.status },
+      });
+    } catch (e: any) {
+      console.error('[config-fidelity] could not record history:', e?.message ?? e);
+    }
+  })();
+
   // GC the in-memory entry after a grace period.
   setTimeout(() => runs.delete(report.runId), 60_000);
 }

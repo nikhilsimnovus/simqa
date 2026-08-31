@@ -5,6 +5,7 @@
 import { NextResponse } from 'next/server';
 import { getSuite, updateSuite, deleteSuite } from '@/lib/automation/store';
 import { deleteRunsForSuite } from '@/lib/automation/runStore';
+import { userFromRequest } from '@/lib/identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +21,11 @@ export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }
   let patch: any = {};
   try { patch = await req.json(); } catch { /* empty patch */ }
   try {
+    // Stamp the editor. createdBy is deliberately not touched — a suite keeps
+    // its author even after someone else edits it.
+    const by = userFromRequest(req);
+    if (by) patch.updatedBy = by;
+    delete patch.createdBy;
     const s = updateSuite(id, patch);
     return NextResponse.json({ ok: true, suite: s });
   } catch (e: any) {

@@ -1,1225 +1,485 @@
+// Build Validation — install a Simnovator build, then prove it works.
+//
+// Two columns, because the two halves are independent jobs: the left is the
+// install (plan the commands, watch the box come back), the right is the
+// verification (pick checks, read results). A validate-only run uses the right
+// column alone and never touches the left.
+//
+// One thing to be clear-eyed about: SimQA does NOT run the installer. The
+// build is installed by pasting the generated commands into Cockpit, because
+// inventory.yaml carries no SSH credentials for these machines. So Install
+// Progress reports what SimQA can *observe* from outside — the box dropping
+// off and returning on a new build — and labels itself as observed rather than
+// pretending to stream an installer log it cannot see.
+
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Header } from '@/components/Header';
-import { Card, CardBody, CardHeader, CardTitle, Input, Field, Button, Badge } from '@/components/ui';
+import { BackToRunHistory } from '@/components/BackToRunHistory';
+import { Card, CardBody, CardHeader, CardTitle, Button, Badge } from '@/components/ui';
 import {
-  CheckCircle2, XCircle, Loader2, ShieldCheck, AlertTriangle, ExternalLink,
-  Copy, ClipboardCheck, Terminal, Download,
+  CheckCircle2, XCircle, MinusCircle, Loader2, Copy, ClipboardCheck, Terminal,
+  ChevronRight, ChevronDown, Play, ShieldCheck, AlertTriangle,
 } from 'lucide-react';
 
-interface InventorySystem {
-  id: string;
-  type: string;
-  name: string;
-  host: string;
-  cockpitPort?: number;
-  cockpitUser?: string;
-  cockpitPassword?: string;
+interface SystemRow { id: string; name: string; host: string; type: string }
+/** Topology row: which UE / App Server / callbox belong to a Simnovator. */
+interface Profile { id: string; name?: string; simnovator?: string; uesim?: string; appserver?: string; callbox?: string }
+
+type StepStatus = 'pass' | 'fail' | 'skip' | 'running' | 'pending';
+interface Step { id: string; label: string; status: StepStatus; detail?: string; expected?: string; startedAt?: string; finishedAt?: string; durationMs?: number }
+interface CheckGroup { id: string; label: string; status: StepStatus; detail?: string; steps: Step[] }
+interface Report {
+  id: string; startedAt: string; finishedAt?: string; ok: boolean; status: string;
+  systemId: string; systemName?: string; host: string; buildVersion?: string;
+  ueHost?: string; appServerHost?: string;
+  install?: { buildUrl?: string; skipFlags?: string[]; commands?: string[] };
+  selectedChecks: string[]; groups: CheckGroup[];
 }
 
-const COCKPIT_DEFAULT_USER = 'simnovus';
-const COCKPIT_DEFAULT_PASSWORD = 'admin@123';
-const COCKPIT_DEFAULT_PORT = 9090;
-interface CheckResult { name: string; ok: boolean; detail?: string; durationMs?: number }
-interface ValidationResult {
-  ok: boolean;
-  startedAt: string;
-  finishedAt: string;
-  checks: CheckResult[];
-  build?: { source: string; targetPath: string; bytes: number; installResult?: { ok: boolean; output: string } };
+const VERIFICATIONS: Array<{ id: string; label: string; hint: string }> = [
+  { id: 'reachable',    label: 'Simnovator Reachable',   hint: 'Pings the Simnovator, the selected UE and the App Server' },
+  { id: 'login',        label: 'Able to Login',          hint: 'UI serves, and the configured credentials are accepted' },
+  { id: 'sample-tests', label: 'Sample Tests Available', hint: "Sample testcases shipped with the build are present" },
+  { id: 'run-tests',    label: 'Run Test Cases',         hint: 'Executes a 5G and an LTE testcase on real hardware — takes minutes' },
+];
+
+const SKIP_FLAGS = ['--no_app_server', '--no_app_manager', '--no_simnovator', '--no_ue', '--no_oru'];
+
+// Mirrors INSTALL_STEPS in src/lib/buildValidation.ts. `observable` marks the
+// steps SimQA can genuinely see from outside; the rest happen inside Cockpit.
+const INSTALL_STEPS: Array<{ id: string; label: string; observable: boolean }> = [
+  { id: 'download',   label: 'Build download',           observable: false },
+  { id: 'extract',    label: 'Build extraction',         observable: false },
+  { id: 'started',    label: 'Installation started',     observable: true },
+  { id: 'simnovator', label: 'Simnovator installation',  observable: true },
+  { id: 'ue',         label: 'UE configuration',         observable: true },
+  { id: 'appserver',  label: 'App Server configuration', observable: true },
+  { id: 'completed',  label: 'Installation completed',   observable: true },
+];
+
+function StatusIcon({ status }: { status: StepStatus }) {
+  if (status === 'running') return <Loader2 className="h-3.5 w-3.5 animate-spin text-primary-600" />;
+  if (status === 'pass')    return <CheckCircle2 className="h-3.5 w-3.5 text-success-600" />;
+  if (status === 'fail')    return <XCircle className="h-3.5 w-3.5 text-red-600" />;
+  if (status === 'skip')    return <MinusCircle className="h-3.5 w-3.5 text-slate-300" />;
+  return <div className="h-3.5 w-3.5 rounded-full border border-slate-300" />;
 }
 
-const ALL_CHECKS: Array<{ id: string; label: string; default: boolean }> = [
-  { id: 'ui-reachable',            label: 'UI reachable',                  default: true },
-  { id: 'login',                   label: 'REST API login',                default: true },
-  { id: 'me',                      label: 'GET /v2/users/me',              default: true },
-  { id: 'list-simulators',         label: 'List simulators',               default: true },
-  { id: 'list-testcases',          label: 'List testcases',                default: true },
-  { id: 'list-bands',              label: 'POST /v2/band-info',            default: true },
-  { id: 'cfg-generator-roundtrip', label: 'Cfg generator round-trip',      default: true },
-  { id: 'sample-execution',        label: 'Run a sample testcase live',    default: false },
-];
-
-// Flags for the Simnovator `./install` script. Mirror the real `./install --help`
-// output:
-//
-//   -u, --ue              credentials of the UE machine to install UE stack
-//   -o, --oru             credentials of the ORU machine to install ORU stack
-//   -a, --app             credentials of the App server machine
-//   -e, --external        IP address of the external data generator
-//   -m, --max_simulators  number of simulators to use
-//   --no_app_server       skip installing app server
-//   --no_app_manager      skip installing app manager
-//   --no_simnovator       skip installing simnovator manager
-//   --no_ue               skip installing UE
-//   --no_oru              skip installing ORU
-//   -t, --timezone        set timezone on all machines (e.g. -t Asia/Kolkata)
-//   -r, --restore         restore simnovator testcases
-//
-// `--ue`, `--oru`, `--app` take "user@IP". `--external` is just an IP.
-// The "host" flags get auto-filled from inventory by type; everything else
-// is a free-form input or toggle.
-
-interface HostFlag {
-  key: 'ue' | 'oru' | 'app' | 'external';
-  flag: string;            // e.g. "--ue"
-  short?: string;          // e.g. "-u"
-  label: string;
-  description: string;
-  /** What inventory types should auto-populate this flag's IP? */
-  types: string[];
-  /** True for `--external` which takes just an IP (no user@). */
-  ipOnly?: boolean;
-  required: boolean;
-}
-
-const HOST_FLAGS: HostFlag[] = [
-  { key: 'ue',       flag: '--ue',       short: '-u', label: 'UE Machine',          description: 'Where the UE stack is installed',  types: ['UESIM', 'SIMNOVATOR'], required: true },
-  { key: 'app',      flag: '--app',      short: '-a', label: 'App Server',          description: 'Where the App server is installed', types: ['APPSERVER'],           required: true },
-  { key: 'oru',      flag: '--oru',      short: '-o', label: 'ORU Machine',         description: 'Where the ORU stack is installed (optional)', types: ['ORU', 'CALLBOX'], required: false },
-  { key: 'external', flag: '--external', short: '-e', label: 'External Generator',  description: 'IP of the external data generator (optional)',  types: [], ipOnly: true, required: false },
-];
-
-interface SkipFlag { key: string; flag: string; label: string }
-const SKIP_FLAGS: SkipFlag[] = [
-  { key: 'no_app_server',  flag: '--no_app_server',  label: 'Skip App server'    },
-  { key: 'no_app_manager', flag: '--no_app_manager', label: 'Skip App manager'   },
-  { key: 'no_simnovator',  flag: '--no_simnovator',  label: 'Skip Simnovator mgr' },
-  { key: 'no_ue',          flag: '--no_ue',          label: 'Skip UE install'    },
-  { key: 'no_oru',          flag: '--no_oru',         label: 'Skip ORU install'   },
-];
-
-interface TimezoneOption { value: string; label: string }
-const TIMEZONES: TimezoneOption[] = [
-  { value: 'Asia/Kolkata',     label: '🇮🇳 Asia/Kolkata (IST)' },
-  { value: 'America/New_York', label: '🇺🇸 America/New_York (EST)' },
-  { value: 'America/Toronto',  label: '🇨🇦 America/Toronto (EST)' },
-  { value: 'America/Los_Angeles', label: '🇺🇸 America/Los_Angeles (PST)' },
-  { value: 'Europe/London',    label: '🇬🇧 Europe/London (GMT)' },
-  { value: 'Europe/Paris',     label: '🇫🇷 Europe/Paris (CET)' },
-  { value: 'Asia/Tokyo',       label: '🇯🇵 Asia/Tokyo (JST)' },
-  { value: 'Asia/Shanghai',    label: '🇨🇳 Asia/Shanghai (CST)' },
-  { value: 'Australia/Sydney', label: '🇦🇺 Australia/Sydney (AEST)' },
-];
-const DEFAULT_TIMEZONE = 'Asia/Kolkata';
-
-const INSTALL_USER = 'sysadmin'; // user the Simnovator install script SSHes as
-
-// Step status pill for the install progress strip.
-type StepName = 'launch' | 'login' | 'terminal' | 'preflight' | 'fetch' | 'extract' | 'install';
-type StepStatus = 'idle' | 'start' | 'ok' | 'fail';
-const STEP_LABEL: Record<StepName, string> = {
-  launch:    '1. Launch browser',
-  login:     '2. Cockpit login',
-  terminal:  '3. Open Terminal',
-  preflight: '4. Reach build URL',
-  fetch:     '5. wget tarball',
-  extract:   '6. Extract',
-  install:   '7. ./install',
-};
-const STEP_ORDER: StepName[] = ['launch', 'login', 'terminal', 'preflight', 'fetch', 'extract', 'install'];
-function StepPill({ name, status }: { name: StepName; status: StepStatus }) {
-  const cls =
-    status === 'ok'    ? 'border-emerald-300 bg-emerald-50 text-emerald-800' :
-    status === 'fail'  ? 'border-red-300 bg-red-50 text-red-700' :
-    status === 'start' ? 'border-sky-300 bg-sky-50 text-sky-700' :
-                         'border-slate-200 bg-slate-50 text-slate-500';
-  const icon =
-    status === 'ok'    ? <CheckCircle2 className="h-3.5 w-3.5" /> :
-    status === 'fail'  ? <XCircle className="h-3.5 w-3.5" /> :
-    status === 'start' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> :
-                         <span className="h-3.5 w-3.5 inline-block rounded-full border border-slate-300" />;
-  return (
-    <div className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium ${cls}`}>
-      {icon}
-      <span className="truncate">{STEP_LABEL[name]}</span>
-    </div>
-  );
-}
-
-function CopyBtn({ text, label }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-  const onClick = async () => {
-    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
+function StatusPill({ status }: { status: StepStatus }) {
+  const map: Record<StepStatus, string> = {
+    pass:    'bg-success-50 text-success-700 border-success-200',
+    fail:    'bg-red-50 text-red-700 border-red-200',
+    skip:    'bg-slate-50 text-slate-500 border-slate-200',
+    running: 'bg-primary-50 text-primary-700 border-primary-200',
+    pending: 'bg-slate-50 text-slate-400 border-slate-200',
   };
-  return (
-    <button
-      onClick={onClick}
-      className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-      title={`Copy ${label ?? 'command'}`}
-    >
-      {copied ? <ClipboardCheck className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
-      {copied ? 'Copied' : 'Copy'}
-    </button>
-  );
+  return <span className={`text-[10px] font-semibold uppercase tracking-wide rounded border px-1.5 py-0.5 ${map[status]}`}>{status}</span>;
 }
 
-function CommandBlock({ title, command }: { title?: string; command: string }) {
-  return (
-    <div className="rounded-lg border border-slate-200 bg-slate-900 overflow-hidden">
-      {title ? (
-        <div className="flex items-center justify-between border-b border-slate-800 bg-slate-950 px-3 py-1.5">
-          <span className="text-[11px] uppercase tracking-wider text-slate-400">{title}</span>
-          <CopyBtn text={command} />
-        </div>
-      ) : null}
-      <pre className="px-3 py-2.5 text-[12.5px] leading-relaxed text-slate-100 font-mono whitespace-pre-wrap break-all">{command}</pre>
-      {!title ? <div className="border-t border-slate-800 bg-slate-950 px-3 py-1.5 flex justify-end"><CopyBtn text={command} /></div> : null}
-    </div>
-  );
-}
-
-// derive the tarball file/dir name from a URL
-function nameFromUrl(url: string): { fileName: string; dirName: string } {
-  try {
-    const u = new URL(url);
-    const file = u.pathname.split('/').filter(Boolean).pop() ?? 'build.tar.gz';
-    const dir = file.replace(/\.tar\.gz$|\.tgz$/i, '');
-    return { fileName: file, dirName: dir };
-  } catch {
-    return { fileName: 'build.tar.gz', dirName: 'build' };
-  }
-}
-
-export default function ValidatePage() {
-  const [systems, setSystems] = useState<InventorySystem[]>([]);
-  const [target, setTarget] = useState<string>('');
-  const [tcs, setTcs] = useState<Array<{ id: string; name: string }>>([]);
-  const [sampleId, setSampleId] = useState<string>('');
-  const [enabled, setEnabled] = useState<Set<string>>(new Set(ALL_CHECKS.filter((c) => c.default).map((c) => c.id)));
-
-  // Build install plan state
-  const [includeBuild, setIncludeBuild] = useState(false);
-  /** Where the build comes from. 'url' = wget on the VM. 'local' = file is
-   *  already on the VM (uploaded via Cockpit File Browser, scp, etc). */
-  const [sourceMode, setSourceMode] = useState<'url' | 'local'>('url');
+export default function BuildValidationPage() {
+  const [systems, setSystems] = useState<SystemRow[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [systemId, setSystemId] = useState('');
+  const [wantInstall, setWantInstall] = useState(false);
   const [buildUrl, setBuildUrl] = useState('');
-  const [localFile, setLocalFile] = useState('');
-  const [browseDirs, setBrowseDirs] = useState<string>('/tmp, /home/simnovus, /home/simnovus/builds');
-  const [browseBusy, setBrowseBusy] = useState(false);
-  const [browseErr, setBrowseErr]  = useState<string | null>(null);
-  const [vmFiles, setVmFiles]      = useState<Array<{ path: string; size: number; mtime: string }> | null>(null);
-  const [installDir, setInstallDir] = useState('/tmp');
-  const [extraArgs, setExtraArgs] = useState('');
-  // Per-host-flag enabled state (UE & App default ON because they're required;
-  // ORU & External are off until the user opts in).
-  const [hostEnabled, setHostEnabled] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(HOST_FLAGS.map((f) => [f.key, f.required])),
-  );
-  // Per-host IP override (when blank, falls back to inventory auto-pick).
-  const [hostIp, setHostIp] = useState<Record<string, string>>({});
-  // Per-host SSH user override. Pre-filled with "sysadmin" for every host
-  // flag (the default user the Simnovator install script SSHes as) — the
-  // user can edit any of these before clicking Install.
-  const [hostUser, setHostUser] = useState<Record<string, string>>(
-    () => Object.fromEntries(HOST_FLAGS.filter((f) => !f.ipOnly).map((f) => [f.key, INSTALL_USER])),
-  );
-  // Skip flags state
-  const [skipFlags, setSkipFlags] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(SKIP_FLAGS.map((f) => [f.key, false])),
-  );
-  // Timezone (default Asia/Kolkata, dropdown + free-form override)
-  const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE);
-  const [maxSimulators, setMaxSimulators] = useState<string>('');
-  const [restore, setRestore] = useState<boolean>(false);
-  const [urlCheck, setUrlCheck] = useState<{ status: 'idle' | 'checking' | 'ok' | 'fail'; detail?: string; rewrittenTo?: string; rewriteNote?: string }>({ status: 'idle' });
-
+  const [ueId, setUeId] = useState('');
+  const [appId, setAppId] = useState('');
+  const [skips, setSkips] = useState<Record<string, boolean>>({});
+  const [checks, setChecks] = useState<Record<string, boolean>>({ reachable: true, login: true, 'sample-tests': true, 'run-tests': false });
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<ValidationResult | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [inventoryLoading, setInventoryLoading] = useState(true);
+  const [report, setReport] = useState<Report | null>(null);
+  const [err, setErr] = useState('');
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [copied, setCopied] = useState(false);
 
-  // Install run state (StepName/StepStatus are module-level above)
-  type LogEvent  = { type: 'log'; stream: 'stdout'|'stderr'|'info'|'error'; line: string; ts: number };
-  type StepEvent = { type: 'step'; step: StepName; status: 'start'|'ok'|'fail'; detail?: string; durationMs?: number; ts: number };
-  type ShotEvent = { type: 'screenshot'; step: StepName | 'final'; file: string; ts: number };
-  type DoneEvent = { type: 'done'; ok: boolean; durationMs: number; ts: number };
-  type AnyEvent  = LogEvent | StepEvent | ShotEvent | DoneEvent;
+  // Install observation
+  const [watching, setWatching] = useState(false);
+  const [installLog, setInstallLog] = useState<Array<{ step: string; status: StepStatus; detail: string; at: string }>>([]);
+  const baselineBuild = useRef<string | undefined>(undefined);
+  const watchTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const [installBusy,    setInstallBusy]    = useState(false);
-  const [installErr,     setInstallErr]     = useState<string | null>(null);
-  const [installEvents,  setInstallEvents]  = useState<AnyEvent[]>([]);
-  const [installSteps,   setInstallSteps]   = useState<Record<StepName, StepStatus>>({
-    launch: 'idle', login: 'idle', terminal: 'idle', preflight: 'idle', fetch: 'idle', extract: 'idle', install: 'idle',
-  });
-  const [installDone,    setInstallDone]    = useState<{ ok: boolean; durationMs: number } | null>(null);
-  /** Captured from the X-Build-Id response header on /api/build-install; used
-   *  to deep-link the "Download log" button at install.log on disk. */
-  const [installBuildId, setInstallBuildId] = useState<string | null>(null);
-  const [showManualFallback, setShowManualFallback] = useState(false);
-  /** When true, ask the backend to launch Chromium in HEADED mode so the
-   *  user can watch the install happen in a real browser window. */
-  const [headedMode, setHeadedMode] = useState(false);
-
+  // Systems AND the topology profiles, because which UE / App Server belong to
+  // a Simnovator is a property of the lab wiring, not something the operator
+  // should have to remember. /api/inventory carries both.
   useEffect(() => {
-    // Inventory is fast (local file read) — fetch + render its result regardless
-    // of whether testcases comes back. The testcases call hits the live UESIM
-    // box and can take 10–30s; we don't want that latency to keep the user from
-    // seeing their Simnovator system or making it look like inventory is empty.
-    fetch('/api/inventory')
-      .then((r) => r.json())
-      .then((inv) => {
-        const sys: InventorySystem[] = inv.systems ?? [];
-        setSystems(sys);
-        const sn = sys.find((s) => s.type === 'SIMNOVATOR');
-        if (sn) setTarget(sn.id);
-      })
-      .catch((e) => setErr(`Failed to load inventory: ${e?.message ?? e}`))
-      .finally(() => setInventoryLoading(false));
-
-    // Testcases is best-effort and only used by the optional "Run a sample
-    // testcase live" check. Failures here must not block the page.
-    fetch('/api/testcases?limit=500')
-      .then((r) => r.json())
-      .then((t) => setTcs(t.items ?? []))
-      .catch(() => { /* silent — sample-execution will show "no testcases" */ });
+    fetch('/api/inventory').then((r) => r.json()).then((j) => {
+      setSystems(j.systems ?? []);
+      setProfiles(j.profiles ?? []);
+      const sims = (j.systems ?? []).filter((s: SystemRow) => s.type === 'SIMNOVATOR' || s.type === 'SIMNOVATOR_GUI');
+      if (sims[0]) setSystemId(sims[0].id);
+    }).catch(() => { setSystems([]); setProfiles([]); });
+    return () => { if (watchTimer.current) clearInterval(watchTimer.current); };
   }, []);
 
-  // Once inventory is loaded, pre-fill the host IPs from the first matching
-  // system per flag so the per-host dropdown shows the auto-pick (rather
-  // than appearing as "custom" with an empty input). User edits override.
+  // Follow the topology whenever the Simnovator changes: picking .102 should
+  // bring its own UE (.101) and App Server (.100) with it. Falls back to the
+  // first machine of each type only when no profile binds them, so an
+  // un-wired system still offers something sensible rather than nothing.
   useEffect(() => {
-    if (systems.length === 0) return;
-    setHostIp((cur) => {
-      const next = { ...cur };
-      let changed = false;
-      for (const f of HOST_FLAGS) {
-        if (next[f.key]?.trim()) continue; // user already filled it
-        const sys = systems.find((s) => f.types.includes(s.type));
-        if (sys?.host) { next[f.key] = sys.host; changed = true; }
-      }
-      return changed ? next : cur;
-    });
-  }, [systems]);
+    if (!systemId) return;
+    const p = profiles.find((x) => x.simnovator === systemId);
+    const byId = (id?: string) => (id ? systems.find((s) => s.id === id) : undefined);
+    const ue = byId(p?.uesim) ?? systems.find((s) => s.type === 'UESIM');
+    const app = byId(p?.appserver) ?? systems.find((s) => s.type === 'APPSERVER');
+    setUeId(ue?.id ?? '');
+    setAppId(app?.id ?? '');
+  }, [systemId, profiles, systems]);
 
-  const simnovators = useMemo(() => systems.filter((s) => s.type === 'SIMNOVATOR'), [systems]);
-  const overallOk   = result?.ok;
-  const targetSys   = systems.find((s) => s.id === target);
-  const hasTarget   = simnovators.length > 0 && !!targetSys;
+  const simSystems = useMemo(() => systems.filter((s) => s.type === 'SIMNOVATOR' || s.type === 'SIMNOVATOR_GUI'), [systems]);
+  const ueSystems  = useMemo(() => systems.filter((s) => s.type === 'UESIM'), [systems]);
+  const appSystems = useMemo(() => systems.filter((s) => s.type === 'APPSERVER'), [systems]);
+  const sim = simSystems.find((s) => s.id === systemId);
 
-  // Pick an inventory system whose type matches one of `types`. Returns its host.
-  const inventoryHostFor = (types: string[]): string | undefined =>
-    systems.find((s) => types.includes(s.type))?.host;
-
-  // For each host flag, resolve the IP it would point at (override > inventory auto-pick).
-  const resolvedHostIp: Record<string, string | undefined> = useMemo(() => {
-    const out: Record<string, string | undefined> = {};
-    for (const f of HOST_FLAGS) {
-      out[f.key] = (hostIp[f.key] || '').trim() || inventoryHostFor(f.types);
-    }
-    return out;
-  }, [systems, hostIp]);
-
-  // Required host flags that the user has enabled but for which we still
-  // can't resolve an IP. The install line will be malformed without these.
-  const missingRequired: string[] = useMemo(() => {
-    return HOST_FLAGS
-      .filter((f) => f.required && hostEnabled[f.key])
-      .filter((f) => !resolvedHostIp[f.key])
-      .map((f) => f.flag);
-  }, [hostEnabled, resolvedHostIp]);
-
-  // Build the full install plan as discrete commands.
-  const plan = useMemo(() => {
+  const commands = useMemo(() => {
     const url = buildUrl.trim();
-    const { fileName, dirName } = nameFromUrl(url || 'build.tar.gz');
-    const dir = (installDir.trim() || '/tmp').replace(/\/+$/, '');
-
-    // Build the install flags string.
+    const file = url ? (url.split('/').pop() || 'simnovator.tar.gz').split('?')[0] : '<build>.tar.gz';
+    const ueHost = ueSystems.find((s) => s.id === ueId)?.host;
+    const appHost = appSystems.find((s) => s.id === appId)?.host;
     const parts: string[] = [];
-    for (const f of HOST_FLAGS) {
-      if (!hostEnabled[f.key]) continue;
-      const ip = resolvedHostIp[f.key];
-      if (!ip) continue;
-      const user = (hostUser[f.key] || '').trim() || INSTALL_USER;
-      // --external is IP-only; the others use 'user@IP' (single-quoted to be safe).
-      parts.push(f.ipOnly ? `${f.flag} '${ip}'` : `${f.flag} '${user}@${ip}'`);
-    }
-    if (timezone.trim()) parts.push(`-t '${timezone.trim()}'`);
-    if (maxSimulators.trim()) parts.push(`-m ${maxSimulators.trim()}`);
-    for (const s of SKIP_FLAGS) {
-      if (skipFlags[s.key]) parts.push(s.flag);
-    }
-    if (restore) parts.push('--restore');
-    const extra = extraArgs.trim() ? ' ' + extraArgs.trim() : '';
-    const installLine = `./install ${parts.join(' ')}${extra}`.replace(/\s+/g, ' ').trim();
+    if (ueHost) parts.push(`--ue root@${ueHost}`);
+    if (appHost) parts.push(`--app root@${appHost}`);
+    for (const f of SKIP_FLAGS) if (skips[f]) parts.push(f);
+    return [
+      `wget --no-check-certificate -c "${url || '<paste-build-url>'}"`,
+      `tar -zxvf ${file}`,
+      `./install ${parts.join(' ')}`.replace(/\s+/g, ' ').trim(),
+    ];
+  }, [buildUrl, ueId, appId, skips, ueSystems, appSystems]);
 
-    return {
-      fileName, dirName, dir,
-      cdTmp:    `cd ${dir}`,
-      wget:     url ? `wget --no-check-certificate -c "${url}"` : `wget --no-check-certificate -c "<paste-build-url>"`,
-      untar:    `tar -zxvf ${fileName}`,
-      cdBuild:  `cd ${dirName}`,
-      install:  installLine,
-      oneLiner: [
-        `cd ${dir}`,
-        url ? `wget --no-check-certificate -c "${url}"` : `wget --no-check-certificate -c "<paste-build-url>"`,
-        `tar -zxvf ${fileName}`,
-        `cd ${dirName}`,
-        installLine,
-      ].join(' && \\\n  '),
-    };
-  }, [buildUrl, installDir, extraArgs, hostEnabled, hostIp, hostUser, resolvedHostIp, skipFlags, timezone, maxSimulators, restore]);
+  const selectedChecks = useMemo(() => Object.keys(checks).filter((k) => checks[k]), [checks]);
 
-  const cockpitTerminalUrl = useMemo(() => {
-    if (!targetSys?.host) return '';
-    const port = targetSys.cockpitPort ?? COCKPIT_DEFAULT_PORT;
-    return `https://${targetSys.host}:${port}/system/terminal`;
-  }, [targetSys]);
-
-  const cockpitCreds = useMemo(() => ({
-    user:     targetSys?.cockpitUser     ?? COCKPIT_DEFAULT_USER,
-    password: targetSys?.cockpitPassword ?? COCKPIT_DEFAULT_PASSWORD,
-  }), [targetSys]);
-
-  function toggleCheck(id: string) {
-    const next = new Set(enabled);
-    next.has(id) ? next.delete(id) : next.add(id);
-    setEnabled(next);
+  async function copyCommands() {
+    try { await navigator.clipboard.writeText(commands.join('\n')); setCopied(true); setTimeout(() => setCopied(false), 1600); }
+    catch { /* clipboard blocked — the block is selectable anyway */ }
   }
 
-  // ── VM file browser (Cockpit-driven `find` for .tar.gz files) ──────────
-  async function browseVmFiles() {
-    if (!targetSys) return;
-    setBrowseBusy(true); setBrowseErr(null); setVmFiles(null);
+  /** Poll the box while the operator runs the installer in Cockpit. */
+  async function startWatching() {
+    if (!sim) return;
+    setWatching(true);
+    setInstallLog([]);
+    // Record what build is on the box now, so "came back on a NEW build" is
+    // distinguishable from "never went away".
     try {
-      const dirs = browseDirs.split(',').map((s) => s.trim()).filter(Boolean);
-      const r = await fetch('/api/vm-files', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ systemId: targetSys.id, searchDirs: dirs, maxDepth: 3 }),
+      const r = await fetch('/api/build-validation', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ observeInstall: { host: sim.host } }),
       });
       const j = await r.json();
-      if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
-      setVmFiles(j.files ?? []);
-      // The backend may also surface a diagnostic 'error' string on a
-      // successful empty result (e.g. raw terminal output) — show it so the
-      // user can see what the VM actually returned.
-      if ((j.files?.length ?? 0) === 0 && j.error) setBrowseErr(j.error);
-    } catch (e: any) {
-      setBrowseErr(e?.message ?? String(e));
-    } finally {
-      setBrowseBusy(false);
-    }
-  }
+      const m = String(j?.observation?.detail ?? '').match(/build ([\w.\-_]+)/);
+      baselineBuild.current = m?.[1];
+    } catch { /* baseline is optional */ }
 
-  async function probeUrl() {
-    if (!buildUrl.trim()) { setUrlCheck({ status: 'fail', detail: 'enter a URL first' }); return; }
-    setUrlCheck({ status: 'checking' });
-    try {
-      const r = await fetch(`/api/build-probe?url=${encodeURIComponent(buildUrl.trim())}`);
-      const j = await r.json();
-      if (!r.ok || !j.ok) {
-        setUrlCheck({ status: 'fail', detail: j.error || `HTTP ${r.status}`, rewrittenTo: j.rewrittenTo, rewriteNote: j.rewriteNote });
-        return;
-      }
-      setUrlCheck({
-        status: 'ok',
-        detail: `${j.status} · ${j.bytes ? (j.bytes / 1024 / 1024).toFixed(1) + ' MB' : 'reachable'}`,
-        rewrittenTo: j.rewrittenTo,
-        rewriteNote: j.rewriteNote,
-      });
-    } catch (e: any) {
-      setUrlCheck({ status: 'fail', detail: e?.message ?? String(e) });
-    }
-  }
-
-  // ── Install + Validate flow (backend-driven) ────────────────────────────
-  async function runInstall(): Promise<{ ok: boolean; buildId: string | null }> {
-    if (!targetSys) return { ok: false, buildId: null };
-    if (sourceMode === 'url' && !buildUrl.trim()) {
-      setInstallErr('Enter a Build URL first.');
-      return { ok: false, buildId: null };
-    }
-    if (sourceMode === 'local' && !localFile.trim()) {
-      setInstallErr('Pick (or type) the path to the .tar.gz on the VM.');
-      return { ok: false, buildId: null };
-    }
-    // Validate required host flags resolve to an IP. The Simnovator install
-    // script refuses to proceed without --ue and --app, so we refuse to
-    // generate an obviously-broken command.
-    const missing: string[] = [];
-    for (const f of HOST_FLAGS) {
-      if (!f.required) continue;
-      if (!hostEnabled[f.key]) continue;
-      const ip = ((hostIp[f.key] || '').trim() || resolvedHostIp[f.key] || '').trim();
-      if (!ip) missing.push(f.flag);
-    }
-    if (missing.length > 0) {
-      setInstallErr(`Missing required IP for ${missing.join(', ')}. Add an ${missing.includes('--app') ? 'APPSERVER' : 'system'} in Inventory or type the IP into the host card above.`);
-      return { ok: false, buildId: null };
-    }
-    setInstallErr(null);
-    setInstallBusy(true);
-    setInstallEvents([]);
-    setInstallSteps({ launch: 'idle', login: 'idle', terminal: 'idle', preflight: 'idle', fetch: 'idle', extract: 'idle', install: 'idle' });
-    setInstallDone(null);
-
-    const body = {
-      systemId: targetSys.id,
-      buildUrl:  sourceMode === 'url'   ? buildUrl.trim()  : undefined,
-      localFile: sourceMode === 'local' ? localFile.trim() : undefined,
-      workingDir: installDir.trim() || '/tmp',
-      hosts: HOST_FLAGS
-        .filter((f) => hostEnabled[f.key])
-        .map((f) => ({
-          flag: f.flag as '--ue' | '--app' | '--oru' | '--external',
-          ip: ((hostIp[f.key] || '').trim() || resolvedHostIp[f.key] || ''),
-          user: (hostUser[f.key] || '').trim() || undefined,
-          ipOnly: !!f.ipOnly,
-        }))
-        .filter((h) => h.ip),
-      timezone: timezone.trim() || undefined,
-      maxSimulators: maxSimulators.trim() || undefined,
-      skip: {
-        app_server: !!skipFlags.no_app_server,
-        app_manager: !!skipFlags.no_app_manager,
-        simnovator: !!skipFlags.no_simnovator,
-        ue: !!skipFlags.no_ue,
-        oru: !!skipFlags.no_oru,
-      },
-      restore,
-      extraArgs: extraArgs.trim() || undefined,
-      headed: headedMode,
-    };
-
-    let buildId: string | null = null;
-    setInstallBuildId(null);
-    try {
-      const resp = await fetch('/api/build-install', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      buildId = resp.headers.get('X-Build-Id');
-      if (buildId) setInstallBuildId(buildId);
-      if (!resp.ok || !resp.body) {
-        const txt = await resp.text().catch(() => '');
-        setInstallErr(`HTTP ${resp.status}: ${txt.slice(0, 300)}`);
-        setInstallBusy(false);
-        return { ok: false, buildId };
-      }
-      // Stream-decode line-delimited JSON events.
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      let finalOk = false;
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) !== -1) {
-          const line = buf.slice(0, nl);
-          buf = buf.slice(nl + 1);
-          if (!line.trim()) continue;
-          let ev: any;
-          try { ev = JSON.parse(line); } catch { continue; }
-          setInstallEvents((prev) => [...prev, ev]);
-          if (ev.type === 'step') {
-            setInstallSteps((prev) => ({ ...prev, [ev.step]: ev.status }));
-          } else if (ev.type === 'done') {
-            finalOk = !!ev.ok;
-            setInstallDone({ ok: finalOk, durationMs: ev.durationMs });
-          }
+    const tick = async () => {
+      try {
+        const r = await fetch('/api/build-validation', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ observeInstall: { host: sim.host, baselineBuild: baselineBuild.current } }),
+        });
+        const j = await r.json();
+        if (j?.observation) {
+          setInstallLog((prev) => {
+            const last = prev[prev.length - 1];
+            // Only append when something changed, so a long install does not
+            // produce hundreds of identical lines.
+            if (last && last.step === j.observation.step && last.detail === j.observation.detail) return prev;
+            return [...prev, j.observation];
+          });
+          if (j.observation.step === 'completed' && j.observation.status === 'pass') stopWatching();
         }
-      }
-      setInstallBusy(false);
-      return { ok: finalOk, buildId };
-    } catch (e: any) {
-      setInstallErr(e?.message ?? String(e));
-      setInstallBusy(false);
-      return { ok: false, buildId };
-    }
+      } catch { /* keep polling */ }
+    };
+    await tick();
+    watchTimer.current = setInterval(tick, 10_000);
   }
-
-  // Top-of-page button: if "install a new build" is ticked, run install
-  // then checks. Otherwise just run checks.
-  async function runAll() {
-    if (includeBuild) {
-      const r = await runInstall();
-      if (!r.ok) return;
-    }
-    await runChecks();
+  function stopWatching() {
+    setWatching(false);
+    if (watchTimer.current) { clearInterval(watchTimer.current); watchTimer.current = null; }
   }
 
   async function runChecks() {
-    setBusy(true); setErr(null); setResult(null);
+    if (!systemId || selectedChecks.length === 0) return;
+    setBusy(true); setErr(''); setReport(null); setExpanded(new Set());
     try {
-      const body: any = {
-        uesimSystemId: target || undefined,
-        checks: Array.from(enabled),
-      };
-      if (enabled.has('sample-execution') && sampleId) body.sampleTestcaseId = sampleId;
-      const r = await fetch('/api/validate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      const r = await fetch('/api/build-validation', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemId, checks: selectedChecks,
+          ueSystemId: ueId || undefined, appServerSystemId: appId || undefined,
+          install: wantInstall ? { buildUrl: buildUrl.trim() || undefined, skipFlags: SKIP_FLAGS.filter((f) => skips[f]), commands } : undefined,
+        }),
       });
-      const j: ValidationResult = await r.json();
-      setResult(j);
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
-    } finally {
-      setBusy(false);
-    }
+      const j = await r.json();
+      if (!j.ok) { setErr(j.error ?? 'run failed'); return; }
+      setReport(j.report);
+      // Open failures straight away — that is what the operator came for.
+      setExpanded(new Set((j.report.groups ?? []).filter((g: CheckGroup) => g.status === 'fail').map((g: CheckGroup) => g.id)));
+    } catch (e: any) { setErr(e?.message ?? String(e)); }
+    finally { setBusy(false); }
   }
+
+  const toggleExpand = (id: string) => setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const inputCls = 'w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs bg-white';
 
   return (
     <>
       <Header
-        title="Build validation"
-        subtitle="Install a Simnovator build and run the checklist — fully automated, with a saved report"
+        title="Build Validation"
+        subtitle="Install a Simnovator build and automatically run the validation checklist"
+        left={<BackToRunHistory />}
         right={
-          <Button size="sm" onClick={runAll} disabled={busy || installBusy || !hasTarget}>
-            {(busy || installBusy) ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-            {installBusy ? 'Installing…' : busy ? 'Running checks…' : (includeBuild ? 'Install + Validate' : 'Run checks')}
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* Install Build ticks the install plan on and starts watching the
+                box in one action — the installer itself still runs in Cockpit. */}
+            <Button
+              size="sm" variant="secondary"
+              onClick={() => { setWantInstall(true); if (!watching) startWatching(); }}
+              disabled={busy || !sim || watching}
+            >
+              <Terminal className="h-4 w-4" />{watching ? 'Watching install…' : 'Install Build'}
+            </Button>
+            <Button size="sm" onClick={runChecks} disabled={busy || !systemId || selectedChecks.length === 0}>
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              {busy ? 'Running…' : 'Run Checks'}
+            </Button>
+          </div>
         }
       />
-      <main className="p-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* LEFT — config */}
-        <div className="lg:col-span-1 space-y-4">
-          <Card>
-            <CardHeader><CardTitle>Target</CardTitle></CardHeader>
-            <CardBody className="space-y-3">
-              {inventoryLoading ? (
-                <div className="flex items-center gap-2 text-[12px] text-slate-500">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading inventory…
-                </div>
-              ) : simnovators.length === 0 ? (
-                <div className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-[11px] text-orange-800 leading-relaxed flex gap-2">
-                  <AlertTriangle className="h-4 w-4 mt-0.5 flex-none" />
-                  <div>
-                    No Simnovator system in inventory yet.
-                    {' '}<Link className="underline hover:no-underline font-medium" href="/inventory">Add one</Link>{' '}
-                    to install a build and run checks.
-                  </div>
-                </div>
-              ) : (
-                <Field label="Simnovator system">
-                  <select
-                    value={target}
-                    onChange={(e) => setTarget(e.target.value)}
-                    className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
-                  >
-                    {simnovators.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name || s.id} ({s.host})</option>
-                    ))}
-                  </select>
-                </Field>
-              )}
-            </CardBody>
-          </Card>
 
-          <Card>
-            <CardHeader><CardTitle>Checks</CardTitle></CardHeader>
-            <CardBody className="space-y-2">
-              {ALL_CHECKS.map((c) => (
-                <label key={c.id} className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={enabled.has(c.id)} onChange={() => toggleCheck(c.id)} />
-                  {c.label}
-                </label>
-              ))}
-              {enabled.has('sample-execution') ? (
-                <Field label="Sample testcase to run live">
-                  <select
-                    value={sampleId}
-                    onChange={(e) => setSampleId(e.target.value)}
-                    className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
-                  >
-                    <option value="">— pick —</option>
-                    {tcs.map((t) => <option key={t.id} value={t.id}>{t.name || t.id}</option>)}
-                  </select>
-                </Field>
-              ) : null}
-            </CardBody>
-          </Card>
-        </div>
+      <main className="p-4 space-y-3">
+        {/* Overall verdict banner */}
+        {report ? (
+          <div className={`rounded-lg border px-4 py-2.5 flex items-center gap-3 ${report.ok ? 'bg-success-50 border-success-200' : 'bg-red-50 border-red-200'}`}>
+            {report.ok ? <ShieldCheck className="h-5 w-5 text-success-700" /> : <AlertTriangle className="h-5 w-5 text-red-700" />}
+            <div className="min-w-0">
+              <div className={`text-sm font-semibold ${report.ok ? 'text-success-800' : 'text-red-800'}`}>
+                {report.ok ? 'BUILD VALIDATION PASSED' : 'BUILD VALIDATION FAILED'}
+              </div>
+              <div className="text-[11px] text-slate-600">
+                {report.systemName ?? report.host} · build {report.buildVersion ?? '—'} · {new Date(report.startedAt).toLocaleString()}
+                {report.finishedAt ? ` → ${new Date(report.finishedAt).toLocaleTimeString()}` : ''}
+              </div>
+            </div>
+            <span className="ml-auto text-[11px] text-slate-500 font-mono">{report.id}</span>
+          </div>
+        ) : null}
 
-        {/* RIGHT — install plan + check results */}
-        <div className="lg:col-span-2 space-y-4">
-          {/* COCKPIT INSTALL PLAN */}
-          {hasTarget ? (
+        {err ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{err}</div> : null}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          {/* ───── Left: system + install ───── */}
+          <div className="space-y-3">
             <Card>
-              <CardHeader className="flex items-center justify-between">
-                <CardTitle>Cockpit install plan</CardTitle>
-                <div className="flex items-center gap-4">
-                  {includeBuild ? (
-                    <label className="flex items-center gap-2 text-xs text-slate-600" title="Run with a visible browser window so you can watch the Cockpit Terminal type the install commands. Slower; uses display.">
-                      <input type="checkbox" checked={headedMode} onChange={(e) => setHeadedMode(e.target.checked)} />
-                      Show browser window (live demo)
-                    </label>
-                  ) : null}
-                  <label className="flex items-center gap-2 text-xs text-slate-600">
-                    <input type="checkbox" checked={includeBuild} onChange={(e) => setIncludeBuild(e.target.checked)} />
-                    I want to install a new build
-                  </label>
-                </div>
-              </CardHeader>
-              {!includeBuild ? (
-                <CardBody>
-                  <div className="text-xs text-slate-500">
-                    Tick "I want to install a new build" to generate the wget + tar + ./install commands ready to paste into Cockpit Terminal on <span className="font-mono">{targetSys?.host}</span>. Otherwise just click <span className="font-medium">Run checks</span> to validate the box as-is.
-                  </div>
-                </CardBody>
-              ) : (
-                <CardBody className="space-y-4">
-                  {/* SOURCE MODE PICKER */}
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
-                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Build source</div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {([
-                        { id: 'url',   title: 'Download from URL', desc: 'wget runs on the VM. Best when the VM has network access to the build host.' },
-                        { id: 'local', title: 'File already on VM', desc: 'You uploaded the .tar.gz to the VM (Cockpit Files / scp). Pick it from the list.' },
-                      ] as const).map((m) => (
-                        <label
-                          key={m.id}
-                          className={`flex gap-3 cursor-pointer rounded-lg border px-3 py-2 transition-colors ${sourceMode === m.id ? 'border-primary-500 bg-primary-50/40 ring-1 ring-primary-200' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
-                        >
-                          <input
-                            type="radio"
-                            name="source-mode"
-                            value={m.id}
-                            checked={sourceMode === m.id}
-                            onChange={() => setSourceMode(m.id)}
-                            className="mt-1"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium text-slate-900">{m.title}</div>
-                            <div className="text-[11px] text-slate-500 mt-0.5">{m.desc}</div>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* URL MODE */}
-                  {sourceMode === 'url' ? (
-                    <div>
-                      <Field
-                        label="Build URL (.tar.gz)"
-                        hint='Pasting works even when Chrome blocks the download — the Simnovator VM fetches it directly with wget, not your browser.'
-                      >
-                        <div className="flex gap-2">
-                          <Input
-                            value={buildUrl}
-                            onChange={(e) => { setBuildUrl(e.target.value); setUrlCheck({ status: 'idle' }); }}
-                            placeholder="http://192.168.0.19/builds/.../Simnovator-4.0.0_260424.tar.gz"
-                            className="flex-1"
-                          />
-                          <Button size="sm" variant="secondary" onClick={probeUrl} disabled={!buildUrl.trim() || urlCheck.status === 'checking'}>
-                            {urlCheck.status === 'checking' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                            Test URL
-                          </Button>
-                        </div>
-                      </Field>
-                      {urlCheck.status === 'ok' ? (
-                        <div className="mt-1 text-[11px] text-emerald-700 flex items-center gap-1.5"><CheckCircle2 className="h-3 w-3" /> Reachable from this server · {urlCheck.detail}</div>
-                      ) : urlCheck.status === 'fail' ? (
-                        <div className="mt-1 text-[11px] text-red-600 flex items-center gap-1.5"><XCircle className="h-3 w-3" /> {urlCheck.detail}</div>
-                      ) : null}
-
-                      {/* Share-URL auto-rewrite banner. Shown after a Test URL
-                          that exercised a SharePoint/OneDrive/Dropbox/GDrive link
-                          (success OR failure) — so the user understands which
-                          URL was actually probed and which one the VM will wget. */}
-                      {urlCheck.rewrittenTo ? (
-                        <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 p-3 text-[11px] text-sky-900 leading-relaxed flex gap-2">
-                          <CheckCircle2 className="h-4 w-4 mt-0.5 flex-none text-sky-600" />
-                          <div className="min-w-0">
-                            <div className="font-semibold">Share URL auto-rewritten for wget.</div>
-                            {urlCheck.rewriteNote ? <div className="mt-0.5">{urlCheck.rewriteNote}</div> : null}
-                            <div className="mt-1 font-mono text-[10px] break-all opacity-80">→ {urlCheck.rewrittenTo}</div>
-                            <div className="mt-1 opacity-80">The Simnovator VM will run wget against this rewritten URL with a Mozilla User-Agent.</div>
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {/* Heads-up about share-URL requirements — shown only
-                          BEFORE the user clicks Test URL, so we don't double
-                          up with the rewrite banner above. */}
-                      {(() => {
-                        const u = buildUrl.trim().toLowerCase();
-                        if (!u || urlCheck.status !== 'idle') return null;
-                        const matches = [
-                          { test: /sharepoint\.com/, name: 'SharePoint' },
-                          { test: /onedrive\.live\.com|1drv\.ms/, name: 'OneDrive' },
-                          { test: /drive\.google\.com|docs\.google\.com/, name: 'Google Drive' },
-                          { test: /dropbox\.com/, name: 'Dropbox' },
-                        ];
-                        const hit = matches.find((m) => m.test.test(u));
-                        if (!hit) return null;
-                        return (
-                          <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 leading-relaxed flex gap-2">
-                            <AlertTriangle className="h-4 w-4 mt-0.5 flex-none" />
-                            <div>
-                              <div className="font-semibold">{hit.name} share link detected — we'll auto-rewrite for wget.</div>
-                              <div className="mt-0.5">
-                                {hit.name} link must be shared as <span className="font-semibold">"Anyone with the link"</span> (not "People in your org") so the VM can fetch it without a sign-in. Click <span className="font-semibold">Test URL</span> to verify.
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  ) : null}
-
-                  {/* LOCAL-FILE MODE */}
-                  {sourceMode === 'local' ? (
-                    <div className="space-y-3">
-                      {/* Browser */}
-                      <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
-                        <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Browse VM for .tar.gz files</div>
-                        <div className="flex gap-2">
-                          <Input
-                            value={browseDirs}
-                            onChange={(e) => setBrowseDirs(e.target.value)}
-                            placeholder="/tmp, /home/simnovus, /home/simnovus/builds"
-                            className="flex-1"
-                          />
-                          <Button size="sm" variant="secondary" onClick={browseVmFiles} disabled={browseBusy || !targetSys}>
-                            {browseBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                            {browseBusy ? 'Searching…' : 'Find files'}
-                          </Button>
-                        </div>
-                        <div className="text-[11px] text-slate-500">
-                          Comma-separated list of directories on the VM to scan (max depth 3). Tool opens Cockpit Terminal, runs <span className="font-mono">find</span>, and returns matches sorted newest-first. Takes ~15-25s on first run.
-                        </div>
-
-                        {browseErr ? (
-                          <details className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900">
-                            <summary className="cursor-pointer flex items-start gap-1.5"><AlertTriangle className="h-3 w-3 mt-0.5" /> Diagnostic from VM (click to expand)</summary>
-                            <pre className="mt-2 whitespace-pre-wrap font-mono text-[10.5px] text-slate-700 max-h-48 overflow-auto">{browseErr}</pre>
-                          </details>
-                        ) : null}
-
-                        {vmFiles ? (
-                          vmFiles.length === 0 ? (
-                            <div className="text-[12px] text-slate-600 italic">No <span className="font-mono">.tar.gz</span> / <span className="font-mono">.tgz</span> files found in those directories.</div>
-                          ) : (
-                            <div className="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 max-h-72 overflow-auto">
-                              {vmFiles.map((f) => {
-                                const sizeMB = (f.size / (1024 * 1024)).toFixed(1);
-                                const sizeGB = (f.size / (1024 * 1024 * 1024)).toFixed(2);
-                                const sizeStr = f.size >= 1e9 ? `${sizeGB} GB` : `${sizeMB} MB`;
-                                const when = new Date(f.mtime).toLocaleString();
-                                const selected = localFile === f.path;
-                                return (
-                                  <label
-                                    key={f.path}
-                                    className={`flex items-start gap-3 px-3 py-2 cursor-pointer ${selected ? 'bg-primary-50/60' : 'hover:bg-slate-50'}`}
-                                  >
-                                    <input
-                                      type="radio"
-                                      name="vm-file"
-                                      checked={selected}
-                                      onChange={() => setLocalFile(f.path)}
-                                      className="mt-1"
-                                    />
-                                    <div className="min-w-0 flex-1">
-                                      <div className="text-[12px] font-mono text-slate-900 break-all">{f.path}</div>
-                                      <div className="text-[11px] text-slate-500 flex flex-wrap gap-x-3 mt-0.5">
-                                        <span>{sizeStr}</span>
-                                        <span>· {when}</span>
-                                      </div>
-                                    </div>
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          )
-                        ) : null}
-                      </div>
-
-                      {/* Manual path fallback */}
-                      <Field label="Or type the .tar.gz path on the VM" hint="absolute path; the file must already exist on the Simnovator VM">
-                        <Input
-                          value={localFile}
-                          onChange={(e) => setLocalFile(e.target.value)}
-                          placeholder="/home/simnovus/Simnovator-4.0.0_260424.tar.gz"
-                        />
-                      </Field>
-                    </div>
-                  ) : null}
-
-                  {/* Working dir + Install flags + extra args */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <Field label="Working directory on the VM" hint="where to wget + tar">
-                      <Input value={installDir} onChange={(e) => setInstallDir(e.target.value)} placeholder="/tmp" />
-                    </Field>
-                    <Field label="Extra args" hint="pass-through to ./install (e.g. --license …, --no-update)">
-                      <Input value={extraArgs} onChange={(e) => setExtraArgs(e.target.value)} placeholder="--license /opt/license.bin" />
-                    </Field>
-                  </div>
-
-                  {/* Host machines (--ue, --app, --oru, --external) */}
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Host machines</div>
-                      <div className="text-[10px] text-slate-500">user defaults to <span className="font-mono">{INSTALL_USER}</span> · pick from inventory or type a custom IP</div>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {HOST_FLAGS.map((f) => {
-                        const candidates = systems.filter((s) => f.types.includes(s.type));
-                        const enabled = hostEnabled[f.key];
-                        const ipValue   = hostIp[f.key]   ?? '';
-                        const userValue = hostUser[f.key] ?? INSTALL_USER;
-                        // Match the current IP to a system in inventory so the
-                        // dropdown shows the right entry as selected.
-                        const matchedSystemId = candidates.find((s) => s.host === ipValue)?.id ?? '';
-                        return (
-                          <div key={f.key} className={`rounded-lg border bg-white px-3 py-2 ${enabled ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
-                            <label className="flex items-center justify-between gap-2 text-xs">
-                              <span className="flex items-center gap-2">
-                                <input
-                                  type="checkbox"
-                                  checked={!!enabled}
-                                  disabled={f.required}
-                                  onChange={(e) => setHostEnabled((s) => ({ ...s, [f.key]: e.target.checked }))}
-                                />
-                                <span className="font-mono text-slate-900">{f.flag}</span>
-                                <span className="text-slate-500">· {f.label}</span>
-                                {f.required ? <span className="text-[9px] uppercase tracking-wider text-red-500">req</span> : null}
-                              </span>
-                            </label>
-                            <div className="text-[10px] text-slate-500 mt-1">{f.description}</div>
-
-                            {/* System picker (skipped for --external which is IP-only) */}
-                            {!f.ipOnly ? (
-                              <div className="mt-2">
-                                <select
-                                  value={matchedSystemId}
-                                  onChange={(e) => {
-                                    const id = e.target.value;
-                                    if (!id) {
-                                      // "Custom" was picked — clear the IP so the user types one.
-                                      setHostIp((o) => ({ ...o, [f.key]: '' }));
-                                      return;
-                                    }
-                                    const sys = systems.find((s) => s.id === id);
-                                    if (sys) {
-                                      setHostIp((o) => ({ ...o, [f.key]: sys.host }));
-                                      // Don't overwrite a user-edited username with system.username; only
-                                      // pre-fill if it's still the default.
-                                      setHostUser((o) => ({
-                                        ...o,
-                                        [f.key]: o[f.key] && o[f.key] !== INSTALL_USER ? o[f.key] : ((sys as any).username || INSTALL_USER),
-                                      }));
-                                    }
-                                  }}
-                                  className="h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-[12px] text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
-                                >
-                                  <option value="">— custom IP below —</option>
-                                  {candidates.length > 0 ? (
-                                    <optgroup label="From Inventory">
-                                      {candidates.map((s) => (
-                                        <option key={s.id} value={s.id}>{(s.name || s.id) + ' · ' + s.host + (s.type ? ` (${s.type})` : '')}</option>
-                                      ))}
-                                    </optgroup>
-                                  ) : null}
-                                </select>
-                                {candidates.length === 0 ? (
-                                  <div className="text-[10px] text-slate-500 mt-1">
-                                    No <span className="font-mono">{f.types.join(' / ')}</span> systems in inventory yet.{' '}
-                                    <Link href="/inventory" className="underline hover:no-underline">Add one</Link>{' '}
-                                    or type the IP below.
-                                  </div>
-                                ) : null}
-                              </div>
-                            ) : null}
-
-                            <div className="mt-2 flex items-center gap-1.5">
-                              {!f.ipOnly ? (
-                                <>
-                                  <input
-                                    value={userValue}
-                                    onChange={(e) => setHostUser((o) => ({ ...o, [f.key]: e.target.value }))}
-                                    placeholder={INSTALL_USER}
-                                    className="w-24 h-7 rounded-md border border-slate-300 bg-white px-2 text-[12px] font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
-                                  />
-                                  <span className="text-[11px] text-slate-500 font-mono">@</span>
-                                </>
-                              ) : null}
-                              <input
-                                value={ipValue}
-                                onChange={(e) => setHostIp((o) => ({ ...o, [f.key]: e.target.value }))}
-                                placeholder={f.ipOnly ? 'IP address' : (matchedSystemId ? '' : '192.168.x.x')}
-                                className="flex-1 h-7 rounded-md border border-slate-300 bg-white px-2 text-[12px] font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-300"
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Timezone + max simulators + restore */}
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <Field label="Timezone (-t)" hint="set on all machines during install">
-                      <select
-                        value={TIMEZONES.some((tz) => tz.value === timezone) ? timezone : '__manual__'}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          if (v === '__manual__') return; // keep user's free-form value
-                          if (v === '__none__') { setTimezone(''); return; }
-                          setTimezone(v);
-                        }}
-                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
-                      >
-                        <option value="__none__">— none —</option>
-                        {TIMEZONES.map((tz) => (
-                          <option key={tz.value} value={tz.value}>{tz.label}</option>
-                        ))}
-                        <option value="__manual__">✏ Enter manually below</option>
-                      </select>
-                      {!TIMEZONES.some((tz) => tz.value === timezone) && timezone !== '' ? (
-                        <Input
-                          value={timezone}
-                          onChange={(e) => setTimezone(e.target.value)}
-                          placeholder="e.g. Asia/Singapore"
-                          className="mt-1.5"
-                        />
-                      ) : null}
-                    </Field>
-                    <Field label="Max simulators (-m)" hint="optional — number of simulators to use">
-                      <Input
-                        value={maxSimulators}
-                        onChange={(e) => setMaxSimulators(e.target.value.replace(/[^0-9]/g, ''))}
-                        placeholder="e.g. 4"
-                      />
-                    </Field>
-                    <Field label="Other" hint="">
-                      <label className="flex items-center gap-2 text-sm h-9 mt-0">
-                        <input type="checkbox" checked={restore} onChange={(e) => setRestore(e.target.checked)} />
-                        <span className="font-mono text-[12px]">--restore</span>
-                        <span className="text-[11px] text-slate-500">restore testcases</span>
-                      </label>
-                    </Field>
-                  </div>
-
-                  {/* Skip flags */}
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">Skip options</div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-                      {SKIP_FLAGS.map((s) => (
-                        <label key={s.key} className={`flex items-center gap-2 rounded-md border bg-white px-2.5 py-1.5 text-[11px] cursor-pointer ${skipFlags[s.key] ? 'border-orange-300 bg-orange-50' : 'border-slate-200'}`}>
-                          <input
-                            type="checkbox"
-                            checked={!!skipFlags[s.key]}
-                            onChange={(e) => setSkipFlags((p) => ({ ...p, [s.key]: e.target.checked }))}
-                          />
-                          <span className="font-mono">{s.flag}</span>
-                        </label>
-                      ))}
-                    </div>
-                    <div className="mt-2 text-[10px] text-slate-500">{SKIP_FLAGS.map((s) => s.label).join(' · ')}</div>
-                    {/*
-                      License-vs-skip-flag gotcha: the App Manager package's
-                      installer re-validates the UE license count even when
-                      --no_ue is set. So a VM with ue_license=0 will fail
-                      ~30s into Step 2 unless --no_app_manager is also set.
-                      We surface this in the live log when license=0 is
-                      detected, but flag it here too so users know up front.
-                    */}
-                    {skipFlags.no_ue && !skipFlags.no_app_manager ? (
-                      <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2.5 text-[11px] text-amber-800 leading-relaxed flex gap-2">
-                        <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-none" />
-                        <div>
-                          <span className="font-semibold">Heads-up:</span> if this VM has <span className="font-mono">ue_license=0</span>, App Manager
-                          install will still fail (~30s into Step 2) even with <span className="font-mono">--no_ue</span>. Either refresh the UE
-                          license on the VM or also check <span className="font-mono">--no_app_manager</span>. The live log will warn you the
-                          moment it sees the license counts on the first run.
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  {/* GENERATED COMMAND PREVIEW (read-only) */}
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-2">
-                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Generated install command</div>
-                    <CommandBlock command={plan.install} />
-                    {missingRequired.length > 0 ? (
-                      <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-[12px] text-red-700 leading-relaxed flex gap-2">
-                        <AlertTriangle className="h-4 w-4 mt-0.5 flex-none" />
-                        <div>
-                          <div className="font-semibold">Required flag{missingRequired.length > 1 ? 's' : ''} missing: {missingRequired.join(', ')}</div>
-                          <div className="mt-0.5">
-                            The Simnovator installer will refuse to run without {missingRequired.length > 1 ? 'these' : 'this'}.{' '}
-                            {missingRequired.includes('--app') ? <>Add an <span className="font-semibold">APPSERVER</span> system in <Link href="/inventory" className="underline hover:no-underline">Inventory</Link>, or type the IP into the App Server card above.</> : null}
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
-                    <div className="text-[11px] text-slate-500">
-                      This is the exact line the tool will run on <span className="font-mono">{targetSys?.host}</span> after fetching + extracting the build. Click <span className="font-medium">Install + Validate</span> at the top to do it automatically.
-                    </div>
-                  </div>
-                </CardBody>
-              )}
-            </Card>
-          ) : null}
-
-          {/* INSTALL PROGRESS / LOG */}
-          {hasTarget && includeBuild ? (
-            <Card>
-              <CardHeader className="flex items-center justify-between gap-2">
-                <CardTitle>Install progress</CardTitle>
-                <div className="flex items-center gap-2 flex-wrap">
-                  {installDone ? (
-                    installDone.ok
-                      ? <Badge tone="success">install ok · total {(installDone.durationMs / 1000 / 60).toFixed(1)} min</Badge>
-                      : <Badge tone="danger">install failed · {(installDone.durationMs / 1000 / 60).toFixed(1)} min</Badge>
-                  ) : installBusy ? <Badge tone="info">running…</Badge> : null}
-                  {installBuildId ? (
-                    <>
-                      <a
-                        href={`/api/build-log?buildId=${encodeURIComponent(installBuildId)}&file=install.log`}
-                        target="_blank" rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
-                        title="Download the full timestamped transcript"
-                      >
-                        <Download className="h-3 w-3" /> install.log
-                      </a>
-                      <a
-                        href={`/api/build-log?buildId=${encodeURIComponent(installBuildId)}&file=events.ndjson`}
-                        target="_blank" rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
-                        title="Download every event as raw JSON for replay / triage"
-                      >
-                        <Download className="h-3 w-3" /> events.ndjson
-                      </a>
-                    </>
-                  ) : null}
-                </div>
-              </CardHeader>
-              <CardBody className="space-y-3">
-                {/* Step strip */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-                  {STEP_ORDER.map((s) => (
-                    <StepPill key={s} name={s} status={installSteps[s]} />
-                  ))}
-                </div>
-
-                {installErr ? (
-                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-[12px] text-red-700">{installErr}</div>
-                ) : null}
-
-                {/* Live log */}
-                {installEvents.length > 0 ? (
-                  <div className="rounded-lg border border-slate-200 bg-slate-900 overflow-hidden">
-                    <div className="flex items-center justify-between border-b border-slate-800 bg-slate-950 px-3 py-1.5">
-                      <span className="text-[11px] uppercase tracking-wider text-slate-400">Live log · {installEvents.filter((e) => e.type === 'log').length} lines</span>
-                      <CopyBtn text={installEvents.filter((e): e is LogEvent => e.type === 'log').map((e) => e.line).join('\n')} label="log" />
-                    </div>
-                    <div className="max-h-80 overflow-auto px-3 py-2.5 text-[12px] leading-relaxed font-mono whitespace-pre-wrap">
-                      {installEvents.map((e, i) =>
-                        e.type === 'log' ? (
-                          <div
-                            key={i}
-                            className={
-                              e.stream === 'error'  ? 'text-red-300' :
-                              e.stream === 'stderr' ? 'text-amber-300' :
-                              e.stream === 'info'   ? 'text-sky-300' :
-                              'text-slate-100'
-                            }
-                          >{e.line}</div>
-                        ) : e.type === 'step' ? (
-                          <div key={i} className={
-                            e.status === 'fail' ? 'text-red-400' :
-                            e.status === 'ok'   ? 'text-emerald-400' :
-                            'text-slate-400'
-                          }>
-                            ── {e.step.toUpperCase()} {e.status}{e.durationMs ? ` (${e.durationMs}ms)` : ''}{e.detail ? ` :: ${e.detail.slice(0, 200)}` : ''}
-                          </div>
-                        ) : null
-                      )}
-                    </div>
-                  </div>
-                ) : !installBusy ? (
-                  <div className="text-[12px] text-slate-500">Waiting to start. Click <span className="font-medium">Install + Validate</span> at the top.</div>
-                ) : null}
-
-                {/* Manual fallback */}
-                <details className="rounded-lg border border-slate-200 bg-slate-50/60 p-3" open={showManualFallback} onToggle={(e) => setShowManualFallback((e.target as HTMLDetailsElement).open)}>
-                  <summary className="cursor-pointer text-[11px] uppercase tracking-wider text-slate-500 flex items-center gap-2">
-                    <Terminal className="h-3.5 w-3.5" /> Manual fallback — paste these into Cockpit if SSH is blocked
-                  </summary>
-                  <div className="mt-3 space-y-2">
-                    <div className="flex items-center justify-end">
-                      <a
-                        href={cockpitTerminalUrl}
-                        target="_blank" rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-md bg-primary-700 hover:bg-primary-800 px-2.5 py-1 text-[11px] font-medium text-white transition-colors"
-                      >
-                        <Terminal className="h-3.5 w-3.5" /> Open Cockpit Terminal
-                        <ExternalLink className="h-3 w-3 opacity-80" />
-                      </a>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
-                      <div className="text-[11px] text-slate-600">Log in with:</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div className="rounded-md bg-slate-50 border border-slate-200 px-2.5 py-1.5 flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="text-[10px] uppercase tracking-wider text-slate-500">User</div>
-                            <div className="font-mono text-[12px] text-slate-900 truncate">{cockpitCreds.user}</div>
-                          </div>
-                          <CopyBtn text={cockpitCreds.user} label="user" />
-                        </div>
-                        <div className="rounded-md bg-slate-50 border border-slate-200 px-2.5 py-1.5 flex items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="text-[10px] uppercase tracking-wider text-slate-500">Password</div>
-                            <div className="font-mono text-[12px] text-slate-900 truncate">{cockpitCreds.password}</div>
-                          </div>
-                          <CopyBtn text={cockpitCreds.password} label="password" />
-                        </div>
-                      </div>
-                    </div>
-                    {sourceMode === 'url' ? (
-                      <>
-                        <CommandBlock title={`1. Fetch — ${plan.fileName}`} command={`${plan.cdTmp}\n${plan.wget}`} />
-                        <CommandBlock title="2. Extract" command={`${plan.untar}\n${plan.cdBuild}`} />
-                        <CommandBlock title="3. Install" command={plan.install} />
-                      </>
-                    ) : (
-                      <>
-                        <CommandBlock title={`1. Extract — ${localFile || '(pick a file above)'}`} command={localFile ? `cd ${localFile.replace(/\/[^/]+$/, '') || '/'}\ntar -zxvf ${localFile.replace(/.*\//, '')}` : '(pick a file above)'} />
-                        <CommandBlock title="2. Install" command={plan.install} />
-                      </>
-                    )}
-                  </div>
-                </details>
+              <CardHeader><CardTitle>System</CardTitle></CardHeader>
+              <CardBody className="space-y-2">
+                <select value={systemId} onChange={(e) => setSystemId(e.target.value)} className={inputCls} disabled={busy}>
+                  {simSystems.length === 0 ? <option value="">No Simnovator systems in inventory.yaml</option> : null}
+                  {simSystems.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.host})</option>)}
+                </select>
+                <p className="text-[11px] text-slate-500">Pick the target Simnovator before installing or validating.</p>
               </CardBody>
             </Card>
-          ) : null}
 
-          {/* CHECK RESULTS */}
-          {err ? <Card><CardBody><div className="text-sm text-red-700">{err}</div></CardBody></Card> : null}
+            <Card>
+              <CardHeader><CardTitle>Cockpit Install Plan</CardTitle></CardHeader>
+              <CardBody className="space-y-2.5">
+                <label className="flex items-start gap-2 text-xs">
+                  <input type="checkbox" className="mt-0.5" checked={wantInstall} onChange={(e) => setWantInstall(e.target.checked)} />
+                  <span className="font-medium text-slate-800">I want to install a new build</span>
+                </label>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  Install a new Simnovator build or validate the current setup. Tick <span className="font-medium">I want to install a new build</span> to
+                  generate the <code className="font-mono">wget</code>, <code className="font-mono">tar</code> and <code className="font-mono">./install</code> commands,
+                  ready to paste into the Cockpit Terminal. Otherwise click <span className="font-medium">Run Checks</span> to validate the existing setup.
+                </p>
 
-          <Card>
-            <CardHeader className="flex items-center justify-between">
-              <CardTitle>Checks</CardTitle>
-              {result ? (overallOk ? <Badge tone="success">all passed</Badge> : <Badge tone="danger">failed</Badge>) : null}
-            </CardHeader>
-            <CardBody className="p-0">
-              {!result ? (
-                <div className="p-5 text-sm text-slate-500">{busy ? 'Running…' : 'Click "Run checks" to validate the box.'}</div>
-              ) : (
-                <ol className="divide-y divide-slate-100">
-                  {result.checks.map((c, i) => (
-                    <li key={i} className="px-5 py-3 flex items-start gap-3">
-                      {c.ok ? <CheckCircle2 className="h-4 w-4 text-success-600 mt-0.5" /> : <XCircle className="h-4 w-4 text-red-600 mt-0.5" />}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium text-slate-900">{c.name}</div>
-                        {c.detail ? <div className="text-xs text-slate-500 mt-0.5 break-all">{c.detail}</div> : null}
+                {wantInstall ? (
+                  <div className="space-y-2.5 pt-1 border-t border-slate-100">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-slate-400 mb-1">Build URL</div>
+                      <textarea
+                        value={buildUrl} onChange={(e) => setBuildUrl(e.target.value)} rows={2}
+                        placeholder="Paste Simnovator build URL here…"
+                        className={`${inputCls} font-mono resize-y`}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-slate-400 mb-1">UE</div>
+                        <select value={ueId} onChange={(e) => setUeId(e.target.value)} className={inputCls}>
+                          <option value="">— none —</option>
+                          {ueSystems.map((s) => <option key={s.id} value={s.id}>{s.host}</option>)}
+                        </select>
                       </div>
-                      {typeof c.durationMs === 'number' ? <span className="text-[11px] text-slate-400">{c.durationMs}ms</span> : null}
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </CardBody>
-          </Card>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-slate-400 mb-1">App Server</div>
+                        <select value={appId} onChange={(e) => setAppId(e.target.value)} className={inputCls}>
+                          <option value="">— none —</option>
+                          {appSystems.map((s) => <option key={s.id} value={s.id}>{s.host}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wider text-slate-400 mb-1">Skip</div>
+                      <div className="flex flex-wrap gap-x-3 gap-y-1">
+                        {SKIP_FLAGS.map((f) => (
+                          <label key={f} className="flex items-center gap-1.5 text-[11px] font-mono">
+                            <input type="checkbox" checked={!!skips[f]} onChange={(e) => setSkips((s) => ({ ...s, [f]: e.target.checked }))} />
+                            {f}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="text-[10px] uppercase tracking-wider text-slate-400">Generated Installation Commands</div>
+                        <button onClick={copyCommands} className="inline-flex items-center gap-1 text-[11px] text-slate-600 hover:text-slate-900">
+                          {copied ? <ClipboardCheck className="h-3 w-3" /> : <Copy className="h-3 w-3" />}{copied ? 'Copied' : 'Copy all'}
+                        </button>
+                      </div>
+                      <pre className="cfg text-[11px] whitespace-pre-wrap break-all">{commands.join('\n')}</pre>
+                      <p className="text-[10px] text-slate-400 mt-1 flex items-center gap-1">
+                        <Terminal className="h-3 w-3" />Paste into the Cockpit Terminal on the install host.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+              </CardBody>
+            </Card>
+
+          </div>
+
+          {/* ───── Right: verification + results ───── */}
+          <div className="space-y-3">
+            <Card>
+              <CardHeader><CardTitle>Build Verification</CardTitle></CardHeader>
+              <CardBody className="space-y-1.5">
+                {VERIFICATIONS.map((v) => (
+                  <label key={v.id} className="flex items-start gap-2 text-xs">
+                    <input type="checkbox" className="mt-0.5" checked={!!checks[v.id]} onChange={(e) => setChecks((c) => ({ ...c, [v.id]: e.target.checked }))} disabled={busy} />
+                    <span className="min-w-0">
+                      <span className="font-medium text-slate-800">{v.label}</span>
+                      <span className="block text-[10px] text-slate-500">{v.hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </CardBody>
+            </Card>
+
+            {wantInstall ? (
+              <Card>
+                <CardHeader className="flex items-center justify-between">
+                  <CardTitle>Install Progress</CardTitle>
+                  {watching
+                    ? <Button size="sm" variant="secondary" onClick={stopWatching}>Stop watching</Button>
+                    : <Button size="sm" variant="secondary" onClick={startWatching} disabled={!sim}>Watch install</Button>}
+                </CardHeader>
+                <CardBody className="space-y-2">
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    SimQA cannot run or stream the installer — it runs in your Cockpit terminal, and inventory holds no SSH
+                    credentials for these machines. These steps are <span className="font-medium">observed from outside</span>: the box
+                    dropping off and returning on a new build.
+                  </p>
+                  <ul className="space-y-1">
+                    {INSTALL_STEPS.map((st) => {
+                      const seen = installLog.filter((l) => l.step === st.id);
+                      const last = seen[seen.length - 1];
+                      const status: StepStatus = last ? last.status : (watching && st.observable ? 'pending' : 'pending');
+                      return (
+                        <li key={st.id} className="flex items-start gap-2 text-[11px]">
+                          <span className="mt-0.5"><StatusIcon status={status} /></span>
+                          <span className={`${st.observable ? 'text-slate-700' : 'text-slate-400'} min-w-[150px]`}>{st.label}</span>
+                          <span className="text-slate-500 flex-1">
+                            {last?.detail ?? (st.observable ? '' : 'runs inside Cockpit — not visible to SimQA')}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  {installLog.length > 0 ? (
+                    <div className="pt-1 border-t border-slate-100">
+                      <div className="text-[10px] uppercase tracking-wider text-slate-400 mb-1">Observations</div>
+                      <ul className="space-y-0.5 max-h-32 overflow-y-auto">
+                        {installLog.map((l, i) => (
+                          <li key={i} className="text-[10px] font-mono text-slate-500">
+                            {new Date(l.at).toLocaleTimeString()} · {l.detail}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </CardBody>
+              </Card>
+            ) : null}
+
+            <Card>
+              <CardHeader className="flex items-center justify-between">
+                <CardTitle>Results</CardTitle>
+                {report ? (report.ok ? <Badge tone="success">all passed</Badge> : <Badge tone="danger">failures</Badge>) : null}
+              </CardHeader>
+              <CardBody className="p-0">
+                {!report ? (
+                  <div className="px-4 py-6 text-xs text-slate-500">Pick a system and the checks to run, then click <span className="font-medium">Run Checks</span>.</div>
+                ) : (
+                  <ul className="divide-y divide-slate-100">
+                    {report.groups.map((g) => {
+                      const open = expanded.has(g.id);
+                      const Caret = open ? ChevronDown : ChevronRight;
+                      return (
+                        <li key={g.id}>
+                          <button onClick={() => toggleExpand(g.id)} className="w-full text-left px-3 py-2 flex items-start gap-2 hover:bg-slate-50">
+                            <Caret className="h-3.5 w-3.5 mt-0.5 text-slate-400 shrink-0" />
+                            <span className="mt-0.5 shrink-0"><StatusIcon status={g.status} /></span>
+                            <span className="min-w-0 flex-1">
+                              <span className="text-xs font-medium text-slate-800">{g.label}</span>
+                              <span className={`block text-[11px] ${g.status === 'fail' ? 'text-red-700' : 'text-slate-500'}`}>{g.detail}</span>
+                            </span>
+                            <StatusPill status={g.status} />
+                          </button>
+                          {open ? (
+                            <div className="px-3 pb-2.5 pl-9 space-y-1.5 bg-slate-50/50">
+                              {g.steps.length === 0 ? <div className="text-[11px] text-slate-400">no sub-steps recorded</div> : g.steps.map((s) => (
+                                <div key={s.id} className="text-[11px]">
+                                  <div className="flex items-center gap-1.5">
+                                    <StatusIcon status={s.status} />
+                                    <span className="font-medium text-slate-700">{s.label}</span>
+                                    {typeof s.durationMs === 'number' ? <span className="text-slate-400">{(s.durationMs / 1000).toFixed(1)}s</span> : null}
+                                    {s.startedAt ? <span className="text-slate-300 ml-auto font-mono text-[10px]">{new Date(s.startedAt).toLocaleTimeString()}</span> : null}
+                                  </div>
+                                  <div className={`ml-5 ${s.status === 'fail' ? 'text-red-700' : 'text-slate-500'}`}>{s.detail}</div>
+                                  {s.status === 'fail' && s.expected ? <div className="ml-5 text-slate-400">Expected: {s.expected}</div> : null}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </CardBody>
+            </Card>
+
+            {report ? (
+              <Card>
+                <CardHeader><CardTitle>Report</CardTitle></CardHeader>
+                <CardBody className="text-[11px] text-slate-600 space-y-0.5">
+                  <div><span className="text-slate-400">System:</span> {report.systemName ?? '—'} ({report.host})</div>
+                  <div><span className="text-slate-400">Build:</span> {report.buildVersion ?? '—'}</div>
+                  {report.ueHost ? <div><span className="text-slate-400">UE:</span> {report.ueHost}</div> : null}
+                  {report.appServerHost ? <div><span className="text-slate-400">App Server:</span> {report.appServerHost}</div> : null}
+                  {report.install?.buildUrl ? <div className="break-all"><span className="text-slate-400">Build URL:</span> {report.install.buildUrl}</div> : null}
+                  {report.install?.skipFlags?.length ? <div><span className="text-slate-400">Skip:</span> <span className="font-mono">{report.install.skipFlags.join(' ')}</span></div> : null}
+                  <div><span className="text-slate-400">Checks:</span> {report.selectedChecks.join(', ')}</div>
+                  <div><span className="text-slate-400">Started:</span> {new Date(report.startedAt).toLocaleString()}</div>
+                  {report.finishedAt ? <div><span className="text-slate-400">Completed:</span> {new Date(report.finishedAt).toLocaleString()}</div> : null}
+                  <div className="pt-1 text-slate-400">Saved to data/build-validation/{report.id}.json — also listed on Run History.</div>
+                </CardBody>
+              </Card>
+            ) : null}
+          </div>
         </div>
       </main>
     </>

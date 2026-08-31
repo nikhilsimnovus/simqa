@@ -23,6 +23,73 @@ import { loadInventory, getSystem, uesimApiOptsForSystem, type AutomationSuite, 
 import { withSsh, readCommand } from '../configFidelity/ssh';
 import { saveRun, newRunId, type RunRecord } from './runStore';
 import { triggerPerfQaCollection, DEFAULT_PERFQA_URL } from './diagnostics';
+import { duplicateTestcase } from './duplicateTestcase';
+
+/** How long to give the box before asking whether any UE attached. The UEs are
+ *  powered on over the first ~30-40s (attachRate-dependent), so checking sooner
+ *  reports a false "nothing attached". */
+const ATTACH_CHECK_DELAY_SEC = 55;
+
+interface AttachEvidence {
+  /** Distinct UEs seen in NAS state 5GMM-REGISTERED. */
+  registered: number;
+  /** Distinct UEs that exchanged a DCCH message — that channel only exists once
+   *  RRC is established, so it proves the UE found the cell and connected. */
+  rrcConnected: number;
+  /** "No cell available" lines: the UE searched and found nothing. */
+  noCell: number;
+  /** Whether any log file for this testcase was found at all. */
+  sawLog: boolean;
+}
+
+/**
+ * Gather evidence of whether UEs attached, from the UE simulator's log.
+ *
+ * The box's own verdict is useless for this — its only criterion is
+ * Avg_DL_BLER <= 5%, which 0 attached UEs satisfies trivially.
+ *
+ * Deliberately reads SEVERAL signals rather than one. `5GMM-REGISTERED` is a
+ * NAS message, and a testcase whose logging profile is e.g. "rrc_debug" logs no
+ * NAS at all — counting only that reported "nothing attached" for a run that was
+ * attaching fine. DCCH traffic is visible under any profile that logs RRC, and
+ * "No cell available" is the positive signal of the failure we actually care
+ * about (gnb cfg on a different band from the testcase).
+ *
+ * The log rotates at 5 MB (a 10s 64-UE test wrote ~926 MB across five segments),
+ * so the live file AND every rotated segment are read. Counting happens on the
+ * UE box — only the numbers cross the wire.
+ */
+async function gatherAttachEvidence(ueSys: any, tcName: string): Promise<AttachEvidence | null> {
+  const q = tcName.replace(/'/g, "'\\''");
+  const files = `/tmp/'${q}'.log /var/log/lte/'${q}'.log.*`;
+  const cmd = [
+    `F=$(ls ${files} 2>/dev/null | wc -l)`,
+    `R=$(cat ${files} 2>/dev/null | grep -h '5GMM-REGISTERED' | awk '{print $5}' | sort -u | wc -l)`,
+    `C=$(cat ${files} 2>/dev/null | grep -h 'DCCH-NR' | awk '{print $5}' | sort -u | wc -l)`,
+    `N=$(cat ${files} 2>/dev/null | grep -hc 'No cell available' || true)`,
+    `echo "$R $C $N $F"`,
+  ].join('; ');
+  try {
+    const out = String(await readCommand(ueSys, cmd)).trim().split(/\s+/).map(Number);
+    if (out.length < 4 || out.some(n => !Number.isFinite(n))) return null;
+    return { registered: out[0], rrcConnected: out[1], noCell: out[2], sawLog: out[3] > 0 };
+  } catch {
+    return null;
+  }
+}
+
+/** The UE simulator bound to a Simnovator by a topology profile — that's the box
+ *  whose log carries the attach evidence. */
+function ueSystemForSimnovator(inv: ReturnType<typeof loadInventory>, simnovatorId?: string) {
+  if (!simnovatorId) return undefined;
+  const profile = (inv.profiles ?? []).find(p => p.simnovator === simnovatorId);
+  return profile?.uesim ? getSystem(inv, profile.uesim) : undefined;
+}
+
+/** Slack added to the poll window on top of the requested duration, to cover the
+ *  box's power-on/attach/teardown phases (powerOnTime is roughly session + 50s,
+ *  and a looped power-cycle profile runs it twice). */
+const POLL_MARGIN_SEC = 180;
 
 export interface SuiteRunStep {
   testcaseId: string;
@@ -61,6 +128,12 @@ export interface SuiteRunResult {
 interface RunOpts {
   signal?: AbortSignal;
   onProgress?: (done: number, total: number, currentId?: string) => void;
+  /** Fired as each row settles, so a caller can surface per-testcase status
+   *  while the run is still going rather than only in the final record. */
+  onStep?: (step: SuiteRunStep) => void;
+  /** Signed-in user who submitted this job, for attribution on the saved
+   *  record. Absent when triggered outside a browser session. */
+  submittedBy?: string;
   /** When true, fire a perf-qa collection job alongside the run + stash
    *  the job id on the run record. Off by default — the customer may not
    *  have perf-qa deployed. */
@@ -189,6 +262,8 @@ async function login(host: string, username: string, password: string): Promise<
   const r = await fetch(`http://${host}/v2/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
+    // Bounded — an unreachable box would otherwise hang the whole suite run.
+    signal: AbortSignal.timeout(15_000),
   });
   if (!r.ok) throw new Error(`login ${r.status}`);
   const j: any = await r.json();
@@ -210,6 +285,38 @@ async function fetchFirstSimulatorId(host: string, token: string): Promise<strin
     const sims = j?.items ?? j?.data ?? [];
     return sims[0]?.id ? String(sims[0].id) : undefined;
   } catch { return undefined; }
+}
+
+/**
+ * Block until the simulator is free, or `maxSec` elapses.
+ *
+ * Suite rows run one after another, but the box doesn't drop `availability:
+ * BUSY` the instant an execution stops — so triggering row 2 straight after row
+ * 1 finished can 409. Waiting here is what makes "second one executes
+ * automatically when the first stops" actually hold.
+ *
+ * Returns the name of whatever is still running if it never went idle.
+ */
+async function waitForSimulatorIdle(host: string, token: string, maxSec: number, signal?: AbortSignal): Promise<string | null> {
+  const deadline = Date.now() + maxSec * 1000;
+  let last: string | null = null;
+  while (Date.now() < deadline && !signal?.aborted) {
+    try {
+      const r = await fetch(`http://${host}/v2/simulators`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (r.ok) {
+        const j: any = await r.json();
+        const sims: any[] = j?.items ?? j?.data ?? [];
+        const busy = sims.find(s => String(s?.availability ?? '').toUpperCase() === 'BUSY');
+        if (!busy) return null;
+        last = busy.name ?? busy.id ?? 'a test case';
+      }
+    } catch { /* transient — keep waiting */ }
+    await new Promise(res => setTimeout(res, 3_000));
+  }
+  return last;
 }
 
 async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<SuiteRunResult> {
@@ -556,19 +663,38 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
   if (suite.kind === 'uesim+callbox' && (!callboxSys || callboxSys.type !== 'CALLBOX')) {
     throw new Error(`suite callboxSystemId "${suite.callboxSystemId}" is not a CALLBOX`);
   }
+  // The UE box holds the only real evidence of whether UEs attached. Absent a
+  // topology profile binding it to this Simnovator we simply skip the check
+  // rather than failing the run.
+  const ueSys = ueSystemForSimnovator(inv, suite.uesimSystemId);
 
   const safe = (s: string) => s.replace(/[^\w.\-]/g, '_');
-  const steps: SuiteRunStep[] = [];
+  const rawSteps: SuiteRunStep[] = [];
+  /** Record a step AND report it, so the UI can colour a row the moment it
+   *  settles instead of waiting for the whole suite. */
+  const steps = {
+    push(step: SuiteRunStep) {
+      rawSteps.push(step);
+      try { opts.onStep?.(step); } catch { /* reporting must never break a run */ }
+      return rawSteps.length;
+    },
+    get length() { return rawSteps.length; },
+  };
   let passed = 0, failed = 0;
   const total = items.length;
   let done = 0;
 
   // Cache of files currently on the callbox so we don't re-ls per item.
   let existing = new Set<string>();
+  let existingCore = new Set<string>();
   if (callboxSys) {
     try {
       const raw = await readCommand(callboxSys, 'ls -1 /root/enb/config 2>/dev/null');
       existing = new Set(raw.split('\n').map(s => s.trim()).filter(Boolean));
+    } catch { /* uploads still attempt */ }
+    try {
+      const raw = await readCommand(callboxSys, 'ls -1 /root/mme/config 2>/dev/null');
+      existingCore = new Set(raw.split('\n').map(s => s.trim()).filter(Boolean));
     } catch { /* uploads still attempt */ }
   }
 
@@ -584,25 +710,85 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     const t0 = Date.now();
     const stepDetails: string[] = [];
     let itemOk = true;
+    /** enb.cfg's target before this row re-pointed it — reported only, so the
+     *  run log records what the callbox was bound to beforehand. */
+    let prevEnbLink = '';
+    let prevMmeLink = '';
+    let prevImsLink = '';
+    /** Set only when this row UPLOADED a cfg that wasn't already on the callbox;
+     *  that file is the sole thing opt-in cleanup may remove. */
+    let pushedCfg = '';
+
+    // ── Phase 0: create the row's testcase on the Simnovator first, under the
+    // display name and with the row's duration baked in — so the case exists in
+    // the box's catalogue before the callbox is touched. If the box rejects it
+    // (bad name, duplicate, bad config) we find out without having restarted
+    // anything. The copy stays on the Simnovator afterwards.
+    const durSec = item.durationSec ?? defaultDur;
+    let runTcId = item.simnovatorTcId;
+    /** The name the box actually gave the copy — the UE log is named after it. */
+    let createdName = item.name;
+    if (!token) {
+      steps.push({ testcaseId: item.name, status: 0, ok: false, detail: 'simnovator login failed', durationMs: Date.now() - t0 });
+      failed += 1; done += 1;
+      if (suite.stopOnFail) break;
+      continue;
+    }
+    try {
+      const dup = await duplicateTestcase(ueOpts, item.simnovatorTcId, item.name, durSec);
+      if (dup.error || !dup.testCaseId) {
+        steps.push({
+          testcaseId: item.name, status: 0, ok: false,
+          detail: `duplicate failed at ${dup.failedStep ?? '?'}: ${dup.error ?? 'no testCaseId returned'}`,
+          durationMs: Date.now() - t0,
+        });
+        failed += 1; done += 1;
+        if (suite.stopOnFail) break;
+        continue;
+      }
+      runTcId = dup.testCaseId;
+      createdName = dup.name;
+      // dup.name may differ from item.name — testcase names are unique on the
+      // box, so a re-run of the same row gets "_2", "_3", …
+      stepDetails.push(dup.reused
+        ? `testcase: reusing existing "${dup.name}" on ${ueOpts.host}`
+        : `testcase: "${dup.name}" (${durSec}s) created on ${ueOpts.host}`);
+      if (dup.warning) stepDetails.push(`note: ${dup.warning}`);
+    } catch (e: any) {
+      steps.push({
+        testcaseId: item.name, status: 0, ok: false,
+        detail: `duplicate threw: ${e?.message ?? e}`,
+        durationMs: Date.now() - t0,
+      });
+      failed += 1; done += 1;
+      if (suite.stopOnFail) break;
+      continue;
+    }
 
     // ── Phase 1-3: callbox bring-up (only if cfg + callbox present)
-    // New policy (2026-06): source-of-truth for each item's cfg is the
-    // local blob in suite.uploadedConfigs (pulled DOWN from the callbox
-    // at suite-save time when the user picks an existing /root/enb/config
-    // file, OR put there by upload). At run-time we ALWAYS scp the blob
-    // UP with a sanitized "safe" filename — sidesteps the commas + special
-    // chars that break ln on the callbox (e.g.
-    // "370-TC03-01,02,03,04,06,07,08-gnb.cfg").
+    // enb.cfg links straight at the file the operator picked, by its own name —
+    // `enb.cfg -> SA-1Cell.cfg_June2026`, so the binding is legible in the
+    // callbox terminal. (This used to copy the pick to a sanitised
+    // simqa-<id>.cfg and link at that instead, which hid which config was
+    // actually running.) Names with commas/spaces are handled by quoting the
+    // shell args, not by renaming the file. Uploads — configs not already on the
+    // box — are pushed up under their own name first.
     if (callboxSys && item.callboxCfg) {
       const cfg = item.callboxCfg;
-      const deployName = `simqa-${safe(item.id)}.cfg`;       // deterministic per item
-      const target = `/root/enb/config/${deployName}`;
       const linkPath = `/root/enb/config/enb.cfg`;
       const blob = suite.uploadedConfigs?.[cfg];
+      /** Single-quoted shell arg; embedded quotes escaped. */
+      const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+      let target = '';
 
       try {
-        if (blob) {
+        if (existing.has(cfg)) {
+          // Already on the callbox — link at it directly, nothing to copy.
+          target = `/root/enb/config/${cfg}`;
+          stepDetails.push(`cfg-source: existing "${cfg}"`);
+        } else if (blob) {
           const buf = Buffer.from(blob, 'base64');
+          target = `/root/enb/config/${cfg}`;
           await withSsh(callboxSys, async (ssh) => {
             const sftp = await ssh.requestSFTP();
             await new Promise<void>((resolve, reject) => {
@@ -612,41 +798,73 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               ws.end(buf);
             });
           });
-          stepDetails.push(`cfg-push: scp ${buf.length}B → ${deployName} (source: "${cfg}")`);
+          existing.add(cfg);
+          pushedCfg = cfg;
+          stepDetails.push(`cfg-push: scp ${buf.length}B → ${cfg}`);
         } else {
-          // Legacy fallback: cfg name refers to a file already on the
-          // callbox (the wizard didn't pull it down). cp (not mv) so the
-          // operator's original named file stays put.
-          if (!existing.has(cfg) && !existing.has(safe(cfg))) {
-            throw new Error(`cfg "${cfg}" not in suite uploadedConfigs and missing on callbox /root/enb/config`);
-          }
-          const sourceOnBox = existing.has(cfg) ? cfg : safe(cfg);
-          await withSsh(callboxSys, async (ssh) => {
-            // Quote-safe even when the source has commas: single-quoted
-            // shell arg with embedded literal quote escape.
-            const safeShell = sourceOnBox.replace(/'/g, "'\\''");
-            const r = await ssh.execCommand(`cp -f '/root/enb/config/${safeShell}' '${target}'`);
-            if (r.code !== 0) throw new Error(`cp: ${r.stderr || r.stdout || `exit ${r.code}`}`);
-          });
-          stepDetails.push(`cfg-push: copied existing "${sourceOnBox}" → ${deployName}`);
+          throw new Error(`cfg "${cfg}" not in suite uploadedConfigs and missing on callbox /root/enb/config`);
         }
-        existing.add(deployName);
 
+        // Linked from inside the directory with a bare basename, so the link is
+        // relative — `enb.cfg -> SA-1Cell.cfg_June2026`, which is how the
+        // operators write it by hand and how it reads in the callbox terminal.
+        // An absolute target works identically but shows the full path.
         await withSsh(callboxSys, async (ssh) => {
-          const r = await ssh.execCommand(`ln -sfn "${target}" "${linkPath}"`);
+          const prev = await ssh.execCommand(`readlink ${q(linkPath)} || true`);
+          prevEnbLink = (prev.stdout ?? '').trim();
+          const r = await ssh.execCommand(
+            `cd /root/enb/config && ln -sfn ${q(cfg)} 'enb.cfg' && ls -la 'enb.cfg'`);
           if (r.code !== 0) throw new Error(`ln: ${r.stderr || r.stdout || `exit ${r.code}`}`);
         });
-        stepDetails.push(`cfg-link: ${linkPath} → ${deployName}`);
+        stepDetails.push(`cfg-link: ln -sfn ${cfg} enb.cfg`);
 
-        // The Simnovator callbox uses `service lte restart` — not systemd.
-        // Going through sudo so the simqa SSH user doesn't need to be root.
-        const restartCmd = `sudo service lte restart`;
+        // Core cfgs live in /root/mme/config and are picked from files already
+        // on the box (no upload path), so we only ever re-point the symlink the
+        // services read. A test needs the core up as well as the radio.
+        const coreLinks: Array<[string, string | undefined]> = [
+          ['mme.cfg', item.mmeCfg],
+          ['ims.cfg', item.imsCfg],
+        ];
+        // Relative, same as enb.cfg above: `mme.cfg -> demo-mme.cfg`.
+        for (const [linkName, pick] of coreLinks) {
+          if (!pick) continue;
+          // An uploaded core cfg isn't on the box yet — push it under its own
+          // name first, so the link reads the same as the operator's pick.
+          if (!existingCore.has(pick) && suite.uploadedConfigs?.[pick]) {
+            const buf = Buffer.from(suite.uploadedConfigs[pick], 'base64');
+            await withSsh(callboxSys, async (ssh) => {
+              const sftp = await ssh.requestSFTP();
+              await new Promise<void>((resolve, reject) => {
+                const ws = sftp.createWriteStream(`/root/mme/config/${pick}`);
+                ws.on('close', () => resolve());
+                ws.on('error', reject);
+                ws.end(buf);
+              });
+            });
+            existingCore.add(pick);
+            stepDetails.push(`cfg-push: scp ${buf.length}B → /root/mme/config/${pick}`);
+          }
+          await withSsh(callboxSys, async (ssh) => {
+            const prev = await ssh.execCommand(`readlink /root/mme/config/${linkName} || true`);
+            const prevTarget = (prev.stdout ?? '').trim();
+            if (linkName === 'mme.cfg') prevMmeLink = prevTarget; else prevImsLink = prevTarget;
+            const r = await ssh.execCommand(
+              `cd /root/mme/config && ln -sfn ${q(pick)} ${q(linkName)} && ls -la ${q(linkName)}`);
+            if (r.code !== 0) throw new Error(`ln ${linkName}: ${r.stderr || r.stdout || `exit ${r.code}`}`);
+          });
+          stepDetails.push(`cfg-link: ln -sfn ${pick} ${linkName}`);
+        }
+
+        // One unit — lte.service runs /root/ots/ltestart.sh, which launches enb,
+        // mme AND ims together (see ots.cfg's ENB/MME/IMS_CONFIG_FILE). There is
+        // no separate ltemme unit, so this single restart picks up all three
+        // symlinks. Going through sudo so the simqa SSH user needn't be root.
         await withSsh(callboxSys, async (ssh) => {
-          const r = await ssh.execCommand(restartCmd);
-          if (r.code !== 0) throw new Error(`restart: ${r.stderr || r.stdout || `exit ${r.code}`}`);
+          const r = await ssh.execCommand(`sudo service lte restart`);
+          if (r.code !== 0) throw new Error(`restart lte: ${r.stderr || r.stdout || `exit ${r.code}`}`);
         });
         await new Promise(r => setTimeout(r, 15_000));
-        stepDetails.push(`cfg-restart: lte restarted + 15s settle`);
+        stepDetails.push(`cfg-restart: lte restarted (enb+mme+ims) + 15s settle`);
       } catch (e: any) {
         steps.push({
           testcaseId: item.name, status: 0, ok: false,
@@ -660,14 +878,23 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       }
     }
 
-    // ── Phase 4-5: trigger + poll the Simnovator testcase
-    if (!token) {
-      steps.push({ testcaseId: item.name, status: 0, ok: false, detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}simnovator login failed`, durationMs: Date.now() - t0 });
+    // ── Phase 4-5: trigger + poll the testcase created in phase 0
+    //
+    // Rows run strictly in order. The previous row's execution may still be
+    // winding down, so wait for the simulator to go idle before triggering
+    // rather than colliding with the box's one-at-a-time mutex.
+    const stillBusy = await waitForSimulatorIdle(ueOpts.host, token, 120, opts.signal);
+    if (stillBusy) {
+      steps.push({
+        testcaseId: item.name, status: 409, ok: false,
+        detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}simulator still busy with "${stillBusy}" after 120s — not triggered`,
+        durationMs: Date.now() - t0,
+      });
       failed += 1; done += 1;
       if (suite.stopOnFail) break;
       continue;
     }
-    const durSec = item.durationSec ?? defaultDur;
+
     const triggerBody = JSON.stringify(simulatorId ? { simulatorId } : {});
     try {
       // See runUesimOnly above for why this is fire-and-forget + abort.
@@ -675,7 +902,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       const timer = setTimeout(() => ac.abort(), 3000);
       let r: { ok: boolean; status: number };
       try {
-        const resp = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(item.simnovatorTcId)}/executions`, {
+        const resp = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(runTcId)}/executions`, {
           method: 'POST', headers: H, body: triggerBody, signal: ac.signal,
         });
         r = { ok: resp.ok, status: resp.status };
@@ -689,7 +916,11 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       if (!triggerOk) {
         steps.push({
           testcaseId: item.name, status: r.status, ok: false,
-          detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}trigger ${r.status} — likely missing simulatorId in body`,
+          // 409 is the box's one-testcase-at-a-time mutex, not a bad request —
+          // calling it a missing simulatorId sent us chasing the wrong bug once.
+          detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}trigger ${r.status} — ${r.status === 409
+            ? 'a test case is already running on the simulator'
+            : 'rejected by the box (check simulatorId in the trigger body)'}`,
           durationMs: Date.now() - t0,
         });
         failed += 1;
@@ -701,14 +932,60 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       //    terminal state up to durationSec. execId is read from the
       //    polled lastExecution (we aborted the trigger response).
       await new Promise(res => setTimeout(res, 1500));
-      let finalState = await pollExecutionToTerminal(ueOpts.host, token, item.simnovatorTcId, undefined, durSec, opts.signal);
+
+      // Attach gate: once the UEs have had time to power on, check the UE
+      // simulator's log. A run where nothing attached is a real failure that the
+      // box would otherwise report as PASS, so cut it short instead of burning
+      // the rest of the duration on a test that cannot do anything.
+      if (ueSys) {
+        const grace = Math.min(ATTACH_CHECK_DELAY_SEC, durSec + POLL_MARGIN_SEC);
+        await new Promise(res => setTimeout(res, grace * 1000));
+        const ev = await gatherAttachEvidence(ueSys, createdName);
+        // Only a log that positively says the UE searched and found nothing is
+        // treated as failure. Silence is NOT evidence — the logging profile may
+        // simply not record the layer we looked at, and killing a healthy run
+        // over that is far worse than letting it play out.
+        const attached = ev ? ev.registered > 0 || ev.rrcConnected > 0 : false;
+        const definitelyNotAttached = !!ev && ev.sawLog && !attached && ev.noCell > 0;
+
+        if (definitelyNotAttached) {
+          const st = await fetchLastExecution(ueOpts.host, token, runTcId);
+          if (st?.executionId && !opts.signal?.aborted) {
+            await stopAndFinalize(ueOpts.host, token, runTcId, st.executionId, opts.signal, simulatorId);
+          }
+          steps.push({
+            testcaseId: item.name, status: r.status, ok: false, verdict: 'FAIL',
+            executionId: st?.executionId,
+            detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}no UE attached within ${grace}s `
+              + `("No cell available" ×${ev!.noCell}) — stopped. The UE never found the cell; `
+              + `check that the gnb cfg's band matches the testcase's band.`,
+            durationMs: Date.now() - t0,
+          });
+          failed += 1; done += 1;
+          if (suite.stopOnFail) break;
+          continue;
+        }
+
+        stepDetails.push(
+          !ev ? 'attach: UE log unreadable — not checked'
+          : ev.registered > 0 ? `attach: ${ev.registered} UE(s) registered`
+          : ev.rrcConnected > 0 ? `attach: ${ev.rrcConnected} UE(s) RRC-connected (profile logs no NAS)`
+          : 'attach: inconclusive at this point — letting the test run',
+        );
+      }
+
+      // The poll window has to outlast the test, not match it: durSec is the
+      // user-plane session length, and the box spends powerOnTime (session +
+      // ~50s) bringing UEs up around it. Waiting only durSec would stop a 5s
+      // test while it was still attaching.
+      let finalState = await pollExecutionToTerminal(ueOpts.host, token, runTcId, undefined, durSec + POLL_MARGIN_SEC, opts.signal);
       const execId = finalState?.executionId;
       let stoppedByUs = false;
       const naturallyDone = finalState?.status && TERMINAL_STATUSES.has(finalState.status);
       // 2. If the window expired before the test stopped on its own,
       //    POST stop and re-read the verdict from lastExecution.
       if (!naturallyDone && execId && !opts.signal?.aborted) {
-        const settled = await stopAndFinalize(ueOpts.host, token, item.simnovatorTcId, execId, opts.signal, simulatorId);
+        const settled = await stopAndFinalize(ueOpts.host, token, runTcId, execId, opts.signal, simulatorId);
         if (settled) finalState = settled;
         stoppedByUs = true;
       }
@@ -729,20 +1006,31 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       failed += 1;
       if (suite.stopOnFail) { done += 1; break; }
     } finally {
-      // Phase 6: per-item cleanup (default ON).
-      // Removes the simqa-<id>.cfg deploy file + the enb.cfg symlink so
-      // the callbox is left tidy for the next operator. Set
-      // suite.removeConfigAfterRun=false to keep the files for
-      // post-mortem inspection. Best-effort: a failed rm doesn't
-      // change the test verdict.
-      const cleanup = suite.removeConfigAfterRun !== false; // default true
-      if (cleanup && callboxSys && item.callboxCfg) {
+      // Phase 6: per-item cleanup — runs only once the execution has finished,
+      // and only when the suite opted in.
+      //
+      // "Back to normal" means the symlinks point at whatever they pointed at
+      // BEFORE this row ran, so the callbox is handed back as it was found. A
+      // cfg we uploaded is removed too, but never while a link still points at
+      // it (that would leave a dangling symlink). With the box left unchanged
+      // by default, an operator can see which cfg a run used.
+      if (suite.removeConfigAfterRun === true && callboxSys) {
+        const sq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
         try {
-          const deployName = `simqa-${safe(item.id)}.cfg`;
           await withSsh(callboxSys, async (ssh) => {
-            await ssh.execCommand(`rm -f "/root/enb/config/${deployName}" "/root/enb/config/enb.cfg"`);
+            if (prevEnbLink) {
+              await ssh.execCommand(`cd /root/enb/config && ln -sfn ${sq(prevEnbLink)} 'enb.cfg' && ls -la 'enb.cfg'`);
+            }
+            for (const [linkName, prev] of [['mme.cfg', prevMmeLink], ['ims.cfg', prevImsLink]] as const) {
+              if (prev) await ssh.execCommand(`cd /root/mme/config && ln -sfn ${sq(prev)} ${sq(linkName)}`);
+            }
+            if (pushedCfg) {
+              await ssh.execCommand(
+                `cd /root/enb/config && [ "$(readlink enb.cfg)" != ${sq(pushedCfg)} ] && rm -f ${sq(pushedCfg)} || true`);
+            }
           });
-        } catch { /* cleanup is best-effort */ }
+          stepDetails.push('cfg-restore: callbox symlinks put back');
+        } catch { /* cleanup is best-effort — never changes the verdict */ }
       }
     }
     done += 1;
@@ -756,7 +1044,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     kind: suite.kind ?? 'uesim-only',
     uesimHost: ueOpts.host,
     callboxHost: callboxSys?.host,
-    total, passed, failed, steps,
+    total, passed, failed, steps: rawSteps,
     buildVersion,
   };
 }
@@ -793,6 +1081,7 @@ export async function runSuite(suite: AutomationSuite, opts: RunOpts = {}): Prom
     ...summary,
     runId: newRunId(),
     buildVersion: (summary as any).buildVersion,
+    submittedBy: opts.submittedBy,
     diagnostics,
   };
   saveRun(rec);
@@ -818,6 +1107,7 @@ export async function runSuite(suite: AutomationSuite, opts: RunOpts = {}): Prom
         kind: rec.kind,
         callboxHost: rec.callboxHost,
         diagnostics: !!diagnostics,
+        submittedBy: rec.submittedBy,
       },
     });
   } catch { /* history side-channel */ }

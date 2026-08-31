@@ -9,7 +9,10 @@ import { cn } from '@/lib/cn';
 export function Card({ className, ...rest }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn('bg-white border border-slate-200 rounded-lg shadow-sm', className)} {...rest} />;
 }
-export function CardHeader({ className, ...rest }: React.HTMLAttributes<HTMLDivElement>) {
+// ComponentPropsWithRef (not HTMLAttributes) so callers can attach a ref —
+// React 19 passes ref through as a normal prop. The Test Cases toolbar needs
+// one to measure its height for the sticky table header offset.
+export function CardHeader({ className, ...rest }: React.ComponentPropsWithRef<'div'>) {
   return <div className={cn('px-5 py-4 border-b border-slate-100', className)} {...rest} />;
 }
 export function CardTitle({ className, ...rest }: React.HTMLAttributes<HTMLHeadingElement>) {

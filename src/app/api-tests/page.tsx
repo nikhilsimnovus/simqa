@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Header } from '@/components/Header';
+import { BackToRunHistory } from '@/components/BackToRunHistory';
 import { Card, CardBody, CardHeader, CardTitle, Button, Badge, Stat, Input } from '@/components/ui';
 import { CheckCircle2, XCircle, MinusCircle, Loader2, Beaker, Download, Copy, ChevronRight, ChevronDown, Filter } from 'lucide-react';
 
@@ -80,39 +81,46 @@ const ALL_CATEGORIES: Category[] = [
 ];
 
 type StatusFilter = 'all' | 'failed' | 'passed' | 'skipped';
-type SortBy = 'failures-first' | 'slowest' | 'name' | 'category';
+type SortBy = 'failed-first' | 'passed-first';
 
 export default function ApiTestsPage() {
   const [enabled, setEnabled] = useState<Set<Category>>(new Set(DEFAULT_CATEGORIES));
   const [includeDestructive, setIncludeDestructive] = useState(false);
   const [includeLongRunning, setIncludeLongRunning] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const [data, setData] = useState<Response | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   // Filtering / sorting state
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState<SortBy>('failures-first');
+  const [sortBy, setSortBy] = useState<SortBy>('failed-first');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  // Target system picker — same flow as /ui-tests: list testable systems
-  // from inventory, persist the last choice in localStorage so a refresh
-  // doesn't reset the dropdown.
+  // System picker. /api/ui-tests/systems also returns UE and callbox entries
+  // (the /ui-tests page drives those too), but every test in this catalogue
+  // targets the Simnovator REST API — a UE or callbox host has no /v2 surface
+  // to test, so they're filtered out here rather than in the shared route.
   const [systems, setSystems] = useState<TestSystem[] | null>(null);
   const [targetSystemId, setTargetSystemId] = useState<string>('');
   useEffect(() => {
     fetch('/api/ui-tests/systems').then((r) => r.json()).then((j) => {
-      const list: TestSystem[] = j.systems ?? [];
+      const list: TestSystem[] = (j.systems ?? []).filter(
+        (s: TestSystem) => s.type === 'SIMNOVATOR' || s.type === 'SIMNOVATOR_GUI',
+      );
       setSystems(list);
-      const stored = (typeof window !== 'undefined' ? localStorage.getItem('simqa-target-system') : null) ?? '';
+      // Own key, not the 'simqa-target-system' one /ui-tests uses: that page's
+      // picker includes UE and callbox systems this one deliberately excludes,
+      // so sharing the key means each page silently resets the other's choice.
+      const stored = (typeof window !== 'undefined' ? localStorage.getItem('simqa-api-tests-target-system') : null) ?? '';
       const valid = list.find((s) => s.id === stored);
       if (valid) setTargetSystemId(valid.id);
       else if (list.length > 0) setTargetSystemId(list[0].id);
     }).catch(() => setSystems([]));
   }, []);
   useEffect(() => {
-    if (typeof window !== 'undefined' && targetSystemId) localStorage.setItem('simqa-target-system', targetSystemId);
+    if (typeof window !== 'undefined' && targetSystemId) localStorage.setItem('simqa-api-tests-target-system', targetSystemId);
   }, [targetSystemId]);
 
   function toggle(c: Category) {
@@ -125,6 +133,9 @@ export default function ApiTestsPage() {
 
   async function run() {
     setBusy(true); setErr(null); setData(null); setExpanded(new Set());
+    setElapsed(0);
+    const startedAt = Date.now();
+    const tick = setInterval(() => setElapsed(Math.round((Date.now() - startedAt) / 1000)), 1000);
     try {
       const r = await fetch('/api/api-tests', {
         method: 'POST',
@@ -134,46 +145,65 @@ export default function ApiTestsPage() {
           includeDestructive, includeLongRunning,
           targetSystemId: targetSystemId || undefined,
         }),
+        // A sweep with exports enabled legitimately runs for minutes. Without a
+        // ceiling a stalled box leaves the page spinning with no explanation.
+        signal: AbortSignal.timeout(900_000),
       });
       const j: Response = await r.json();
       setData(j);
       // Auto-expand failures.
       setExpanded(new Set(j.results.filter((x) => !x.ok).map((x) => x.id)));
     } catch (e: any) {
-      setErr(e?.message ?? String(e));
+      setErr(e?.name === 'TimeoutError'
+        ? 'The run exceeded 15 minutes and was cancelled — the Simnovator or one of the export calls is not responding.'
+        : (e?.message ?? String(e)));
     } finally {
+      clearInterval(tick);
       setBusy(false);
     }
   }
 
-  // Apply filters + sort.
-  const visible = useMemo(() => {
-    if (!data) return [] as TestResult[];
+  // Apply filters + sort, then bucket by category. Groups are emitted in
+  // catalogue order (the same order the categories appear in the sidebar and
+  // in which the runner executes them) so the layout doesn't reshuffle
+  // between runs; the sort control only reorders rows WITHIN a group.
+  const groups = useMemo(() => {
+    if (!data) return [] as Array<{ category: Category; label: string; rows: TestResult[] }>;
     const ql = search.trim().toLowerCase();
-    let list = data.results.filter((r) => {
+    const kept = data.results.filter((r) => {
       if (statusFilter === 'failed'  && r.ok)         return false;
       if (statusFilter === 'passed'  && (!r.ok || r.skipped)) return false;
       if (statusFilter === 'skipped' && !r.skipped)   return false;
       if (ql) {
-        const hay = `${r.id} ${r.name} ${r.method} ${r.endpoint} ${r.detail ?? ''}`.toLowerCase();
+        const hay = `${r.id} ${r.name} ${r.method} ${r.endpoint} ${r.category} ${r.detail ?? ''} ${r.skippedReason ?? ''}`.toLowerCase();
         if (!hay.includes(ql)) return false;
       }
       return true;
     });
-    list = [...list];
-    list.sort((a, b) => {
-      switch (sortBy) {
-        case 'slowest':  return (b.durationMs ?? 0) - (a.durationMs ?? 0);
-        case 'name':     return a.name.localeCompare(b.name);
-        case 'category': return a.category.localeCompare(b.category) || a.name.localeCompare(b.name);
-        case 'failures-first':
-        default:
-          const rank = (r: TestResult) => r.skipped ? 2 : (r.ok ? 1 : 0);
-          return rank(a) - rank(b) || a.name.localeCompare(b.name);
+    // failed(0) → passed(1) → skipped(2), or the reverse for passed-first.
+    // Skipped always sorts last either way: it is an absence of a result, not
+    // a milder pass, so floating it above real outcomes would bury them.
+    const rank = (r: TestResult) => (r.skipped ? 2 : r.ok ? 1 : 0);
+    const cmp = (a: TestResult, b: TestResult) => {
+      const ra = rank(a), rb = rank(b);
+      if (ra !== rb) {
+        if (ra === 2 || rb === 2) return ra - rb;
+        return sortBy === 'passed-first' ? rb - ra : ra - rb;
       }
-    });
-    return list;
+      return a.name.localeCompare(b.name);
+    };
+    const byCat = new Map<Category, TestResult[]>();
+    for (const r of kept) {
+      const arr = byCat.get(r.category) ?? [];
+      arr.push(r);
+      byCat.set(r.category, arr);
+    }
+    return (Object.keys(CATEGORY_LABELS) as Category[])
+      .filter((c) => byCat.has(c))
+      .map((c) => ({ category: c, label: CATEGORY_LABELS[c], rows: byCat.get(c)!.sort(cmp) }));
   }, [data, statusFilter, search, sortBy]);
+
+  const visibleCount = useMemo(() => groups.reduce((n, g) => n + g.rows.length, 0), [groups]);
 
   function toggleExpand(id: string) {
     const next = new Set(expanded);
@@ -198,10 +228,14 @@ export default function ApiTestsPage() {
 
   function downloadFailures() {
     if (!data) return;
-    const failures = data.results.filter((r) => !r.ok && !r.skipped);
+    const failures = data.results.filter((r) => !r.ok);
     const bundle = {
       box: { reportedAt: data.finishedAt },
-      summary: { ...data.counts, total: failures.length, kind: 'failures-only' },
+      // Counts describe THIS bundle, not the whole run — spreading data.counts
+      // here used to leave the full run's passed/skipped totals sitting inside
+      // a failures-only file, which read as "67 passed" in a download that
+      // contained nothing but failures.
+      summary: { kind: 'failures-only', total: failures.length, failed: failures.length, ofRun: data.counts },
       generatedAt: new Date().toISOString(),
       tool: 'simqa api-tests',
       results: failures,
@@ -230,7 +264,8 @@ export default function ApiTestsPage() {
     <>
       <Header
         title="API Tests"
-        subtitle="Endpoint-by-endpoint coverage of the Simnovator REST surface"
+        left={<BackToRunHistory />}
+        subtitle="Test each Simnovator API endpoint to ensure it works correctly and returns the expected results."
         right={
           <div className="flex items-center gap-2">
             {data ? (
@@ -245,20 +280,26 @@ export default function ApiTestsPage() {
             ) : null}
             <Button size="sm" onClick={run} disabled={busy}>
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Beaker className="h-4 w-4" />}
-              {busy ? 'Running…' : 'Run tests'}
+              {busy ? `Running… ${elapsed}s` : 'Run'}
             </Button>
           </div>
         }
       />
-      <main className="p-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-1 space-y-4">
+      <main className="p-6 grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+        {/* self-start + sticky keeps the controls in place while the results
+            column scrolls. Offsets are measured off the app Header (h-14 =
+            3.5rem, sticky top-0) plus this main's p-6: top-20 parks the column
+            below it, and the max-height subtracts header + both paddings so a
+            category list taller than the viewport stays fully reachable via
+            its own scroll rather than being clipped once pinned. */}
+        <div className="lg:col-span-1 space-y-4 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6.5rem)] lg:overflow-y-auto lg:pr-1">
           <Card>
-            <CardHeader><CardTitle>Test target</CardTitle></CardHeader>
-            <CardBody className="space-y-2 text-sm">
+            <CardHeader><CardTitle>System</CardTitle></CardHeader>
+            <CardBody className="text-sm">
               {!systems ? (
                 <div className="text-xs text-slate-500">Loading systems…</div>
               ) : systems.length === 0 ? (
-                <div className="text-xs text-red-700">No UESIM / Simnovator / Callbox systems in inventory.yaml.</div>
+                <div className="text-xs text-red-700">No Simnovator systems in inventory.yaml.</div>
               ) : (
                 <select
                   value={targetSystemId}
@@ -267,13 +308,10 @@ export default function ApiTestsPage() {
                   className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 bg-white"
                 >
                   {systems.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name} ({s.host}) · {s.type}</option>
+                    <option key={s.id} value={s.id}>{s.name} ({s.host})</option>
                   ))}
                 </select>
               )}
-              <div className="text-[10px] text-slate-500 pt-1">
-                The API runner logs in with the UESIM REST credentials on the selected system.
-              </div>
             </CardBody>
           </Card>
           <Card>
@@ -321,6 +359,8 @@ export default function ApiTestsPage() {
               </label>
               <div className="text-[11px] text-slate-500 pt-1">
                 Destructive tests create + delete throwaway resources. Auth tokens are redacted in downloads.
+                Most long-running tests are destructive too, so they need <em>both</em> boxes ticked — each
+                skipped test says which options it is waiting on.
               </div>
             </CardBody>
           </Card>
@@ -367,48 +407,75 @@ export default function ApiTestsPage() {
                     })}
                   </div>
                   <div className="flex-1 min-w-[180px]">
-                    <Input placeholder="Search id / endpoint / detail…" value={search} onChange={(e) => setSearch(e.target.value)} />
+                    <Input
+                      placeholder="Search name, endpoint, category, result…"
+                      title="Matches the test name, its id, the HTTP method, the endpoint path, the category, the result detail line, and the skip reason. It does not search request or response bodies."
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                    />
                   </div>
                   <select
                     value={sortBy}
                     onChange={(e) => setSortBy(e.target.value as SortBy)}
                     className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900"
                   >
-                    <option value="failures-first">Failures first</option>
-                    <option value="slowest">Slowest first</option>
-                    <option value="name">Name</option>
-                    <option value="category">Category</option>
+                    <option value="failed-first">Failed first</option>
+                    <option value="passed-first">Passed first</option>
                   </select>
                 </CardBody>
               </Card>
 
               <Card>
                 <CardHeader className="flex items-center justify-between">
-                  <CardTitle>Results <span className="text-xs text-slate-500 font-normal">({visible.length} shown)</span></CardTitle>
+                  <CardTitle>Results <span className="text-xs text-slate-500 font-normal">({visibleCount} shown)</span></CardTitle>
                   {data.ok ? <Badge tone="success">all passed</Badge> : <Badge tone="danger">failures</Badge>}
                 </CardHeader>
                 <CardBody className="p-0">
-                  {visible.length === 0 ? (
+                  {groups.length === 0 ? (
                     <div className="p-5 text-sm text-slate-500">No results match the filter.</div>
                   ) : (
-                    <ul className="divide-y divide-slate-100">
-                      {visible.map((r) => (
-                        <TestRow
-                          key={r.id}
-                          r={r}
-                          expanded={expanded.has(r.id)}
-                          onToggle={() => toggleExpand(r.id)}
-                          onDownload={() => downloadOne(r)}
-                          onCopyCurl={() => copyAsCurl(r)}
-                        />
-                      ))}
-                    </ul>
+                    groups.map((g) => {
+                      const failed  = g.rows.filter((r) => !r.ok).length;
+                      const skipped = g.rows.filter((r) => r.skipped).length;
+                      const passed  = g.rows.length - failed - skipped;
+                      return (
+                        <section key={g.category}>
+                          {/* top-14 parks the heading flush under the app
+                              Header; z below the Header's z-10 so it can never
+                              paint over it. */}
+                          <div className="sticky top-14 z-[5] flex items-center gap-2 px-5 py-2 bg-slate-100/95 backdrop-blur border-y border-slate-200">
+                            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-600">{g.label}</h3>
+                            <span className="text-[11px] text-slate-500">
+                              {passed} passed
+                              {failed ? <span className="text-red-700"> · {failed} failed</span> : null}
+                              {skipped ? <span> · {skipped} skipped</span> : null}
+                            </span>
+                          </div>
+                          <ul className="divide-y divide-slate-100">
+                            {g.rows.map((r) => (
+                              <TestRow
+                                key={r.id}
+                                r={r}
+                                expanded={expanded.has(r.id)}
+                                onToggle={() => toggleExpand(r.id)}
+                                onDownload={() => downloadOne(r)}
+                                onCopyCurl={() => copyAsCurl(r)}
+                              />
+                            ))}
+                          </ul>
+                        </section>
+                      );
+                    })
                   )}
                 </CardBody>
               </Card>
             </>
           ) : (
-            <Card><CardBody><div className="text-sm text-slate-500">{busy ? 'Running…' : 'Pick categories on the left and hit Run tests.'}</div></CardBody></Card>
+            <Card><CardBody><div className="text-sm text-slate-500">
+              {busy
+                ? `Running… ${elapsed}s elapsed. Long-running exports and destructive tests can take several minutes.`
+                : 'Pick Simnovator from the systems and hit Run.'}
+            </div></CardBody></Card>
           )}
         </div>
       </main>

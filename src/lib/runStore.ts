@@ -20,6 +20,14 @@ export type RunStatus = 'queued' | 'running' | 'passed' | 'failed' | 'cancelled'
 export interface RunRecord {
   id: string;
   testcaseId: string;
+  /** Human name captured when the run fetched the testcase, so run views can
+   *  show it instead of the raw UUID. Absent on runs recorded before this
+   *  existed, and on runs that failed before the fetch. */
+  testcaseName?: string;
+  /** The testcase's own verdict on the box (PASS / INCOMPLETE / FAIL / ERROR)
+   *  at the time this workflow ran. Distinct from `status`, which only says
+   *  whether the workflow's steps succeeded. */
+  testcaseResult?: string;
   topology?: string;            // profile id
   startedAt: string;
   finishedAt?: string;

@@ -162,7 +162,7 @@ fi
 log "Writing systemd unit to ${SYSTEMD_UNIT}"
 cat > "${SYSTEMD_UNIT}" <<UNIT
 [Unit]
-Description=simqa — QA Ka BAAP, Next.js UI for Simnovator
+Description=simqa — SimQA, Next.js UI for Simnovator
 After=network-online.target
 Wants=network-online.target
 

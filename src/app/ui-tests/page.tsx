@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Header } from '@/components/Header';
+import { BackToRunHistory } from '@/components/BackToRunHistory';
 import { Card, CardBody, CardHeader, CardTitle, Button, Badge, Input } from '@/components/ui';
 import {
   CheckCircle2, XCircle, Loader2, MousePointerClick, ChevronRight, ChevronDown,
@@ -161,11 +162,19 @@ export default function UiTestsPage() {
   // Load testable systems from inventory + restore last-used target from localStorage
   useEffect(() => {
     fetch('/api/ui-tests/systems').then((r) => r.json()).then((j) => {
-      setSystems(j.systems ?? []);
+      // The shared route also returns UE and callbox entries, but every check
+      // in this catalogue drives the Simnovator management UI — a UE or
+      // callbox host serves no such interface, so pointing a run at one only
+      // produces a browser timeout. Filtered here rather than in the route,
+      // which other callers still use for the full list.
+      const list: TestSystem[] = (j.systems ?? []).filter(
+        (s: TestSystem) => s.type === 'SIMNOVATOR' || s.type === 'SIMNOVATOR_GUI',
+      );
+      setSystems(list);
       const stored = (typeof window !== 'undefined' ? localStorage.getItem('simqa-target-system') : null) ?? '';
-      const valid = (j.systems ?? []).find((s: TestSystem) => s.id === stored);
+      const valid = list.find((s) => s.id === stored);
       if (valid) setTargetSystemId(valid.id);
-      else if ((j.systems ?? []).length > 0) setTargetSystemId(j.systems[0].id);
+      else if (list.length > 0) setTargetSystemId(list[0].id);
     }).catch(() => setSystems([]));
   }, []);
 
@@ -391,7 +400,8 @@ export default function UiTestsPage() {
     <>
       <Header
         title="UI Tests"
-        subtitle="Browser-driven validation of the Simnovator management UI"
+        left={<BackToRunHistory />}
+        subtitle="Browser-based validation to ensure the Simnovator management interface functions correctly and reliably"
         right={
           <div className="flex items-center gap-2">
             {data && data.counts.failed > 0 ? (
@@ -448,14 +458,16 @@ export default function UiTestsPage() {
 
       <main className="p-6 grid grid-cols-1 lg:grid-cols-4 gap-4">
         {/* Sidebar */}
-        <aside className="lg:col-span-1 space-y-4">
+        {/* Sticky so scrolling the (much longer) results column doesn't drag
+            the target picker and category list out of view. */}
+        <aside className="lg:col-span-1 space-y-4 lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
           <Card>
-            <CardHeader><CardTitle>Test target</CardTitle></CardHeader>
+            <CardHeader><CardTitle>System</CardTitle></CardHeader>
             <CardBody className="space-y-2 text-sm">
               {!systems ? (
                 <div className="text-xs text-slate-500">Loading systems…</div>
               ) : systems.length === 0 ? (
-                <div className="text-xs text-red-700">No UESIM/CALLBOX systems in inventory.yaml.</div>
+                <div className="text-xs text-red-700">No Simnovator systems in inventory.yaml.</div>
               ) : (
                 <select
                   value={targetSystemId}
@@ -482,9 +494,6 @@ export default function UiTestsPage() {
                   ))}
                 </div>
               ) : null}
-              <div className="text-[11px] text-slate-500 leading-relaxed pt-1">
-                Different teammates can target different boxes in parallel. Same box queues.
-              </div>
             </CardBody>
           </Card>
 

@@ -1,4 +1,4 @@
-# QA Ka BAAP
+# SimQA
 
 Automated QA tooling for the Simnovator UESIM product. A Next.js web app that
 covers the full lifecycle: install a build, validate it, drive the UI through

@@ -3,9 +3,10 @@
 //
 //   1. SIMQA_VERSION env var — explicit override.
 //   2. SIMQA_VERSION.txt at project root — written by release.cjs at
-//      tarball-pack time. Survives renames of the qakabaap-<sha>/ dir.
-//   3. process.cwd() basename — matches qakabaap-<YYYYMMDD>-<sha> pattern
-//      when the user runs the unrenamed extracted tarball.
+//      tarball-pack time. Survives renames of the extracted release dir.
+//   3. process.cwd() basename — matches simqa-<YYYYMMDD>-<sha> (and the
+//      legacy qakabaap-<YYYYMMDD>-<sha>) pattern when the user runs the
+//      unrenamed extracted tarball.
 //   4. `git rev-parse --short HEAD` — works in a git checkout (dev).
 //   5. "dev (unknown)" fallback.
 //
@@ -37,7 +38,11 @@ let cached: SimqaVersion | undefined;
 
 const ROOT = process.cwd();
 const VERSION_TXT = path.join(ROOT, 'SIMQA_VERSION.txt');
-const VERSION_RE = /^(qakabaap-)?(\d{8})-([a-f0-9]{7,40})$/i;
+// Both prefixes are accepted on purpose: the app is now SimQA, but tarballs
+// released under the old name extract to qakabaap-<date>-<sha>/ and are still
+// deployed. Dropping the old prefix would make those installs report
+// "dev (unknown)" instead of their real version.
+const VERSION_RE = /^(simqa-|qakabaap-)?(\d{8})-([a-f0-9]{7,40})$/i;
 
 export function getSimqaVersion(): SimqaVersion {
   if (cached) return cached;
@@ -70,7 +75,7 @@ export function getSimqaVersion(): SimqaVersion {
     }
   } catch { /* fall through */ }
 
-  // 3. cwd basename — matches qakabaap-<date>-<sha>.
+  // 3. cwd basename — matches simqa-<date>-<sha> (or the legacy prefix).
   const cwdBase = path.basename(ROOT);
   const m = cwdBase.match(VERSION_RE);
   if (m) {

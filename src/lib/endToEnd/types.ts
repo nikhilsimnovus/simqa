@@ -50,9 +50,16 @@ export interface RunStatusSnapshot {
   systemId?: string;
   systemHost?: string;
   testcaseId?: string;
+  /** Testcase display name, once preflight has discovered it. Undefined for
+   *  the first tick or two of a run. */
+  testcaseName?: string;
   executionId?: string;
   startedAt?: string;
   phase?: Phase;
+  /** Configured test duration in seconds, parsed from testcase metadata by
+   *  the preflight check that also discovers testcaseName. Undefined until
+   *  then, or if the box's testcase metadata has no duration field. */
+  configuredDurationSec?: number;
   /** Catalog-order checks with their current verdict. Includes pending +
    *  running flavours for the UI to render spinners on in-flight rows. */
   checks?: (CheckResult | { id: string; name: string; phase: Phase; severity: Severity; description: string; status: 'pending' | 'running' })[];
@@ -109,6 +116,10 @@ export interface RunRequest {
   options?: RunOptions;
   /** When re-running just specific checks, pass the ids — others are skipped. */
   onlyCheckIds?: string[];
+  /** Symlink these cfg files into place on the target's callbox — see
+   *  src/lib/labCfgLink.ts — before preflight proceeds. Omit for a plain
+   *  REST-only validation run (unchanged default behaviour). */
+  cfgSelection?: { enb?: string; mme?: string; ims?: string };
 }
 
 export interface RunOptions {

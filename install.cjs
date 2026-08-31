@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Cross-platform installer for QA Ka BAAP.
+ * Cross-platform installer for SimQA.
  *
  * Run after extracting the release tarball. Works on Windows, Linux, macOS —
  * the only prerequisite is Node 18+, which you need anyway to run the app.
@@ -166,7 +166,7 @@ const sep = '─'.repeat(60);
 const effectivePort = CUSTOM_PORT || '4000';
 console.log(`
 ${C.green}${sep}${C.reset}
-${C.bold}QA Ka BAAP installed.${C.reset}
+${C.bold}SimQA installed.${C.reset}
 
 Installed at:
   ${C.dim}${here}${C.reset}

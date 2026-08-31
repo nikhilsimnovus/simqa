@@ -71,6 +71,15 @@ const MODULE_MAP: Record<ModuleName, ModuleEntry> = {
   ue_db: { configPath: '/root/mme/config/ue_db.cfg', service: '',       checkPort: 0    },
 };
 
+/** Where a module's config lives on a lab box — the same path deploy writes
+ *  to, so collectors read back exactly what deploy would overwrite. */
+export function moduleConfigPath(module: ModuleName): string {
+  return MODULE_MAP[module].configPath;
+}
+
+/** Module names, for validating inventory `collect:` entries. */
+export const MODULE_NAMES = Object.keys(MODULE_MAP) as ModuleName[];
+
 export interface DeployStep {
   step: string;
   ok: boolean;

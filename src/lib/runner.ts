@@ -5,12 +5,13 @@ import {
   ensureToken, getTestcase, listSimulators,
   startExecution, getBoxVersion, type TestcaseSummary,
 } from './uesimClient';
+import { findBusy } from './executions';
 import { runRunVerification } from './verification';
 import { generateConfigs, type UesimTestDefinition } from './cfgGenerator';
 import { deployBundle } from './deploy';
 import {
   type Inventory, type TopologyProfile, type InventorySystem,
-  getProfile, getSystem, uesimApiOptsFromInventory,
+  getProfile, getSystem, uesimApiOptsForSystem,
 } from './inventory';
 import {
   type RunRecord, type RunStep,
@@ -20,6 +21,8 @@ import {
 export interface RunRequest {
   testcaseId: string;
   topologyId?: string;
+  /** Which UESIM the testcase lives on. Omitted → first UESIM in inventory. */
+  systemId?: string;
   dryRun?: boolean;
   /** Skip trigger + poll. Useful for cfg-only round-trips. */
   noTrigger?: boolean;
@@ -97,7 +100,10 @@ export async function executeRun(inv: Inventory, req: RunRequest): Promise<RunRe
   };
   saveRun(run);
 
-  // 1. Resolve UESIM API opts (from topology -> inventory, or inventory default).
+  // 1. Resolve UESIM API opts. Precedence: the topology profile's pinned box,
+  //    then the caller's explicit systemId, then the first UESIM in inventory.
+  //    Without the systemId hop a testcase browsed on box B was fetched from
+  //    box A and the run died with "404 Test case not found".
   const profile = req.topologyId ? getProfile(inv, req.topologyId) : undefined;
   // profile.uesim is optional as of 2026-05-12 — fall back to inventory
   // default when the topology profile doesn't pin a UESIM box.
@@ -108,7 +114,7 @@ export async function executeRun(inv: Inventory, req: RunRequest): Promise<RunRe
       username: uesimSys.uesim?.username ?? 'admin',
       password: uesimSys.uesim?.password ?? 'admin',
     }) ||
-    uesimApiOptsFromInventory(inv);
+    uesimApiOptsForSystem(inv, req.systemId);
   if (!apiOpts) {
     run.steps.push(step('preflight', false, 'No UESIM system in inventory.yaml'));
     run.status = 'failed';
@@ -150,8 +156,13 @@ export async function executeRun(inv: Inventory, req: RunRequest): Promise<RunRe
   try {
     const t0 = Date.now();
     tc = await getTestcase(apiOpts, req.testcaseId);
+    if (tc.name) run.testcaseName = tc.name;
+    // Snapshot the box's verdict for this testcase so the run page can report
+    // the TESTCASE outcome, not just whether the workflow's steps ran.
+    const lastResult = (tc.metadata as any)?.lastExecution?.result;
+    if (lastResult) run.testcaseResult = String(lastResult);
     if (!tc.testDefinition) throw new Error('testcase has no testDefinition');
-    bundle = generateConfigs(tc.testDefinition as UesimTestDefinition, req.testcaseId);
+    bundle = generateConfigs(tc.testDefinition as UesimTestDefinition, req.testcaseId, { testcaseName: tc.name });
     ensureRunDir(id);
     for (const [name, content] of Object.entries(bundle.files)) {
       writeRunFile(id, name, content);
@@ -212,6 +223,21 @@ export async function executeRun(inv: Inventory, req: RunRequest): Promise<RunRe
   if (req.dryRun || req.noTrigger) {
     run.steps.push(step('trigger', true, req.dryRun ? 'skipped (dry-run)' : 'skipped (--no-trigger)'));
   } else {
+    // The box runs ONE testcase at a time. Starting a second gives an opaque
+    // API error, so check first and fail with something the user can act on.
+    try {
+      const busy = await findBusy(apiOpts);
+      if (busy) {
+        const what = busy.testCaseName ?? busy.testCaseId ?? 'another test case';
+        run.steps.push(step('trigger', false,
+          `A test case is already running — testcase ${what}. Stop it before starting another, or try again once it finishes.`));
+        run.status = 'failed';
+        run.finishedAt = new Date().toISOString();
+        saveRun(run);
+        return run;
+      }
+    } catch { /* couldn't check — let the trigger below report the real error */ }
+
     try {
       const t0 = Date.now();
       const r = await startExecution(apiOpts, req.testcaseId, {});
@@ -279,8 +305,8 @@ export async function executeRun(inv: Inventory, req: RunRequest): Promise<RunRe
   return run;
 }
 
-export async function discoverSimulators(inv: Inventory) {
-  const apiOpts = uesimApiOptsFromInventory(inv);
+export async function discoverSimulators(inv: Inventory, systemId?: string) {
+  const apiOpts = uesimApiOptsForSystem(inv, systemId);
   if (!apiOpts) return { items: [] as any[] };
   return listSimulators(apiOpts);
 }

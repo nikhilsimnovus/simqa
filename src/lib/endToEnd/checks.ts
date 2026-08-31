@@ -417,6 +417,39 @@ function probeAnonymousFtp(host: string, port = 21, timeoutMs = 5000): Promise<F
   });
 }
 
+// Symlink the caller's picked cfg files into place on the callbox and bring
+// the radio stack back up — the same bring-up Automation Suite already does,
+// extracted to src/lib/labCfgLink.ts so this and that share one
+// implementation. Only does anything when the run was started with a
+// cfgSelection (src/app/testcases/[id]'s "Run Configuration" picker); a plain
+// REST-only validation run skips this cleanly, the same way
+// preflightApiResponsive skips when there's no token.
+const preflightCfgBringUp: CheckDef = {
+  id: 'preflight-cfg-bring-up',
+  name: 'Callbox cfg bring-up',
+  description: 'Symlink the selected enb/mme/ims cfg files into place on the callbox and restart lte, so the run actually exercises the chosen configuration rather than whatever was already linked.',
+  phase: 'preflight', severity: 'critical',
+  destructive: true,
+  run: async (ctx) => {
+    const base = {
+      id: 'preflight-cfg-bring-up', name: 'Callbox cfg bring-up', phase: 'preflight' as Phase, severity: 'critical' as Severity,
+      description: 'Symlink the selected enb/mme/ims cfg files into place on the callbox and restart lte, so the run actually exercises the chosen configuration rather than whatever was already linked.',
+    };
+    const sel = ctx.cfgSelection;
+    if (!sel || (!sel.enb && !sel.mme && !sel.ims)) {
+      return makeResult(base, 'skip', 'no cfg files selected for this run');
+    }
+    if (!ctx.callbox) {
+      return makeResult(base, 'fail', 'no callbox bound to this Simnovator in Systems Management → Topology Setup — cannot link the selected files');
+    }
+    const t0 = Date.now();
+    const { linkAndRestart } = await import('../labCfgLink');
+    const r = await linkAndRestart(ctx.callbox, sel);
+    const detail = r.steps.map((s) => `${s.step}${s.ok ? '' : ' FAILED'}: ${s.detail}`).join('; ');
+    return makeResult(base, r.ok ? 'pass' : 'fail', detail, { durationMs: Date.now() - t0 });
+  },
+};
+
 // SIM40-2227: the box ships an FTP service that grants anonymous login,
 // exposing run artifacts/configs to anyone on the management network. This
 // probe is read-only in effect (a login attempt, no STOR/DELE/RETR ever sent).
@@ -544,17 +577,29 @@ const duringStatusRunning: CheckDef = {
   },
 };
 
+// Cell bring-up + subscriber registration on real hardware is a mostly
+// FIXED cost — it doesn't shrink just because a testcase's configured
+// (traffic) duration is short. Observed live: a 131s-configured run took
+// 227.3s wall-clock end to end, ~96s of which was attach/settle overhead
+// unrelated to the configured traffic window. duringZombieExecution's own
+// grace period independently arrived at the same ~120s figure for "how
+// long attach legitimately takes" — reused here as one named constant
+// instead of three separately-guessed numbers.
+const ATTACH_SETTLE_MS = 120_000;
+
 // Both during-* checks below use these helpers:
 //
-// Timeout scales with the testcase's configured duration. 60s was the
-// old hardcoded cap, which is too short for any testcase that takes
-// >30s to bring up a PDU session (essentially all real data-plane tests
-// on IP loopback). New cap: min(180s, configuredDuration / 3) with a
-// 60s floor so very short testcases still get a fair shot.
+// Timeout for "does X eventually happen" during-checks (UE attach,
+// throughput ramp-up, per-cell traffic). Previously scaled as
+// configuredDuration / 3 with a 60s floor — for a 131s-configured
+// testcase that's a 60s window, well under the ~120s attach/settle cost
+// above, so checks gave up before the fleet had a real chance to finish
+// attaching (61/64 UEs at 63s, then reported FAIL, even though all 64
+// went on to attach later in the same run). Track the full configured
+// duration instead of a fraction of it, floored at the settle cost.
 function deriveDuringTimeoutMs(ctx: any): number {
   const configured = ctx.configuredDurationSec ?? 60;
-  const scaled = Math.floor((configured * 1000) / 3);
-  return Math.max(60_000, Math.min(180_000, scaled));
+  return Math.max(ATTACH_SETTLE_MS, Math.min(240_000, configured * 1000));
 }
 
 const duringUeAttach: CheckDef = {
@@ -580,15 +625,28 @@ const duringUeAttach: CheckDef = {
   },
 };
 
+// Minimum throughput a run must reach to count as PASS. Below "nonzero" —
+// dl_bitrate ticking up from ramp-up noise (a few kbps) used to satisfy the
+// old ">0" bar and reported PASS on traffic that never really got going.
+// These are absolute floors, not the testcase's own configured target
+// (userPlaneConfig.profiles[].dataBitrate) — a real QA gate rather than
+// "the box did anything at all".
+const DL_MIN_KBPS = 1500;
+const UL_MIN_KBPS = 200;
+
 const duringThroughputFlowing: CheckDef = {
   id: 'during-throughput-flowing',
-  name: 'Downlink throughput > 0',
-  description: 'GET /v2/testcases/executions/{eid}/statistics/cells — any cell with dl_throughput > 0 within a duration-scaled window.',
+  name: `Downlink throughput ≥ ${DL_MIN_KBPS} kbps`,
+  description: `GET /v2/testcases/executions/{eid}/statistics/cells — some cell's dl_bitrate must reach ${DL_MIN_KBPS} kbps within a duration-scaled window.`,
   phase: 'during', severity: 'normal',
   run: async (ctx) => {
-    const base = { id: 'during-throughput-flowing', name: 'Downlink throughput > 0', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'GET /v2/testcases/executions/{eid}/statistics/cells — any cell with dl_throughput > 0 within a duration-scaled window.' };
+    const base = { id: 'during-throughput-flowing', name: `Downlink throughput ≥ ${DL_MIN_KBPS} kbps`, phase: 'during' as Phase, severity: 'normal' as Severity, description: `GET /v2/testcases/executions/{eid}/statistics/cells — some cell's dl_bitrate must reach ${DL_MIN_KBPS} kbps within a duration-scaled window.` };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const dirs = configuredDirections(ctx.testDefinition);
+    if (!dirs.dl) return makeResult(base, 'skip', 'no DL traffic configured');
     const timeoutMs = deriveDuringTimeoutMs(ctx);
+    const thresholdBps = DL_MIN_KBPS * 1000;
+    let peak = 0;
     const r = await pollUntil(async () => {
       // Endpoint is `/statistics/cells` (plural, no `-summary`). The
       // `/cells-summary` path returns cell CONFIG (n_rb, pci, antennas),
@@ -597,12 +655,90 @@ const duringThroughputFlowing: CheckDef = {
       const cells = await fetchCells(ctx);
       for (const c of cells) {
         const dl = cellDl(c);
-        if (typeof dl === 'number' && dl > 0) return dl;
+        if (typeof dl !== 'number') continue;
+        if (dl > peak) peak = dl;
+        if (dl >= thresholdBps) return dl;
       }
       return undefined;
     }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
-    if (!r.ok) return makeResult(base, 'fail', `no DL throughput after ${(r.elapsedMs / 1000).toFixed(1)}s (poll window ${(timeoutMs / 1000).toFixed(0)}s — scaled from configuredDuration) — testcase may not be data-plane, or PDU session never came up`, { durationMs: r.elapsedMs });
-    return makeResult(base, 'pass', `DL=${r.value} bps after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs });
+    if (!r.ok) return makeResult(base, 'fail', `DL peaked at ${(peak / 1000).toFixed(1)} kbps after ${(r.elapsedMs / 1000).toFixed(1)}s — never reached ${DL_MIN_KBPS} kbps (poll window ${(timeoutMs / 1000).toFixed(0)}s — scaled from configuredDuration)`, { durationMs: r.elapsedMs });
+    return makeResult(base, 'pass', `DL=${((r.value as number) / 1000).toFixed(1)} kbps after ${(r.elapsedMs / 1000).toFixed(1)}s (≥ ${DL_MIN_KBPS} kbps)`, { durationMs: r.elapsedMs });
+  },
+};
+
+const duringUlThroughputFlowing: CheckDef = {
+  id: 'during-ul-throughput-flowing',
+  name: `Uplink throughput ≥ ${UL_MIN_KBPS} kbps`,
+  description: `GET /v2/testcases/executions/{eid}/statistics/cells — some cell's ul_bitrate must reach ${UL_MIN_KBPS} kbps within a duration-scaled window.`,
+  phase: 'during', severity: 'normal',
+  run: async (ctx) => {
+    const base = { id: 'during-ul-throughput-flowing', name: `Uplink throughput ≥ ${UL_MIN_KBPS} kbps`, phase: 'during' as Phase, severity: 'normal' as Severity, description: `GET /v2/testcases/executions/{eid}/statistics/cells — some cell's ul_bitrate must reach ${UL_MIN_KBPS} kbps within a duration-scaled window.` };
+    if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const dirs = configuredDirections(ctx.testDefinition);
+    if (!dirs.ul) return makeResult(base, 'skip', 'no UL traffic configured');
+    const timeoutMs = deriveDuringTimeoutMs(ctx);
+    const thresholdBps = UL_MIN_KBPS * 1000;
+    let peak = 0;
+    const r = await pollUntil(async () => {
+      const cells = await fetchCells(ctx);
+      for (const c of cells) {
+        const ul = cellUl(c);
+        if (typeof ul !== 'number') continue;
+        if (ul > peak) peak = ul;
+        if (ul >= thresholdBps) return ul;
+      }
+      return undefined;
+    }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
+    if (!r.ok) return makeResult(base, 'fail', `UL peaked at ${(peak / 1000).toFixed(1)} kbps after ${(r.elapsedMs / 1000).toFixed(1)}s — never reached ${UL_MIN_KBPS} kbps (poll window ${(timeoutMs / 1000).toFixed(0)}s — scaled from configuredDuration)`, { durationMs: r.elapsedMs });
+    return makeResult(base, 'pass', `UL=${((r.value as number) / 1000).toFixed(1)} kbps after ${(r.elapsedMs / 1000).toFixed(1)}s (≥ ${UL_MIN_KBPS} kbps)`, { durationMs: r.elapsedMs });
+  },
+};
+
+/** Per-cell block error rate, as /statistics/cells reports it (field: `bler`,
+ *  observed live as a plain 0-based number, not a "0.0X" fraction — e.g. a
+ *  reading of 0.18 means 0.18%, not 18%). */
+const cellBler = (c: any) => rowNum(c, ['bler', 'BLER', 'dl_bler', 'blerDl', 'avg_dl_bler']);
+
+/** Same ≤5% BLER tolerance the box's own PASS verdict uses. Originally this
+ *  check failed on ANY nonzero sample, deliberately stricter than the box —
+ *  but real RF (and the box's own simulated channel) naturally produces
+ *  occasional small nonzero blips even on a healthy link, e.g. 0.18% on one
+ *  sample out of dozens. That's not a quality regression, just normal
+ *  measurement noise, and demanding literal zero across a whole run window
+ *  just produced false failures on runs the Simnovator itself reports as
+ *  fine. 5% is also the standard 3GPP link-adaptation target BLER, not a
+ *  loose number picked to make failures go away. */
+const BLER_MAX_PERCENT = 5;
+
+const duringBlerZero: CheckDef = {
+  id: 'during-bler-zero',
+  name: `BLER stays within ${BLER_MAX_PERCENT}%`,
+  description: `Samples per-cell BLER via /statistics/cells across the run window. Fails if any sample exceeds ${BLER_MAX_PERCENT}% on any cell.`,
+  phase: 'during', severity: 'normal',
+  run: async (ctx) => {
+    const base = { id: 'during-bler-zero', name: `BLER stays within ${BLER_MAX_PERCENT}%`, phase: 'during' as Phase, severity: 'normal' as Severity, description: `Samples per-cell BLER via /statistics/cells across the run window. Fails if any sample exceeds ${BLER_MAX_PERCENT}% on any cell.` };
+    if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    const dirs = configuredDirections(ctx.testDefinition);
+    if (!dirs.dl && !dirs.ul) return makeResult(base, 'skip', 'no traffic configured');
+    const deadline = Math.min(duringDeadline(ctx), Date.now() + 120_000);
+    const t0 = Date.now();
+    let samples = 0;
+    let maxBler = 0;
+    let worstCell: string | undefined;
+    while (Date.now() < deadline && !ctx.isCanceled()) {
+      const rows = await fetchCells(ctx);
+      for (const c of latestPerCell(rows)) {
+        const b = cellBler(c);
+        if (typeof b !== 'number') continue;
+        samples++;
+        if (b > maxBler) { maxBler = b; worstCell = String(c.cell ?? c.cell_id ?? c.cellId ?? '?'); }
+      }
+      await sleep(5000, ctx.isCanceled);
+    }
+    const dur = Date.now() - t0;
+    if (samples === 0) return makeResult(base, 'skip', 'no BLER samples observed in window', { durationMs: dur });
+    if (maxBler > BLER_MAX_PERCENT) return makeResult(base, 'fail', `BLER reached ${maxBler}% on cell ${worstCell} across ${samples} sample(s) — must stay within ${BLER_MAX_PERCENT}%`, { durationMs: dur });
+    return makeResult(base, 'pass', `BLER peaked at ${maxBler}% across ${samples} sample(s) (within ${BLER_MAX_PERCENT}%)`, { durationMs: dur });
   },
 };
 
@@ -760,6 +896,33 @@ function latestPerUe(rows: any[]): any[] {
     if (!prev || rowUtc(r) >= rowUtc(prev)) byUe.set(key, r);
   }
   return [...byUe.values(), ...keyless];
+}
+
+/** Like latestPerUe, but prefers each UE's newest row WHILE ATTACHED over its
+ *  absolute newest row. A window that runs even a few seconds into teardown
+ *  otherwise makes "newest row" the disconnected one for every UE, which
+ *  reads as "nothing was ever attached" regardless of how the test actually
+ *  went. Falls back to the newest row overall for a UE that was never seen
+ *  attached, so it still shows up (correctly, as unattached) rather than
+ *  vanishing from the set. Requires ueAttached (defined above). */
+function latestAttachedPerUe(rows: any[]): any[] {
+  const byUeAttached = new Map<string, any>();
+  const byUeAny = new Map<string, any>();
+  const keyless: any[] = [];
+  for (const r of rows) {
+    const rawKey = r?.ue_id ?? r?.ueId ?? r?.imsi ?? r?.id;
+    if (rawKey === undefined || rawKey === null || rawKey === '') { keyless.push(r); continue; }
+    const key = String(rawKey);
+    const prevAny = byUeAny.get(key);
+    if (!prevAny || rowUtc(r) >= rowUtc(prevAny)) byUeAny.set(key, r);
+    if (ueAttached(r)) {
+      const prevAttached = byUeAttached.get(key);
+      if (!prevAttached || rowUtc(r) >= rowUtc(prevAttached)) byUeAttached.set(key, r);
+    }
+  }
+  const out: any[] = [];
+  for (const key of byUeAny.keys()) out.push(byUeAttached.get(key) ?? byUeAny.get(key));
+  return [...out, ...keyless];
 }
 
 /** Statistics time window, in SECONDS. The box's statistics endpoints expect
@@ -1015,8 +1178,11 @@ const duringStatsConsistency: CheckDef = {
   run: async (ctx) => {
     const base = { id: 'during-stats-consistency', name: 'Global UE-state summary is self-consistent', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'Samples /statistics/global ue_state_summary through the run window: NAS deregistrations must not coexist with a full RRC-connected fleet, and connected UEs with traffic configured must show nonzero cell throughput.' };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
+    // No upfront "is there enough time" estimate — a short testcase still gets
+    // whatever samples fit in whatever window remains, down to a single one.
+    // The only real skip condition is having gathered literally zero samples
+    // (checked after the loop), not a guess made before trying.
     const deadline = Math.min(duringDeadline(ctx), Date.now() + 120_000);
-    if (deadline - Date.now() < 25_000) return makeResult(base, 'skip', 'during window too short to sample global statistics');
     const expected = expectedUeCount(ctx.testDefinition);
     const dirs = configuredDirections(ctx.testDefinition);
     const trafficConfigured = dirs.dl || dirs.ul;
@@ -1058,7 +1224,12 @@ const duringStatsConsistency: CheckDef = {
           if (cells.some((c) => cellDl(c) + cellUl(c) > 0)) sawCellTraffic = true;
         }
       }
-      await sleep(10_000, ctx.isCanceled);
+      // Never sleep past the deadline — a short window still gets exactly the
+      // samples it has room for instead of the loop overshooting into a check
+      // that was supposed to stay bounded.
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(10_000, remaining), ctx.isCanceled);
     }
     const dur = Date.now() - t0;
     if (contradiction) return makeResult(base, 'fail', `state-summary contradiction: ${contradiction}`, { durationMs: dur });
@@ -1095,14 +1266,20 @@ const duringZombieExecution: CheckDef = {
     const simulatorId = await resolveSimulatorId(ctx);
     if (!simulatorId) return makeResult(base, 'skip', 'no simulatorId resolvable — cannot query current/status');
     // Grace: UEs legitimately take a while to attach after trigger. Only
-    // samples taken ≥120s after the trigger count toward the zombie verdict.
-    const graceEnd = (ctx.triggeredAt ?? Date.now()) + 120_000;
+    // samples taken ≥ATTACH_SETTLE_MS after the trigger count toward the
+    // zombie verdict. No upfront "is there room for 4 samples" estimate —
+    // try, and take however many actually fit. A testcase shorter than the
+    // grace period will legitimately end before any sample is possible;
+    // that surfaces honestly below as "execution already finished" / "no
+    // usable samples", not as a guess made before attempting anything.
+    const graceEnd = (ctx.triggeredAt ?? Date.now()) + ATTACH_SETTLE_MS;
     const deadline = Math.min(duringDeadline(ctx), Date.now() + 180_000);
-    const sampleStart = Math.max(Date.now(), graceEnd);
-    // Need room for 4+ samples at ~10s cadence after the grace.
-    if (deadline - sampleStart < 45_000) return makeResult(base, 'skip', 'during window too short for 4 post-grace samples');
     const t0 = Date.now();
-    if (Date.now() < graceEnd) await sleep(graceEnd - Date.now(), ctx.isCanceled);
+    // Never sleep past the deadline chasing a grace period the run won't live
+    // to see — clamp so a short test fails fast into the loop's own verdict
+    // instead of blocking for up to 120s for nothing.
+    const graceSleep = Math.min(graceEnd, deadline) - Date.now();
+    if (graceSleep > 0) await sleep(graceSleep, ctx.isCanceled);
     let samples = 0;
     let executionEnded = false;
     // Streak of consecutive zero-UE samples, with the progress clock at each.
@@ -1130,7 +1307,9 @@ const duringZombieExecution: CheckDef = {
           }
         }
       }
-      await sleep(10_000, ctx.isCanceled);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(10_000, remaining), ctx.isCanceled);
     }
     const dur = Date.now() - t0;
     if (samples === 0) {
@@ -1178,9 +1357,16 @@ const completionDurationSane: CheckDef = {
     const observedSec = (ctx.finishedAt - ctx.triggeredAt) / 1000;
     const configured = ctx.configuredDurationSec;
     const lo = configured * 0.8;
-    const hi = configured * 1.2 + 30;  // +30s of slack for trigger latency
+    // configuredDurationSec is the TRAFFIC window, not the full wall-clock
+    // run — cell bring-up + subscriber registration adds a mostly-fixed
+    // ~120s (ATTACH_SETTLE_MS) on top before traffic even starts, which a
+    // flat 30s of slack didn't cover (live: 131s configured measured
+    // 227.3s observed, a legitimate run flagged as a false failure). That
+    // fixed cost is a much bigger fraction of a short test than a long
+    // one, hence additive slack rather than a bigger multiplier.
+    const hi = configured * 1.2 + ATTACH_SETTLE_MS / 1000;
     if (observedSec >= lo && observedSec <= hi) {
-      return makeResult(base, 'pass', `observed=${observedSec.toFixed(1)}s configured=${configured}s (within ±20% + 30s slack)`);
+      return makeResult(base, 'pass', `observed=${observedSec.toFixed(1)}s configured=${configured}s (within ±20% + ${(ATTACH_SETTLE_MS / 1000).toFixed(0)}s slack)`);
     }
     return makeResult(base, 'fail', `observed=${observedSec.toFixed(1)}s configured=${configured}s — outside [${lo.toFixed(0)}, ${hi.toFixed(0)}]s`);
   },
@@ -1255,6 +1441,15 @@ const postAllUesPowerOff: CheckDef = {
     let sawPostTerminal = false;
     let lastUp: any[] = [];
     let lastTotal = 0;
+    // Freshest sample seen regardless of the post-terminal guard, so a run
+    // that never produces one can still be judged instead of skipped — see
+    // below. On a short testcase the box can stop writing UE stats within a
+    // couple of seconds of the run ending, before our own terminal-status
+    // poll (5s cadence) even notices; requiring a sample strictly AFTER that
+    // detection was skipping runs that had perfectly good teardown evidence.
+    let bestUtc = -Infinity;
+    let bestUp: any[] = [];
+    let bestTotal = 0;
     // Normalize a row timestamp to epoch SECONDS — rowUtc may yield epoch
     // seconds, epoch millis, or Date.parse millis depending on field shape.
     const rowUtcSec = (row: any): number => {
@@ -1273,24 +1468,37 @@ const postAllUesPowerOff: CheckDef = {
       const rows = ueRowsOf(f.body);
       if (!rows.length) return undefined;
       sawRows = true;
-      // Post-terminal-evidence guard: the box may stop storing samples at
-      // termination, leaving only stale mid-run rows in the window. Judging
-      // those would call live mid-run UEs a "teardown leak". Require at
-      // least one row sampled at/after the terminal status (5s tolerance)
-      // before judging; until then keep polling for a fresh sample.
       const maxUtc = Math.max(...rows.map(rowUtcSec));
+      const latest = latestPerUe(rows); // time series → newest row per UE
+      const up = latest.filter(stillUp);
+      if (maxUtc > bestUtc) { bestUtc = maxUtc; bestUp = up; bestTotal = latest.length; }
+      // Prefer a sample strictly at/after the terminal status when one shows
+      // up (5s tolerance) — cleanest evidence. Keep polling for it briefly,
+      // but the freshest-seen fallback above means a timeout is never a dead
+      // end.
       if (maxUtc < finishedSec - 5) return undefined;
       sawPostTerminal = true;
-      const latest = latestPerUe(rows); // time series → newest row per UE
       lastTotal = latest.length;
-      lastUp = latest.filter(stillUp);
+      lastUp = up;
       return lastUp.length === 0 ? latest.length : undefined;
     }, { intervalMs: 5000, timeoutMs: 30_000, isCanceled: ctx.isCanceled });
     if (r.ok) return makeResult(base, 'pass', `all ${r.value} UE(s) powered off / disconnected after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs });
     if (!sawRows) return makeResult(base, 'skip', 'no per-UE rows in the final window — nothing to judge', { durationMs: r.elapsedMs });
-    if (!sawPostTerminal) return makeResult(base, 'skip', 'no post-terminal sample stored — cannot judge teardown', { durationMs: r.elapsedMs });
-    const ids = lastUp.slice(0, 8).map((u) => String(u?.ue_id ?? u?.imsi ?? '?'));
-    return makeResult(base, 'fail', `${lastUp.length} of ${lastTotal} UE(s) still connected/registered ${(r.elapsedMs / 1000).toFixed(0)}s after terminal status (ue_id: ${ids.join(', ')}${lastUp.length > ids.length ? ', …' : ''}) — teardown did not power them off`, { durationMs: r.elapsedMs });
+    if (sawPostTerminal) {
+      const ids = lastUp.slice(0, 8).map((u) => String(u?.ue_id ?? u?.imsi ?? '?'));
+      return makeResult(base, 'fail', `${lastUp.length} of ${lastTotal} UE(s) still connected/registered ${(r.elapsedMs / 1000).toFixed(0)}s after terminal status (ue_id: ${ids.join(', ')}${lastUp.length > ids.length ? ', …' : ''}) — teardown did not power them off`, { durationMs: r.elapsedMs });
+    }
+    // No sample ever landed strictly post-terminal — judge the freshest one we
+    // DID get rather than skip. Per-UE power state does not spontaneously
+    // flip back to connected, so a reading a few seconds stale is still real
+    // evidence either way.
+    const staleness = (finishedSec - bestUtc).toFixed(1);
+    if (bestTotal === 0) return makeResult(base, 'skip', 'no per-UE rows in the final window — nothing to judge', { durationMs: r.elapsedMs });
+    if (bestUp.length === 0) {
+      return makeResult(base, 'pass', `all ${bestTotal} UE(s) powered off / disconnected (freshest sample ${staleness}s before terminal status — box stopped writing stats around teardown)`, { durationMs: r.elapsedMs });
+    }
+    const ids = bestUp.slice(0, 8).map((u) => String(u?.ue_id ?? u?.imsi ?? '?'));
+    return makeResult(base, 'fail', `${bestUp.length} of ${bestTotal} UE(s) still connected/registered in the freshest available sample (${staleness}s before terminal status; no fresher sample was ever written) — teardown did not power them off (ue_id: ${ids.join(', ')}${bestUp.length > ids.length ? ', …' : ''})`, { durationMs: r.elapsedMs });
   },
 };
 
@@ -1303,24 +1511,30 @@ const postPerUeStatsSane: CheckDef = {
     const base = { id: 'post-per-ue-stats-sane', name: 'Per-UE statistics are plausible', phase: 'post' as Phase, severity: 'normal' as Severity, description: 'After completion, the per-UE stats must not be visibly corrupted: traffic-carrying UEs report nonzero bitrate, SNR is not one constant implausible value, positions move when mobility is configured, and voice tests expose MOS for (nearly) all UEs.' };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
     // Window in SECONDS (the box ignores millisecond epochs — see
-    // statsWindowSec). /statistics/ues returns a TIME SERIES (one row per UE
-    // per sample), and we judge each UE by its NEWEST row in the window — so
-    // a window that reaches into teardown makes that newest row a powered-off
-    // one (bitrate 0, rrc disconnected). End the window a few seconds before
-    // the execution finished to capture live mid-run values.
-    const endSec = ctx.finishedAt ? Math.floor(ctx.finishedAt / 1000) - 8 : Math.floor(Date.now() / 1000);
+    // statsWindowSec). Wide and generous on both ends — from just before
+    // trigger through a bit past the detected finish — rather than trying to
+    // guess a cutoff that lands before teardown starts. A fixed "-8s" cutoff
+    // fought the several-second lag in our OWN terminal-status detection (5s
+    // poll cadence): on a short testcase, "finish - 8s" could already be
+    // inside the disconnect window, leaving nothing but teardown rows no
+    // matter how the test actually went. The window can safely span past
+    // teardown now because latestAttachedPerUe (below) picks each UE's
+    // ATTACHED row over its merely-newest one.
+    const endSec = ctx.finishedAt ? Math.floor(ctx.finishedAt / 1000) + 15 : Math.floor(Date.now() / 1000);
     const startSec = ctx.triggeredAt ? Math.floor(ctx.triggeredAt / 1000) - 5 : endSec - 3600;
     const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId)}/statistics/ues?startTime=${startSec}&endTime=${endSec}`, { headers: authHeaders(ctx) }, 30_000);
     if (f.status !== 200) return makeResult(base, 'fail', `statistics/ues returned ${f.status}`, { durationMs: f.durationMs });
-    // Dedupe to the newest row per ue_id BEFORE judging: every fraction-based
-    // threshold below ("60% of UEs report bitrate", "90% of UEs have MOS")
-    // is about UEs, not about time-series rows. Without the dedupe, 64 UEs ×
-    // 16 samples = 1024 rows silently rescale all the percentages.
-    const rows = latestPerUe(ueRowsOf(f.body));
+    // Dedupe to ONE row per UE BEFORE judging: every fraction-based threshold
+    // below ("60% of UEs report bitrate", "90% of UEs have MOS") is about UEs,
+    // not about time-series rows. Without the dedupe, 64 UEs × 16 samples =
+    // 1024 rows silently rescale all the percentages. Prefer each UE's
+    // attached row over its newest row — see latestAttachedPerUe.
+    const rows = latestAttachedPerUe(ueRowsOf(f.body));
     if (rows.length < 2) return makeResult(base, 'skip', `only ${rows.length} per-UE row(s) — not enough to judge`, { durationMs: f.durationMs });
-    // Guard: if the captured snapshot is entirely torn-down (no UE attached),
-    // we only saw teardown — skip rather than false-fail on "zero bitrate".
-    if (rows.filter(ueAttached).length === 0) return makeResult(base, 'skip', `only teardown state captured (no attached UE in window) — cannot judge per-UE sanity`, { durationMs: f.durationMs });
+    // Skip only when NO UE was ever seen attached anywhere in the window —
+    // genuinely nothing to sanity-check, as opposed to the old cutoff-based
+    // guard which could trigger even when the run attached fine.
+    if (rows.filter(ueAttached).length === 0) return makeResult(base, 'skip', `no UE was ever attached in the window — nothing to judge`, { durationMs: f.durationMs });
     const td = ctx.testDefinition;
     const dirs = configuredDirections(td);
     const problems: string[] = [];
@@ -1661,6 +1875,7 @@ export const ALL_CHECKS: CheckDef[] = [
   preflightTestcaseExists,
   preflightApiResponsive,
   preflightSimulatorsAvailable,
+  preflightCfgBringUp,
   preflightFtpAnonLocked,
   // TRIGGER
   triggerStart,
@@ -1671,6 +1886,8 @@ export const ALL_CHECKS: CheckDef[] = [
   duringAllUesAttach,
   duringUeStability,
   duringThroughputFlowing,
+  duringUlThroughputFlowing,
+  duringBlerZero,
   duringThroughputStability,
   duringPerCellTraffic,
   duringStatsConsistency,

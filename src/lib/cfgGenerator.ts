@@ -36,6 +36,50 @@ const LTE_NRB: Record<string, number> = {
 const IMS_REALM_DEFAULT = 'ims.mnc001.mcc001.3gppnetwork.org';
 const IMS_PCSCF_DEFAULT = '192.168.4.1';
 
+// ---------- FLAT / NESTED field access ----------
+// The box stores a testDefinition in TWO layouts and which one you get depends
+// on how the testcase was written:
+//   NESTED  subs[].subscriberProfileInfo.ueCount, cells[].cellRadioInfo.NRARFCN
+//   FLAT    subs[].ueCount,                       cells[].NRARFCN
+// FLAT is what the REST API writes, so most testcases on the box use it.
+// Reading only NESTED silently fell back to defaults — every FLAT testcase
+// previewed as "1 UE" with no traffic, and its generated ue_db held one
+// subscriber instead of hundreds. Read both, nested first.
+
+/** First non-nullish value among dotted paths. */
+function pick<T = any>(obj: any, ...paths: string[]): T | undefined {
+  for (const p of paths) {
+    let cur: any = obj;
+    for (const key of p.split('.')) {
+      if (cur == null) break;
+      cur = cur[key];
+    }
+    if (cur !== undefined && cur !== null) return cur as T;
+  }
+  return undefined;
+}
+
+/** UEs in one subscriber group, both layouts. */
+function subUeCount(sg: any): number {
+  return Math.max(0, Number(pick(sg, 'subscriberProfileInfo.ueCount', 'ueCount') ?? 0));
+}
+
+/** Total UEs across every subscriber group (0 when there are none). */
+function totalUeCount(td: UesimTestDefinition): number {
+  return (td.subsConfig?.subs ?? []).reduce((acc, s) => acc + subUeCount(s), 0);
+}
+
+/** Identity range start for a group, both layouts and both RAT families. */
+function subStartId(sg: any): string | number | undefined {
+  return pick(sg,
+    'subscriberProfileInfo.startingSUPI', 'startingSUPI',
+    'subscriberProfileInfo.startingIMSI', 'startingIMSI');
+}
+
+/** A userPlane profile's dataType / apnName, both layouts. */
+function profileDataType(p: any): string | undefined { return pick(p, 'dataGeneralInfo.dataType', 'dataType'); }
+function profileApn(p: any): string | undefined { return pick(p, 'dataGeneralInfo.apnName', 'apnName'); }
+
 // ---------- Loose UESIM testDefinition types ----------
 // We model only the fields the generator reads. Everything else is `any`
 // so we don't fight the schema as it evolves.
@@ -133,6 +177,7 @@ export interface CfgBundle {
   /** Diagnostics + decisions for the UI. */
   summary: {
     testcaseId: string;
+    testcaseName?: string;
     ratType: string;
     cells: number;
     cellTypes: string[];
@@ -238,7 +283,7 @@ function withCells(td: UesimTestDefinition, cells: UesimCell[]): UesimTestDefini
 function resolveSlices(td: UesimTestDefinition): UesimSnssai[] {
   const subs = td.subsConfig?.subs ?? [];
   const slicingEnabled = subs.some((s) => {
-    const ns = s.subscriberNetworkConfig?.networkSlicing;
+    const ns = pick<string>(s, 'subscriberNetworkConfig.networkSlicing', 'networkSlicing');
     return ns && ns !== 'disable';
   });
   if (!slicingEnabled) return [];
@@ -281,11 +326,11 @@ function renderNssaiBlock(slices: UesimSnssai[], indent = 4): string {
 
 function buildNrCellList(cells: UesimCell[], fr2: boolean): string {
   return cells.map((c, i) => {
-    const band     = toNrBand(c.cellConfig?.band);
-    const arfcnDl  = c.cellRadioInfo?.NRARFCN?.dl ?? 632628;
-    const arfcnSsb = c.cellRadioInfo?.NRARFCN?.ssb ?? 629952;
-    const scs      = c.cellCarrierConfig?.ScsInfo?.scs ?? 30;
-    const rfPort   = c.cellRadioInfo?.rfInfo?.rfCard ?? i;
+    const band     = toNrBand(pick(c, 'cellConfig.band', 'band'));
+    const arfcnDl  = pick<number>(c, 'cellRadioInfo.NRARFCN.dl', 'NRARFCN.dl') ?? 632628;
+    const arfcnSsb = pick<number>(c, 'cellRadioInfo.NRARFCN.ssb', 'NRARFCN.ssb') ?? 629952;
+    const scs      = pick<number>(c, 'cellCarrierConfig.ScsInfo.scs', 'scs') ?? 30;
+    const rfPort   = pick<number>(c, 'cellRadioInfo.rfInfo.rfCard', 'rfCard') ?? i;
     const cellId   = `0x${(i + 1).toString(16).padStart(2, '0').toUpperCase()}`;
     const nIdCell  = 500 + i;
     const ssbBitmap = fr2
@@ -318,15 +363,19 @@ function buildGnbSa(td: UesimTestDefinition, testcaseId: string, opts: { nsa?: b
   if (cells.length === 0) throw new Error('No NR cells for gnb (cellConfig.cells empty)');
   const c0 = cells[0];
 
-  const duplex  = c0.cellConfig?.duplexMode ?? 'TDD';
-  const bw      = Number(c0.cellBandwidthInfo?.bandwidth ?? 100);
-  const band    = toNrBand(c0.cellConfig?.band);
-  const antDl   = Number(c0.cellRadioInfo?.antennas?.dl ?? 2);
-  const antUl   = Number(c0.cellRadioInfo?.antennas?.ul ?? 2);
+  // Both schemas: the box serves cells FLAT (band/duplexMode at the top of the
+  // cell) while older payloads nest them under cellConfig. Reading only the
+  // nested path made every generated cfg fall back to n78/TDD regardless of the
+  // testcase — the exact band mismatch that produces 0 attached UEs.
+  const duplex  = String(pick(c0, 'cellConfig.duplexMode', 'duplexMode') ?? 'TDD');
+  const bw      = Number(pick(c0, 'cellBandwidthInfo.bandwidth', 'bandwidth') ?? 100);
+  const band    = toNrBand(pick(c0, 'cellConfig.band', 'band'));
+  const antDl   = Number(pick(c0, 'cellRadioInfo.antennas.dl', 'antennas.dl') ?? 2);
+  const antUl   = Number(pick(c0, 'cellRadioInfo.antennas.ul', 'antennas.ul') ?? 2);
   const fr2     = band >= 257;
   const tddFlag = duplex === 'TDD' ? 1 : 0;
-  const txGain  = firstGain(c0.cellCarrierConfig?.gainInfo?.txGain, 80);
-  const rxGain  = firstGain(c0.cellCarrierConfig?.gainInfo?.rxGain, 10);
+  const txGain  = firstGain(pick(c0, 'cellCarrierConfig.gainInfo.txGain', 'txGain'), 80);
+  const rxGain  = firstGain(pick(c0, 'cellCarrierConfig.gainInfo.rxGain', 'rxGain'), 10);
 
   let text = TPL.gnbSa;
   text = setDefine(text, 'NR_TDD',       tddFlag);
@@ -352,7 +401,7 @@ function buildGnbSa(td: UesimTestDefinition, testcaseId: string, opts: { nsa?: b
   // gNB's plmn_list_5gc[].nssai advertises supported slices on the SIB/S1.
   const slices = resolveSlices(td);
   if (slices.length > 0) {
-    const plmn = plmnFromImsi(td.subsConfig?.subs?.[0]?.subscriberProfileInfo?.startingSUPI ?? td.subsConfig?.subs?.[0]?.subscriberProfileInfo?.startingIMSI);
+    const plmn = plmnFromImsi(subStartId(td.subsConfig?.subs?.[0]));
     const block = [
       '  plmn_list_5gc: [',
       '    {',
@@ -376,8 +425,8 @@ function buildGnbSa(td: UesimTestDefinition, testcaseId: string, opts: { nsa?: b
 
 function buildLteCellList(cells: UesimCell[], plmn: string): string {
   return cells.map((c, i) => {
-    const earfcnDl = c.cellRadioInfo?.EARFCN?.dl ?? 3350;
-    const earfcnUl = c.cellRadioInfo?.EARFCN?.ul;
+    const earfcnDl = pick<number>(c, 'cellRadioInfo.EARFCN.dl', 'EARFCN.dl') ?? 3350;
+    const earfcnUl = pick<number>(c, 'cellRadioInfo.EARFCN.ul', 'EARFCN.ul');
     const tac      = `0x${(i + 1).toString(16).padStart(4, '0').toUpperCase()}`;
     const cellId   = `0x${(i + 1).toString(16).padStart(2, '0').toUpperCase()}`;
     const nIdCell  = i + 1;
@@ -411,11 +460,11 @@ function buildLteEnb(td: UesimTestDefinition, testcaseId: string, plmn: string, 
     }
   }
   const c0 = cells[0];
-  const duplex  = c0.cellConfig?.duplexMode ?? 'FDD';
-  const bwStr   = String(c0.cellBandwidthInfo?.bandwidth ?? '20');
+  const duplex  = String(pick(c0, 'cellConfig.duplexMode', 'duplexMode') ?? 'FDD');
+  const bwStr   = String(pick(c0, 'cellBandwidthInfo.bandwidth', 'bandwidth') ?? '20');
   const nRb     = LTE_NRB[bwStr] ?? 100;
-  const antDl   = Number(c0.cellRadioInfo?.antennas?.dl ?? 2);
-  const antUl   = Number(c0.cellRadioInfo?.antennas?.ul ?? 1);
+  const antDl   = Number(pick(c0, 'cellRadioInfo.antennas.dl', 'antennas.dl') ?? 2);
+  const antUl   = Number(pick(c0, 'cellRadioInfo.antennas.ul', 'antennas.ul') ?? 1);
   const tddFlag = duplex === 'TDD' ? 1 : 0;
   const channel = td.cellConfig?.master?.channelSim ? 1 : 0;
 
@@ -485,10 +534,10 @@ function buildUeDb(subs: UesimSub[], imsRequired: boolean, realm: string): strin
   const parts: string[] = [];
   let first = true;
   for (const sg of subs) {
-    const algo  = sg.subscriberProfileInfo?.algorithm ?? 'xor';
-    const K     = sg.subscriberNetworkConfig?.sharedKey ?? '00112233445566778899aabbccddeeff';
-    const start = sg.subscriberProfileInfo?.startingSUPI ?? sg.subscriberProfileInfo?.startingIMSI;
-    const count = Math.max(1, Number(sg.subscriberProfileInfo?.ueCount ?? 1));
+    const algo  = pick<string>(sg, 'subscriberProfileInfo.algorithm', 'algorithm') ?? 'xor';
+    const K     = pick<string>(sg, 'subscriberNetworkConfig.sharedKey', 'sharedKey') ?? '00112233445566778899aabbccddeeff';
+    const start = subStartId(sg);
+    const count = Math.max(1, subUeCount(sg));
     const startBig = BigInt(padImsi(start) || '0');
 
     for (let i = 0; i < count; i++) {
@@ -525,11 +574,11 @@ function buildUeDb(subs: UesimSub[], imsRequired: boolean, realm: string): strin
 function buildMme(td: UesimTestDefinition, testcaseId: string, plmn: string, imsRequired: boolean, realm: string): string {
   const apns = Array.from(new Set(
     (td.userPlaneConfig?.profiles ?? [])
-      .map((p) => p.dataGeneralInfo?.apnName)
+      .map((p) => profileApn(p))
       .filter((x): x is string => Boolean(x))
   )).sort();
   const ueCount = (td.subsConfig?.subs ?? [])
-    .reduce((acc, s) => acc + Math.max(0, Number(s.subscriberProfileInfo?.ueCount ?? 0)), 0) || 1;
+    .reduce((acc, s) => acc + subUeCount(s), 0) || 1;
 
   let text = TPL.mme;
   text = setQuotedScalar(text, 'plmn', plmn);
@@ -569,21 +618,25 @@ function buildIms(_td: UesimTestDefinition, testcaseId: string, _realm: string, 
 
 // ---------- Public entrypoint ----------
 
-export function generateConfigs(td: UesimTestDefinition, testcaseId: string): CfgBundle {
+export function generateConfigs(
+  td: UesimTestDefinition,
+  testcaseId: string,
+  opts: { testcaseName?: string } = {},
+): CfgBundle {
   const ratType   = td.cellConfig?.master?.ratType ?? 'sa';
   const cells     = td.cellConfig?.cells ?? [];
-  const cellTypes = Array.from(new Set(cells.map((c) => c.cellConfig?.cellType ?? '5g'))).sort();
+  const cellTypes = Array.from(new Set(cells.map((c) => pick(c, 'cellConfig.cellType', 'cellType') ?? '5g'))).sort();
   const dataTypes = Array.from(new Set(
     (td.userPlaneConfig?.profiles ?? [])
-      .map((p) => p.dataGeneralInfo?.dataType)
+      .map((p) => profileDataType(p))
       .filter((x): x is string => Boolean(x))
   )).sort();
   const ueCount   = (td.subsConfig?.subs ?? [])
-    .reduce((acc, s) => acc + Math.max(0, Number(s.subscriberProfileInfo?.ueCount ?? 0)), 0) || 1;
+    .reduce((acc, s) => acc + subUeCount(s), 0) || 1;
 
   const sub0 = td.subsConfig?.subs?.[0];
-  const startImsi = sub0?.subscriberProfileInfo?.startingSUPI ?? sub0?.subscriberProfileInfo?.startingIMSI;
-  const mncDigits = sub0?.csiInfo?.mncDigits ?? 2;
+  const startImsi = subStartId(sub0);
+  const mncDigits = pick<number>(sub0, 'csiInfo.mncDigits', 'mncDigits') ?? 2;
   const plmn      = plmnFromImsi(startImsi, mncDigits);
 
   const imsRequired = dataTypes.includes('volte') || dataTypes.includes('vonr');
@@ -591,8 +644,10 @@ export function generateConfigs(td: UesimTestDefinition, testcaseId: string): Cf
   let pcscf = IMS_PCSCF_DEFAULT;
   if (imsRequired) {
     for (const p of td.userPlaneConfig?.profiles ?? []) {
-      if (p.dataNetworkConfig?.realm)         realm = String(p.dataNetworkConfig.realm);
-      if (p.dataNetworkConfig?.pcscfIpAddress) pcscf = String(p.dataNetworkConfig.pcscfIpAddress);
+      const r = pick(p, 'dataNetworkConfig.realm', 'realm');
+      const pc = pick(p, 'dataNetworkConfig.pcscfIpAddress', 'pcscfIpAddress');
+      if (r)  realm = String(r);
+      if (pc) pcscf = String(pc);
       break;
     }
   }
@@ -605,20 +660,55 @@ export function generateConfigs(td: UesimTestDefinition, testcaseId: string): Cf
   // NR cells -> gnb.cfg (secondary). If a cellType is missing from the
   // testcase, fall back to all cells (for SA / smartphone the filter is
   // a no-op).
-  const lteCells = isNsa ? cells.filter((c) => c.cellConfig?.cellType === '4g') : cells;
-  const nrCells  = isNsa ? cells.filter((c) => c.cellConfig?.cellType === '5g') : cells;
+  const lteCells = isNsa ? cells.filter((c) => pick(c, 'cellConfig.cellType', 'cellType') === '4g') : cells;
+  const nrCells  = isNsa ? cells.filter((c) => pick(c, 'cellConfig.cellType', 'cellType') === '5g') : cells;
   const tdEnb: UesimTestDefinition = isNsa ? withCells(td, lteCells) : td;
   const tdGnb: UesimTestDefinition = isNsa ? withCells(td, nrCells)  : td;
 
   const files: Record<string, string> = {};
-  if (wantGnb)      files['gnb.cfg'] = buildGnbSa(tdGnb, testcaseId, { nsa: isNsa });
-  if (wantEnb)      files['enb.cfg'] = buildLteEnb(tdEnb, testcaseId, plmn, { nsa: isNsa });
+  // The callbox loads ONE radio config, always at /root/enb/config/enb.cfg —
+  // ots.cfg sets ENB_CONFIG_FILE="config/enb.cfg" whatever the RAT, and a 5G SA
+  // run has lteenb-avx2 reading it. So the generated radio config is named
+  // enb.cfg for both 5G and LTE: it is the file you would symlink. NSA is the
+  // one case with two, since the LTE anchor and the NR cell are separate.
+  if (wantGnb && isNsa) files['gnb.cfg'] = buildGnbSa(tdGnb, testcaseId, { nsa: true });
+  else if (wantGnb)     files['enb.cfg'] = buildGnbSa(tdGnb, testcaseId, { nsa: false });
+  if (wantEnb)          files['enb.cfg'] = buildLteEnb(tdEnb, testcaseId, plmn, { nsa: isNsa });
   files['mme.cfg']  = buildMme(td, testcaseId, plmn, imsRequired, realm);
-  if (imsRequired)  files['ims.cfg'] = buildIms(td, testcaseId, realm, pcscf);
+  // Also emit the subscriber database on its own. mme.cfg embeds this same
+  // data as a `ue_db: [...]` block (ltemme has no separate-file / #include
+  // form for it, confirmed against cfgTemplates/mme.cfg) — this standalone
+  // copy is for visibility/download ("the database file") and is NOT wired
+  // into deploy.ts's SSH push, since there is no evidence anything on the
+  // callbox reads a freestanding ue_db.cfg. If that changes, wire it in
+  // deliberately rather than assuming.
+  files['ue_db.cfg'] = `/* GENERATED by cfgGenerator from testcase ${testcaseId} on ${timestamp()} */\n`
+    + `/* Subscriber database — the same data embedded in mme.cfg's ue_db block, shown standalone. */\n`
+    + `{\n  ue_db: [\n${buildUeDb(td.subsConfig?.subs ?? [], imsRequired, realm)}\n  ],\n}\n`;
+  // ims.cfg unconditionally: the callbox always starts lteims (IMS_CONFIG_FILE
+  // is in ots.cfg beside the other two), so a run needs an ims.cfg whether or
+  // not this testcase places calls. Withholding it left the default set
+  // incomplete next to the live files.
+  files['ims.cfg']  = buildIms(td, testcaseId, realm, pcscf);
+  // Emit the testcase in the box's OWN download envelope, not a bare
+  // testDefinition. The importer validates top-level Test_Name and rejects a
+  // raw definition with "Test_Name must be a non-empty string", so a bare dump
+  // could be diffed but never re-uploaded. This shape round-trips: it's what
+  // the box's "Download testcase" button produces, and normalizeToTestDefinition
+  // in lib/environment/parse.ts already reads it back.
+  const tcName = opts.testcaseName
+    ?? (td as any)?.settings?.test_name
+    ?? (td as any)?.settings?.testCaseName
+    ?? testcaseId;
+  files['testcase.json'] = JSON.stringify({
+    Test_Id: testcaseId,
+    Test_Name: tcName,
+    Test_Config_Intermediate_Object: td,
+  }, null, 2);
 
   const apns = Array.from(new Set(
     (td.userPlaneConfig?.profiles ?? [])
-      .map((p) => p.dataGeneralInfo?.apnName)
+      .map((p) => profileApn(p))
       .filter((x): x is string => Boolean(x))
   )).sort();
 
@@ -629,7 +719,7 @@ export function generateConfigs(td: UesimTestDefinition, testcaseId: string): Cf
   if (td.mobilityConfig) {
     notes.push('mobility/HO present; cellMobility -> rf_ports[].channel_dl mapping not yet wired');
   }
-  const slicing = sub0?.subscriberNetworkConfig?.networkSlicing;
+  const slicing = pick<string>(sub0, 'subscriberNetworkConfig.networkSlicing', 'networkSlicing');
   if (slicing && slicing !== 'disable') {
     const slices = resolveSlices(td);
     notes.push(`slicing enabled; emitted ${slices.length} S-NSSAI(s) into gnb plmn_list_5gc + mme nssai`);
@@ -644,6 +734,9 @@ export function generateConfigs(td: UesimTestDefinition, testcaseId: string): Cf
     files,
     summary: {
       testcaseId,
+      // Carried so summary.json / the run's Run context identify the testcase
+      // by name, not just by an opaque id.
+      testcaseName: tcName,
       ratType,
       cells: cells.length,
       cellTypes,

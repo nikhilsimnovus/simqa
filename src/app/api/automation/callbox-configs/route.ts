@@ -1,8 +1,13 @@
-// GET /api/automation/callbox-configs?systemId=sys-2
+// GET /api/automation/callbox-configs?systemId=sys-2&dir=enb|mme
 //
-// Lists files under /root/enb/config on the chosen callbox via SSH.
-// Used by the Automation Suite wizard so the user can pick which eNB
-// config to bind into a uesim+callbox suite (instead of uploading).
+// Lists config files on the chosen callbox via SSH. `dir` selects which
+// directory: 'enb' -> /root/enb/config (gnb/enb cfgs), 'mme' -> /root/mme/config
+// (mme + ims cfgs). Used by the Automation Suite wizard so the user can pick
+// which configs to bind into a uesim+callbox suite (instead of uploading).
+//
+// The directory is chosen from a fixed map rather than taken from the query —
+// this runs `find` over SSH as root, so an attacker-controlled path would be
+// an arbitrary directory read.
 
 import { NextResponse } from 'next/server';
 import { loadInventory, getSystem } from '@/lib/inventory';
@@ -20,13 +25,19 @@ export async function GET(req: Request) {
   if (sys.type !== 'CALLBOX') {
     return NextResponse.json({ ok: false, error: `system "${systemId}" is not a CALLBOX (type=${sys.type})` }, { status: 400 });
   }
+  const DIRS: Record<string, string> = { enb: '/root/enb/config', mme: '/root/mme/config' };
+  const dirKey = url.searchParams.get('dir') ?? 'enb';
+  const dir = DIRS[dirKey];
+  if (!dir) {
+    return NextResponse.json({ ok: false, error: `unknown dir "${dirKey}" (expected ${Object.keys(DIRS).join(' | ')})` }, { status: 400 });
+  }
 
   try {
     // Use `find -printf` to get the mtime as an epoch float so we can sort
     // deterministically. Format: <epoch>\t<size>\t<name>. Hidden files
     // (leading dot) are skipped per the lab convention — .md5 etc. aren't
     // testcase configs.
-    const cmd = `find /root/enb/config -maxdepth 1 -type f ! -name '.*' -printf '%T@\\t%s\\t%f\\n' 2>/dev/null`;
+    const cmd = `find ${dir} -maxdepth 1 -type f ! -name '.*' -printf '%T@\\t%s\\t%f\\n' 2>/dev/null`;
     const raw = await readCommand(sys, cmd);
     const files = raw.split('\n').filter(Boolean).map(line => {
       const [epoch, size, ...nameParts] = line.split('\t');
@@ -42,7 +53,7 @@ export async function GET(req: Request) {
     }).filter(f => f.name);
     // Sort newest first.
     files.sort((a, b) => b.mtimeEpoch - a.mtimeEpoch);
-    return NextResponse.json({ ok: true, host: sys.host, dir: '/root/enb/config', files });
+    return NextResponse.json({ ok: true, host: sys.host, dir, files });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
   }

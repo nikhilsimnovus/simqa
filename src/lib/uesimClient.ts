@@ -30,10 +30,14 @@ export async function ensureToken(host: string, username: string, password: stri
   if (isAlive(cached)) return cached.token;
 
   const url = `http://${host}/v2/login`;
+  // Bounded like every other call. Without this a slow or unreachable box holds
+  // the request open forever; background pollers then stack up hung handlers
+  // until the whole server stops answering.
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
+    signal: AbortSignal.timeout(LOGIN_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`UESIM login failed: ${res.status} ${await res.text().catch(() => '')}`);
   const body = (await res.json()) as { access_token: string; expires_in?: number };
@@ -43,7 +47,7 @@ export async function ensureToken(host: string, username: string, password: stri
   return body.access_token;
 }
 
-interface ApiOpts {
+export interface ApiOpts {
   host: string;
   username: string;
   password: string;
@@ -53,6 +57,8 @@ interface ApiOpts {
 // legitimately slow on some builds, so POST gets a generous cap.
 const GET_TIMEOUT_MS = 20_000;
 const POST_TIMEOUT_MS = 120_000;
+/** Login is a cheap call — if the box hasn't answered in 15s it isn't going to. */
+const LOGIN_TIMEOUT_MS = 15_000;
 
 async function apiGet<T>(opts: ApiOpts, path: string): Promise<T> {
   const token = await ensureToken(opts.host, opts.username, opts.password);
@@ -88,8 +94,22 @@ export interface TestcaseSummary {
   metadata?: any;
 }
 
-export async function listTestcases(opts: ApiOpts, limit = 50, offset = 0): Promise<{ items: TestcaseSummary[]; total: number }> {
-  return apiGet(opts, `/testcases?limit=${limit}&offset=${offset}`);
+/**
+ * List testcases.
+ *
+ * `page` is a PAGE INDEX (0-based), NOT a row offset — despite the box naming
+ * the query param `offset`. Verified live against 4.0.0:
+ *   limit=200&offset=0 -> rows 0-199    limit=200&offset=1 -> rows 200-204
+ *   limit=100&offset=1 -> rows 100-199  limit=100&offset=2 -> rows 200-204
+ *   limit=200&offset=2 -> 400 {"message":"requested page 3 out of range"}
+ * Passing a row count here (offset += items.length) asks for a page far past
+ * the end and the box 400s. `limit` is capped at 1000 by the box.
+ *
+ * `total` in the response is the whole catalogue size; note pageInfo.totalItems
+ * is only the count in THAT page, which reads like a total but isn't.
+ */
+export async function listTestcases(opts: ApiOpts, limit = 50, page = 0): Promise<{ items: TestcaseSummary[]; total: number }> {
+  return apiGet(opts, `/testcases?limit=${limit}&offset=${page}`);
 }
 
 export async function getTestcase(opts: ApiOpts, id: string): Promise<TestcaseSummary & { testDefinition: UesimTestDefinition }> {

@@ -15,6 +15,10 @@ const INDEX = () => path.join(ROOT(), '_index.json');
 export interface RunRecord extends SuiteRunResult {
   /** Server-assigned ULID-style id (timestamp-prefixed for sort-by-time). */
   runId: string;
+  /** Who submitted this job. Attribution only — see src/lib/identity.ts.
+   *  Absent for runs triggered outside a browser session (cron, curl, the
+   *  scratchpad runner), which is honest rather than guessed. */
+  submittedBy?: string;
   /** Captured at run start from /v2/version on the box, if reachable. */
   buildVersion?: string;
   /** Optional perf-qa job id + host so the run record points at the

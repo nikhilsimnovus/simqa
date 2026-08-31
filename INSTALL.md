@@ -1,4 +1,4 @@
-# Installing QA Ka BAAP
+# Installing SimQA
 
 Works on **Windows 10/11, Linux, and macOS**. Only prerequisite is **Node 18 or newer**.
 
@@ -138,7 +138,7 @@ So on a Windows customer box, you almost never need the bundled Chromium downloa
 
 ## Smoke test
 
-1. Sidebar should show the QA Ka BAAP mascot + nav entries (Dashboard, Test Cases, Automation, Build Check, End to End, API Tests, UI Tests, Systems Mgmt, **Tools**, Runs, Settings)
+1. Sidebar should show the SimQA mascot + nav entries (Dashboard, Test Cases, Automation, Build Check, End to End, API Tests, UI Tests, Systems Mgmt, **Tools**, Runs, Settings)
 2. **Systems Mgmt** — your Simnovator system should be listed
 3. **API Tests** — clicking Run should fire requests (no browser needed, smoke test for the install)
 4. **Tools** — pick a UESIM box, see status panel (only works if SSH creds are in inventory.yaml)

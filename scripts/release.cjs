@@ -136,7 +136,7 @@ ${C.bold}Release ready.${C.reset}
   Size:  ${sizeMB} MB
   Sha:   ${sha}
 
-Share this file with whoever needs to test/run QA Ka BAAP elsewhere.
+Share this file with whoever needs to test/run SimQA elsewhere.
 
 On the target machine (Windows / Linux / macOS, Node 18+):
   ${C.cyan}1.${C.reset} tar -zxvf ${version}.tar.gz

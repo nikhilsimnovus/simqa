@@ -26,8 +26,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   let body: any = {};
   try { body = await req.json(); } catch { /* empty */ }
   const matrix = body.matrix as AutoCreateMatrix;
-  if (!matrix || !Array.isArray(matrix.cellCounts)) {
-    return NextResponse.json({ ok: false, error: 'matrix required (with cellCounts[])' }, { status: 400 });
+  if (!matrix || typeof matrix.cellCount !== 'number' || !Array.isArray(matrix.ueGroups) || matrix.ueGroups.length === 0) {
+    return NextResponse.json({ ok: false, error: 'matrix required (cellCount: number, ueGroups: [{ ueCount, traffic[] }])' }, { status: 400 });
   }
 
   // Preview — no box writes, just expand + return the plan.

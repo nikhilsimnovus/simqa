@@ -53,7 +53,10 @@ function legacyRunsAsHistory(): HistoryEntry[] {
         out.push({
           id: r.id,
           surface: 'end-to-end',
-          label: `end-to-end · ${r.testcaseId ?? '?'}`,
+          // Name it after what actually happened. This used to read
+          // "end-to-end · <uuid>", which said nothing about which testcase ran
+          // or whether it was a rehearsal.
+          label: `${r.dryRun ? 'Work Flow' : 'Run Test'} · ${r.testcaseName ?? r.testcaseId ?? '?'}`,
           startedAt: r.startedAt,
           finishedAt: r.finishedAt ?? r.startedAt,
           targetHost: r.steps?.find?.((s: any) => s.name === 'preflight-login')?.detail,

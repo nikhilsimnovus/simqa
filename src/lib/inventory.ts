@@ -3,24 +3,34 @@
 // the UESIM box itself. The runner consumes this to know where to push
 // generated cfgs and which testcases to trigger.
 
-import * as fs from 'fs';
-import * as path from 'path';
+// node: prefixed so bundlers can tell these are builtins rather than trying to
+// resolve packages named "fs"/"path" — this module is reached from
+// instrumentation.ts, which Next also compiles for the Edge runtime.
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as YAML from 'yaml';
 
 export type SystemType =
-  | 'SIMNOVATOR'  // A box running the Simnovator product. Build Check installs onto these.
+  | 'SIMNOVATOR'  // Build Check installs onto these — shown in the UI as "Cockpit".
                   // Functionally a superset of UESIM — a Simnovator box always exposes the
                   // UESIM REST API, so it satisfies any "needs a UESIM" requirement too.
+  | 'SIMNOVATOR_GUI' // A box running the Simnovator product GUI + REST API. Shown
+                     // as "Simnovator". Serves testcases, but is NOT a Build
+                     // Check install target — that's SIMNOVATOR ("Cockpit").
   | 'UESIM'       // A generic UESIM box that is NOT necessarily a Simnovator install.
+  | 'UE'          // The UE-sim host. Serves no REST API — it's an SSH target we
+                  // read ue.cfg from, so it stays out of the testable pickers.
   | 'CALLBOX'
   | 'ENB' | 'GNB' | 'MME' | 'IMS' | 'APPSERVER';
 
 /** True when the system can play the UESIM role (Simnovator builds always can). */
 export function isUesimLike(s: { type: SystemType }): boolean {
-  return s.type === 'SIMNOVATOR' || s.type === 'UESIM';
+  return s.type === 'SIMNOVATOR' || s.type === 'SIMNOVATOR_GUI' || s.type === 'UESIM';
 }
 
-/** True only for systems explicitly marked Simnovator — install targets for Build Check. */
+/** True only for systems marked SIMNOVATOR — shown as "Cockpit" in the UI, and
+ *  the install targets for Build Check. SIMNOVATOR_GUI ("Simnovator") serves
+ *  testcases but is not something we install onto. */
 export function isSimnovatorTarget(s: { type: SystemType }): boolean {
   return s.type === 'SIMNOVATOR';
 }
@@ -63,6 +73,19 @@ export interface InventorySystem {
   sudoPassword?: string;
   /** Vendor / stack hint, drives adapter selection. */
   vendor?: 'simnovus' | 'amarisoft' | 'srsran' | 'oai' | 'other';
+  /**
+   * Live config files to read back from this host, by module name
+   * ('gnb' | 'enb' | 'mme' | 'ims' | 'ue' | 'ue_db'). Paths come from the
+   * deploy module map unless overridden in `collectPaths`.
+   *
+   * Lab configs are split across machines — the callbox runs enb/gnb/mme,
+   * while the UE-sim writes ue.cfg on its own host. Declaring `collect` on
+   * each system lets the testcase view show the ACTUAL files next to the
+   * ones simqa generated. Requires SSH credentials on that system.
+   */
+  collect?: string[];
+  /** Per-module path overrides, e.g. { ue: '/opt/ue/ue.cfg' }. */
+  collectPaths?: Record<string, string>;
   /** UESIM REST credentials (only meaningful for type === 'UESIM'). */
   uesim?: {
     username?: string;
@@ -141,10 +164,18 @@ export interface SuiteItem {
   name: string;
   /** Simnovator REST testcase id (the UUID from /v2/testcases). */
   simnovatorTcId: string;
+  /** Which suite this row belongs to, captured from the wizard's suite-name
+   *  field when the row was added. Rows added under different names are saved
+   *  as separate suites, so one wizard session can build several. */
+  suiteName?: string;
   /** Filename under /root/enb/config on the callbox (only for
    *  uesim+callbox suites). May refer to an existing file or to a
    *  blob in `uploadedConfigs`. Absent for uesim-only suites. */
   callboxCfg?: string;
+  /** Filenames under /root/mme/config. A test needs the core up as well as
+   *  the radio, so the mme + ims cfgs are bound per row alongside the gnb one. */
+  mmeCfg?: string;
+  imsCfg?: string;
   /** Max seconds to wait for the Simnovator testcase to reach a
    *  terminal state. Falls back to the suite's defaultDurationSec
    *  (or 10) when absent. */
@@ -154,6 +185,11 @@ export interface SuiteItem {
 export interface AutomationSuite {
   id: string;
   name: string;
+  /** Who created this suite / playlist, and who last changed it. Attribution
+   *  only — see src/lib/identity.ts. Absent on suites saved before sign-in
+   *  existed, and on anything created outside a browser session. */
+  createdBy?: string;
+  updatedBy?: string;
   /** Ordered list of test rows. Each row pairs a Simnovator testcase
    *  with (optionally) a callbox eNB cfg. New in 2026-06 — supersedes
    *  the flat `testcaseIds` + `callboxConfig` pair, which the runner

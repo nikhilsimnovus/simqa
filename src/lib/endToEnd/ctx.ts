@@ -5,6 +5,8 @@
 // so later checks don't have to re-fetch what earlier ones already learned.
 
 import type { Page, Browser } from 'playwright';
+import type { InventorySystem } from '../inventory';
+import type { CfgSelection } from '../labCfgLink';
 
 export interface RunCtx {
   /** Generated id for this run — also the dirname under data/end-to-end/. */
@@ -26,6 +28,16 @@ export interface RunCtx {
    *  checks to derive expectations (UE count, traffic directions, mobility,
    *  voice data types) instead of hard-coding thresholds. */
   testDefinition?: any;
+
+  // ── Optional cfg bring-up (see src/lib/labCfgLink.ts) ──
+  /** Files the caller picked on the callbox, to be symlinked in before the
+   *  run's preflight checks proceed. Unset for a plain REST-only validation
+   *  run — the cfg-link checks are only added to the plan when this is set. */
+  cfgSelection?: CfgSelection;
+  /** The callbox resolved from the target Simnovator's topology profile.
+   *  Required for cfgSelection to do anything; absence is reported as a
+   *  failed preflight check rather than silently skipping the bring-up. */
+  callbox?: InventorySystem;
 
   // ── Mutable state that checks fill in as the run progresses ──
   /** JWT bearer token. Populated by the very first preflight check. */

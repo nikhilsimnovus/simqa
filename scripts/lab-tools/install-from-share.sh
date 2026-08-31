@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install-from-share.sh — one-shot installer for QA Ka BAAP from a cloud share link.
+# install-from-share.sh — one-shot installer for SimQA from a cloud share link.
 #
 # Designed for customer sites where:
 #   • The tarball is hosted on SharePoint / OneDrive / Dropbox / Google Drive
@@ -203,7 +203,7 @@ node install.cjs --skip-playwright --port "$PORT" --no-prompt
 # ── 8. Launch (optional) ──────────────────────────────────────────────────
 if [[ "$START" == "1" ]]; then
   IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo localhost)
-  printf '\n%b%bQA Ka BAAP installed at:%b %s\n' "$C_GREEN" "$C_BOLD" "$C_RESET" "$TARGET"
+  printf '\n%b%bSimQA installed at:%b %s\n' "$C_GREEN" "$C_BOLD" "$C_RESET" "$TARGET"
   printf '%bStarting dev server on port %s...%b\n' "$C_DIM" "$PORT" "$C_RESET"
   printf '%bOpen:%b %bhttp://%s:%s%b\n\n' "$C_DIM" "$C_RESET" "$C_CYAN" "$IP" "$PORT" "$C_RESET"
   exec npm run dev
