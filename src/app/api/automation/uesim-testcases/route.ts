@@ -30,15 +30,25 @@ export async function GET(req: Request) {
     const loginD: any = await loginR.json();
     const token: string = loginD.access_token ?? loginD.token;
 
-    // Page through the catalogue. The box caps a single response at 1000 rows
-    // and (verified on 4.0.0_260609) offsets at/near 1000 return EMPTY while
-    // total can exceed it — rows past 1000 are unreachable via this API. Page
-    // in 500s to collect whatever the box will serve and surface serverTotal +
-    // truncated so callers can tell the user what is missing.
+    // Page through the catalogue.
+    //
+    // `offset` is a PAGE INDEX on this API, not a row offset. This loop used to
+    // advance it by batch.length, so after page 0 it asked for offset=500 —
+    // page 500, which is far past the end and comes back empty. The loop then
+    // stopped and reported "showing 500 of 886, the box cannot serve past
+    // ~1000". That conclusion was wrong: verified live on .95, offset=1 returns
+    // the remaining 386 rows. Nothing was unreachable; we were asking wrongly.
+    //
+    // The box also returns DUPLICATE ids within a single page (500 rows, 491
+    // unique on .95), which surfaced as a React duplicate-key error in the
+    // suite picker. Deduping here fixes it for every consumer rather than in
+    // one component, and means `total` is a count of real testcases.
+    const seen = new Set<string>();
     const items: any[] = [];
     let serverTotal = 0;
-    for (let offset = 0, page = 0; page < 20; page++) {
-      const r = await fetch(`http://${opts.host}/v2/testcases?limit=500&offset=${offset}`, {
+    let rowsRead = 0;
+    for (let page = 0; page < 40; page++) {
+      const r = await fetch(`http://${opts.host}/v2/testcases?limit=500&offset=${page}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!r.ok) {
@@ -49,11 +59,20 @@ export async function GET(req: Request) {
       const batch: any[] = d.items ?? d.data ?? [];
       serverTotal = d.total ?? serverTotal;
       if (batch.length === 0) break;
-      items.push(...batch);
-      offset += batch.length;
-      if (serverTotal > 0 && items.length >= serverTotal) break;
+      rowsRead += batch.length;
+      for (const t of batch) {
+        const id = String(t?.id ?? '');
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        items.push(t);
+      }
+      // serverTotal counts the box's duplicates, so compare against rows READ,
+      // not rows kept — otherwise a duplicate-heavy catalogue never terminates.
+      if (batch.length < 500) break;
     }
-    const truncated = serverTotal > items.length;
+    // Truncated only when the box has rows we never READ. items.length is
+    // lower than serverTotal by design, because the box counts its duplicates.
+    const truncated = serverTotal > 0 && rowsRead < serverTotal;
     // Trim to the fields the UI multi-select needs, surface lastModifiedOn
     // so callers can show it and we can sort newest-first.
     const out = items.map(t => ({

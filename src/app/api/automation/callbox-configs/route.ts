@@ -37,12 +37,20 @@ export async function GET(req: Request) {
     // deterministically. Format: <epoch>\t<size>\t<name>. Hidden files
     // (leading dot) are skipped per the lab convention — .md5 etc. aren't
     // testcase configs.
-    // `-not -type d` covers files AND symlinks. enb.cfg / mme.cfg / ims.cfg
-    // are symlinks (`ln -sfn`), so the old `-type f` hid the very entries that
-    // say which config is active. Parens are avoided rather than escaped: `\(`
-    // inside a template literal collapses to a bare paren the shell rejects.
-    const cmd = `find ${dir} -maxdepth 1 -not -type d ! -name '.*' -printf '%T@\t%s\t%f\n' 2>/dev/null`;
+    // stderr is NOT swallowed. `2>/dev/null` made "directory does not exist on
+    // this callbox" and "directory is empty" produce the identical empty list,
+    // which is exactly the ambiguity that makes an empty picker unexplainable.
+    // readCommand appends stderr, so a missing path comes back and is reported.
+    const cmd = `find ${dir} -maxdepth 1 -not -type d ! -name '.*' -printf '%T@\t%s\t%f\n'`;
     const raw = await readCommand(sys, cmd);
+    // A find error means the path is not there — say so instead of returning
+    // an empty list that reads as "this callbox has no configs".
+    if (/No such file or directory|Permission denied/i.test(raw)) {
+      return NextResponse.json({
+        ok: false, host: sys.host, dir, files: [],
+        error: `${sys.name || sys.host}: ${dir} is not present (or not readable). This callbox does not keep its configs there.`,
+      });
+    }
     const files = raw.split('\n').filter(Boolean).map(line => {
       const [epoch, size, ...nameParts] = line.split('\t');
       const name = nameParts.join('\t');
