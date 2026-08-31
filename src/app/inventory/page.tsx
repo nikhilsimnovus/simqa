@@ -1,12 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Header } from '@/components/Header';
 import { Card, CardBody, CardHeader, CardTitle, Button, Input, Field, Badge } from '@/components/ui';
 import {
   Plus, Trash2, Server, Radio, Cpu, Network, Globe, Database, ShieldCheck, Layers, ArrowLeft,
-  Pencil, Check, X, ArrowRight, ChevronDown, ChevronRight,
-} from 'lucide-react';
+  Pencil, Check, X, ArrowRight, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import Link from 'next/link';
 
 interface InventorySystem {
@@ -171,6 +170,12 @@ export default function InventoryPage() {
    *  the effect below opens the tab instead of scrolling to it. */
   const [tab, setTab] = useState<'systems' | 'topology'>('systems');
   const [systems, setSystems]   = useState<InventorySystem[]>([]);
+  /** Filters over the systems list, and which row is expanded for editing.
+   *  Only one row edits at a time — twelve open editors is the layout this
+   *  replaced. */
+  const [sysQuery, setSysQuery] = useState('');
+  const [sysType, setSysType]   = useState('');
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [profiles, setProfiles] = useState<TopologyProfile[]>([]);
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
@@ -263,6 +268,13 @@ export default function InventoryPage() {
       const used = new Set(s.map((x) => x.id));
       let n = s.length + 1;
       while (used.has(`sys-${n}`)) n += 1;
+      // Open the new row straight away — Add system exists to enter details,
+      // and a blank row appended silently under an active filter is easy to
+      // miss entirely. Clearing the filters guarantees it is on screen.
+      setEditingIdx(s.length);
+      setSysQuery('');
+      setSysType('');
+      setTab('systems');
       return [...s, { id: `sys-${n}`, type: 'SIMNOVATOR_GUI', name: '', host: '' }];
     });
   }
@@ -296,6 +308,20 @@ export default function InventoryPage() {
     return [...seen.entries()].filter(([, n]) => n > 1).map(([id]) => id);
   }, [systems]);
 
+  /** Filtered rows, each carrying its index in the UNFILTERED array — every
+   *  handler addresses systems by position, so filtering must not renumber
+   *  them or Edit would patch the wrong box. */
+  const visibleSystems = useMemo(() => {
+    const q = sysQuery.trim().toLowerCase();
+    return systems
+      .map((sys, idx) => ({ sys, idx }))
+      .filter(({ sys }) => {
+        if (sysType && sys.type !== sysType) return false;
+        if (!q) return true;
+        return `${sys.name ?? ''} ${sys.host ?? ''} ${sys.id ?? ''}`.toLowerCase().includes(q);
+      });
+  }, [systems, sysQuery, sysType]);
+
   // Quick stats banner content
   const stats = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -313,7 +339,7 @@ export default function InventoryPage() {
     <>
       <Header
         title="Systems Management"
-        subtitle="Systems and Topology Setup · click add system or any field to edit then Save"
+        subtitle="Systems and Topology Setup · Add system to register a box, Edit to change one, then Save"
         right={
           <div className="flex items-center gap-2">
             {msg ? (
@@ -404,30 +430,118 @@ export default function InventoryPage() {
               ))}
             </div>
 
-            {/* SYSTEMS */}
+            {/* SYSTEMS — one line each.
+                Twelve always-open cards made this page a very long scroll for
+                information you rarely change: the fields you read (type, name,
+                IP, whether REST/SSH are set) fit on a row, and the fields you
+                edit belong behind Edit. The card editor is unchanged and still
+                does the work — it is just no longer the default view. */}
             <section className={tab === 'systems' ? '' : 'hidden'}>
-              <div className="flex items-end justify-between mb-3">
-                <div>
-                  <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">Systems</h2>
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                <div className="relative">
+                  <Search className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    value={sysQuery}
+                    onChange={(e) => setSysQuery(e.target.value)}
+                    placeholder="Filter by name or IP…"
+                    className="h-8 w-56 rounded-md border border-slate-300 bg-surface pl-8 pr-2 text-xs"
+                  />
                 </div>
+                <select
+                  value={sysType}
+                  onChange={(e) => setSysType(e.target.value)}
+                  className="h-8 rounded-md border border-slate-300 bg-surface px-2 text-xs"
+                >
+                  <option value="">All types</option>
+                  {SYSTEM_TYPES.map((t) => (
+                    <option key={t} value={t}>{TYPE_META[t]?.label ?? t}</option>
+                  ))}
+                </select>
+                <span className="text-[11px] text-slate-400">
+                  {visibleSystems.length} of {systems.length}
+                </span>
               </div>
 
               {systems.length === 0 ? (
                 <EmptyCard
                   icon={<Server className="h-5 w-5 text-slate-400" />}
                   title="No systems yet"
-                  desc='Click "Add system" above to register your first lab box.'
+                  desc="Click Add system above to register your first lab box."
                 />
+              ) : visibleSystems.length === 0 ? (
+                <div className="rounded-lg border border-line bg-surface px-4 py-6 text-sm text-slate-500">
+                  No system matches those filters.
+                </div>
               ) : (
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                  {systems.map((sys, idx) => (
-                    <SystemCard
-                      key={idx}
-                      sys={sys}
-                      onPatch={(p) => patchSystem(idx, p)}
-                      onRemove={() => removeSystem(idx)}
-                    />
-                  ))}
+                <div className="rounded-lg border border-line bg-surface overflow-hidden">
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-panel text-slate-500 border-b border-line">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-medium">Type</th>
+                        <th className="px-3 py-2 text-left font-medium">Name</th>
+                        <th className="px-3 py-2 text-left font-medium">IP address</th>
+                        <th className="px-3 py-2 text-left font-medium">Id</th>
+                        <th className="px-3 py-2 text-left font-medium">Access</th>
+                        <th className="px-3 py-2 text-right font-medium">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {visibleSystems.map(({ sys, idx }) => {
+                        const meta = TYPE_META[sys.type] ?? TYPE_META.UESIM;
+                        const Icon = meta.icon;
+                        const open = editingIdx === idx;
+                        return (
+                          <Fragment key={idx}>
+                            <tr className={open ? 'bg-primary-50/40' : 'hover:bg-slate-50'}>
+                              <td className="px-3 py-1.5 whitespace-nowrap">
+                                <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${meta.bg} ${meta.text}`}>
+                                  <Icon className="h-3 w-3" />{meta.label}
+                                </span>
+                              </td>
+                              <td className="px-3 py-1.5 text-slate-800">{sys.name || <span className="text-slate-400">unnamed</span>}</td>
+                              <td className="px-3 py-1.5 font-mono text-[11px] text-slate-600">{sys.host || <span className="font-sans text-slate-400">no IP</span>}</td>
+                              <td className="px-3 py-1.5 font-mono text-[11px] text-slate-400">{sys.id}</td>
+                              <td className="px-3 py-1.5">
+                                {/* At-a-glance: is this box actually usable. A
+                                    system with neither is why a run fails later. */}
+                                <span className="inline-flex gap-1">
+                                  <span className={'rounded px-1.5 py-0.5 text-[10px] ' + (sys.uesim?.username ? 'bg-success-50 text-success-700' : 'bg-slate-100 text-slate-400')}>REST</span>
+                                  <span className={'rounded px-1.5 py-0.5 text-[10px] ' + (sys.password || sys.privateKey ? 'bg-success-50 text-success-700' : 'bg-slate-100 text-slate-400')}>SSH</span>
+                                </span>
+                              </td>
+                              <td className="px-3 py-1.5 text-right whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingIdx(open ? null : idx)}
+                                  className="text-[11px] text-primary-700 hover:underline"
+                                >
+                                  {open ? 'Close' : 'Edit'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { if (editingIdx === idx) setEditingIdx(null); removeSystem(idx); }}
+                                  className="ml-3 text-[11px] text-red-600 hover:underline"
+                                >
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                            {open ? (
+                              <tr>
+                                <td colSpan={6} className="p-3 bg-slate-50/60">
+                                  <SystemCard
+                                    sys={sys}
+                                    onPatch={(p) => patchSystem(idx, p)}
+                                    onRemove={() => { setEditingIdx(null); removeSystem(idx); }}
+                                  />
+                                </td>
+                              </tr>
+                            ) : null}
+                          </Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </section>
