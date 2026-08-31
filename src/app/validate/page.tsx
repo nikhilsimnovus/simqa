@@ -6,8 +6,8 @@
 // column alone and never touches the left.
 //
 // One thing to be clear-eyed about: SimQA does NOT run the installer. The
-// build is installed by pasting the generated commands into Cockpit, because
-// inventory.yaml carries no SSH credentials for these machines. So Install
+// build is installed by pasting the generated commands into Cockpit, and SimQA
+// does not drive that terminal session. So Install
 // Progress reports what SimQA can *observe* from outside — the box dropping
 // off and returning on a new build — and labels itself as observed rather than
 // pretending to stream an installer log it cannot see.

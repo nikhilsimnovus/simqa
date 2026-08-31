@@ -21,9 +21,11 @@
 //
 // • The install itself is NOT executed from here. The build is installed by
 //   pasting the generated commands into the Cockpit terminal on the install
-//   host — SimQA has no SSH credentials for these machines (inventory.yaml
-//   carries none), so it cannot run or watch the installer. Install progress
-//   is therefore *observed*, not driven: see observeInstallProgress().
+//   host — SimQA does not drive that terminal session, so it cannot stream the
+//   installer's own output here. Install progress is therefore *observed* from
+//   outside, not driven: see observeInstallProgress(). (The Job Tracker DOES
+//   install a build itself, via Cockpit automation in buildInstaller.ts; this
+//   page is the manual path.)
 
 import { spawn } from 'node:child_process';
 import * as net from 'node:net';
