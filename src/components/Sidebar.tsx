@@ -7,7 +7,7 @@ import {
   LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle,
   ShieldCheck, Beaker, MousePointerClick, Info, Wrench, Database,
   FileCheck2, Activity, ChevronDown, ChevronRight, Boxes,
-  PanelLeftClose, PanelLeftOpen, RefreshCw, Globe, ClipboardList, PlayCircle,
+  PanelLeftClose, PanelLeftOpen, RefreshCw, Globe, ClipboardList,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ThemeToggle } from '@/components/ThemeToggle';

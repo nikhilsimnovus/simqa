@@ -129,7 +129,10 @@ export async function ensureToken(host: string, username: string, password: stri
   return attempt;
 }
 
-interface ApiOpts {
+/** Exported: executions.ts, jobTracker/executor.ts and duplicateTestcase.ts all
+ *  take the same host+credentials shape, and re-declaring it in each would let
+ *  the four copies drift. */
+export interface ApiOpts {
   host: string;
   username: string;
   password: string;
