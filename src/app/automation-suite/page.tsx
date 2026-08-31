@@ -986,7 +986,39 @@ export default function AutomationSuitePage() {
           );
         })()}
 
+        {/* Saved suites and the editor are tabs, not stacked sections. The
+            editor used to open BELOW a full list of suites, so creating one
+            meant scrolling past everything you already had. showWizard already
+            tracked which is active, so it drives the tabs directly rather than
+            adding a second source of truth that could disagree with it. */}
+        <div className="flex items-center gap-1 border-b border-line mb-4">
+          <button
+            type="button"
+            onClick={resetWizard}
+            className={
+              'relative px-4 h-9 text-sm font-medium transition-colors -mb-px border-b-2 ' +
+              (!showWizard ? 'border-primary-600 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800')
+            }
+          >
+            Saved suites
+            <span className={'ml-1.5 text-[11px] tabular-nums ' + (!showWizard ? 'text-slate-500' : 'text-slate-400')}>
+              {suites.length}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => { if (!showWizard) openNew(); }}
+            className={
+              'relative px-4 h-9 text-sm font-medium transition-colors -mb-px border-b-2 ' +
+              (showWizard ? 'border-primary-600 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800')
+            }
+          >
+            {editingId ? 'Edit suite' : 'New suite'}
+          </button>
+        </div>
+
         {/* Suite list */}
+        {!showWizard && (
         <section className="bg-surface border border-line rounded-xl p-5 mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-slate-900">Saved suites ({suites.length})</h2>
@@ -1274,6 +1306,7 @@ export default function AutomationSuitePage() {
             </div>
           )}
         </section>
+        )}
 
         {/* Run history + compare (visible when "Runs" was clicked) */}
         {historyFor && (
