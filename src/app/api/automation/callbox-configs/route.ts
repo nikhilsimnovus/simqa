@@ -37,7 +37,11 @@ export async function GET(req: Request) {
     // deterministically. Format: <epoch>\t<size>\t<name>. Hidden files
     // (leading dot) are skipped per the lab convention — .md5 etc. aren't
     // testcase configs.
-    const cmd = `find ${dir} -maxdepth 1 -type f ! -name '.*' -printf '%T@\\t%s\\t%f\\n' 2>/dev/null`;
+    // `-not -type d` covers files AND symlinks. enb.cfg / mme.cfg / ims.cfg
+    // are symlinks (`ln -sfn`), so the old `-type f` hid the very entries that
+    // say which config is active. Parens are avoided rather than escaped: `\(`
+    // inside a template literal collapses to a bare paren the shell rejects.
+    const cmd = `find ${dir} -maxdepth 1 -not -type d ! -name '.*' -printf '%T@\t%s\t%f\n' 2>/dev/null`;
     const raw = await readCommand(sys, cmd);
     const files = raw.split('\n').filter(Boolean).map(line => {
       const [epoch, size, ...nameParts] = line.split('\t');

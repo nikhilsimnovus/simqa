@@ -73,17 +73,23 @@ export async function GET(req: Request) {
   }
 
   try {
-    const cmd = `find ${spec.dir} -maxdepth 1 -type f ! -name '.*' -printf '%T@\\t%s\\t%f\\n' 2>/dev/null`;
+    // `-not -type d` rather than `\( -type f -o -type l \)`: it covers files
+    // AND symlinks with no shell parens to escape through a template literal,
+    // which is what silently broke this the first time. The escapes below must
+    // stay doubled — \t and \n reach find as the two-character sequences its
+    // -printf understands; a real tab or newline here would not.
+    const cmd = `find ${spec.dir} -maxdepth 1 -not -type d ! -name '.*' -printf '%T@\t%s\t%f\t%l\n' 2>/dev/null`;
     const raw = await readCommand(sys, cmd);
     const files = raw.split('\n').filter(Boolean).map((line) => {
-      const [epoch, size, ...nameParts] = line.split('\t');
-      const name = nameParts.join('\t');
+      const [epoch, size, name, target] = line.split('\t');
       const e = Number(epoch) || 0;
       return {
         name,
         size: Number(size) || 0,
         mtimeEpoch: e,
         mtime: e ? new Date(e * 1000).toISOString().slice(0, 19).replace('T', ' ') : '',
+        // Present only for symlinks; the UI can show it as "name -> target".
+        linkTarget: target ? target.trim() : undefined,
       };
     }).filter((f) => f.name);
     files.sort((a, b) => b.mtimeEpoch - a.mtimeEpoch);
