@@ -262,7 +262,10 @@ export async function duplicateTestcase(
  * recreateTestcase() so there is one implementation of "POST a testDefinition
  * onto the box", not two.
  */
-async function createFromDefinition(
+/** Build a testcase on a box from a full testDefinition, via the box's 6-step
+ *  create lifecycle. Exported so e2eTestcases.ts can replay a captured
+ *  definition on a different station without duplicating the lifecycle. */
+export async function createFromDefinition(
   opts: ApiOpts,
   token: string,
   td: any,
