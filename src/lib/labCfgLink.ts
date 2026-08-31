@@ -99,7 +99,10 @@ export async function linkAndRestart(
 export async function currentCfgLinks(callbox: InventorySystem): Promise<CfgSelection> {
   const read = async (path: string) => {
     try {
-      const out = await readCommand(callbox, `readlink ${q(path)} 2>/dev/null || true`);
+      // sudo first: /root is 0700 on some callboxes (.122), where an
+      // unprivileged readlink returns nothing and the caller concludes no cfg
+      // is bound — when one is.
+      const out = await readCommand(callbox, `sudo -n readlink ${q(path)} 2>/dev/null || readlink ${q(path)} 2>/dev/null || true`);
       return out.trim() || undefined;
     } catch {
       return undefined;

@@ -435,7 +435,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   // ── Phase 1: push/verify the single callbox config (if set) ─────
   let existing = new Set<string>();
   try {
-    const raw = await readCommand(sys, 'ls -1 /root/enb/config 2>/dev/null');
+    const raw = await readCommand(sys, 'sudo -n ls -1 /root/enb/config 2>/dev/null || ls -1 /root/enb/config 2>/dev/null');
     existing = new Set(raw.split('\n').map(s => s.trim()).filter(Boolean));
   } catch { /* leave empty — upload still attempts */ }
 
@@ -689,11 +689,11 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
   let existingCore = new Set<string>();
   if (callboxSys) {
     try {
-      const raw = await readCommand(callboxSys, 'ls -1 /root/enb/config 2>/dev/null');
+      const raw = await readCommand(callboxSys, 'sudo -n ls -1 /root/enb/config 2>/dev/null || ls -1 /root/enb/config 2>/dev/null');
       existing = new Set(raw.split('\n').map(s => s.trim()).filter(Boolean));
     } catch { /* uploads still attempt */ }
     try {
-      const raw = await readCommand(callboxSys, 'ls -1 /root/mme/config 2>/dev/null');
+      const raw = await readCommand(callboxSys, 'sudo -n ls -1 /root/mme/config 2>/dev/null || ls -1 /root/mme/config 2>/dev/null');
       existingCore = new Set(raw.split('\n').map(s => s.trim()).filter(Boolean));
     } catch { /* uploads still attempt */ }
   }

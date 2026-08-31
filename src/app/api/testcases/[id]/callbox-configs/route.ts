@@ -48,8 +48,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
 
   try {
     const [radioRaw, coreRaw, current] = await Promise.all([
-      readCommand(callbox, 'ls -1 /root/enb/config 2>/dev/null'),
-      readCommand(callbox, 'ls -1 /root/mme/config 2>/dev/null'),
+      readCommand(callbox, 'sudo -n ls -1 /root/enb/config 2>/dev/null || ls -1 /root/enb/config 2>/dev/null'),
+      readCommand(callbox, 'sudo -n ls -1 /root/mme/config 2>/dev/null || ls -1 /root/mme/config 2>/dev/null'),
       currentCfgLinks(callbox),
     ]);
 
