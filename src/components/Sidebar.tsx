@@ -7,7 +7,7 @@ import {
   LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle,
   ShieldCheck, Beaker, MousePointerClick, Info, Wrench, Database,
   FileCheck2, Activity, ChevronDown, ChevronRight, Boxes,
-  PanelLeftClose, PanelLeftOpen, RefreshCw, Globe, ClipboardList,
+  PanelLeftClose, PanelLeftOpen, RefreshCw, Globe, ClipboardList, Star
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -34,6 +34,7 @@ const SECTIONS: NavSection[] = [
       { href: '/',                  label: 'Dashboard',         icon: LayoutDashboard },
       { href: '/job-tracker',       label: 'Job Tracker',       icon: ClipboardList },
       { href: '/testcases',         label: 'Test Case and Validate', icon: FlaskConical },
+      { href: '/scenarios',         label: 'Scenarios',         icon: Star },
       { href: '/automation-suite',  label: 'Automation Suite',  icon: PlayCircle },
       { href: '/environments',      label: 'Auto Test Creation', icon: Globe },
     ],
