@@ -46,6 +46,11 @@ export interface RunCtx {
    *  testcase metadata after the POST returns (the start endpoint itself
    *  doesn't return an executionId — see uesimClient.ts comment). */
   executionId?: string;
+  /** Simulator the TRIGGER phase actually started the execution on.
+   *  Recorded so later checks can ask the simulator directly instead of
+   *  relying solely on the testcase's metadata — see
+   *  trigger-execution-id-discovered. */
+  simulatorId?: string;
   /** Configured run duration in seconds, parsed from testcase metadata.
    *  Used by the COMPLETION-phase wait to know how long to wait. */
   configuredDurationSec?: number;
