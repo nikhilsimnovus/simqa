@@ -12,7 +12,7 @@
 // root, and a caller-supplied path would be an arbitrary directory read.
 
 import { NextResponse } from 'next/server';
-import { loadInventory, getSystem, type InventorySystem } from '@/lib/inventory';
+import { loadInventory, getSystem, type InventorySystem, callboxForProfile } from '@/lib/inventory';
 import { getSetup } from '@/lib/jobTracker/setups';
 import { readCommand } from '@/lib/configFidelity/ssh';
 
@@ -51,7 +51,7 @@ export async function GET(req: Request) {
     // The callbox is not part of the install topology, so it is looked up from
     // the same profile the rest of the app uses.
     const profile = inv.profiles.find((p) => p.simnovator === setup.systemId);
-    sys = profile?.callbox ? getSystem(inv, profile.callbox) : undefined;
+    sys = callboxForProfile(inv, profile);
   }
 
   if (!sys) {

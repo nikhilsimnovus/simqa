@@ -2,16 +2,19 @@
 
 // Scenarios — saved one-click runs.
 //
-// The card is the whole point: a name you recognise, the box it will use, and
-// a Run button. Choosing a system is a dropdown next to Run rather than a
-// separate dialog, because the common case is "same box as last time" and
-// that should cost zero clicks.
+// Listed as ROWS, matching how the Simnovator GUI and the Test Cases page
+// list things: one line per scenario, columns you can scan down, action on
+// the right. Cards wasted vertical space and made two scenarios look like a
+// dashboard rather than a list.
+//
+// The system dropdown sits in its own column next to Run, because the common
+// case is "same box as last time" and that should cost zero clicks.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Header } from '@/components/Header';
 import { Card, CardBody, CardHeader, CardTitle, Button, Input, Field, Badge } from '@/components/ui';
-import { Play, Plus, Trash2, ExternalLink, Loader2 } from 'lucide-react';
+import { Play, Plus, Trash2, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
 interface Scenario {
@@ -20,7 +23,25 @@ interface Scenario {
   systemId?: string; lastSystemId?: string;
   lastRunAt?: string; lastRunId?: string;
   notes?: string; createdBy?: string;
+  cfgSelection?: CfgSel;
 }
+type CfgSel = { enb?: string; gnb?: string; mme?: string; mme2?: string; ims?: string };
+interface CfgOptions {
+  callbox: { id: string; name: string; host: string } | null;
+  enb: string[]; mme: string[];
+  current: CfgSel;
+  ueDb: Record<string, string[]>;
+}
+/** The five symlink slots, and which directory listing feeds each. The UE
+ *  database is absent on purpose: it is an `include` inside the MME config,
+ *  not a symlink, so it travels with the MME choice. */
+const CFG_SLOTS: { key: keyof CfgSel; label: string; from: 'enb' | 'mme'; hint: string }[] = [
+  { key: 'enb',  label: 'eNB / gNB config', from: 'enb', hint: 'becomes enb.cfg' },
+  { key: 'gnb',  label: 'gNB config',       from: 'enb', hint: 'becomes gnb.cfg — only if the box keeps a separate NR link' },
+  { key: 'mme',  label: 'MME config',       from: 'mme', hint: 'becomes mme.cfg — the subscriber DB comes with it' },
+  { key: 'mme2', label: 'MME2 config',      from: 'mme', hint: 'becomes mme2.cfg — second core, two-core setups only' },
+  { key: 'ims',  label: 'IMS config',       from: 'mme', hint: 'becomes ims.cfg' },
+];
 interface SystemRow { id: string; name: string; host: string; type: string }
 interface TestcaseRow { id: string; name: string }
 
@@ -131,18 +152,35 @@ export default function ScenariosPage() {
             <div className="mt-4"><Button size="sm" onClick={() => setCreating(true)}><Plus className="h-4 w-4" />New scenario</Button></div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            {scenarios.map((s) => (
-              <ScenarioCard
-                key={s.id}
-                s={s}
-                systems={systems}
-                systemLabel={systemLabel}
-                busy={busyId === s.id}
-                onRun={(sysId) => run(s, sysId)}
-                onDelete={() => remove(s)}
-              />
-            ))}
+          <div className="overflow-hidden rounded-xl border border-line bg-surface">
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs uppercase tracking-wider text-slate-500">
+                <tr>
+                  {['Scenario', 'Test case', 'Callbox configs', 'Last run', 'System', 'Action'].map((label, i) => (
+                    <th
+                      key={label}
+                      className={cn(
+                        'border-b border-line bg-slate-50 px-4 py-2 font-medium',
+                        i >= 4 && 'text-right',
+                      )}
+                    >{label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {scenarios.map((s) => (
+                  <ScenarioRow
+                    key={s.id}
+                    s={s}
+                    systems={systems}
+                    systemLabel={systemLabel}
+                    busy={busyId === s.id}
+                    onRun={(sysId) => run(s, sysId)}
+                    onDelete={() => remove(s)}
+                  />
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </main>
@@ -150,7 +188,7 @@ export default function ScenariosPage() {
   );
 }
 
-function ScenarioCard({
+function ScenarioRow({
   s, systems, systemLabel, busy, onRun, onDelete,
 }: {
   s: Scenario; systems: SystemRow[]; systemLabel: (id?: string) => string | null;
@@ -159,60 +197,68 @@ function ScenarioCard({
   // The box this click would use, resolved the same way the API resolves it.
   const remembered = s.systemId || s.lastSystemId;
   const [choice, setChoice] = useState<string>('');
-  const target = choice || remembered;
-  const needsChoice = !target;
+  const needsChoice = !(choice || remembered);
+  const cfgs = CFG_SLOTS.filter((sl) => s.cfgSelection?.[sl.key]);
 
   return (
-    <Card>
-      <CardHeader className="flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <CardTitle className="truncate">{s.name}</CardTitle>
-          <div className="mt-0.5 truncate text-[11px] font-light text-slate-500" title={s.testcaseId}>
-            {s.testcaseName ?? s.testcaseId}
+    <tr className="transition-colors hover:bg-slate-50">
+      <td className="px-4 py-2">
+        <div className="font-medium text-slate-900">{s.name}</div>
+        {s.notes ? <div className="mt-0.5 text-[11px] font-light text-slate-500">{s.notes}</div> : null}
+      </td>
+
+      <td className="px-4 py-2">
+        <span className="text-slate-700" title={s.testcaseId}>{s.testcaseName ?? s.testcaseId}</span>
+      </td>
+
+      <td className="px-4 py-2">
+        {cfgs.length === 0 ? (
+          <span className="text-xs text-slate-400">— box as-is —</span>
+        ) : (
+          <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[11px]">
+            {cfgs.map((sl) => (
+              <span key={sl.key} title={sl.hint}>
+                <span className="text-slate-400">{sl.key}</span>{' '}
+                <span className="font-mono text-slate-600">{s.cfgSelection![sl.key]}</span>
+              </span>
+            ))}
           </div>
-        </div>
-        <button
-          type="button" onClick={onDelete}
-          className="rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"
-          aria-label={`Delete ${s.name}`}
-        ><Trash2 className="h-3.5 w-3.5" /></button>
-      </CardHeader>
-      <CardBody className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-          {s.lastRunAt ? (
-            <>
-              <Badge tone="default">last run {new Date(s.lastRunAt).toLocaleString()}</Badge>
-              {s.lastRunId ? (
-                <Link href={`/runs`} className="inline-flex items-center gap-1 text-primary-700 hover:underline">
-                  report <ExternalLink className="h-3 w-3" />
-                </Link>
-              ) : null}
-            </>
-          ) : <Badge tone="warning">never run</Badge>}
-        </div>
+        )}
+      </td>
 
-        {s.notes ? <p className="text-[12px] font-light text-slate-600">{s.notes}</p> : null}
+      <td className="px-4 py-2 text-xs text-slate-500">
+        {s.lastRunAt ? new Date(s.lastRunAt).toLocaleString() : <Badge tone="warning">never run</Badge>}
+      </td>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={choice}
-            onChange={(e) => setChoice(e.target.value)}
-            className={cn(SELECT_CLS, 'min-w-[15rem] flex-1')}
-            aria-label="System to run on"
+      <td className="px-4 py-2 text-right">
+        <select
+          value={choice}
+          onChange={(e) => setChoice(e.target.value)}
+          className={cn(SELECT_CLS, 'w-full max-w-[14rem]')}
+          aria-label={`System for ${s.name}`}
+        >
+          <option value="">{remembered ? `Last: ${systemLabel(remembered)}` : '— choose —'}</option>
+          {systems.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.host}</option>)}
+        </select>
+      </td>
+
+      <td className="px-4 py-2">
+        <div className="flex items-center justify-end gap-1">
+          <Button
+            size="sm" onClick={() => onRun(choice || undefined)} disabled={busy || needsChoice}
+            title={needsChoice ? 'Pick a system first — this scenario has never run' : undefined}
           >
-            <option value="">
-              {remembered ? `Use last: ${systemLabel(remembered)}` : '— choose a system —'}
-            </option>
-            {systems.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.host}</option>)}
-          </select>
-          <Button size="sm" onClick={() => onRun(choice || undefined)} disabled={busy || needsChoice}
-            title={needsChoice ? 'Pick a system first — this scenario has never run' : undefined}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
             {busy ? 'Starting…' : 'Run'}
           </Button>
+          <button
+            type="button" onClick={onDelete}
+            className="rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"
+            aria-label={`Delete ${s.name}`}
+          ><Trash2 className="h-3.5 w-3.5" /></button>
         </div>
-      </CardBody>
-    </Card>
+      </td>
+    </tr>
   );
 }
 
@@ -228,6 +274,26 @@ function NewScenarioForm({
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [q, setQ] = useState('');
+  const [cfg, setCfg] = useState<CfgSel>({});
+  const [opts, setOpts] = useState<CfgOptions | null>(null);
+  const [optsLoading, setOptsLoading] = useState(false);
+
+  // Cfg files live on the callbox bound to the chosen Simnovator, so the
+  // pickers can only be populated once a system is picked.
+  useEffect(() => {
+    if (!systemId) { setOpts(null); return; }
+    let cancelled = false;
+    setOptsLoading(true);
+    fetch(`/api/scenarios/cfg-options?systemId=${encodeURIComponent(systemId)}`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => { if (!cancelled && j?.ok) { setOpts(j); setCfg(j.current ?? {}); } })
+      .catch(() => { if (!cancelled) setOpts(null); })
+      .finally(() => { if (!cancelled) setOptsLoading(false); });
+    return () => { cancelled = true; };
+  }, [systemId]);
+
+  // The subscriber DB the chosen MME config pulls in — shown, not chosen.
+  const ueDb = cfg.mme ? (opts?.ueDb?.[cfg.mme] ?? []) : [];
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -246,6 +312,7 @@ function NewScenarioForm({
           name: name.trim(), testcaseId,
           testcaseName: testcases.find((t) => t.id === testcaseId)?.name,
           systemId: systemId || undefined,
+          cfgSelection: Object.values(cfg).some(Boolean) ? cfg : undefined,
           notes: notes.trim() || undefined,
         }),
       });
@@ -283,6 +350,54 @@ function NewScenarioForm({
         >
           {filtered.map((t) => <option key={t.id} value={t.id}>{t.name || t.id}</option>)}
         </select>
+        {/* Callbox config set — only meaningful once a system (hence a bound
+            callbox) is chosen. */}
+        {systemId ? (
+          <div className="rounded-lg border border-line bg-panel p-3">
+            <div className="mb-2 flex items-baseline gap-2">
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-label text-slate-500">
+                Callbox configs
+              </span>
+              <span className="text-[11px] font-light text-slate-500">
+                {optsLoading ? 'reading the callbox…'
+                  : opts?.callbox ? `${opts.callbox.name} · ${opts.callbox.host} — linked before each run, then one lte restart`
+                  : 'no callbox bound to this system in the topology — REST-only run'}
+              </span>
+            </div>
+            {opts?.callbox ? (
+              <>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {CFG_SLOTS.map((sl) => {
+                    const list = sl.from === 'enb' ? opts.enb : opts.mme;
+                    return (
+                      <label key={sl.key} className="block">
+                        <span className="mb-1 block text-xs font-medium text-slate-700">{sl.label}</span>
+                        <select
+                          value={cfg[sl.key] ?? ''}
+                          onChange={(e) => setCfg((c) => ({ ...c, [sl.key]: e.target.value || undefined }))}
+                          className={cn(SELECT_CLS, 'w-full')}
+                          title={sl.hint}
+                        >
+                          <option value="">— leave as-is —</option>
+                          {list.map((f) => <option key={f} value={f}>{f}</option>)}
+                        </select>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="mt-2 text-[11px] font-light text-slate-500">
+                  <span className="font-medium text-slate-600">UE database:</span>{' '}
+                  {cfg.mme
+                    ? (ueDb.length
+                      ? <span className="font-mono">{ueDb.join(', ')}</span>
+                      : <span>none found in {cfg.mme}</span>)
+                    : 'pick an MME config — the database is an include inside it, not a separate link'}
+                </p>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+
         <Field label="Notes" hint="optional">
           <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. two-core roaming demo, needs the DISH build on .122" />
         </Field>

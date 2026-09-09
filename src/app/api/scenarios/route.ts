@@ -6,6 +6,18 @@ import { userFromRequest } from '@/lib/identity';
 
 export const dynamic = 'force-dynamic';
 
+/** Keep only the five known slots, as non-empty strings. Anything else a
+ *  client sends is dropped rather than stored and later fed to a symlink. */
+function pickCfg(raw: any): { enb?: string; gnb?: string; mme?: string; mme2?: string; ims?: string } | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const out: Record<string, string> = {};
+  for (const k of ['enb', 'gnb', 'mme', 'mme2', 'ims']) {
+    const v = raw[k];
+    if (typeof v === 'string' && v.trim()) out[k] = v.trim();
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 export async function GET() {
   return NextResponse.json({ ok: true, scenarios: listScenarios() });
 }
@@ -21,6 +33,7 @@ export async function POST(req: Request) {
     name, testcaseId,
     testcaseName: body?.testcaseName ? String(body.testcaseName) : undefined,
     systemId: body?.systemId ? String(body.systemId) : undefined,
+    cfgSelection: pickCfg(body?.cfgSelection),
     notes: body?.notes ? String(body.notes) : undefined,
   }, userFromRequest(req));
   return NextResponse.json({ ok: true, scenario: s });

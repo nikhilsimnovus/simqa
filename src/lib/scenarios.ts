@@ -36,6 +36,15 @@ export interface Scenario {
   lastRunAt?: string;
   /** Run id of the last run, so the card can deep-link into its report. */
   lastRunId?: string;
+  /** Callbox config set to put in place before the run: each value is a
+   *  basename already on the callbox, symlinked to the matching slot
+   *  (enb.cfg / gnb.cfg / mme.cfg / mme2.cfg / ims.cfg) and followed by one
+   *  `lte` restart. Omit for a REST-only run against whatever the box is
+   *  already wearing.
+   *
+   *  No ueDb field on purpose — the subscriber DB is an `include` inside the
+   *  MME config, so it travels with `mme`. See CfgSelection in labCfgLink.ts. */
+  cfgSelection?: { enb?: string; gnb?: string; mme?: string; mme2?: string; ims?: string };
   /** Free-text note shown under the name. */
   notes?: string;
   /** Attribution only — see src/lib/identity.ts. */
@@ -107,6 +116,7 @@ export function createScenario(input: Partial<Scenario> & { name: string; testca
     testcaseId: input.testcaseId,
     testcaseName: input.testcaseName,
     systemId: input.systemId,
+    cfgSelection: input.cfgSelection,
     notes: input.notes,
     createdBy: by,
     createdAt: now,

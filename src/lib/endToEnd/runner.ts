@@ -14,7 +14,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import type { Inventory } from '../inventory';
-import { loadInventory, uesimApiOptsForSystem, getSystem } from '../inventory';
+import { loadInventory, uesimApiOptsForSystem, getSystem, callboxForProfile } from '../inventory';
 import { findBusy } from '../executions';
 import { ensureToken } from '../uesimClient';
 import { getSettings } from '../settings';
@@ -74,7 +74,7 @@ const activeRuns: Map<string, ActiveRun> = __sg.__simqaEndToEndActive ?? (__sg._
  *  already do, for the callbox instead of the UE. */
 function callboxForSimnovator(inv: Inventory, simnovatorId: string) {
   const profile = inv.profiles.find((p) => p.simnovator === simnovatorId);
-  return profile?.callbox ? getSystem(inv, profile.callbox) : undefined;
+  return callboxForProfile(inv, profile);
 }
 
 export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: string; error?: string }> {

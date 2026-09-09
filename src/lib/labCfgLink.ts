@@ -15,11 +15,37 @@ import type { InventorySystem } from './inventory';
 export interface CfgSelection {
   /** Basename of a file already in /root/enb/config, to become enb.cfg. */
   enb?: string;
+  /** Basename of a file already in /root/enb/config, to become gnb.cfg.
+   *  Separate slot from `enb`: boxes running LTE and NR side by side keep
+   *  both links, and a single-stack box simply leaves this unset. */
+  gnb?: string;
   /** Basename of a file already in /root/mme/config, to become mme.cfg. */
   mme?: string;
+  /** Basename of a file already in /root/mme/config, to become mme2.cfg —
+   *  the SECOND core, for two-core setups like the DISH/Boost roaming demo
+   *  where mme.cfg serves the home PLMN and mme2.cfg the partner. Only has
+   *  an effect when the box's ots.cfg declares an MME2 component. */
+  mme2?: string;
   /** Basename of a file already in /root/mme/config, to become ims.cfg. */
   ims?: string;
 }
+
+/**
+ * The UE database is deliberately NOT a field here.
+ *
+ * Unlike enb/gnb/mme/mme2/ims — each a symlink this module can repoint — the
+ * subscriber DB is pulled in by an `include "<name>.cfg"` line INSIDE the MME
+ * config (mme-dish.cfg includes dish-roaming-db.cfg). There is no ue_db.cfg
+ * symlink convention on the callboxes: a survey of /root/mme/config found
+ * twelve different DB files included by name and zero includes of a generic
+ * ue_db.cfg.
+ *
+ * So the DB travels WITH the MME config you pick. Offering a separate
+ * dropdown would mean rewriting an include line inside a shared config file —
+ * mutating a file other setups also use. `ueDbFor()` below reports which DB a
+ * given MME config pulls in, so a picker can show it rather than pretend to
+ * set it.
+ */
 
 export interface CfgLinkStep {
   step: string;
@@ -66,7 +92,7 @@ export async function linkAndRestart(
     steps.push({ step, ok, detail, durationMs: Date.now() - t0 });
   };
 
-  if (!sel.enb && !sel.mme && !sel.ims) {
+  if (!sel.enb && !sel.gnb && !sel.mme && !sel.mme2 && !sel.ims) {
     return { ok: true, steps: [{ step: 'cfg-link', ok: true, detail: 'no files selected — nothing to link', durationMs: 0 }] };
   }
 
@@ -83,7 +109,15 @@ export async function linkAndRestart(
       });
       stamp('cfg-link:enb', true, `enb.cfg → ${sel.enb}`, t0);
     }
-    for (const [role, name] of [['mme', sel.mme], ['ims', sel.ims]] as const) {
+    if (sel.gnb) {
+      const t0 = Date.now();
+      await withSsh(callbox, async (ssh) => {
+        const r = await ssh.execCommand(sudoLink(`/root/enb/config`, q(sel.gnb!), `'gnb.cfg'`));
+        if (r.code !== 0) throw new Error(r.stderr || r.stdout || `ln exit ${r.code}`);
+      });
+      stamp('cfg-link:gnb', true, `gnb.cfg → ${sel.gnb}`, t0);
+    }
+    for (const [role, name] of [['mme', sel.mme], ['mme2', sel.mme2], ['ims', sel.ims]] as const) {
       if (!name) continue;
       const t0 = Date.now();
       await withSsh(callbox, async (ssh) => {
@@ -130,10 +164,43 @@ export async function currentCfgLinks(callbox: InventorySystem): Promise<CfgSele
       return undefined;
     }
   };
-  const [enb, mme, ims] = await Promise.all([
+  const [enb, gnb, mme, mme2, ims] = await Promise.all([
     read('/root/enb/config/enb.cfg'),
+    read('/root/enb/config/gnb.cfg'),
     read('/root/mme/config/mme.cfg'),
+    read('/root/mme/config/mme2.cfg'),
     read('/root/mme/config/ims.cfg'),
   ]);
-  return { enb, mme, ims };
+  return { enb, gnb, mme, mme2, ims };
+}
+
+/**
+ * Which subscriber DB an MME config pulls in, by reading its `include` lines.
+ *
+ * The DB is not separately selectable (see the note on CfgSelection), so a
+ * picker shows this as derived, read-only context: choose mme-dish.cfg and
+ * you get dish-roaming-db.cfg with it. Commented-out includes are ignored —
+ * the configs on the box carry several of those as history.
+ *
+ * Best-effort: returns [] if the file can't be read, never throws.
+ */
+export async function ueDbFor(callbox: InventorySystem, mmeCfgName: string): Promise<string[]> {
+  try {
+    const path = `/root/mme/config/${mmeCfgName}`;
+    const out = await readCommand(
+      callbox,
+      `sudo -n grep -E '^[[:space:]]*include' ${q(path)} 2>/dev/null || grep -E '^[[:space:]]*include' ${q(path)} 2>/dev/null || true`,
+    );
+    return out
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith('include'))
+      .map((l) => /include\s+"([^"]+)"/.exec(l)?.[1])
+      .filter((n): n is string => !!n)
+      // Only the subscriber/PLMN databases, not every include (configs also
+      // pull in 1000UE.mme.cfg-style fragments).
+      .filter((n) => /db|subscriber|ue/i.test(n));
+  } catch {
+    return [];
+  }
 }

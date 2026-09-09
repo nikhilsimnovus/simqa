@@ -1,0 +1,55 @@
+// GET /api/scenarios/cfg-options?systemId=<simnovator id>
+//
+// The cfg files available on the callbox bound to a given Simnovator, split
+// by slot, plus what is currently linked and which subscriber DB each MME
+// config pulls in. One call so the scenario editor can populate every
+// dropdown without the page orchestrating four round trips.
+import { NextResponse } from 'next/server';
+import { loadInventory, callboxForSimnovator } from '@/lib/inventory';
+import { currentCfgLinks, ueDbFor } from '@/lib/labCfgLink';
+import { readCommand } from '@/lib/configFidelity/ssh';
+
+export const dynamic = 'force-dynamic';
+
+async function listDir(box: any, dir: string): Promise<string[]> {
+  try {
+    // sudo first: /root is 0700 on some callboxes.
+    const out = await readCommand(box, `sudo -n ls -1 ${dir} 2>/dev/null || ls -1 ${dir} 2>/dev/null || true`);
+    return out.split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.cfg')).sort();
+  } catch {
+    return [];
+  }
+}
+
+export async function GET(req: Request) {
+  const systemId = new URL(req.url).searchParams.get('systemId') ?? '';
+  if (!systemId) return NextResponse.json({ ok: false, error: 'systemId required' }, { status: 400 });
+  const inv = loadInventory();
+  const box = callboxForSimnovator(inv, systemId);
+  if (!box) {
+    // Not an error: a REST-only setup has no callbox, and the editor should
+    // simply show no cfg pickers rather than a failure.
+    return NextResponse.json({ ok: true, callbox: null, enb: [], mme: [], current: {}, ueDb: {} });
+  }
+
+  const [enbFiles, mmeFiles, current] = await Promise.all([
+    listDir(box, '/root/enb/config'),
+    listDir(box, '/root/mme/config'),
+    currentCfgLinks(box).catch(() => ({})),
+  ]);
+
+  // Which DB each MME config includes — derived, read-only context. Capped so
+  // a box with hundreds of configs doesn't turn one page load into hundreds
+  // of SSH reads; the UI asks for the rest on demand.
+  const ueDb: Record<string, string[]> = {};
+  for (const name of mmeFiles.filter((n) => /mme/i.test(n)).slice(0, 40)) {
+    const dbs = await ueDbFor(box, name);
+    if (dbs.length) ueDb[name] = dbs;
+  }
+
+  return NextResponse.json({
+    ok: true,
+    callbox: { id: box.id, name: box.name, host: box.host },
+    enb: enbFiles, mme: mmeFiles, current, ueDb,
+  });
+}

@@ -119,7 +119,7 @@ export interface RunRequest {
   /** Symlink these cfg files into place on the target's callbox — see
    *  src/lib/labCfgLink.ts — before preflight proceeds. Omit for a plain
    *  REST-only validation run (unchanged default behaviour). */
-  cfgSelection?: { enb?: string; mme?: string; ims?: string };
+  cfgSelection?: { enb?: string; gnb?: string; mme?: string; mme2?: string; ims?: string };
 }
 
 export interface RunOptions {

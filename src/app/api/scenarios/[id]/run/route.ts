@@ -32,7 +32,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
 
-  const r = await startRun({ systemId, testcaseId: scenario.testcaseId });
+  // Hand the saved cfg set to the runner, which symlinks each slot on the
+  // bound callbox and restarts lte once BEFORE preflight — so the radio is
+  // wearing the right configs by the time UEs attach. Omitted when the
+  // scenario saved none, leaving the box exactly as it is.
+  const r = await startRun({
+    systemId,
+    testcaseId: scenario.testcaseId,
+    cfgSelection: scenario.cfgSelection,
+  });
   if (!r.ok) return NextResponse.json({ ...r, systemId }, { status: 400 });
 
   // Only remember the box AFTER the run actually started: recording a system
