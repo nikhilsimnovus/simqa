@@ -14,7 +14,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Header } from '@/components/Header';
 import { Card, CardBody, CardHeader, CardTitle, Button, Input, Field, Badge } from '@/components/ui';
-import { Play, Plus, Trash2, Loader2 } from 'lucide-react';
+import { Play, Plus, Trash2, Loader2, Pencil } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
 interface Scenario {
@@ -60,6 +60,7 @@ export default function ScenariosPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const flash = useCallback((kind: 'ok' | 'err', text: string) => {
     setMsg({ kind, text });
@@ -136,20 +137,29 @@ export default function ScenariosPage() {
             {msg ? (
               <span className={cn('text-xs font-medium', msg.kind === 'err' ? 'text-red-600' : 'text-emerald-600')}>{msg.text}</span>
             ) : null}
-            <Button size="sm" variant="secondary" onClick={() => setCreating((v) => !v)}>
+            <Button size="sm" variant="secondary" onClick={() => { setEditingId(null); setCreating((v) => !v); }}>
               <Plus className="h-4 w-4" />New scenario
             </Button>
           </div>
         }
       />
       <main className="p-5 space-y-4">
-        {creating ? (
-          <NewScenarioForm
+        {creating || editingId ? (
+          <ScenarioForm
+            // Remount when the target changes so the form re-seeds its fields
+            // instead of keeping the previous scenario's values.
+            key={editingId ?? 'new'}
+            existing={editingId ? scenarios.find((x) => x.id === editingId) : undefined}
             topologies={topologies}
             systems={systems}
             testcases={testcases}
-            onCancel={() => setCreating(false)}
-            onCreated={async () => { setCreating(false); await reload(); flash('ok', 'Scenario saved'); }}
+            onCancel={() => { setCreating(false); setEditingId(null); }}
+            onSaved={async () => {
+              const wasEdit = !!editingId;
+              setCreating(false); setEditingId(null);
+              await reload();
+              flash('ok', wasEdit ? 'Changes saved' : 'Scenario saved');
+            }}
             onError={(t) => flash('err', t)}
           />
         ) : null}
@@ -191,7 +201,8 @@ export default function ScenariosPage() {
                     topologyLabel={topologyLabel}
                     systemLabel={systemLabel}
                     busy={busyId === s.id}
-                    onRun={(sysId) => run(s, sysId)}
+                    onRun={(topoId) => run(s, topoId)}
+                    onEdit={() => { setCreating(false); setEditingId(s.id); }}
                     onDelete={() => remove(s)}
                   />
                 ))}
@@ -205,12 +216,13 @@ export default function ScenariosPage() {
 }
 
 function ScenarioRow({
-  s, topologies, topologyLabel, systemLabel, busy, onRun, onDelete,
+  s, topologies, topologyLabel, systemLabel, busy, onRun, onEdit, onDelete,
 }: {
   s: Scenario; topologies: TopologyRow[];
   topologyLabel: (id?: string) => string | null;
   systemLabel: (id?: string) => string | null;
-  busy: boolean; onRun: (topologyId?: string) => void; onDelete: () => void;
+  busy: boolean; onRun: (topologyId?: string) => void;
+  onEdit: () => void; onDelete: () => void;
 }) {
   // What this click would target, resolved the same way the API resolves it:
   // pinned topology, else the one it last ran on. Legacy scenarios that only
@@ -277,9 +289,14 @@ function ScenarioRow({
             {busy ? 'Starting…' : 'Run'}
           </Button>
           <button
+            type="button" onClick={onEdit}
+            className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-900"
+            aria-label={`Edit ${s.name}`} title="Edit"
+          ><Pencil className="h-3.5 w-3.5" /></button>
+          <button
             type="button" onClick={onDelete}
             className="rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"
-            aria-label={`Delete ${s.name}`}
+            aria-label={`Delete ${s.name}`} title="Delete"
           ><Trash2 className="h-3.5 w-3.5" /></button>
         </div>
       </td>
@@ -287,19 +304,24 @@ function ScenarioRow({
   );
 }
 
-function NewScenarioForm({
-  topologies, systems, testcases, onCancel, onCreated, onError,
+/** One form for create AND edit. `existing` switches it to edit mode: fields
+ *  pre-fill from the scenario and Save does a PUT rather than a POST. Keeping
+ *  one component means the two paths can't drift in what they offer. */
+function ScenarioForm({
+  existing, topologies, systems, testcases, onCancel, onSaved, onError,
 }: {
+  existing?: Scenario;
   topologies: TopologyRow[]; systems: SystemRow[]; testcases: TestcaseRow[];
-  onCancel: () => void; onCreated: () => void; onError: (t: string) => void;
+  onCancel: () => void; onSaved: () => void; onError: (t: string) => void;
 }) {
-  const [name, setName] = useState('');
-  const [testcaseId, setTestcaseId] = useState('');
-  const [topologyId, setTopologyId] = useState('');
-  const [notes, setNotes] = useState('');
+  const editing = !!existing;
+  const [name, setName] = useState(existing?.name ?? '');
+  const [testcaseId, setTestcaseId] = useState(existing?.testcaseId ?? '');
+  const [topologyId, setTopologyId] = useState(existing?.topologyId ?? existing?.lastTopologyId ?? '');
+  const [notes, setNotes] = useState(existing?.notes ?? '');
   const [saving, setSaving] = useState(false);
   const [q, setQ] = useState('');
-  const [cfg, setCfg] = useState<CfgSel>({});
+  const [cfg, setCfg] = useState<CfgSel>(existing?.cfgSelection ?? {});
   const [opts, setOpts] = useState<CfgOptions | null>(null);
   const [optsLoading, setOptsLoading] = useState(false);
 
@@ -311,7 +333,15 @@ function NewScenarioForm({
     setOptsLoading(true);
     fetch(`/api/scenarios/cfg-options?topologyId=${encodeURIComponent(topologyId)}`, { cache: 'no-store' })
       .then((r) => r.json())
-      .then((j) => { if (!cancelled && j?.ok) { setOpts(j); setCfg(j.current ?? {}); } })
+      .then((j) => {
+        if (cancelled || !j?.ok) return;
+        setOpts(j);
+        // Pre-fill from the box's CURRENT links only when creating. When
+        // editing, the scenario's saved selection is the answer — overwriting
+        // it with whatever the callbox happens to be wearing would silently
+        // rewrite the thing being edited.
+        if (!editing) setCfg(j.current ?? {});
+      })
       .catch(() => { if (!cancelled) setOpts(null); })
       .finally(() => { if (!cancelled) setOptsLoading(false); });
     return () => { cancelled = true; };
@@ -330,20 +360,25 @@ function NewScenarioForm({
     if (!name.trim() || !testcaseId) return;
     setSaving(true);
     try {
-      const r = await fetch('/api/scenarios', {
-        method: 'POST',
+      const r = await fetch(
+        editing ? `/api/scenarios/${encodeURIComponent(existing!.id)}` : '/api/scenarios',
+        {
+        method: editing ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: name.trim(), testcaseId,
           testcaseName: testcases.find((t) => t.id === testcaseId)?.name,
           topologyId: topologyId || undefined,
-          cfgSelection: Object.values(cfg).some(Boolean) ? cfg : undefined,
+          // undefined is dropped by JSON.stringify, which on an EDIT would
+          // read as "leave it alone" — so a cleared selection is sent as an
+          // explicit null the PUT can act on.
+          cfgSelection: Object.values(cfg).some(Boolean) ? cfg : (editing ? null : undefined),
           notes: notes.trim() || undefined,
         }),
       });
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
-      onCreated();
+      onSaved();
     } catch (e: any) {
       onError(`${e?.message ?? e}`);
     } finally {
@@ -353,7 +388,7 @@ function NewScenarioForm({
 
   return (
     <Card accent>
-      <CardHeader><CardTitle>New scenario</CardTitle></CardHeader>
+      <CardHeader><CardTitle>{editing ? `Edit ${existing!.name}` : 'New scenario'}</CardTitle></CardHeader>
       <CardBody className="space-y-3">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Name" hint="what the card shows, e.g. DishDemo">
@@ -431,7 +466,7 @@ function NewScenarioForm({
         </Field>
         <div className="flex items-center gap-2">
           <Button size="sm" onClick={save} disabled={saving || !name.trim() || !testcaseId}>
-            {saving ? 'Saving…' : 'Save scenario'}
+            {saving ? 'Saving…' : editing ? 'Save changes' : 'Save scenario'}
           </Button>
           <Button size="sm" variant="secondary" onClick={onCancel}>Cancel</Button>
         </div>
