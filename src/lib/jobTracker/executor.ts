@@ -12,7 +12,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { loadInventory, type Inventory } from '../inventory';
+import { loadInventory, uesimApiCredentials, type Inventory } from '../inventory';
 import { runBuildInstall, buildInstallCommand, type InstallEvent, type BuildInstallRequest } from '../buildInstaller';
 import { listTestcases, getTestcase, listSimulators, startExecution, type ApiOpts } from '../uesimClient';
 import { getSetup, installHostsFor, resolveInstallTarget, type JobSetup } from './setups';
@@ -290,8 +290,7 @@ export async function executeJob(key: string): Promise<void> {
   const sys = inv.systems.find((s) => s.id === setup.systemId);
   const opts: ApiOpts = {
     host: setup.host,
-    username: sys?.uesim?.username ?? sys?.username ?? 'admin',
-    password: sys?.uesim?.password ?? sys?.password ?? 'admin',
+    ...uesimApiCredentials(sys),
   };
 
   const startedAt = new Date().toISOString();

@@ -111,7 +111,11 @@ export default function SettingsPage() {
   }
 
   return (
-    <>
+    // The page claims the full height of the app shell's content column and
+    // scrolls inside itself, so the Header is genuinely fixed. Left as a plain
+    // fragment it was the shell's column that scrolled, and the Header — which
+    // is only `sticky` — travelled with the Save button out of reach.
+    <div className="flex-1 min-h-0 flex flex-col">
       <Header
         title="Settings"
         subtitle="Workspace preferences, request timeouts, and run notifications"
@@ -128,7 +132,8 @@ export default function SettingsPage() {
           </div>
         }
       />
-      <main className="p-5 space-y-4 max-w-3xl">
+      {/* The only scrolling region on the page. */}
+      <main className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4 max-w-3xl">
         {/* ── Appearance ── */}
         <Card>
           <CardHeader><CardTitle>Appearance</CardTitle></CardHeader>
@@ -239,7 +244,7 @@ export default function SettingsPage() {
           </CardBody>
         </Card>
       </main>
-    </>
+    </div>
   );
 }
 

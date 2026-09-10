@@ -16,7 +16,7 @@
 // Used by the Job Tracker's build view to show, per job, which sub-services
 // the installed build is running and whether any of them is down.
 
-import { loadInventory } from '../inventory';
+import { loadInventory, uesimApiCredentials } from '../inventory';
 
 export interface ContainerState {
   name: string;
@@ -50,8 +50,7 @@ export async function fetchContainerHealth(host: string): Promise<ContainerHealt
 
   const inv = loadInventory();
   const sys = inv.systems.find((s) => s.host === host);
-  const username = sys?.uesim?.username ?? sys?.username ?? 'admin';
-  const password = sys?.uesim?.password ?? sys?.password ?? 'admin';
+  const { username, password } = uesimApiCredentials(sys);
 
   try {
     const login = await fetch(`http://${host}/v2/login`, {

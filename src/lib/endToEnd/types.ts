@@ -116,6 +116,15 @@ export interface RunRequest {
   options?: RunOptions;
   /** When re-running just specific checks, pass the ids — others are skipped. */
   onlyCheckIds?: string[];
+  /**
+   * Validate the execution the box is ALREADY running instead of starting one.
+   *
+   * For a testcase launched from the Simnovator's own GUI: SimQA adopts that
+   * execution and runs its During / Completion / After checks against it, so a
+   * run it did not start still gets a real validation instead of only the box's
+   * own verdict. The trigger POST is never fired in this mode.
+   */
+  attach?: boolean;
   /** Symlink these cfg files into place on the target's callbox — see
    *  src/lib/labCfgLink.ts — before preflight proceeds. Omit for a plain
    *  REST-only validation run (unchanged default behaviour). */

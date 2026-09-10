@@ -9,7 +9,7 @@
 import { NextResponse } from 'next/server';
 import { loadInventory } from '@/lib/inventory';
 import {
-  runBuildValidation, listReports, loadReport, observeInstallProgress,
+  runBuildValidation, listReports, loadReport, observeInstallProgress, cancelRun,
   type BuildValidationRequest,
 } from '@/lib/buildValidation';
 
@@ -45,11 +45,41 @@ export async function POST(req: Request) {
 }
 
 export async function GET(req: Request) {
-  const id = new URL(req.url).searchParams.get('id');
+  const url = new URL(req.url);
+  const id = url.searchParams.get('id');
   if (id) {
     const report = loadReport(id);
     if (!report) return NextResponse.json({ ok: false, error: `no report "${id}"` }, { status: 404 });
     return NextResponse.json({ ok: true, report });
   }
+
+  // ?systemId=… → just the newest report for that box, as one report rather
+  // than fifty. This is what the Build Check page asks for on load so a page
+  // refresh puts the last verification back on screen instead of a blank card.
+  const systemId = url.searchParams.get('systemId');
+  if (systemId) {
+    const report = listReports(50).find((r) => r.systemId === systemId) ?? null;
+    return NextResponse.json({ ok: true, report });
+  }
+
   return NextResponse.json({ ok: true, reports: listReports(50) });
+}
+
+/**
+ * DELETE /api/build-validation?id=…
+ *
+ * Cancel a verification run. Writes a marker beside the report; the run checks
+ * it between groups and inside the execution wait loop, where it also stops the
+ * testcase on the box — cancelling has to stop the hardware, not just stop us
+ * watching it.
+ *
+ * A file rather than an in-memory flag because the run is one long POST and
+ * whoever cancels is a different request.
+ */
+export async function DELETE(req: Request) {
+  const id = (new URL(req.url).searchParams.get('id') ?? '').trim();
+  if (!cancelRun(id)) {
+    return NextResponse.json({ ok: false, error: 'a valid run id is required' }, { status: 400 });
+  }
+  return NextResponse.json({ ok: true });
 }

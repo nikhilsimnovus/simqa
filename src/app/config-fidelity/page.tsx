@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Header } from '@/components/Header';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
 import { Card, CardBody, CardHeader, CardTitle, Button, Badge, Input, Field, Stat } from '@/components/ui';
-import { FileCheck2, Play, Square, ChevronRight, ChevronDown, AlertTriangle } from 'lucide-react';
+import { FileCheck2, Play, Square, ChevronRight, ChevronDown, AlertTriangle, Radar, FlaskConical } from 'lucide-react';
+import { LiveCaptures } from './LiveCaptures';
 
 type Rat = 'lte' | 'nr-sa';
 interface SystemRow { id: string; name: string; host: string; type: string; hasSsh: boolean }
@@ -30,6 +31,9 @@ export default function ConfigFidelityPage() {
   const [err, setErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Two ways to prove fidelity, so they are two tabs rather than one crowded
+  // page: the matrix DRIVES the box, live captures WATCH it.
+  const [tab, setTab] = useState<'live' | 'matrix'>('live');
 
   useEffect(() => {
     fetch('/api/config-fidelity/runs').then((r) => r.json()).then((j) => {
@@ -94,13 +98,36 @@ export default function ConfigFidelityPage() {
 
   return (
     <>
-      <Header title="Config Fidelity" subtitle="Create → execute → retrieve ue.cfg → prove every JSON parameter is honoured" uesimHost={report?.targetHost}
+      <Header title="Config Fidelity"
+        subtitle={tab === 'live'
+          ? 'Every testcase run from a Simnovator GUI, compared against the ue.cfg its UE-sim generated'
+          : 'Create → execute → retrieve ue.cfg → prove every JSON parameter is honoured'}
+        uesimHost={report?.targetHost}
         left={<BackToRunHistory />}
         right={<div className="flex items-center gap-2">
           <a href="/runs?surface=config-fidelity" className="text-sm rounded-md border border-slate-300 px-3 py-1.5 text-slate-700 hover:bg-slate-50 whitespace-nowrap">Past runs →</a>
-          {busy ? <Button variant="danger" size="sm" onClick={abort}><Square className="h-4 w-4" /> Abort</Button>
-            : <Button size="sm" onClick={start} disabled={!target}><Play className="h-4 w-4" /> Run matrix</Button>}
+          {tab === 'matrix' ? (busy ? <Button variant="danger" size="sm" onClick={abort}><Square className="h-4 w-4" /> Abort</Button>
+            : <Button size="sm" onClick={start} disabled={!target}><Play className="h-4 w-4" /> Run matrix</Button>) : null}
         </div>} />
+
+      {/* Two ways to prove the same thing, so they are two tabs rather than one
+          crowded page: the matrix DRIVES the box, live captures WATCH it. */}
+      <div className="px-6 pt-4">
+        <div className="inline-flex rounded-lg border border-slate-300 bg-surface p-0.5">
+          {([
+            { k: 'live', label: 'Live captures', Icon: Radar },
+            { k: 'matrix', label: 'Matrix run', Icon: FlaskConical },
+          ] as const).map((t) => (
+            <button key={t.k} onClick={() => setTab(t.k)}
+              className={'inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-sm font-medium transition-colors '
+                + (tab === t.k ? 'bg-primary-600 text-on-accent' : 'text-slate-600 hover:bg-slate-100')}>
+              <t.Icon className="h-3.5 w-3.5" />{t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {tab === 'live' ? <main className="p-6"><LiveCaptures /></main> : (
       <main className="p-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Controls */}
         <div className="lg:col-span-1 space-y-4">
@@ -189,6 +216,7 @@ export default function ConfigFidelityPage() {
           ) : <Card><CardBody><div className="text-sm text-slate-500 py-10 text-center"><FileCheck2 className="h-8 w-8 mx-auto mb-2 text-slate-300" />Pick RATs and Run matrix to validate config fidelity.</div></CardBody></Card>}
         </div>
       </main>
+      )}
     </>
   );
 }

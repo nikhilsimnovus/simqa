@@ -2,16 +2,18 @@
 
 import { Header } from '@/components/Header';
 import { Card, CardBody, CardHeader, CardTitle, Badge } from '@/components/ui';
-import { loadInventory, uesimApiOptsFromInventory } from '@/lib/inventory';
+import { loadInventory, uesimApiOptsFromInventory, uesimApiCredentials } from '@/lib/inventory';
 import { listTestcases, listSimulators, getTestcase } from '@/lib/uesimClient';
 import { listRuns } from '@/lib/runStore';
 import { findBusy } from '@/lib/executions';
-import { listSystemUsage } from '@/lib/systemUsage';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { ensureStationMonitor } from '@/lib/stationMonitor';
+import { ensureFidelityWatcher } from '@/lib/liveFidelity/watcher';
 import { Wifi, WifiOff } from 'lucide-react';
 import * as net from 'node:net';
 import Link from 'next/link';
+import { RecentRunsTable } from './RecentRunsTable';
+import { formatDuration, windowOf, endFromDuration } from '@/lib/timeFormat';
 
 export const dynamic = 'force-dynamic';
 
@@ -110,6 +112,16 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   // no-op once running, and thereafter ticks on its own timer.
   ensureStationMonitor();
 
+  // Same treatment for the config-fidelity watcher, and for the same reason it
+  // was needed here: both live on globalThis and start lazily, but the station
+  // monitor had TWO wake-up points (this page and /api/stations/history) while
+  // the fidelity watcher had only its own page's endpoints. So a server restart
+  // silently stopped fidelity capture until somebody happened to open Config
+  // Fidelity — observed 2026-09-03: capture stopped at 11:35 on .102 and 11:39
+  // on .95 and did not resume for ~18 hours, missing every execution on both
+  // boxes in that window, RES-Len among them.
+  ensureFidelityWatcher();
+
   const inv = loadInventory();
   const apiOpts = uesimApiOptsFromInventory(inv);
   // Which box the dashboard is focused on. Kept in the URL so the choice
@@ -130,8 +142,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
     simnovators.map(async (s) => {
       const opts = {
         host: s.host,
-        username: s.uesim?.username ?? s.username ?? 'admin',
-        password: s.uesim?.password ?? s.password ?? 'admin',
+        ...uesimApiCredentials(s),
       };
       // listSimulators is the cheapest authenticated call and settles both
       // questions at once: if it answers the box is up, and `availability` is
@@ -188,6 +199,12 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
         name: name ?? r.testcaseId,
         at: new Date(r.startedAt).getTime(),
         startedAt: r.startedAt,
+        // SimQA records both ends, so the duration is the difference. A run
+        // still in flight has no finish and reports neither.
+        endedAt: r.finishedAt,
+        durationSec: r.finishedAt
+          ? Math.max(0, (new Date(r.finishedAt).getTime() - new Date(r.startedAt).getTime()) / 1000)
+          : undefined,
         status: r.status,
         testcaseId: r.testcaseId,
         viaSimqa: true,
@@ -209,12 +226,19 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
             // that isn't PASS into "failed" — INCOMPLETE, ABORTED and ERROR
             // mean different things when you're triaging.
             const verdict = String(last.result ?? '').toLowerCase();
+            // The box reports how long its execution ran but not when it
+            // ended, so the end is start + duration. Seconds — same field
+            // boxExecutions.ts and the end-to-end checks read.
+            const dur = Number(last.durationSeconds ?? last.testDuration ?? NaN);
+            const durationSec = Number.isFinite(dur) && dur > 0 ? dur : undefined;
             return [{
               key: `exec:${t.id}:${last.executedOn}`,
               href: `/testcases/${encodeURIComponent(t.id)}?systemId=${encodeURIComponent(selectedProbe!.box.id)}`,
               name: t.name ?? t.id,
               at: new Date(last.executedOn).getTime(),
               startedAt: last.executedOn as string,
+              durationSec,
+              endedAt: endFromDuration(last.executedOn, durationSec),
               status: verdict === 'pass' ? 'passed' : verdict || 'unknown',
               testcaseId: String(t.id),
               viaSimqa: false,
@@ -288,17 +312,17 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
     ['uesim', 'UE'], ['callbox', 'Callbox'], ['enb', 'eNB'], ['gnb', 'gNB'],
     ['mme', 'MME'], ['ims', 'IMS'], ['appserver', 'App server'],
   ] as any;
-  const usage = listSystemUsage();
+  // No last-used attribution here any more: the members table carried a
+  // "last used by <name>" line under each machine, which was removed. The
+  // listSystemUsage() read that fed it went with it — it was a per-render disk
+  // read serving nothing else on this page. systemUsage itself is untouched
+  // and still recorded for other callers.
   const memberSystems = profile
     ? ROLE_LABELS.flatMap(([role, label]) => {
         const id = (profile as any)[role] as string | undefined;
         const sys = id ? inv.systems.find((s) => s.id === id) : undefined;
         if (!sys) return [];
-        const u = usage[sys.id];
-        return [{
-          role: label, name: sys.name, host: sys.host, port: sys.sshPort ?? 22,
-          lastUsedBy: u?.by, lastUsedWhat: u?.what, lastUsedAt: u?.at,
-        }];
+        return [{ role: label, name: sys.name, host: sys.host, port: sys.sshPort ?? 22 }];
       })
     : [];
 
@@ -388,12 +412,16 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
             Resource Status rather than as its own full-width row, since that
             row was rarely as tall as Recent Runs and left the space under it
             unused. ── */}
-        <section className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        {/* 2:1, not 1:1. Recent Runs carries the testcase names and the run
+            window; Resource Status is three short rows of IP and state and
+            Summary is two numbers, so an even split starved the side that
+            needed the width. */}
+        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
           {/* ── Recent runs ─────────────────────────────────────────────── */}
-          <Card>
+          <Card className="lg:col-span-2">
             <CardHeader className="flex items-center justify-between">
               <CardTitle>Recent runs{primary ? ` of ${primary.host}` : ''}</CardTitle>
-              <Link href="/runs" className="text-xs text-primary-700 hover:underline">View all</Link>
+              <Link href="/runs?from=dashboard" className="text-xs text-primary-700 hover:underline">View all</Link>
             </CardHeader>
             <CardBody className="p-0">
               {runs.length === 0 ? (
@@ -401,33 +429,23 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                   No runs yet for {primary?.host ?? 'this box'}. Trigger one from the Test Cases page.
                 </div>
               ) : (
-                <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 text-slate-600">
-                    <tr>
-                      <th className="text-left px-5 py-2 font-medium">Test Case</th>
-                      <th className="text-right px-5 py-2 font-medium">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {runs.map((r) => (
-                      <tr key={r.key} className="hover:bg-slate-50">
-                        <td className="px-5 py-2.5">
-                          <Link href={r.href} className="block min-w-0">
-                            <div className="text-sm font-medium text-slate-900 truncate">{r.name}</div>
-                            {/* No host — the list is already scoped to the selected
-                                box. No origin either: the list deliberately merges
-                                runs started from SimQA with the box's own, so
-                                labelling each one adds noise rather than meaning. */}
-                            <div className="text-xs text-slate-500 truncate">{stamp(r.startedAt)}</div>
-                          </Link>
-                        </td>
-                        <td className="px-5 py-2.5 text-right">
-                          <RunStatusBadge status={r.status} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                /* Spreadsheet-style and column-resizable, like Run History —
+                   the name column used to have no width of its own, so a long
+                   testcase name was clipped with no way to see the rest. The
+                   timestamp is formatted HERE, on the server, because the
+                   table is a client component and formatting a date on both
+                   sides of the boundary would hydrate with two timezones. */
+                <RecentRunsTable
+                  rows={runs.map((r) => ({
+                    key: r.key, href: r.href, name: r.name,
+                    duration: formatDuration(r.durationSec),
+                    // Under the duration, not in a column of its own: when the
+                    // run started and ended. A run still in flight has no end
+                    // yet and shows only its start, with the badge saying why.
+                    window: windowOf(r.startedAt, r.endedAt),
+                    status: r.status,
+                  }))}
+                />
               )}
             </CardBody>
           </Card>
@@ -472,11 +490,6 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                               would just read "UEUE". */}
                           {squash(m.role) !== squash(m.name) ? (
                             <div className="text-[11px] text-slate-400 truncate">{m.name}</div>
-                          ) : null}
-                          {m.lastUsedBy ? (
-                            <div className="text-[11px] text-slate-400 truncate">
-                              last used by {m.lastUsedBy}
-                            </div>
                           ) : null}
                         </td>
                         <td className="px-5 py-2.5 font-mono text-xs text-slate-600">{m.host}</td>
@@ -523,16 +536,4 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   );
 }
 
-/** Covers simqa's own run states AND the verdicts the box reports for
- *  executions started from its GUI (incomplete / aborted / stopped / error). */
-function RunStatusBadge({ status }: { status: string }) {
-  const s = status.toLowerCase();
-  if (s === 'passed' || s === 'pass')       return <Badge tone="success">passed</Badge>;
-  if (s === 'failed' || s === 'fail')       return <Badge tone="danger">failed</Badge>;
-  if (s === 'error')                        return <Badge tone="danger">error</Badge>;
-  if (s === 'in progress' || s === 'running') return <Badge tone="info">in progress</Badge>;
-  if (s === 'queued')                       return <Badge tone="warning">queued</Badge>;
-  if (s === 'incomplete' || s === 'aborted' || s === 'stopped') return <Badge tone="warning">{s}</Badge>;
-  return <Badge>{s}</Badge>;
-}
 

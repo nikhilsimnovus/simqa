@@ -43,6 +43,16 @@ export interface BuildInstallRequest {
    *  (e.g. via Cockpit File Browser). When set, the installer skips
    *  preflight + wget and goes straight to extract. */
   localFile?: string;
+  /**
+   * Ask the Simnovator whether it can reach the build host before downloading.
+   *
+   * OFF by default: it is one `curl -I`, but every xterm round-trip on this
+   * Cockpit/Chrome combo is expensive — measured at 224s of a 386s install —
+   * and wget reports the same routing failures itself. Turn on when you
+   * suspect the box cannot route to the build host and want that said clearly
+   * in seconds rather than after wget's retries.
+   */
+  probeBuildHost?: boolean;
   workingDir?: string;
   hosts: Array<{
     flag: '--ue' | '--app' | '--oru' | '--external';
@@ -103,6 +113,19 @@ export function buildInstallCommand(req: BuildInstallRequest): string {
     if (!h.ip) continue;
     if (h.ipOnly) parts.push(h.flag, shellQuote(h.ip));
     else {
+      // The account the installer SSHes to the UE / app-server hosts as. It
+      // needs passwordless (key) SSH from the Simnovator — `./install --help`
+      // offers no password option — so the right value is whichever user the
+      // Simnovator actually has a key for, and that is lab configuration.
+      //
+      // sysadmin is the default because it is the one with evidence: the runs
+      // on 2026-09-02 reported "App Server Installed successfully!!" and "UE
+      // Simulator installed successfully!!" with sysadmin@. A run on 09-07
+      // with root@ was refused before it started —
+      //   root@192.168.1.101: Permission denied (publickey).
+      //   FAILED : Please check UE credentials
+      // — so root is NOT trusted by these boxes today. Override per host via
+      // `user` (the Build Check page exposes it) rather than editing this.
       const user = (h.user || 'sysadmin').trim() || 'sysadmin';
       parts.push(h.flag, shellQuote(`${user}@${h.ip}`));
     }
@@ -276,8 +299,15 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
     return { ok: false };
   }
-  if (!isSimnovatorTarget(target)) {
-    emit(nowEvent({ type: 'log', stream: 'error', line: `target ${target.id} is type ${target.type}; install requires SIMNOVATOR` }));
+  // SIMNOVATOR or SIMNOVATOR_GUI. The type distinction is about ROLE — which
+  // box serves testcases vs which one Build Check installs onto — but it is the
+  // same machine, and Cockpit answers on :9090 of both (verified 200 on .102,
+  // .95 and .94). Insisting on SIMNOVATOR made the installer unusable in this
+  // lab, where inventory.yaml holds three SIMNOVATOR_GUI systems and no
+  // SIMNOVATOR at all: every target was rejected before a browser ever opened.
+  const installable = isSimnovatorTarget(target) || target.type === 'SIMNOVATOR_GUI';
+  if (!installable) {
+    emit(nowEvent({ type: 'log', stream: 'error', line: `target ${target.id} is type ${target.type}; install requires a Simnovator system` }));
     emit(nowEvent({ type: 'done', ok: false, durationMs: Date.now() - t0 }));
     return { ok: false };
   }
@@ -461,7 +491,24 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
     // Pre-read the prompt so our diff baseline is current.
     state.emitted = await readTerminalIn(frame);
 
-    if (!useLocalFile) {
+    if (!useLocalFile && !req.probeBuildHost) {
+      // ── Preflight skipped (the default) ────────────────
+      // Measured on the 2026-09-07 run: preflight 224.0s of a 386.8s install —
+      // 58% of the whole thing — for one `curl -I`. Every xterm round-trip
+      // costs minutes on this Cockpit/Chrome combo, and the probe is a single
+      // round-trip whose only job is to turn a slow wget failure into a fast
+      // one. wget's own exit codes give the same diagnosis (exitCodeHint: 4 =
+      // NETWORK FAILURE, 6 = DNS), so on a healthy lab this is four minutes of
+      // nothing happening, which is exactly what it looked like.
+      //
+      // Kept behind probeBuildHost for the case it was written for: a build
+      // host you suspect the Simnovator cannot route to, where a clear message
+      // in 5s beats wget's retry storm.
+      emit(nowEvent({ type: 'log', stream: 'info', line: 'skipping the build-host reachability probe (adds ~2-4 min; wget reports the same routing problems itself — set probeBuildHost to re-enable)' }));
+      emit(nowEvent({ type: 'step', step: 'preflight', status: 'ok', detail: 'skipped — wget will report any routing problem', durationMs: 0 }));
+    }
+
+    if (!useLocalFile && req.probeBuildHost) {
       // ── Preflight reachability ─────────────────────────
       // Before we even try to wget, ask the Simnovator VM whether it can
       // reach the build server. wget will hit the same wall after a 30+s
@@ -478,7 +525,24 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
         ? `curl -ks --max-time 10 --connect-timeout 5 -A 'Mozilla/5.0' -r 0-0 ${shellQuote(probeRew.url)} -o /dev/null -w 'HTTP %{http_code} time=%{time_total}s\\n'`
         : `curl -ksI --max-time 10 --connect-timeout 5 ${shellQuote(req.buildUrl!)} -o /dev/null -w 'HTTP %{http_code} time=%{time_total}s\\n'`;
       const probed = await runCommandInFrame(page, frame, simpleProbeCmd, 'preflight', emit, state, 30_000, ctx.isCanceled);
-      if (!probed.ok) {
+      // exitCode -1 means we never saw the sentinel — the probe did not answer
+      // in time, which says nothing about the build host. Preflight is only an
+      // optimisation: it turns a slow wget failure into a fast, clear one. It
+      // must never be the reason an install does not happen, so an inconclusive
+      // probe carries on to the fetch, where wget's own exit codes give the
+      // same diagnosis (see exitCodeHint: wget 4 = NETWORK FAILURE).
+      //
+      // BUT note what this branch can hide. When a bad change to
+      // readTerminalIn stopped the terminal being read at all, every step
+      // silently timed out — and this branch turned preflight's timeout into a
+      // tidy "preflight ok, 35s", which read like a 6x speed-up rather than a
+      // total failure to see the screen. If steps look suspiciously uniform in
+      // duration, check whether ANY stdout was captured before believing them.
+      if (probed.exitCode === -1) {
+        // Fall through to the shared "preflight ok" below rather than emitting
+        // a second step event of our own.
+        emit(nowEvent({ type: 'log', stream: 'info', line: 'preflight did not answer in time — continuing to the download, which will report any real routing problem itself' }));
+      } else if (!probed.ok) {
         const hint =
           probed.exitCode === 6  ? 'curl: DNS resolution failed — the build host is not resolvable from the Simnovator VM.' :
           probed.exitCode === 7  ? 'curl: cannot connect — the Simnovator VM has no route to the build host. Check `ip route` on the VM and any firewall between the two networks.' :
@@ -519,6 +583,18 @@ export async function runBuildInstall(ctx: BuildInstallContext): Promise<{ ok: b
         return { ok: false };
       }
       await snap(page, 'fetch', 'done');
+
+      // The `ls -lrt` an operator does by hand after the wget: confirm the
+      // tarball is really there, and how big it is, before spending time
+      // extracting it. wget's exit code already gates the install, so this is
+      // evidence in the log rather than a gate — a failed listing must never
+      // stop an install whose download succeeded.
+      await runCommandInFrame(
+        page, frame,
+        `cd ${shellQuote(dir)} && ls -lrt ${shellQuote(fileName)}`,
+        'fetch', emit, state, 60_000, ctx.isCanceled,
+      ).catch(() => undefined);
+
       emit(nowEvent({ type: 'step', step: 'fetch', status: 'ok', durationMs: Date.now() - tFetch }));
     } else {
       // Local-file mode — the file was already validated when the user
@@ -711,6 +787,20 @@ async function readTerminalIn(frame: Frame): Promise<string> {
     const candidates = ['.xterm-rows', '.xterm-screen', '.xterm', '.terminal', '.ct-terminal'];
     for (const sel of candidates) {
       const el = document.querySelector(sel) as HTMLElement | null;
+      // innerText, deliberately, despite it being the slower of the two.
+      //
+      // I replaced this with textContent joined per row, reasoning that
+      // innerText forces a layout pass and was therefore the reason each poll
+      // cost seconds. It does force a layout — but the replacement returned
+      // nothing usable on this Cockpit's xterm, so no command's completion
+      // sentinel was ever matched and EVERY step ran to its timeout instead of
+      // finishing. The evidence was unambiguous: 27 stdout lines captured in
+      // the run before the change, 0 in the run after, with a 1 GB download
+      // that had actually completed on the box.
+      //
+      // If this is worth optimising again, the test is "does a real install
+      // still emit stdout lines", not "is the read faster" — a fast read that
+      // returns the wrong thing makes every step slower, not quicker.
       if (el && el.innerText && el.innerText.length) return el.innerText;
     }
     return '';
@@ -792,8 +882,21 @@ async function runCommandInFrame(
   trace('focus xterm viewport');
   await withTimeout('frame.click(.xterm-screen)', frame.click('.xterm-screen', { timeout: 2_000 }).catch(() => null), 5_000);
 
+  // Per-character, deliberately.
+  //
+  // I tried keyboard.insertText first — one CDP round-trip instead of one per
+  // character — because typing 229 chars costs ~9.8s here. It never worked:
+  // across five commands on this Cockpit's xterm it landed 0 times and fell
+  // back every time, so it only added an insertText call and, worse, an extra
+  // readTerminalIn to check it — and that read is the expensive operation.
+  // xterm.js takes keystrokes on its hidden textarea and does not act on the
+  // synthetic `input` event insertText produces.
+  //
+  // If this is worth attempting again, the test is a real install log showing
+  // "(insertText)" WITHOUT a following fallback line — not that the call
+  // returned without throwing.
   trace(`typing ${wrapped.length} chars`);
-  await withTimeout('keyboard.type', page.keyboard.type(wrapped, { delay: 4 }), 30_000);
+  await withTimeout('keyboard.type', page.keyboard.type(wrapped, { delay: 4 }), 60_000);
 
   trace('press Enter');
   await withTimeout('keyboard.press(Enter)', page.keyboard.press('Enter'), 5_000);
@@ -819,7 +922,15 @@ async function runCommandInFrame(
       return { ok: false, exitCode: -2 };
     }
     await new Promise((r) => setTimeout(r, pollIntervalMs));
-    const rawScreen = await readTerminalIn(frame);
+    // Bounded like every other browser call in this file, so one wedged read
+    // cannot pin the loop forever — the loop only checks its clock BETWEEN
+    // reads. The ceiling is deliberately generous: this read is legitimately
+    // slow (innerText forces a layout of the whole terminal), and a bound tight
+    // enough to cut it short would substitute an empty screen for real output
+    // and lose the completion sentinel. 60s catches a hang, not slowness.
+    // A timeout is logged by withTimeout, so it can never be silent.
+    const remaining = Math.max(5_000, timeoutMs - (Date.now() - t0));
+    const rawScreen = (await withTimeout('readTerminalIn(poll)', readTerminalIn(frame), Math.min(remaining, 60_000))) ?? '';
     const screen = trimTrailingBlanks(rawScreen);
 
     let fresh = '';

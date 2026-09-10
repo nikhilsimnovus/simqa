@@ -27,7 +27,7 @@
 // tick is wrapped so a thrown error can only skip one round.
 
 import * as net from 'node:net';
-import { loadInventory, type Inventory, type InventorySystem } from './inventory';
+import { loadInventory, uesimApiCredentials, type Inventory, type InventorySystem } from './inventory';
 import { listSimulators } from './uesimClient';
 import { recordObservations, type Observation, type StationState } from './stationHistory';
 
@@ -159,11 +159,7 @@ export async function pollOnce(): Promise<Observation[]> {
   const busyByHost = new Map<string, boolean>();
 
   await Promise.all(stations.map(async (s) => {
-    const opts = {
-      host: s.host,
-      username: s.uesim?.username ?? s.username ?? 'admin',
-      password: s.uesim?.password ?? s.password ?? 'admin',
-    };
+    const opts = { host: s.host, ...uesimApiCredentials(s) };
     // listSimulators is the cheapest authenticated call: if it answers at all
     // the box is up, and its availability field is the execution mutex the box
     // uses, so one request settles online AND busy.

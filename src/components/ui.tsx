@@ -43,7 +43,9 @@ export function CardHeader({ className, ...rest }: React.ComponentPropsWithRef<'
 export function CardTitle({ className, ...rest }: React.HTMLAttributes<HTMLHeadingElement>) {
   return <h3 className={cn('text-sm font-semibold tracking-tight text-slate-900', className)} {...rest} />;
 }
-export function CardBody({ className, ...rest }: React.HTMLAttributes<HTMLDivElement>) {
+// ComponentPropsWithRef, matching CardHeader above: a CardBody used as a scroll
+// pane needs a ref so an IntersectionObserver can take it as its root.
+export function CardBody({ className, ...rest }: React.ComponentPropsWithRef<'div'>) {
   return <div className={cn('p-4', className)} {...rest} />;
 }
 

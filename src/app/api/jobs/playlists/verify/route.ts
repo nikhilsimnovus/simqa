@@ -9,7 +9,7 @@
 // made.
 
 import { NextResponse } from 'next/server';
-import { loadInventory } from '@/lib/inventory';
+import { loadInventory, uesimApiCredentials } from '@/lib/inventory';
 import { listTestcases } from '@/lib/uesimClient';
 import { listPlaylists } from '@/lib/jobTracker/playlists';
 import { getSetup } from '@/lib/jobTracker/setups';
@@ -28,8 +28,7 @@ export async function GET(req: Request) {
   const sys = inv.systems.find((s) => s.id === setup.systemId);
   const opts = {
     host: setup.host,
-    username: sys?.uesim?.username ?? sys?.username ?? 'admin',
-    password: sys?.uesim?.password ?? sys?.password ?? 'admin',
+    ...uesimApiCredentials(sys),
   };
 
   // Paging note: the box's `offset` is a PAGE INDEX, not a row offset.

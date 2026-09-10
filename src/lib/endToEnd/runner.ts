@@ -82,17 +82,42 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
   const target = uesimApiOptsForSystem(inv, req.systemId);
   if (!target) return { ok: false, error: `system "${req.systemId}" not found or not UESIM-capable` };
 
-  // The box runs one testcase at a time. Triggering into an already-busy
-  // simulator doesn't queue — it 409s, and the run reports a failed critical
-  // check for a reason that has nothing to do with the testcase being
-  // validated. Catching it here means "not right now" instead of a red run.
-  try {
-    const busy = await findBusy(target);
-    if (busy) {
-      const name = busy.testCaseName ?? busy.testCaseId ?? 'a test case';
-      return { ok: false, error: `A test case is already executing on ${target.host} — "${name}". Wait for it to finish before starting a validation run.` };
+  // ATTACH mode inverts the busy guard below: a run already in flight is the
+  // precondition, not the obstacle. Used to validate a testcase somebody
+  // launched from the Simnovator's own GUI.
+  let attached: { executionId: string; startedAt: number } | undefined;
+  if (req.attach) {
+    let busy;
+    try {
+      busy = await findBusy(target);
+    } catch (e: any) {
+      return { ok: false, error: `could not ask ${target.host} what it is running: ${e?.message ?? e}` };
     }
-  } catch { /* best-effort — an unreachable box surfaces its own error at trigger */ }
+    if (!busy) return { ok: false, error: `${target.host} is not executing anything to attach to.` };
+    if (!busy.executionId) {
+      return { ok: false, error: `${target.host} is busy but did not report an execution id, so there is nothing to attach to.` };
+    }
+    // Validating a different testcase than the one actually running would
+    // measure the wrong execution and report it against the wrong testcase.
+    if (req.testcaseId && busy.testCaseId && req.testcaseId !== busy.testCaseId) {
+      const running = busy.testCaseName ?? busy.testCaseId;
+      return { ok: false, error: `${target.host} is running "${running}", not the testcase you asked to validate.` };
+    }
+    attached = { executionId: busy.executionId, startedAt: Date.now() };
+    if (!req.testcaseId && busy.testCaseId) req = { ...req, testcaseId: busy.testCaseId };
+  } else {
+    // The box runs one testcase at a time. Triggering into an already-busy
+    // simulator doesn't queue — it 409s, and the run reports a failed critical
+    // check for a reason that has nothing to do with the testcase being
+    // validated. Catching it here means "not right now" instead of a red run.
+    try {
+      const busy = await findBusy(target);
+      if (busy) {
+        const name = busy.testCaseName ?? busy.testCaseId ?? 'a test case';
+        return { ok: false, error: `A test case is already executing on ${target.host} — "${name}". Wait for it to finish before starting a validation run.` };
+      }
+    } catch { /* best-effort — an unreachable box surfaces its own error at trigger */ }
+  }
 
   // Resolve testcaseId. Two paths:
   //   • req.testcaseId provided → use it
@@ -144,6 +169,12 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
     callbox: callboxForSimnovator(inv, target.systemId),
     isCanceled: () => activeRuns.get(runId)?.canceled === true,
     emit: () => { /* runner manages liveStatus directly; checks don't need to emit */ },
+    // Pre-seeded in attach mode so the During / Completion / After checks —
+    // which all key off executionId and triggeredAt — work exactly as they do
+    // for a run SimQA started itself.
+    attachedExecution: attached,
+    executionId: attached?.executionId,
+    triggeredAt: attached?.startedAt,
   };
 
   const startedAt = new Date().toISOString();
@@ -206,6 +237,7 @@ export function abortRun(runId: string): boolean {
 export function listRuns(): Array<{
   runId: string; startedAt: string; finishedAt?: string; ok?: boolean;
   systemId: string; systemHost?: string; testcaseId: string; testcaseName?: string;
+  executionId?: string;
   counts?: { total: number; passed: number; failed: number; skipped: number };
 }> {
   const root = path.join(process.cwd(), 'data', 'end-to-end');
@@ -229,6 +261,11 @@ export function listRuns(): Array<{
           systemHost: r.systemHost,
           testcaseId: r.testcaseId,
           testcaseName: r.testcaseName,
+          // The BOX's execution id for this run. Carried so the testcase page
+          // can tell that a SimQA validation and an execution the box reports
+          // are the same event, and show the SimQA one — which contains the
+          // box's verdict AND its own stage checks, rather than only the former.
+          executionId: r.executionId,
           counts: r.counts,
         };
       } catch { return null; }
@@ -252,7 +289,9 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
   // launch fails (no Chrome / no Edge / no bundled browser), UI checks will
   // see ctx.browser=undefined and skip themselves with a clear reason —
   // the run still proceeds with API-only checks.
-  const needsBrowser = planned.some((c) => c.requiresBrowser);
+  // `wantsBrowser` checks also need one launched — they just do not skip
+  // without it (see CheckDef).
+  const needsBrowser = planned.some((c) => c.requiresBrowser || c.wantsBrowser);
   if (needsBrowser) {
     const launch = await tryLaunchBrowser();
     if ('browser' in launch) {

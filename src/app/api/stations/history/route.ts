@@ -9,6 +9,7 @@
 import { NextResponse } from 'next/server';
 import { allSeries, type Range } from '@/lib/stationHistory';
 import { ensureStationMonitor, monitorStatus, tick } from '@/lib/stationMonitor';
+import { ensureFidelityWatcher } from '@/lib/liveFidelity/watcher';
 import { listSystemUsage } from '@/lib/systemUsage';
 
 export const dynamic = 'force-dynamic';
@@ -23,6 +24,12 @@ export async function GET(req: Request) {
 
   // Background polling starts on first touch — see ensureStationMonitor.
   ensureStationMonitor();
+  // Started from here too, for the same reason: this endpoint is polled by the
+  // dashboard, so it is the most reliably-hit wake-up point in the app. The
+  // fidelity watcher previously woke only from the Config Fidelity page's own
+  // endpoints, so a restart could leave it stopped for hours (see the note in
+  // src/app/page.tsx). Both are no-ops once running.
+  ensureFidelityWatcher();
 
   // A brand-new install has no history at all until the first tick lands.
   // Rather than showing an empty chart for up to a minute, take one reading

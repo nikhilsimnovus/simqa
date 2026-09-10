@@ -17,6 +17,7 @@
 // are still there for anyone who needs them, just behind a per-check
 // "View technical details" toggle instead of shown inline for every row.
 
+import { explainFailure, explainSkip } from '@/lib/checkExplain';
 import { useState } from 'react';
 import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
 import {
@@ -35,6 +36,19 @@ export interface CheckRowData {
   description: string;
   status: CheckStatus;
   detail?: string;
+  /**
+   * A plain-language statement of what went wrong, when the producer of this
+   * row can say it better than a rule reading `detail` could.
+   *
+   * Set by the box-execution path, whose rows carry their numbers as fields
+   * rather than in a string. SimQA's own checks leave it unset and are
+   * translated from `detail` by checkExplain. Either way `detail` keeps the
+   * raw measurement, so the evidence survives under "technical details".
+   */
+  plain?: string;
+  /** Artifacts the check saved, relative to its run directory. Served by
+   *  /api/end-to-end/evidence. */
+  evidence?: { screenshotFile?: string; responseFile?: string; logFile?: string; downloadFile?: string };
   skippedReason?: string;
   durationMs?: number;
 }
@@ -67,10 +81,26 @@ export interface PastRunSummary {
   systemId: string;
   testcaseId: string;
   counts?: { total: number; passed: number; failed: number; skipped: number };
+  /** The box's execution id, when this run drove one. Lets a caller tell that
+   *  a SimQA validation and an execution the box reports are the same event. */
+  executionId?: string;
+  /**
+   * Still executing. Distinct from `ok` being unset: without it the row falls
+   * to the pass/fail icon, and a run the box has only just started renders as
+   * a red cross — a finished, failed validation — which it is not.
+   *
+   * SimQA's own in-flight run uses `liveEntry` instead; this is for a run
+   * observed on the box, where there is no SimQA run to stream.
+   */
+  running?: boolean;
 }
 
 export interface FullReport extends PastRunSummary {
   systemHost: string;
+  /** The Simnovator's own verdict for this execution, verbatim — set for a run
+   *  observed on the box, where it is a field rather than something a check
+   *  went and asked for. */
+  verdict?: string;
   systemName?: string;
   testcaseName?: string;
   executionId?: string;
@@ -156,6 +186,21 @@ function friendlyName(row: Pick<CheckRowData, 'id' | 'name'>): string {
   return CHECK_DISPLAY_NAMES[row.id] ?? row.name;
 }
 
+/**
+ * The Simnovator's OWN verdict for this execution, worded as the box words it.
+ *
+ * Distinct from the Result badge beside it, which is SimQA's: a run can pass
+ * the box's success conditions and still fail SimQA's checks (a PASS on
+ * "BLER ≤ 5%" is also what zero attached UEs produces), and the two disagreeing
+ * is information, not a bug to paper over. Read from the completion check that
+ * already asked the box for it, so nothing new is fetched.
+ */
+function boxVerdictFrom(checks: CheckRowData[]): string | undefined {
+  const c = checks.find((x) => x.id === 'completion-verdict-present');
+  const v = c?.detail?.match(/result=([A-Za-z_]+)/)?.[1];
+  return v && v.toUpperCase() !== 'NOT_EXECUTED' ? v.toUpperCase() : undefined;
+}
+
 /** "64/64" from whichever UE-attach check has reported a count so far —
  *  reuses the figure the check itself already computed rather than
  *  re-deriving it from raw stats on the client. */
@@ -168,7 +213,7 @@ function ueSummaryFrom(checks: CheckRowData[]): string | undefined {
 
 // ───────────── Single check row ─────────────
 
-export function CheckRow({ row }: { row: CheckRowData }) {
+export function CheckRow({ row, runId }: { row: CheckRowData; runId?: string }) {
   const [showDetails, setShowDetails] = useState(false);
   const icon =
     row.status === 'running' ? <Loader2 className="h-4 w-4 text-primary-600 animate-spin" /> :
@@ -179,8 +224,22 @@ export function CheckRow({ row }: { row: CheckRowData }) {
   // Only surface a reason inline for fail/skip — a passed check reads as
   // "name — Passed" with nothing further needed, matching what a passed
   // check should look like at a glance.
-  const shortReason = row.status === 'fail' ? row.detail : row.status === 'skip' ? row.skippedReason : undefined;
+  // What the reader sees first when a check fails: what went wrong, in a
+  // sentence. The check's own `detail` is written for whoever is debugging the
+  // check ("cv=0.88 over 22 samples") and used to be this line — it is still
+  // there, one click down, as the evidence for the sentence. A check with no
+  // translation falls back to its detail, exactly as before.
+  const plain = row.status === 'fail' ? (row.plain ?? explainFailure(row.id, row.detail)) : undefined;
+  const plainSkip = row.status === 'skip' ? explainSkip(row.id, row.skippedReason) : undefined;
+  const shortReason = row.status === 'fail' ? (plain ?? row.detail)
+    : row.status === 'skip' ? (plainSkip ?? row.skippedReason)
+    : undefined;
   const canShowDetails = row.status === 'pass' || row.status === 'fail' || row.status === 'skip';
+  // Needs the run it belongs to: the artifacts live under that run's directory
+  // and are served by id, not from /public.
+  const shot = runId && row.evidence?.screenshotFile
+    ? `/api/end-to-end/evidence?runId=${encodeURIComponent(runId)}&file=${encodeURIComponent(row.evidence.screenshotFile)}`
+    : undefined;
 
   return (
     <li className={
@@ -200,7 +259,31 @@ export function CheckRow({ row }: { row: CheckRowData }) {
             {row.status === 'running' ? <span className="text-[10px] px-1.5 rounded bg-primary-600 text-white font-semibold animate-pulse">RUNNING</span> : null}
             {row.status === 'pending' ? <span className="text-[10px] px-1.5 rounded bg-slate-100 text-slate-500 font-semibold">WAITING</span> : null}
           </div>
-          {shortReason ? <div className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">{shortReason}</div> : null}
+          {/* A failure reason is the reason you opened the report, so it gets
+              read at normal size rather than in the 11px used for asides. */}
+          {shortReason ? (
+            <div className={`mt-0.5 leading-relaxed ${row.status === 'fail' ? 'text-xs text-red-800' : 'text-[11px] text-slate-600'}`}>
+              {shortReason}
+            </div>
+          ) : null}
+          {/* The box's own UE summary, photographed while the run was live —
+              the only time that page shows this execution. Inline rather than
+              behind the technical-details toggle: it is the evidence for the
+              row above it, and a picture nobody opens is not evidence. */}
+          {shot ? (
+            <div className="mt-2">
+              <a href={shot} target="_blank" rel="noreferrer" className="block w-fit">
+                <img
+                  src={shot}
+                  alt="UE summary on the Simnovator while the test was running"
+                  className="max-h-56 rounded border border-slate-200 bg-white hover:border-primary-400"
+                />
+              </a>
+              <div className="text-[10px] text-slate-400 mt-0.5">
+                UE summary on the box during the run — click to open full size
+              </div>
+            </div>
+          ) : null}
           {canShowDetails ? (
             <button
               onClick={() => setShowDetails((v) => !v)}
@@ -212,7 +295,14 @@ export function CheckRow({ row }: { row: CheckRowData }) {
           {showDetails ? (
             <div className="mt-1.5 space-y-1 text-[11px] text-slate-500 border-l-2 border-slate-200 pl-2">
               <div className="text-slate-600 leading-relaxed">{row.description}</div>
-              {row.detail ? <div className="break-all">↳ {row.detail}</div> : null}
+              {/* The raw measurement. Labelled, because when the line above it
+                  is a plain sentence this is the evidence behind it — not a
+                  repeat of it. */}
+              {row.detail ? (
+                <div className="break-all">
+                  {(plain || plainSkip) ? <span className="text-slate-400">reported: </span> : '↳ '}{row.detail}
+                </div>
+              ) : null}
               <div className="flex flex-wrap gap-x-3 text-slate-400">
                 <span className="font-mono">{row.id}</span>
                 <span>{row.severity} severity</span>
@@ -226,19 +316,19 @@ export function CheckRow({ row }: { row: CheckRowData }) {
   );
 }
 
-export function ChecksList({ checks }: { checks: CheckRowData[] }) {
+export function ChecksList({ checks, runId }: { checks: CheckRowData[]; runId?: string }) {
   return (
     <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-white">
-      {checks.map((c) => <CheckRow key={c.id} row={c} />)}
+      {checks.map((c) => <CheckRow key={c.id} row={c} runId={runId} />)}
     </ul>
   );
 }
 
 // ───────────── One stage (Before Test / During Test / …) ─────────────
 
-type StageTone = 'pass' | 'fail' | 'warn' | 'pending';
+type StageTone = 'pass' | 'fail' | 'warn' | 'pending' | 'skipped';
 
-function StageSection({ phase, checks, autoExpand }: { phase: Phase; checks: CheckRowData[]; autoExpand: boolean }) {
+function StageSection({ phase, checks, autoExpand, runId }: { phase: Phase; checks: CheckRowData[]; autoExpand: boolean; runId?: string }) {
   // null = "user hasn't clicked" -> follow autoExpand live. Once clicked,
   // the user's choice sticks even as the run's live phase moves on.
   const [userOverride, setUserOverride] = useState<boolean | null>(null);
@@ -257,6 +347,11 @@ function StageSection({ phase, checks, autoExpand }: { phase: Phase; checks: Che
     resolved === 0 ? 'pending' :
     criticalFail ? 'fail' :
     failed > 0 ? 'warn' :
+    // A stage where every check was SKIPPED is not a stage that passed.
+    // Without this it painted green, so a run driven by the Simnovator — where
+    // SimQA observes none of its own stages — read as four stages of clean
+    // passes it never actually performed.
+    skipped === total ? 'skipped' :
     'pass';
 
   const toneCls: Record<StageTone, string> = {
@@ -264,11 +359,16 @@ function StageSection({ phase, checks, autoExpand }: { phase: Phase; checks: Che
     fail:    'border-red-200 bg-red-50',
     warn:    'border-amber-200 bg-amber-50',
     pending: 'border-slate-200 bg-slate-50',
+    skipped: 'border-slate-200 bg-slate-50',
   };
   const iconCls: Record<StageTone, string> = {
     pass: 'text-emerald-600', fail: 'text-red-600', warn: 'text-amber-600', pending: 'text-slate-400',
+    skipped: 'text-slate-400',
   };
-  const StatusIcon = tone === 'pass' ? CheckCircle2 : tone === 'fail' ? XCircle : tone === 'warn' ? AlertTriangle : Loader2;
+  // 'skipped' gets a static MinusCircle, never the spinner: these stages are
+  // not waiting to happen, they were never going to be observed at all.
+  const StatusIcon = tone === 'pass' ? CheckCircle2 : tone === 'fail' ? XCircle
+    : tone === 'warn' ? AlertTriangle : tone === 'skipped' ? MinusCircle : Loader2;
 
   return (
     <div className={`rounded-lg border ${toneCls[tone]}`}>
@@ -303,7 +403,7 @@ function StageSection({ phase, checks, autoExpand }: { phase: Phase; checks: Che
 /** The five-stage vertical flow: Before Test -> Starting Test -> During Test
  *  -> Test Completion -> After Test. A stage with zero checks in it (e.g. UI
  *  checks weren't enabled for this run) is skipped rather than shown empty. */
-function StageFlow({ checks, currentPhase }: { checks: CheckRowData[]; currentPhase?: Phase }) {
+function StageFlow({ checks, currentPhase, runId }: { checks: CheckRowData[]; currentPhase?: Phase; runId?: string }) {
   const groups = STAGE_ORDER
     .map((phase) => ({ phase, checks: checks.filter((c) => c.phase === phase) }))
     .filter((g) => g.checks.length > 0);
@@ -316,6 +416,7 @@ function StageFlow({ checks, currentPhase }: { checks: CheckRowData[]; currentPh
             phase={g.phase}
             checks={g.checks}
             autoExpand={g.checks.some((c) => c.status === 'fail') || g.phase === currentPhase}
+            runId={runId}
           />
           {i < groups.length - 1 ? (
             <div className="flex justify-center py-1">
@@ -339,6 +440,8 @@ interface RunOverviewData {
   startedAt?: string;
   configuredDurationSec?: number;
   ueSummary?: string;
+  /** The Simnovator's own verdict, verbatim. */
+  verdict?: string;
 }
 
 function OverviewField({ label, value }: { label: string; value?: React.ReactNode }) {
@@ -349,6 +452,18 @@ function OverviewField({ label, value }: { label: string; value?: React.ReactNod
       <div className="text-sm font-medium text-slate-900 truncate">{value}</div>
     </div>
   );
+}
+
+/** The box's verdict, tinted by what it says but printed verbatim — INCOMPLETE
+ *  and ABORTED are neither a pass nor a failure and must not be flattened into
+ *  one, which is exactly the distinction the box is making. */
+function VerdictBadge({ verdict }: { verdict: string }) {
+  const v = verdict.toUpperCase();
+  const tone =
+    v === 'PASS' || v === 'PASSED' ? 'bg-emerald-600 text-white'
+    : v === 'FAIL' || v === 'FAILED' || v === 'ERROR' ? 'bg-red-600 text-white'
+    : 'bg-amber-500 text-white';
+  return <span className={`text-[11px] px-2 py-0.5 rounded font-semibold ${tone}`}>{v}</span>;
 }
 
 function RunOverview({ data }: { data: RunOverviewData }) {
@@ -364,6 +479,13 @@ function RunOverview({ data }: { data: RunOverviewData }) {
       <OverviewField label="Test Case" value={data.testcaseName ?? data.testcaseId} />
       <OverviewField label="Simnovator IP" value={data.systemHost ? <span className="font-mono text-xs">{data.systemHost}</span> : undefined} />
       <OverviewField label="Status" value={data.currentStatus} />
+      {/* The box's own word for this run, next to SimQA's. They can disagree —
+          a Simnovator PASS only means its success conditions held — so both are
+          shown rather than one standing in for the other. */}
+      <OverviewField
+        label="Verdict"
+        value={data.verdict ? <VerdictBadge verdict={data.verdict} /> : undefined}
+      />
       <div>
         <div className="text-[10px] uppercase tracking-wider text-slate-500">Result</div>
         <div className="mt-0.5">{resultBadge[data.overallResult]}</div>
@@ -380,12 +502,17 @@ function RunOverview({ data }: { data: RunOverviewData }) {
  *  presentation, so the three call sites below don't each re-derive it. */
 function RunProgress({
   testcaseName, testcaseId, systemHost, running, ok, finalDetail,
-  startedAt, configuredDurationSec, checks, currentPhase,
+  startedAt, configuredDurationSec, checks, currentPhase, verdict, runId,
 }: {
   testcaseName?: string; testcaseId?: string; systemHost?: string;
   running: boolean; ok?: boolean; finalDetail?: string;
   startedAt?: string; configuredDurationSec?: number;
   checks: CheckRowData[]; currentPhase?: Phase;
+  /** Passed in for a run observed on the box, where the box's verdict is a
+   *  field rather than something a check went and asked for. */
+  verdict?: string;
+  /** Addresses the run's saved artifacts — see /api/end-to-end/evidence. */
+  runId?: string;
 }) {
   const currentStatus = running ? 'Running' : finalDetail === 'aborted' ? 'Stopped' : 'Completed';
   const overallResult: RunOverviewData['overallResult'] = running ? 'running' : ok === undefined ? 'unknown' : ok ? 'pass' : 'fail';
@@ -395,6 +522,7 @@ function RunProgress({
       <RunOverview data={{
         testcaseName, testcaseId, systemHost, currentStatus, overallResult,
         startedAt, configuredDurationSec, ueSummary: ueSummaryFrom(checks),
+        verdict: verdict ?? boxVerdictFrom(checks),
       }} />
       {finalDetail ? (
         <div className={
@@ -406,7 +534,7 @@ function RunProgress({
           {finalDetail}
         </div>
       ) : null}
-      <StageFlow checks={checks} currentPhase={currentPhase} />
+      <StageFlow checks={checks} currentPhase={currentPhase} runId={runId} />
     </div>
   );
 }
@@ -436,7 +564,7 @@ export interface LiveEntry {
  *  testcase's own runs, and optionally passing `liveEntry` for the run
  *  currently in flight so there's one list, not a separate live card). */
 export function PastRunsPanel({
-  runs, onRefresh, title = 'Past runs', limit = 20, emptyMessage, liveEntry,
+  runs, onRefresh, title = 'Past runs', limit = 20, emptyMessage, liveEntry, prefetchedReports,
 }: {
   runs: PastRunSummary[] | null;
   onRefresh?: () => void;
@@ -444,6 +572,15 @@ export function PastRunsPanel({
   limit?: number;
   emptyMessage?: React.ReactNode;
   liveEntry?: LiveEntry;
+  /**
+   * Reports supplied by the caller, keyed by runId — expanding one of these
+   * uses it instead of fetching /api/end-to-end/runs/<id>.
+   *
+   * For runs that have no SimQA run record at all: a testcase executed from the
+   * Simnovator's own GUI has a real verdict and real checks, but they live on
+   * the testcase rather than in data/runs, so there is nothing to fetch.
+   */
+  prefetchedReports?: Record<string, FullReport>;
 }) {
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [expandedReport, setExpandedReport] = useState<FullReport | null>(null);
@@ -454,6 +591,8 @@ export function PastRunsPanel({
     // The live entry's checks come straight from props (see below) — there's
     // no report.json to fetch until the run finishes.
     if (liveEntry && runId === liveEntry.runId) return;
+    const supplied = prefetchedReports?.[runId];
+    if (supplied) { setExpandedReport(supplied); return; }
     try {
       const r = await fetch(`/api/end-to-end/runs/${encodeURIComponent(runId)}`, { cache: 'no-store' });
       const j = await r.json();
@@ -512,6 +651,7 @@ export function PastRunsPanel({
                       configuredDurationSec={liveEntry.configuredDurationSec}
                       checks={liveEntry.checks}
                       currentPhase={liveEntry.currentPhase}
+                      runId={liveEntry.runId}
                     />
                   </div>
                 ) : null}
@@ -525,11 +665,19 @@ export function PastRunsPanel({
                 >
                   <div className="flex items-center gap-2">
                     {expandedRunId === r.runId ? <ChevronDown className="h-3 w-3 text-slate-400" /> : <ChevronRight className="h-3 w-3 text-slate-400" />}
-                    {r.ok ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> : <XCircle className="h-3.5 w-3.5 text-red-600" />}
+                    {r.running
+                      ? <Loader2 className="h-3.5 w-3.5 text-primary-600 animate-spin" />
+                      : r.ok === undefined
+                        ? <Circle className="h-3.5 w-3.5 text-slate-400" />
+                        : r.ok
+                          ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                          : <XCircle className="h-3.5 w-3.5 text-red-600" />}
                     <span className="font-medium text-slate-900" title={r.testcaseId}>{r.testcaseName || r.testcaseId}</span>
                     <span className="text-slate-400">·</span>
                     <span className="text-slate-500 font-mono text-[11px]">{r.systemHost || r.systemId}</span>
-                    {r.counts ? (
+                    {r.running ? (
+                      <span className="ml-auto text-[10px] text-primary-700 font-medium">Running</span>
+                    ) : r.counts ? (
                       <span className="ml-auto text-[10px] tabular-nums text-slate-500">
                         {r.counts.passed} Passed · {r.counts.failed} Failed · {r.counts.skipped} Skipped
                       </span>
@@ -548,12 +696,14 @@ export function PastRunsPanel({
                         testcaseName={expandedReport.testcaseName}
                         testcaseId={expandedReport.testcaseId}
                         systemHost={expandedReport.systemHost}
-                        running={false}
+                        running={!!r.running}
                         ok={expandedReport.ok}
                         finalDetail={expandedReport.finalDetail}
                         startedAt={expandedReport.startedAt}
                         configuredDurationSec={expandedReport.configuredDurationSec}
                         checks={expandedReport.results ?? []}
+                        verdict={expandedReport.verdict}
+                        runId={expandedReport.runId}
                       />
                     )}
                   </div>

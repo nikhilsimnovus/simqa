@@ -39,12 +39,19 @@ export async function POST(req: Request) {
 
   const logStream  = fs.createWriteStream(logPath,    { flags: 'a' });
   const eventStream = fs.createWriteStream(eventsPath, { flags: 'a' });
+  // Cancelling is a deliberate act, and it is a FILE, not a closed socket.
+  //
+  // This used to abort the install whenever the response stream closed, which
+  // meant a browser refresh killed a ten-minute install on the box — the thing
+  // the operator was least likely to intend and most likely to do. Now a lost
+  // client only stops the live rendering: the run keeps going, keeps writing
+  // to events.ndjson, and GET below lets the page rejoin it. Cancel writes
+  // this marker (DELETE), which is the only thing that stops a run.
+  const cancelPath = path.join(buildDir, 'CANCELED');
 
   const encoder = new TextEncoder();
-  // The client may close the response (browser refresh, navigate away, network
-  // blip) while the install is still running. We watch for that and flip
-  // `clientGone` so the installer can short-circuit its polling loops and
-  // close the browser instead of looping for the full per-step timeout.
+  // Tracks only whether we can still enqueue into the response controller —
+  // it no longer decides whether the install continues.
   let clientGone = false;
   const stream = new ReadableStream({
     start(controller) {
@@ -79,7 +86,7 @@ export async function POST(req: Request) {
       // Header line so the client knows the buildId immediately.
       emit({ type: 'log', stream: 'info', line: `buildId=${buildId}`, ts: Date.now() });
 
-      runBuildInstall({ inv, req: body, emit, buildDir, isCanceled: () => clientGone })
+      runBuildInstall({ inv, req: body, emit, buildDir, isCanceled: () => fs.existsSync(cancelPath) })
         .catch((e: any) => emit({ type: 'log', stream: 'error', line: `unexpected: ${e?.message ?? e}`, ts: Date.now() }))
         .finally(() => {
           try { logStream.end(); } catch { /* ignore */ }
@@ -90,12 +97,11 @@ export async function POST(req: Request) {
         });
     },
     cancel() {
-      // Browser closed the stream — flag the installer so it bails out and
-      // closes its Chromium instance rather than running to completion.
+      // The browser stopped reading (refresh, navigate away, network blip).
+      // The install continues — only the live rendering stops. The write
+      // streams stay open so the run is complete on disk for GET to replay.
       clientGone = true;
-      try { logStream.write(`${new Date().toISOString()} -- CLIENT_DISCONNECTED — install will abort at next checkpoint\n`); } catch { /* ignore */ }
-      try { logStream.end(); } catch { /* ignore */ }
-      try { eventStream.end(); } catch { /* ignore */ }
+      try { logStream.write(`${new Date().toISOString()} -- CLIENT_DISCONNECTED — install continues; reload the page to rejoin it\n`); } catch { /* ignore */ }
     },
   });
 
@@ -106,4 +112,104 @@ export async function POST(req: Request) {
       'X-Build-Id': buildId,
     },
   });
+}
+
+/**
+ * GET /api/build-install?systemId=…
+ *
+ * The most recent install run for that system, replayed from disk.
+ *
+ * Why: the POST above streams the install to whoever started it, and that is
+ * the ONLY copy the page had — reload it and the whole log vanished, even
+ * though every event was already written to data/builds/<buildId>. This reads
+ * it back so a refresh (or a second person opening the page) sees the install
+ * that happened, and an install still in flight keeps updating.
+ *
+ * `running` is inferred from the file rather than from a live handle: the
+ * installer writes `done` last, so a run with no `done` whose events file is
+ * still being appended to is still going.
+ */
+export async function GET(req: Request) {
+  const systemId = (new URL(req.url).searchParams.get('systemId') ?? '').trim();
+  const root = path.join(process.cwd(), 'data', 'builds');
+
+  try {
+    if (!fs.existsSync(root)) return NextResponse.json({ ok: true, run: null });
+
+    // Newest first. Directory names are build-<timestamp>, so they sort
+    // lexicographically in time order.
+    const dirs = fs.readdirSync(root).filter((d) => d.startsWith('build-')).sort().reverse();
+
+    for (const dir of dirs) {
+      const base = path.join(root, dir);
+      let request: any = {};
+      try { request = JSON.parse(fs.readFileSync(path.join(base, 'request.json'), 'utf8')); } catch { /* older run */ }
+      // No systemId asked for → newest run of any system.
+      if (systemId && request?.systemId && request.systemId !== systemId) continue;
+
+      const eventsPath = path.join(base, 'events.ndjson');
+      if (!fs.existsSync(eventsPath)) continue;
+
+      const events: InstallEvent[] = fs.readFileSync(eventsPath, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => { try { return JSON.parse(l) as InstallEvent; } catch { return null; } })
+        .filter((e): e is InstallEvent => !!e);
+
+      const done = events.find((e) => e.type === 'done');
+      // runBuildInstall emits `done` on every exit path, including its catch,
+      // so a run with no `done` either is still going or died with the process
+      // (dev-server restart mid-install). Tell those apart by how long the
+      // events file has been silent — five minutes is generous, the installer
+      // echoes terminal output every few seconds even during ./install.
+      const silentMs = Date.now() - fs.statSync(eventsPath).mtimeMs;
+      const stalled = !done && silentMs > 5 * 60_000;
+      return NextResponse.json({
+        ok: true,
+        run: {
+          buildId: dir,
+          systemId: request?.systemId,
+          buildUrl: request?.buildUrl,
+          startedAt: request?._capturedAt,
+          running: !done && !stalled,
+          stalled,
+          ok: done ? (done as any).ok === true : undefined,
+          events,
+        },
+      });
+    }
+    return NextResponse.json({ ok: true, run: null });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
+  }
+}
+
+/**
+ * DELETE /api/build-install?buildId=…
+ *
+ * Cancel a running install. Writes a CANCELED marker into the build directory;
+ * the installer checks for it at each of its checkpoints and bails out, closing
+ * its Chromium rather than running to completion.
+ *
+ * A marker file rather than an in-memory flag because the operator who cancels
+ * may not be the request that started the install — after a page refresh the
+ * original stream is long gone, but the run is still going.
+ */
+export async function DELETE(req: Request) {
+  const buildId = (new URL(req.url).searchParams.get('buildId') ?? '').trim();
+  // Anchor to the builds directory and take the basename only — a buildId is
+  // a directory name, never a path.
+  if (!/^build-[\w.\-]+$/.test(buildId)) {
+    return NextResponse.json({ ok: false, error: 'buildId is required' }, { status: 400 });
+  }
+  const buildDir = path.join(process.cwd(), 'data', 'builds', buildId);
+  if (!fs.existsSync(buildDir)) {
+    return NextResponse.json({ ok: false, error: `no run "${buildId}"` }, { status: 404 });
+  }
+  try {
+    fs.writeFileSync(path.join(buildDir, 'CANCELED'), new Date().toISOString());
+    return NextResponse.json({ ok: true });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
+  }
 }

@@ -34,6 +34,7 @@ import * as path from 'node:path';
 
 import type { Inventory, InventorySystem } from './inventory';
 import { getSystem, uesimApiOptsForSystem } from './inventory';
+import { linkAndRestart } from './labCfgLink';
 import { fetchBoxBuild } from './buildVersion';
 import { appendHistoryEntry } from './historyStore';
 
@@ -86,6 +87,14 @@ export interface BuildValidationRequest {
   /** Testcase ids for the run-tests group. Resolved by name when omitted. */
   fiveGTestcaseId?: string;
   lteTestcaseId?: string;
+  /**
+   * Report id chosen by the caller, so it can poll this run's progress while
+   * the POST is still open. The run publishes a partial report after every
+   * group; without an agreed id the page cannot tell this run's partials from
+   * the previous run's finished report. Sanitised before use — it becomes a
+   * filename.
+   */
+  runId?: string;
 }
 
 export interface BuildValidationReport {
@@ -93,7 +102,7 @@ export interface BuildValidationReport {
   startedAt: string;
   finishedAt?: string;
   ok: boolean;
-  status: 'running' | 'passed' | 'failed';
+  status: 'running' | 'passed' | 'failed' | 'canceled';
   systemId: string;
   systemName?: string;
   host: string;
@@ -197,13 +206,19 @@ async function groupReachable(sim: InventorySystem, ue?: InventorySystem, app?: 
   ]);
   const failed = steps.filter((s) => s.status === 'fail');
   const checked = steps.filter((s) => s.status !== 'skip');
+  // Name each machine WITH its address. "Simnovator, UE, App Server reachable"
+  // does not say which boxes were actually pinged, and on a lab with several
+  // benches that is the first thing you need to know.
+  const hostOfStep = (s: Step) =>
+    s.label === 'Simnovator' ? sim.host : s.label === 'UE' ? ue?.host : app?.host;
+  const withHost = (s: Step) => `${s.label} ${hostOfStep(s) ?? '(no host)'}`;
   return {
     id: 'reachable',
     label: VERIFICATION_LABELS['reachable'],
     status: failed.length ? 'fail' : 'pass',
     detail: failed.length
-      ? `${failed.length} of ${checked.length} machine(s) unreachable: ${failed.map((f) => f.label).join(', ')}`
-      : `${checked.map((s) => s.label).join(', ')} reachable`,
+      ? `Could not reach ${failed.map(withHost).join(', ')} (${failed.length} of ${checked.length} machine(s))`
+      : `Able to ping ${checked.map(withHost).join(', ')}`,
     steps,
   };
 }
@@ -263,7 +278,10 @@ async function groupLogin(host: string, username: string, password: string): Pro
     id: 'login',
     label: VERIFICATION_LABELS['login'],
     status: failed ? 'fail' : 'pass',
-    detail: failed ? (steps.find((s) => s.status === 'fail')?.detail ?? 'login failed') : 'Login successful',
+    // Say which box was logged into, since that is the fact being asserted.
+    detail: failed
+      ? (steps.find((s) => s.status === 'fail')?.detail ?? `Could not log in to ${host}`)
+      : `Able to log in to ${host} — the configured credentials are accepted`,
     steps,
   };
 }
@@ -330,7 +348,9 @@ async function groupSampleTests(host: string, token: string | undefined): Promis
     id: 'sample-tests',
     label: VERIFICATION_LABELS['sample-tests'],
     status: failed ? 'fail' : 'pass',
-    detail: `${samples.length} sample test(s) detected of ${names.length} testcase(s)`,
+    detail: failed
+      ? `No sample test cases found among ${names.length} testcase(s) on the box`
+      : `Verified sample test cases are present — ${samples.length} of ${names.length} testcase(s) on the box`,
     steps,
   };
 }
@@ -351,7 +371,57 @@ function pickTestcase(all: Array<{ id: string; name: string }>, patterns: RegExp
 const FIVE_G_PATTERNS = [/5g[_\-\s]*single[_\-\s]*cell/i, /\b5g\b/i, /nr[_\-\s]*sa/i];
 const LTE_PATTERNS = [/lte.*(one|1)[_\-\s]*cell/i, /lte[_\-\s]*1\b/i, /\blte\b/i];
 
-async function executeOne(host: string, token: string, tc: { id: string; name: string }, label: string, maxWaitMs: number): Promise<Step> {
+/** Newest value of the first field that carries a finite number. */
+function rowNum(row: any, keys: string[]): number | undefined {
+  for (const k of keys) {
+    const v = Number(row?.[k]);
+    if (Number.isFinite(v)) return v;
+  }
+  return undefined;
+}
+
+/**
+ * One sample of an execution's per-cell radio statistics.
+ *
+ * Field names and the endpoint shape are taken from the end-to-end checks,
+ * which verified them live: throughput is `dl_bitrate` / `ul_bitrate` in bps,
+ * the window is in SECONDS, and the payload nests under data.cells on some
+ * builds and is a bare array on others.
+ *
+ * Returns the peak across cells for this sample — one cell carrying traffic is
+ * what "traffic flowed" means here — and the worst BLER, since a single bad
+ * cell is the thing worth reporting.
+ */
+async function sampleCellStats(host: string, token: string, executionId: string): Promise<{ rows: number; dl: number; ul: number; bler?: number }> {
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - 120;
+  try {
+    const r = await fetch(
+      `http://${host}/v2/testcases/executions/${encodeURIComponent(executionId)}/statistics/cells?startTime=${start}&endTime=${end}`,
+      { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) },
+    );
+    if (!r.ok) return { rows: 0, dl: 0, ul: 0 };
+    const j: any = await r.json().catch(() => ({}));
+    const rows: any[] = Array.isArray(j?.data?.cells) ? j.data.cells
+      : Array.isArray(j?.cells) ? j.cells
+      : Array.isArray(j?.items) ? j.items
+      : Array.isArray(j) ? j : [];
+    if (!rows.length) return { rows: 0, dl: 0, ul: 0 };
+
+    let dl = 0, ul = 0, bler: number | undefined;
+    for (const c of rows) {
+      dl = Math.max(dl, rowNum(c, ['dl_throughput', 'dlThroughput', 'dl_bitrate', 'dl', 'downlinkThroughput']) ?? 0);
+      ul = Math.max(ul, rowNum(c, ['ul_throughput', 'ulThroughput', 'ul_bitrate', 'ul', 'uplinkThroughput']) ?? 0);
+      const b = rowNum(c, ['bler', 'BLER', 'dl_bler', 'blerDl', 'avg_dl_bler']);
+      if (b !== undefined) bler = bler === undefined ? b : Math.max(bler, b);
+    }
+    return { rows: rows.length, dl, ul, bler };
+  } catch {
+    return { rows: 0, dl: 0, ul: 0 };
+  }
+}
+
+async function executeOne(host: string, token: string, tc: { id: string; name: string }, label: string, maxWaitMs: number, isCanceled?: () => boolean): Promise<Step> {
   const startedAt = new Date().toISOString();
   const t0 = Date.now();
   const auth = { Authorization: `Bearer ${token}` };
@@ -378,20 +448,72 @@ async function executeOne(host: string, token: string, tc: { id: string; name: s
       const msg = start ? await start.text().catch(() => '') : '';
       return fin('fail', `could not start "${tc.name}": HTTP ${start?.status ?? '—'} ${msg.slice(0, 120)}`, 'the testcase starts and runs to a terminal status');
     }
-    // Poll the testcase's lastExecution until terminal.
+    // Poll the testcase's lastExecution until terminal, sampling the radio
+    // statistics as we go.
+    //
+    // Sampled DURING the run, not after: /statistics/cells is a time series
+    // over a window, and once the execution ends the box stops producing rows,
+    // so a single read afterwards can come back empty. Peaks are kept because
+    // "did traffic ever flow" is what the build check is asking; the worst BLER
+    // is kept for the same reason in the other direction.
     const TERMINAL = new Set(['COMPLETED', 'FAILED', 'STOPPED', 'ABORTED', 'INCOMPLETE', 'PASSED']);
     const deadline = Date.now() + maxWaitMs;
     let status = '';
     let result = '';
+    let executionId = '';
+    let peakDl = 0;
+    let peakUl = 0;
+    let worstBler: number | undefined;
+    let sampled = 0;
+
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 5000));
+      // Cancel has to reach in here: this loop is where the minutes go, and
+      // stopping the box's execution is what "stop it" has to mean — leaving
+      // the hardware running and only closing our eyes would be worse.
+      if (isCanceled?.()) {
+        if (executionId) {
+          await fetch(`http://${host}/v2/testcases/executions/${encodeURIComponent(executionId)}/stop`, {
+            method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+            body: '{}', signal: AbortSignal.timeout(15_000),
+          }).catch(() => null);
+        }
+        return fin('skip', `canceled after ${((Date.now() - t0) / 1000).toFixed(1)}s${executionId ? ' — execution stopped on the box' : ''}`, 'the run was canceled');
+      }
       const g = await fetch(`http://${host}/v2/testcases/${encodeURIComponent(tc.id)}`, { headers: auth, signal: AbortSignal.timeout(15_000) }).catch(() => null);
       if (!g || !g.ok) continue;
       const j: any = await g.json().catch(() => ({}));
       status = String(j?.metadata?.lastExecution?.status ?? '').toUpperCase();
       result = String(j?.metadata?.lastExecution?.result ?? '').toUpperCase();
+      executionId = String(j?.metadata?.lastExecution?.executionId ?? executionId);
+
+      if (executionId) {
+        const s = await sampleCellStats(host, token, executionId);
+        if (s.rows > 0) {
+          sampled += s.rows;
+          peakDl = Math.max(peakDl, s.dl);
+          peakUl = Math.max(peakUl, s.ul);
+          if (s.bler !== undefined) worstBler = worstBler === undefined ? s.bler : Math.max(worstBler, s.bler);
+        }
+      }
       if (TERMINAL.has(status)) break;
     }
+    // dl_bitrate / ul_bitrate are BITS PER SECOND — verified on a live run:
+    // {"cell":"0","dl_bitrate":1467334681,"ul_bitrate":231997578,"bler":0}.
+    // That is 1.47 Gbps, so the ladder has to reach Gbps; formatting it as
+    // "1467.3 Mbps" is right but unreadable, and treating the field as kbps
+    // would be wrong by a factor of a thousand.
+    const rate = (bps: number) =>
+      bps >= 1_000_000_000 ? `${(bps / 1_000_000_000).toFixed(2)} Gbps`
+        : bps >= 1_000_000 ? `${(bps / 1_000_000).toFixed(1)} Mbps`
+        : `${Math.round(bps / 1000)} kbps`;
+    const measured = sampled > 0
+      // "peak" said out loud: these are the highest values seen across the
+      // run's samples, not an average. A run that only briefly reached the
+      // floor would otherwise read as though it held it throughout.
+      ? `BLER ${worstBler === undefined ? 'not reported' : `${worstBler.toFixed(2)}%`}`
+        + ` · peak throughput DL ${rate(peakDl)}, UL ${rate(peakUl)}`
+      : 'no cell statistics were returned for this execution';
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     if (!TERMINAL.has(status)) {
       return fin('fail', `"${tc.name}" did not finish within ${(maxWaitMs / 60000).toFixed(0)} min (last status ${status || 'unknown'}); ran ${secs}s`, 'the testcase reaches a terminal status inside the wait window');
@@ -399,20 +521,136 @@ async function executeOne(host: string, token: string, tc: { id: string; name: s
     // The box's own verdict is only ever "BLER <= 5%", which an empty run also
     // satisfies — so a PASS here means "it ran and the box was content", not
     // "traffic actually flowed". Said plainly rather than implied.
-    const good = result === 'PASS' || result === 'PASSED' || (status === 'COMPLETED' && result !== 'FAIL');
-    return fin(good ? 'pass' : 'fail',
-      `"${tc.name}" — status ${status}${result ? `, result ${result}` : ''}, ran ${secs}s (box verdict only checks BLER ≤ 5%)`,
-      'the testcase completes with a PASS verdict');
+    // The box's own verdict is only ever "Avg_DL_BLER <= 5%", which an empty
+    // run also satisfies — so it is necessary but nowhere near sufficient. The
+    // build check adds the two things that actually prove the radio carried
+    // traffic, and fails the step when either falls short.
+    const ranToCompletion = result === 'PASS' || result === 'PASSED' || (status === 'COMPLETED' && result !== 'FAIL');
+    const dlMbps = peakDl / 1_000_000;
+    const ulMbps = peakUl / 1_000_000;
+
+    const shortfalls: string[] = [];
+    if (!ranToCompletion) shortfalls.push(`the box reported status ${status || 'unknown'}${result ? ` / result ${result}` : ''}`);
+    if (sampled === 0) shortfalls.push('no cell statistics were returned, so throughput and BLER could not be measured');
+    else {
+      if (dlMbps < BUILD_CHECK_MIN_DL_MBPS) shortfalls.push(`DL ${dlMbps.toFixed(0)} Mbps is below the ${BUILD_CHECK_MIN_DL_MBPS} Mbps floor`);
+      if (ulMbps < BUILD_CHECK_MIN_UL_MBPS) shortfalls.push(`UL ${ulMbps.toFixed(0)} Mbps is below the ${BUILD_CHECK_MIN_UL_MBPS} Mbps floor`);
+      if (worstBler === undefined) shortfalls.push('the box reported no BLER');
+      else if (worstBler > BUILD_CHECK_MAX_BLER) shortfalls.push(`BLER ${worstBler.toFixed(2)}% exceeds ${BUILD_CHECK_MAX_BLER}%`);
+    }
+
+    const headline = `status ${status}${result ? `, result ${result}` : ''}, ran ${secs}s · ${measured}`;
+    return fin(shortfalls.length ? 'fail' : 'pass',
+      shortfalls.length ? `${headline} — ${shortfalls.join('; ')}` : headline,
+      `the testcase completes, DL ≥ ${BUILD_CHECK_MIN_DL_MBPS} Mbps, UL ≥ ${BUILD_CHECK_MIN_UL_MBPS} Mbps and BLER ≤ ${BUILD_CHECK_MAX_BLER}%`);
   } catch (e: any) {
     return fin('fail', `"${tc.name}" — ${e?.name === 'TimeoutError' ? 'request timed out' : (e?.message ?? String(e))}`, 'the testcase starts and runs to a terminal status');
   }
 }
 
-async function groupRunTests(host: string, token: string | undefined, req: BuildValidationRequest): Promise<CheckGroup> {
+/**
+ * The build-check testcase, and the callbox configs it needs.
+ *
+ * One fixed testcase rather than "a 5G one and an LTE one picked by name":
+ * a build check has to compare like with like across builds, and a heuristic
+ * name match silently ran a different testcase whenever the box's contents
+ * changed. All four names verified present on the lab (2026-09-07): the
+ * testcase on .102, the three cfgs on callbox .106.
+ */
+export const BUILD_CHECK_TESTCASE = 'Buildcheck_SA_1Cell_1UEs_UDP';
+export const BUILD_CHECK_CFG = { enb: 'SA-1cell', mme: 'demo-mme.cfg', ims: 'demo-ims.cfg' } as const;
+
+/**
+ * What this testcase has to achieve for the build to pass.
+ *
+ * The box's own verdict is only "Avg_DL_BLER <= 5%", which zero attached UEs
+ * also satisfies — so a green light from the Simnovator says nothing about
+ * whether traffic flowed. These floors are what make the build check mean
+ * something. Set from the observed healthy run on .102 (DL peaked ~1.47 Gbps,
+ * UL ~232 Mbps) with headroom, so a build that regresses materially fails
+ * while normal run-to-run variation does not.
+ */
+export const BUILD_CHECK_MIN_DL_MBPS = 1200;
+export const BUILD_CHECK_MIN_UL_MBPS = 200;
+export const BUILD_CHECK_MAX_BLER = 5;
+
+/**
+ * Put the build-check testcase on a box that does not have it.
+ *
+ * The definition ships with SimQA (buildCheckTestcase.json, exported from .102
+ * on 2026-09-07) rather than being copied from another Simnovator at run time:
+ * a build check is only comparable across builds if every box runs the same
+ * definition, and sourcing it from a peer makes it whatever that peer happens
+ * to hold today.
+ *
+ * Import is multipart to /v2/testcases/import — the same call apiTester.ts
+ * exercises. Test_Id is regenerated so importing onto a box that has a
+ * soft-deleted row of the same id does not collide.
+ */
+async function createBuildCheckTestcase(
+  host: string,
+  token: string,
+): Promise<{ ok: boolean; detail: string; testcase?: { id: string; name: string } }> {
+  try {
+    const seedPath = path.join(process.cwd(), 'src', 'lib', 'buildCheckTestcase.json');
+    if (!fs.existsSync(seedPath)) {
+      return { ok: false, detail: 'the bundled testcase definition is missing from this SimQA install' };
+    }
+    const pack = JSON.parse(fs.readFileSync(seedPath, 'utf8'));
+    const detail = pack?.test_case_details?.[0];
+    if (!detail) return { ok: false, detail: 'the bundled testcase definition has no test_case_details' };
+
+    // Timestamps belong to the export, not to this import.
+    delete detail.Created_Date;
+    delete detail.Modified_Date;
+    delete detail.Deleted_Date;
+    detail.Test_Name = BUILD_CHECK_TESTCASE;
+    detail.Test_Id = `simqa-buildcheck-${Date.now().toString(36)}`;
+
+    const form = new FormData();
+    form.append('file', new Blob([JSON.stringify(pack)], { type: 'application/json' }), 'buildcheck.json');
+    const r = await fetch(`http://${host}/v2/testcases/import`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form,
+      signal: AbortSignal.timeout(60_000),
+    });
+    const text = await r.text().catch(() => '');
+    if (!r.ok) return { ok: false, detail: `import returned HTTP ${r.status}: ${text.slice(0, 160)}` };
+
+    // Look it up by NAME rather than trusting the import response's id: the box
+    // assigns its own, and has been observed auto-suffixing a name it considers
+    // taken — in which case this must fail loudly rather than run a "_copy".
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await new Promise((res) => setTimeout(res, 1500));
+      const g = await fetch(`http://${host}/v2/testcases?limit=50&offset=0`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) }).catch(() => null);
+      if (!g?.ok) continue;
+      const j: any = await g.json().catch(() => ({}));
+      const hit = (j?.items ?? []).find((x: any) => String(x?.name) === BUILD_CHECK_TESTCASE);
+      if (hit) return { ok: true, detail: `imported onto ${host} as ${hit.id}`, testcase: { id: String(hit.id), name: BUILD_CHECK_TESTCASE } };
+    }
+    return { ok: false, detail: `import returned ${r.status} but no testcase named "${BUILD_CHECK_TESTCASE}" appeared on the box` };
+  } catch (e: any) {
+    return { ok: false, detail: e?.message ?? String(e) };
+  }
+}
+
+/** The callbox bound to a Simnovator via its topology profile — the same
+ *  lookup endToEnd/runner.ts and callbox-configs/route.ts already do. */
+function callboxForSimnovator(inv: Inventory, simnovatorId: string): InventorySystem | undefined {
+  const profile = inv.profiles.find((p) => p.simnovator === simnovatorId);
+  return profile?.callbox ? getSystem(inv, profile.callbox) : undefined;
+}
+
+async function groupRunTests(
+  host: string,
+  token: string | undefined,
+  req: BuildValidationRequest,
+  inv: Inventory,
+  sim: InventorySystem,
+  isCanceled?: () => boolean,
+): Promise<CheckGroup> {
   if (!token) {
     return { id: 'run-tests', label: VERIFICATION_LABELS['run-tests'], status: 'skip', detail: 'skipped: could not authenticate', steps: [] };
   }
-  // Resolve the two testcases.
   const all: Array<{ id: string; name: string }> = [];
   try {
     for (let p = 0; p < 10; p++) {
@@ -425,31 +663,110 @@ async function groupRunTests(host: string, token: string | undefined, req: Build
     }
   } catch { /* handled below by the empty list */ }
 
-  const byId = (id?: string) => (id ? all.find((t) => t.id === id) : undefined);
-  const fiveG = byId(req.fiveGTestcaseId) ?? pickTestcase(all, FIVE_G_PATTERNS);
-  const lte   = byId(req.lteTestcaseId)   ?? pickTestcase(all, LTE_PATTERNS);
-
   const steps: Step[] = [];
-  // Strictly sequential: the box executes one testcase at a time, so starting
-  // the second before the first finishes would 409 rather than queue.
-  for (const [tc, label] of [[fiveG, '5G Test Case'], [lte, 'LTE One Cell Test Case']] as const) {
-    if (!tc) {
+
+  // The named testcase, or nothing — no fallback to "something that looks
+  // similar", because running a different testcase and reporting it as the
+  // build check is worse than saying it is missing.
+  let wanted = req.fiveGTestcaseId
+    ? all.find((t) => t.id === req.fiveGTestcaseId)
+    : all.find((t) => t.name === BUILD_CHECK_TESTCASE);
+
+  // Not there — create it. A freshly installed box, or a new Simnovator, will
+  // not have it, and "the build check cannot run here" is a worse answer than
+  // putting the testcase on the box. Imported from the pack shipped with SimQA
+  // (buildCheckTestcase.json, exported from .102), so every box runs a byte-
+  // identical definition rather than whatever each lab happens to hold.
+  if (!wanted) {
+    const t0 = Date.now();
+    const startedAt = new Date().toISOString();
+    const created = await createBuildCheckTestcase(host, token);
+    steps.push({
+      id: 'create-testcase',
+      label: `Create ${BUILD_CHECK_TESTCASE}`,
+      status: created.ok ? 'pass' : 'fail',
+      detail: created.detail,
+      expected: `the testcase "${BUILD_CHECK_TESTCASE}" is importable onto this Simnovator`,
+      startedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - t0,
+    });
+    if (created.ok && created.testcase) wanted = created.testcase;
+  }
+
+  if (!wanted) {
+    steps.push({
+      id: 'run-buildcheck-testcase', label: BUILD_CHECK_TESTCASE, status: 'fail',
+      detail: `"${BUILD_CHECK_TESTCASE}" is not on this box (searched ${all.length} testcase(s)) and could not be created`,
+      expected: `the testcase "${BUILD_CHECK_TESTCASE}" exists on the Simnovator`,
+    });
+    return {
+      id: 'run-tests', label: VERIFICATION_LABELS['run-tests'], status: 'fail',
+      detail: `"${BUILD_CHECK_TESTCASE}" not found on the box and could not be created`, steps,
+    };
+  }
+
+  // ── Point the callbox at this testcase's configs, then restart lte ──
+  // The testcase assumes a specific radio and core config; running it against
+  // whatever the callbox happened to be linked to last measures that instead.
+  const callbox = callboxForSimnovator(inv, sim.id);
+  const tCfg = Date.now();
+  const cfgStartedAt = new Date().toISOString();
+  if (!callbox) {
+    steps.push({
+      id: 'cfg-link', label: 'Callbox configuration', status: 'fail',
+      detail: `no callbox is bound to ${sim.name ?? sim.host} in its topology profile, so the configs cannot be linked`,
+      expected: 'the Simnovator’s topology profile names a callbox',
+      startedAt: cfgStartedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - tCfg,
+    });
+  } else {
+    try {
+      const link = await linkAndRestart(callbox, { ...BUILD_CHECK_CFG });
       steps.push({
-        id: `run-${label.toLowerCase().replace(/\s+/g, '-')}`, label, status: 'fail',
-        detail: `no testcase on this box matches a ${label.startsWith('5G') ? '5G/NR-SA' : 'LTE one-cell'} name — pick one explicitly`,
-        expected: 'a testcase representing this RAT exists on the box, or is named in the request',
+        id: 'cfg-link',
+        label: 'Callbox configuration',
+        status: link.ok ? 'pass' : 'fail',
+        detail: link.ok
+          ? `${callbox.host}: enb.cfg → ${BUILD_CHECK_CFG.enb}, mme.cfg → ${BUILD_CHECK_CFG.mme}, ims.cfg → ${BUILD_CHECK_CFG.ims}, lte restarted`
+          : (link.steps.find((s) => !s.ok)?.detail ?? 'linking the configs failed'),
+        expected: `enb/mme/ims linked to ${BUILD_CHECK_CFG.enb} / ${BUILD_CHECK_CFG.mme} / ${BUILD_CHECK_CFG.ims}`,
+        startedAt: cfgStartedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - tCfg,
       });
-      continue;
+    } catch (e: any) {
+      steps.push({
+        id: 'cfg-link', label: 'Callbox configuration', status: 'fail',
+        detail: `${callbox.host}: ${e?.message ?? String(e)}`,
+        expected: `enb/mme/ims linked to ${BUILD_CHECK_CFG.enb} / ${BUILD_CHECK_CFG.mme} / ${BUILD_CHECK_CFG.ims}`,
+        startedAt: cfgStartedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - tCfg,
+      });
     }
-    steps.push(await executeOne(host, token, tc, label, 15 * 60_000));
+  }
+
+  // Execute only if the radio actually came up on the right config — running
+  // against the wrong one produces a verdict about a configuration nobody
+  // asked for.
+  const cfgOk = steps[steps.length - 1]?.status === 'pass';
+  if (!cfgOk) {
+    steps.push({
+      id: 'run-buildcheck-testcase', label: wanted.name, status: 'skip',
+      detail: 'not executed — the callbox is not on this testcase’s configuration',
+    });
+  } else {
+    steps.push(await executeOne(host, token, wanted, wanted.name, 15 * 60_000, isCanceled));
   }
 
   const failed = steps.some((s) => s.status === 'fail');
+  // Find the execution step by LABEL, not by a guessed id. executeOne derives
+  // its id from the label it is given — here the testcase name — so it comes
+  // out as `run-buildcheck_sa_1cell_1ues_udp`, and looking for a fixed
+  // 'run-buildcheck-testcase' never matched. The summary therefore read
+  // "— not executed" on runs that had just executed the testcase for 685s.
+  const exec = steps.find((s) => s.label === wanted!.name);
   return {
     id: 'run-tests',
     label: VERIFICATION_LABELS['run-tests'],
     status: failed ? 'fail' : 'pass',
-    detail: steps.map((s) => `${s.label}: ${s.status.toUpperCase()}`).join(' · '),
+    detail: exec
+      ? `${wanted.name} — ${exec.status === 'pass' ? 'executed' : exec.status.toUpperCase()}${exec.detail ? `: ${exec.detail}` : ''}`
+      : `${wanted.name} — not executed`,
     steps,
   };
 }
@@ -463,6 +780,33 @@ function saveReport(rep: BuildValidationReport): void {
   } catch (e: any) {
     console.error('[build-validation] could not save report:', e?.message ?? e);
   }
+}
+
+/**
+ * Cancellation, as a file.
+ *
+ * The run is one long POST and the operator who cancels is not that request —
+ * they may even have refreshed the page since. A marker beside the report is
+ * something any request can write and the run can see; it is checked between
+ * groups and inside the execution wait loop, which is where the minutes are.
+ */
+function cancelPath(id: string): string { return path.join(REPORT_DIR, `${id}.cancel`); }
+
+export function cancelRun(id: string): boolean {
+  if (!/^bv-[\w.\-]{1,80}$/.test(id)) return false;
+  try {
+    fs.mkdirSync(REPORT_DIR, { recursive: true });
+    fs.writeFileSync(cancelPath(id), new Date().toISOString());
+    return true;
+  } catch { return false; }
+}
+
+function isCanceled(id: string): boolean {
+  try { return fs.existsSync(cancelPath(id)); } catch { return false; }
+}
+
+function clearCancel(id: string): void {
+  try { fs.rmSync(cancelPath(id), { force: true }); } catch { /* ignore */ }
 }
 
 export function loadReport(id: string): BuildValidationReport | null {
@@ -482,7 +826,9 @@ export function listReports(limit = 50): BuildValidationReport[] {
 export async function runBuildValidation(inv: Inventory, req: BuildValidationRequest): Promise<BuildValidationReport> {
   const sim = getSystem(inv, req.systemId);
   const startedAt = new Date().toISOString();
-  const id = `bv-${startedAt.replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 7)}`;
+  const id = /^bv-[\w.\-]{1,80}$/.test(req.runId ?? '')
+    ? req.runId!
+    : `bv-${startedAt.replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 7)}`;
 
   if (!sim) {
     const rep: BuildValidationReport = {
@@ -504,12 +850,60 @@ export async function runBuildValidation(inv: Inventory, req: BuildValidationReq
   const groups: CheckGroup[] = [];
   const want = new Set(req.checks);
 
-  if (want.has('reachable')) groups.push(await groupReachable(sim, ue, app));
+  /**
+   * Write the report as it stands, so the page can show each check finishing
+   * instead of four spinners for the whole run.
+   *
+   * The run is one long POST — Run Test Cases alone executes on hardware for
+   * minutes — and until this existed the only report was the one written at the
+   * end. So Reachable, Login and Sample Tests, which all finish in seconds,
+   * still read "running" until the hardware test came back. Groups not reached
+   * yet are `pending`; the one in flight is `running`.
+   */
+  const publish = (runningId?: VerificationId) => {
+    const done = new Set(groups.map((g) => g.id));
+    const pending: CheckGroup[] = req.checks
+      .filter((c) => !done.has(c))
+      .map((c) => ({
+        id: c,
+        label: VERIFICATION_LABELS[c] ?? c,
+        status: c === runningId ? 'running' : 'pending',
+        detail: c !== runningId
+          ? 'waiting'
+          // Naming the testcase matters here: this is the group that takes
+          // minutes, and without saying why it looks like a hang.
+          : c === 'run-tests'
+            ? `executing ${BUILD_CHECK_TESTCASE} on the box — this takes minutes`
+            : 'running…',
+        steps: [],
+      }));
+    saveReport({
+      id, startedAt, ok: false, status: 'running',
+      systemId: sim.id, systemName: sim.name, host: sim.host,
+      ueSystemId: ue?.id, ueHost: ue?.host,
+      appServerSystemId: app?.id, appServerHost: app?.host,
+      install: req.install,
+      selectedChecks: req.checks,
+      groups: [...groups, ...pending],
+    });
+  };
+
+  /** Mark everything not yet run as canceled and stop. */
+  const cancelRemaining = () => {
+    const done = new Set(groups.map((g) => g.id));
+    for (const c of req.checks) {
+      if (done.has(c)) continue;
+      groups.push({ id: c, label: VERIFICATION_LABELS[c] ?? c, status: 'skip', detail: 'canceled', steps: [] });
+    }
+  };
+
+  if (want.has('reachable')) { publish('reachable'); groups.push(await groupReachable(sim, ue, app)); }
 
   // A token is needed by the two later groups; obtained once here so login is
   // not attempted three times.
   let token: string | undefined;
-  if (want.has('login') || want.has('sample-tests') || want.has('run-tests')) {
+  if (!isCanceled(id) && (want.has('login') || want.has('sample-tests') || want.has('run-tests'))) {
+    publish('login');
     const g = await groupLogin(sim.host, username, password);
     if (want.has('login')) groups.push(g);
     if (g.status === 'pass') {
@@ -523,15 +917,29 @@ export async function runBuildValidation(inv: Inventory, req: BuildValidationReq
     }
   }
 
-  if (want.has('sample-tests')) groups.push(await groupSampleTests(sim.host, token));
-  if (want.has('run-tests'))    groups.push(await groupRunTests(sim.host, token, req));
+  if (!isCanceled(id) && want.has('sample-tests')) { publish('sample-tests'); groups.push(await groupSampleTests(sim.host, token)); }
+  if (!isCanceled(id) && want.has('run-tests'))    { publish('run-tests');    groups.push(await groupRunTests(sim.host, token, req, inv, sim, () => isCanceled(id))); }
+
+  // "Canceled" only if the cancel actually stopped something. A click that
+  // lands as the last group finishes should not relabel a run that completed —
+  // the operator would be told nothing ran when everything did.
+  const cutShort = req.checks.some((c) => !groups.some((g) => g.id === c))
+    || groups.some((g) => g.steps.some((s) => (s.detail ?? '').startsWith('canceled')));
+  const canceled = isCanceled(id) && cutShort;
+  if (canceled) cancelRemaining();
+  clearCancel(id);
+  // Last groups finished; publish once more so a poll landing between here and
+  // the final save still sees them as done rather than running.
+  publish();
 
   const build = token ? await fetchBoxBuild(sim.host, token) : undefined;
   const finishedAt = new Date().toISOString();
-  const ok = groups.length > 0 && groups.every((g) => g.status !== 'fail');
+  // A canceled run is never "passed", however far it got — the checks that did
+  // not run cannot vouch for the build.
+  const ok = !canceled && groups.length > 0 && groups.every((g) => g.status !== 'fail');
 
   const rep: BuildValidationReport = {
-    id, startedAt, finishedAt, ok, status: ok ? 'passed' : 'failed',
+    id, startedAt, finishedAt, ok, status: canceled ? 'canceled' : ok ? 'passed' : 'failed',
     systemId: sim.id, systemName: sim.name, host: sim.host,
     buildVersion: build?.version,
     ueSystemId: ue?.id, ueHost: ue?.host,

@@ -2,11 +2,11 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Header } from '@/components/Header';
+import { BackToDashboard } from '@/components/BackToDashboard';
 import { Card, CardBody, CardHeader, CardTitle, Button, Input, Field, Badge } from '@/components/ui';
 import {
-  Plus, Trash2, Server, Radio, Cpu, Network, Globe, Database, ShieldCheck, Layers, ArrowLeft,
-  Pencil, Check, X, ArrowRight, ChevronDown, ChevronRight, Search } from 'lucide-react';
-import Link from 'next/link';
+  Plus, Trash2, Server, Radio, Cpu, Network, Globe, Database, ShieldCheck, Layers,
+  Check, X, ArrowRight, ChevronDown, ChevronRight, Search } from 'lucide-react';
 
 interface InventorySystem {
   id: string;
@@ -180,10 +180,6 @@ export default function InventoryPage() {
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
   const [msg, setMsg]           = useState<string | null>(null);
-  /** True when the dashboard sent us here (?from=dashboard). Read from the URL
-   *  in an effect rather than via useSearchParams, which would force this page
-   *  behind a Suspense boundary just to answer one boolean. */
-  const [cameFromDashboard, setCameFromDashboard] = useState(false);
   /**
    * Everything in inventory.yaml that this page does NOT edit (currently
    * `suites`, written by the Generate + Push page).
@@ -199,7 +195,6 @@ export default function InventoryPage() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    setCameFromDashboard(new URLSearchParams(window.location.search).get('from') === 'dashboard');
     // #topology used to scroll to a section further down the page. Now that
     // Topology is a tab, the anchor has to OPEN it — otherwise the dashboard
     // tile and the /end-to-end redirect both land on Systems with nothing to
@@ -248,6 +243,10 @@ export default function InventoryPage() {
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error ?? `HTTP ${r.status}`);
       setSavedSystems(JSON.stringify(systems));
+      // Collapse the open row. Add system opens an editor to type the details
+      // into; once those details are saved the form has done its job, and
+      // leaving it expanded reads as "not saved yet".
+      setEditingIdx(null);
       setMsg('Saved');
       setTimeout(() => setMsg(null), 1500);
     } catch (e: any) {
@@ -347,13 +346,12 @@ export default function InventoryPage() {
             ) : dirty ? (
               <span className="text-xs text-amber-600">Unsaved changes</span>
             ) : null}
-            {/* Only when we got here from the dashboard. Reached from the sidebar
-                there is nothing to go "back" to, so no link is offered. */}
-            {cameFromDashboard && (
-              <Link href="/" className="inline-flex items-center gap-1 text-xs text-slate-600 hover:text-slate-900 hover:underline mr-1">
-                <ArrowLeft className="h-3.5 w-3.5" /> Back to Dashboard
-              </Link>
-            )}
+            {/* The shared control, so this reads as the same affordance as the
+                one on Run History rather than muted grey text next to it. It
+                also goes back through history, which returns to the dashboard
+                tile that was selected — the plain href="/" it replaces landed
+                on the unfiltered dashboard whichever box you came from. */}
+            <BackToDashboard />
             <Button size="sm" variant="secondary" onClick={addSystem}><Plus className="h-4 w-4" />Add system</Button>
             {/* Blocked while ids collide — saving would persist a document in
                 which lookups resolve to the wrong machine. */}
@@ -559,6 +557,7 @@ export default function InventoryPage() {
                 profiles={profiles}
                 otherDoc={otherDoc}
                 onProfilesChange={setProfiles}
+                savedSystemsSig={savedSystems}
               />
             </section>
           </>
@@ -953,7 +952,19 @@ function deriveProfiles(systems: InventorySystem[], existing: TopologyProfile[])
   // dropped. Deleting a chain here would be silent and unrecoverable, and
   // runner.ts treats a missing topology as "deploy skipped — ok", so a run
   // would report passed having deployed nothing.
-  for (const p of existing) if (!claimed.has(p.id)) out.push(p);
+  //
+  // ORPHANS are the one exception. A chain every one of whose four systems has
+  // been removed from the inventory points at nothing: it can never match a
+  // run, the installer can never resolve a host from it, and every role on its
+  // card renders empty. Keeping it protects nothing — the reasoning above is
+  // about a chain whose machines still exist — while showing it puts a bench
+  // in Systems Management that is not there. The lab had exactly one, a chain
+  // named "192.168.1.01" still bound to sys-14/15/16/17 after those four were
+  // deleted. A chain with even ONE surviving system is still kept.
+  const isOrphan = (p: TopologyProfile) =>
+    ![p.simnovator, p.uesim, p.callbox, p.appserver].some((id) => id && systems.some((s) => s.id === id));
+
+  for (const p of existing) if (!claimed.has(p.id) && !isOrphan(p)) out.push(p);
   return out;
 }
 
@@ -967,18 +978,21 @@ function sameProfiles(a: TopologyProfile[], b: TopologyProfile[]): boolean {
 }
 
 function TopologySetupSection({
-  systems, profiles, otherDoc, onProfilesChange,
+  systems, profiles, otherDoc, onProfilesChange, savedSystemsSig,
 }: {
   systems: InventorySystem[];
   profiles: TopologyProfile[];
   otherDoc: Record<string, unknown>;
   onProfilesChange: (next: TopologyProfile[]) => void;
+  /** Changes every time the Systems list is SAVED — the signal to re-derive
+   *  the chains. Deliberately not `systems` itself: that state changes on
+   *  every keystroke while a row is being edited, and re-deriving mid-typing
+   *  would write a chain to disk for a half-entered box. */
+  savedSystemsSig: string;
 }) {
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<TopologyProfile | null>(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  const syncedRef = useRef(false);
+  const lastSyncSig = useRef<string | null>(null);
 
   const flash = (kind: 'ok' | 'err', text: string) => {
     setMsg({ kind, text });
@@ -1007,54 +1021,42 @@ function TopologySetupSection({
     }
   }
 
-  // Bring the chains in line with the registered systems, once, after load.
+  // Bring the chains in line with the registered systems — after load, and
+  // again after every save of the Systems list.
   //
-  // Gated on syncedRef so it cannot loop: persist() updates `profiles`, which
-  // re-runs this effect. Gated on `systems.length` so it does not fire against
-  // the empty pre-fetch state and wipe every setup.
+  // This used to run ONCE per page load, so a system added and saved did not
+  // get a chain until the page was reloaded. Gating on the saved-systems
+  // signature instead keeps that loop-safety (persist() updates `profiles`,
+  // which re-runs this effect; the signature is unchanged by then, so it
+  // stops) while still reacting to a new box. `systems.length` guards the
+  // empty pre-fetch state, which would otherwise wipe every setup.
   useEffect(() => {
-    if (syncedRef.current || systems.length === 0) return;
+    if (systems.length === 0) return;
+    if (lastSyncSig.current === savedSystemsSig) return;
+    lastSyncSig.current = savedSystemsSig;
     const derived = deriveProfiles(systems, profiles);
-    if (sameProfiles(derived, profiles)) { syncedRef.current = true; return; }
-    syncedRef.current = true;
-    const added = derived.length - profiles.length;
+    if (sameProfiles(derived, profiles)) return;
+    const delta = derived.length - profiles.length;
     persist(derived).then((ok) => {
-      if (ok) {
-        flash('ok', added > 0
-          ? `Linked ${added} new setup${added === 1 ? '' : 's'} from your systems`
-          : 'Chains updated from your systems');
+      if (!ok) return;
+      if (delta > 0) {
+        flash('ok', `Linked ${delta} new setup${delta === 1 ? '' : 's'} from your systems`);
+      } else if (delta < 0) {
+        // Say so. deriveProfiles now drops chains whose systems have all been
+        // removed, and a chain disappearing from the page with no explanation
+        // is exactly the silent deletion the derivation warns about.
+        const n = -delta;
+        flash('ok', `Removed ${n} setup${n === 1 ? '' : 's'} whose systems are no longer registered`);
+      } else {
+        flash('ok', 'Chains updated from your systems');
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [systems, profiles]);
+  }, [savedSystemsSig, systems, profiles]);
 
-  function startEdit(p: TopologyProfile) {
-    setDraft({ ...p });
-    setEditingId(p.id);
-  }
-
-  function cancelEdit() {
-    setDraft(null);
-    setEditingId(null);
-  }
-
-  async function saveDraft() {
-    if (!draft) return;
-    if (!draft.simnovator) { flash('err', 'Pick a Simnovator system'); return; }
-    if (!draft.uesim) { flash('err', 'Pick a UE system'); return; }
-    if (!draft.name?.trim()) { flash('err', 'Give the setup a name'); return; }
-
-    // A human has now chosen these bindings, so the "auto-linked" caveat no
-    // longer applies.
-    const confirmed: TopologyProfile = {
-      ...draft, autoLinked: undefined, updatedAt: new Date().toISOString(),
-    };
-    const ok = await persist(profiles.map((p) => (p.id === draft.id ? confirmed : p)));
-    if (ok) {
-      flash('ok', 'Setup updated');
-      cancelEdit();
-    }
-  }
+  // startEdit / cancelEdit / saveDraft lived here. Removed with the Edit
+  // button: chains are now derived from the Systems section and shown
+  // read-only. persist() is still used by the auto-sync effect above.
 
   return (
     <>
@@ -1066,9 +1068,9 @@ function TopologySetupSection({
             which machines belong to the same test bench.
           </p>
         </div>
-        {/* No "New setup" button: a chain exists for each Simnovator you
-            register, created automatically. Editing a chain is still possible —
-            the automatic pairing is positional and can guess wrong. */}
+        {/* Read-only, and no "New setup" button: a chain exists for each
+            Simnovator you register and is created, re-paired and removed
+            automatically from the Systems section above. */}
         {msg ? <span className={`text-xs shrink-0 ${msg.kind === 'err' ? 'text-red-600' : 'text-emerald-600'}`}>{msg.text}</span> : null}
       </div>
 
@@ -1080,27 +1082,7 @@ function TopologySetupSection({
         />
       ) : (
         <div className="grid grid-cols-1 gap-4">
-          {profiles.map((p) =>
-            editingId === p.id && draft ? (
-              <SetupForm
-                key={p.id}
-                draft={draft}
-                systems={systems}
-                onChange={setDraft}
-                onCancel={cancelEdit}
-                onSave={saveDraft}
-                saving={saving}
-              />
-            ) : (
-              <SetupCard
-                key={p.id}
-                setup={p}
-                systems={systems}
-                onEdit={() => startEdit(p)}
-                busy={saving}
-              />
-            ),
-          )}
+          {profiles.map((p) => <SetupCard key={p.id} setup={p} systems={systems} />)}
         </div>
       )}
     </>
@@ -1110,12 +1092,10 @@ function TopologySetupSection({
 // ───── card view ─────
 
 function SetupCard({
-  setup, systems, onEdit, busy,
+  setup, systems,
 }: {
   setup: TopologyProfile;
   systems: InventorySystem[];
-  onEdit: () => void;
-  busy: boolean;
 }) {
   const callboxId = setup.callbox;
   return (
@@ -1138,16 +1118,10 @@ function SetupCard({
               </span>
             ) : null}
           </div>
-          {/* Edit only — no delete. A chain belongs to a Simnovator; remove the
-              Simnovator in the Systems section and its chain goes with it. A
-              delete button here would just be undone by the next auto-sync. */}
-          <button
-            onClick={onEdit}
-            disabled={busy}
-            className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 h-9 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-          >
-            <Pencil className="h-4 w-4" /> Edit
-          </button>
+          {/* Read-only. No Edit, and no delete either: a chain belongs to a
+              Simnovator, so it is created, re-paired and removed by the Systems
+              section above, and a control here would just be undone by the next
+              auto-sync. */}
         </div>
 
         <div className="flex flex-wrap items-stretch gap-y-3">
@@ -1237,6 +1211,9 @@ function RoleChip({
 
 // ───── form view ─────
 
+/* UNUSED since the Topology cards became read-only — kept, not deleted, so
+   restoring an edit path is re-wiring a button rather than rewriting the
+   editor. SetupForm and RoleSelector below have no call sites. */
 function SetupForm({
   draft, systems, onChange, onCancel, onSave, saving, isNew,
 }: {

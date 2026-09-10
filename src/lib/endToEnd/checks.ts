@@ -20,7 +20,7 @@ import * as net from 'node:net';
 import type { CheckResult, Phase, Severity } from './types';
 import type { RunCtx } from './ctx';
 import { pollUntil, sleep } from './poll';
-import { newCheckContext, loginUI } from './browser';
+import { newCheckContext, loginUI, snapshot } from './browser';
 
 // ───────────── Helpers ─────────────
 
@@ -86,6 +86,16 @@ export interface CheckDef {
   /** If true, this check requires a Playwright browser. Skipped when
    *  options.uiChecks is false or no browser is available. */
   requiresBrowser?: boolean;
+  /**
+   * This check does its real work over the API but captures a screenshot when
+   * a browser happens to be available, so the run launches one for it.
+   *
+   * Deliberately not `requiresBrowser`: that flag force-skips its checks when
+   * no browser can be launched, which would turn a working API check into a
+   * skip on a machine with no Chrome. A missing browser here costs the picture
+   * and nothing else.
+   */
+  wantsBrowser?: boolean;
   /** If true, this check mutates state on the target (POST). Useful for the
    *  UI to flag what will actually happen. */
   destructive?: boolean;
@@ -191,6 +201,21 @@ const preflightSimulatorsAvailable: CheckDef = {
     if (r.status !== 200) return makeResult(base, 'fail', `simulators returned ${r.status}`, { durationMs: r.durationMs });
     const items: any[] = r.body?.items ?? r.body?.data ?? [];
     if (items.length === 0) return makeResult(base, 'fail', '0 simulators registered on this system', { durationMs: r.durationMs });
+
+    // Attached run: a BUSY simulator is the whole precondition — it is the
+    // execution being validated. The rest of this check exists to stop a
+    // doomed trigger, and no trigger is going to fire.
+    if (ctx.attachedExecution) {
+      const busyNames = items
+        .filter((s) => String(s?.availability ?? '').toUpperCase() === 'BUSY')
+        .map((s) => s?.name ?? s?.id)
+        .join(', ');
+      return makeResult(base, 'pass',
+        busyNames
+          ? `validating the execution already running on ${busyNames}`
+          : 'attached to an execution the box reported; no simulator now reads BUSY',
+        { durationMs: r.durationMs });
+    }
 
     // ── BUSY-flag handling ───────────────────────────────────────────────
     // The /v2/simulators list returns availability=BUSY for two distinct
@@ -436,7 +461,23 @@ const preflightCfgBringUp: CheckDef = {
       description: 'Symlink the selected enb/mme/ims cfg files into place on the callbox and restart lte, so the run actually exercises the chosen configuration rather than whatever was already linked.',
     };
     const sel = ctx.cfgSelection;
-    if (!sel || (!sel.enb && !sel.mme && !sel.ims)) {
+    const picked = [sel?.enb, sel?.mme, sel?.ims].filter(Boolean) as string[];
+
+    // Attached to an execution the box already started.
+    //
+    // Linking cfg files means symlinking them on the callbox and restarting
+    // lte — which would disrupt the very execution being validated, and the
+    // run is already using whatever was linked when it started. So this cannot
+    // run, and saying so matters: the operator can see files chosen in Pick
+    // Configuration and would otherwise assume they were applied. It used to
+    // report "no cfg files selected", which was both wrong and reassuring.
+    if (ctx.attachedExecution) {
+      return makeResult(base, 'skip', picked.length
+        ? `the box was already running this execution, so its configuration is whatever was linked when it started — ${picked.join(', ')} were NOT applied`
+        : 'the box was already running this execution, so its configuration is whatever was linked when it started');
+    }
+
+    if (!sel || picked.length === 0) {
       return makeResult(base, 'skip', 'no cfg files selected for this run');
     }
     if (!ctx.callbox) {
@@ -493,6 +534,12 @@ const triggerStart: CheckDef = {
   run: async (ctx) => {
     const base = { id: 'trigger-start-execution', name: 'POST /testcases/{id}/executions', phase: 'trigger' as Phase, severity: 'critical' as Severity, description: 'Start endpoint returns 2xx within 90 seconds. This is the first state-mutating step.' };
     if (!ctx.token) return makeResult(base, 'skip', 'no token');
+    // Attached to an execution the box was already running: firing this POST
+    // would start a SECOND one. Skipped rather than failed — the execution
+    // being validated exists, it just was not started from here.
+    if (ctx.attachedExecution) {
+      return makeResult(base, 'skip', `attached to execution ${ctx.attachedExecution.executionId} already running on the box — not triggering another`);
+    }
     ctx.triggeredAt = Date.now();
     // Bumped from 20s default to 90s on 2026-05-13. The Simnovator can take
     // up to ~55s to return 500 "Could not start LTE" when the UESIM ue.cfg
@@ -528,6 +575,11 @@ const triggerExecutionDiscovered: CheckDef = {
   run: async (ctx) => {
     const base = { id: 'trigger-execution-id-discovered', name: 'Execution registered in testcase metadata', phase: 'trigger' as Phase, severity: 'critical' as Severity, description: 'Within 30s of trigger, metadata.lastExecution.executionId exposes a new id.' };
     if (!ctx.token || !ctx.triggeredAt) return makeResult(base, 'skip', 'trigger did not fire');
+    // Attached: the id came from the box's own report of what it is running,
+    // so there is nothing to discover — it is already known and in use.
+    if (ctx.attachedExecution) {
+      return makeResult(base, 'pass', `adopted execution ${ctx.attachedExecution.executionId} reported by the box`);
+    }
     // The /executions POST doesn't return an id directly. We re-fetch the
     // testcase and look at metadata.lastExecution.executionId. Filter out
     // any executionId that was already there before we triggered (compare
@@ -1030,11 +1082,46 @@ function duringDeadline(ctx: RunCtx): number {
   return Date.now() + 90_000;
 }
 
+/**
+ * Photograph the box's own UE summary for this execution.
+ *
+ * Best-effort and never fatal: it runs after the attach result is already
+ * decided, so a browser that will not launch, a UI that will not log in or a
+ * page that will not paint costs the picture and nothing else. The screenshot
+ * is taken WHILE the run is in flight, which is the only time that page shows
+ * this execution's UEs.
+ */
+async function snapUeSummary(ctx: RunCtx, checkId: string): Promise<string | undefined> {
+  if (!ctx.browser || !ctx.executionId) return undefined;
+  let context;
+  try {
+    const c = await newCheckContext(ctx.browser);
+    context = c.context;
+    const page = c.page;
+    const lr = await loginUI(page, ctx.systemHost, ctx.apiUser, ctx.apiPass);
+    if (!lr.ok) return undefined;
+    await page.goto(
+      `http://${ctx.systemHost}/statistics?tab=ue&iterationId=${encodeURIComponent(ctx.executionId)}`,
+      { waitUntil: 'domcontentloaded' },
+    );
+    // The table renders from a follow-up fetch, so a screenshot at
+    // domcontentloaded catches an empty grid.
+    await sleep(2500, ctx.isCanceled);
+    return await snapshot(page, ctx.evidenceDir, checkId);
+  } catch {
+    return undefined;
+  } finally {
+    try { await context?.close(); } catch { /* the run must not fail on this */ }
+  }
+}
+
 const duringAllUesAttach: CheckDef = {
   id: 'during-all-ues-attach',
   name: 'ALL configured UEs attach',
   description: 'totalUEs reaches the ueCount configured in the testcase (not just ≥ 1). Catches partial attach at scale.',
   phase: 'during', severity: 'normal',
+  // For the UE-summary screenshot only — the check itself is API-driven.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'during-all-ues-attach', name: 'ALL configured UEs attach', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'totalUEs reaches the ueCount configured in the testcase (not just ≥ 1). Catches partial attach at scale.' };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
@@ -1047,8 +1134,12 @@ const duringAllUesAttach: CheckDef = {
       if (typeof n === 'number') { maxSeen = Math.max(maxSeen, n); if (n >= expected) return n; }
       return undefined;
     }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
-    if (!r.ok) return makeResult(base, 'fail', `only ${maxSeen}/${expected} UEs attached after ${(r.elapsedMs / 1000).toFixed(0)}s — partial attach`, { durationMs: r.elapsedMs });
-    return makeResult(base, 'pass', `${r.value}/${expected} UEs attached after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs });
+    // Taken either way. A partial attach is exactly when a picture of the UE
+    // summary is worth having.
+    const screenshotFile = await snapUeSummary(ctx, base.id);
+    const evidence = screenshotFile ? { evidence: { screenshotFile } } : {};
+    if (!r.ok) return makeResult(base, 'fail', `only ${maxSeen}/${expected} UEs attached after ${(r.elapsedMs / 1000).toFixed(0)}s — partial attach`, { durationMs: r.elapsedMs, ...evidence });
+    return makeResult(base, 'pass', `${r.value}/${expected} UEs attached after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs, ...evidence });
   },
 };
 

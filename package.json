@@ -14,7 +14,8 @@
     "start": "node scripts/run.cjs start",
     "cli": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",
-    "release": "node scripts/release.cjs"
+    "release": "node scripts/release.cjs",
+    "test": "node --test \"src/lib/backup/*.test.ts\" \"src/lib/liveFidelity/*.test.ts\" \"src/lib/*.test.ts\""
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

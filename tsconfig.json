@@ -13,6 +13,10 @@
     "noEmit": true,
     "incremental": true,
     "isolatedModules": true,
+    // The backup unit tests run under `node --test`, whose ESM resolver needs the
+    // explicit `./store.ts` extension. Safe with noEmit: nothing is emitted, so no
+    // output path can end up pointing at a .ts file.
+    "allowImportingTsExtensions": true,
     "plugins": [{ "name": "next" }],
     "paths": {
       "@/*": ["./src/*"]

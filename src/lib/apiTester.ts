@@ -2706,6 +2706,12 @@ export async function runApiTests(inv: Inventory, req: ApiTesterRequest): Promis
       counts: { total: 0, passed: 0, failed: 1, skipped: 0 },
       results: [{ id: 'preflight-login', name: 'preflight login', category: 'auth', method: 'POST', endpoint: '/v2/login', severity: 'critical', destructive: false, ok: false, detail: e?.message ?? String(e) }],
       byCategory: {},
+      // Which box refused us is worth recording even though nothing ran: the
+      // Run History row for a failed sweep was landing with a blank System
+      // column, so "the sweep against .102 failed" was indistinguishable from
+      // "a sweep against nothing in particular failed". The build is genuinely
+      // unknown here — we never got far enough to ask the box.
+      targetHost: apiOpts.host,
     };
   }
 

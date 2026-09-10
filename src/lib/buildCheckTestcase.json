@@ -1,0 +1,289 @@
+{
+  "test_case_details": [
+    {
+      "Test_Id": "01a07a63-b28c-7f3f-b6c4-3e873a6cbac5",
+      "Test_Name": "Buildcheck_SA_1Cell_1UEs_UDP",
+      "Log_Settings_Id": "275aaf45-9755-4723-9588-bcba45722439",
+      "State": "active",
+      "Type": "UE",
+      "Config_File": {
+        "config": {
+          "cell_groups": [
+            {
+              "cells": [
+                {
+                  "band": 78,
+                  "bandwidth": 100,
+                  "dl_nr_arfcn": 632628,
+                  "global_timing_advance": -1,
+                  "n_antenna_dl": 4,
+                  "n_antenna_ul": 2,
+                  "prach_delay": 0,
+                  "rf_port": 0,
+                  "ssb_nr_arfcn": 629952,
+                  "subcarrier_spacing": 30,
+                  "sync_id": 0,
+                  "ul_nr_arfcn": 632628
+                }
+              ],
+              "channel_sim": false,
+              "group_type": "nr",
+              "ldpc_max_its": 5,
+              "multi_ue": true,
+              "pdcch_decode_opt": false
+            }
+          ],
+          "com_addr": "0.0.0.0:9002",
+          "global_traffic": {
+            "iperf": [
+              {
+                "iperf0": {
+                  "bitrate_dl": 1500,
+                  "bitrate_ul": 220,
+                  "dest_ip": "20.10.10.1",
+                  "mtu": 1500,
+                  "payload": 1000,
+                  "port_range": 5000,
+                  "type": "udp"
+                }
+              }
+            ],
+            "log_level": "none"
+          },
+          "log_filename": "/tmp/Buildcheck_SA_1Cell_1UEs_UDP.log",
+          "log_options": "sip.level=none,ip.level=none,nas.level=debug,rrc.level=debug,pdcp.level=none,rlc.level=none,mac.level=none,phy.level=none,phy.signal=0,phy.ntn=1,all.max_size=1,file.rotate=5M,time=full",
+          "rf_driver": {
+            "args": "dev0=/dev/sdr0,dev1=/dev/sdr1",
+            "name": "sdr",
+            "rx_antenna": "rx"
+          },
+          "rx_gain": [
+            10,
+            10,
+            10,
+            10
+          ],
+          "tx_gain": [
+            80,
+            80
+          ],
+          "ue_list": [
+            {
+              "K": "00112233445566778899AABBCCDDEEFF",
+              "as_release": 16,
+              "attach_pdn_type": "ipv4",
+              "cell_index": 0,
+              "cipher_algo_bitmap": 224,
+              "ecc_params": {
+                "home_nw_public_key_id": 0,
+                "routing_indicator": "1111",
+                "scheme": "null"
+              },
+              "imeisv": "4085780000000102",
+              "imsi": "001010123456001",
+              "integ_algo_bitmap": 224,
+              "mnc_nb_digits": 2,
+              "nr_voice_support": true,
+              "power_control_enabled": false,
+              "rrc_inactive_support": false,
+              "rrc_initial_selection": false,
+              "rrc_sel_resel": false,
+              "sim_algo": "xor",
+              "sim_events": [
+                {
+                  "event": "power_on",
+                  "start_time": 0
+                },
+                {
+                  "event": "power_off",
+                  "start_time": 650
+                }
+              ],
+              "traffic": [
+                {
+                  "iperf": [
+                    {
+                      "data_loop_count": 0,
+                      "inter_data_loop_delay": 0,
+                      "loop_count": 0,
+                      "loop_delay": 0,
+                      "profile_id": "iperf0",
+                      "session_duration": 600,
+                      "start_time": 5
+                    }
+                  ]
+                }
+              ],
+              "tun_setup_script": "ue-ifup",
+              "ue_category": "nr",
+              "ue_id": 1,
+              "use_security_context_for_registration": true
+            }
+          ]
+        }
+      },
+      "Test_Config_Intermediate_Object": {
+        "cellConfig": {
+          "cells": [
+            {
+              "NRARFCN": {
+                "dl": 632628,
+                "ssb": 629952
+              },
+              "NTN": false,
+              "antennas": {
+                "dl": 4,
+                "ul": 2
+              },
+              "asymmetricApplicable": false,
+              "band": "n78",
+              "bandwidth": "100",
+              "carrierAggregationP": false,
+              "cellType": "5g",
+              "channelSimP": false,
+              "duplexMode": "TDD",
+              "prach": 0,
+              "productP": "UE-SIM",
+              "ratTypeP": "sa",
+              "rfCard": 0,
+              "rxGain": [
+                10,
+                10,
+                10,
+                10
+              ],
+              "scs": 30,
+              "txGain": [
+                80,
+                80
+              ]
+            }
+          ],
+          "master": {
+            "carrierAggregation": false,
+            "channelSim": false,
+            "ldpcIteration": 5,
+            "pdcchDecodeOpt": false,
+            "product": "UE-SIM",
+            "ratType": "sa"
+          }
+        },
+        "powerCycleConfig": {
+          "profiles": [
+            {
+              "attachDelay": 0,
+              "attachRate": 8,
+              "attachRateMode": "attachRate",
+              "attachType": "bursty",
+              "durationP": 605,
+              "loopProfile": "disable",
+              "powerOnTime": 650,
+              "subsLen": 1,
+              "subscriberGroup": [
+                -1
+              ]
+            }
+          ]
+        },
+        "settings": {
+          "description": "",
+          "loggingProfileName": "nas_rrc_debug",
+          "successCriteriaName": "Attach Success",
+          "test_name": "Buildcheck_SA_1Cell_1UEs_UDP"
+        },
+        "subsConfig": {
+          "subs": [
+            {
+              "BLEROverrideValue": 0,
+              "NTNP": false,
+              "VoNRSupport": true,
+              "algorithm": "xor",
+              "asRelease": 16,
+              "attachType": "normal",
+              "carrierAggregationP": false,
+              "cellTypeP": "5g",
+              "cellsLen": 1,
+              "channelSimP": false,
+              "cipherAlgorithm": [
+                "nea0",
+                "nea1",
+                "nea2"
+              ],
+              "cqi": "auto",
+              "duplexModeP": "TDD",
+              "external_sim": false,
+              "imeisv": "4085780000000102",
+              "incrementSharedKey": 0,
+              "integrityAlgorithm": [
+                "nia0",
+                "nia1",
+                "nia2"
+              ],
+              "mncDigits": 2,
+              "networkSlicing": "disable",
+              "nextSUPI": 1,
+              "pdnType": "ipv4",
+              "pmi": "auto",
+              "powerControl": false,
+              "preambleIndex": 0,
+              "preferredPLMN": [],
+              "protectionScheme": "null",
+              "publicKeyId": 0,
+              "ratTypeP": "sa",
+              "resLength": 8,
+              "ri": "auto",
+              "routingIndicator": 1111,
+              "rrc_inactive_support": false,
+              "securityContext": true,
+              "servingCell": 0,
+              "sharedKey": "00112233445566778899aabbccddeeff",
+              "startingSUPI": 1010123456001,
+              "sulcapable": false,
+              "ueCategory": "nr",
+              "ueCategoryType": "combined",
+              "ueCount": 1,
+              "ueInitiatedEvents": "none"
+            }
+          ]
+        },
+        "userPlaneConfig": {
+          "profiles": [
+            {
+              "attachTypeSIP": true,
+              "dataBitrate": {
+                "dl": {
+                  "unit": "mbps",
+                  "value": 1500
+                },
+                "ul": {
+                  "unit": "mbps",
+                  "value": 220
+                }
+              },
+              "dataDirection": "both",
+              "dataLoop": false,
+              "dataType": "iperf",
+              "isEmergencyAttachP": false,
+              "mtuSize": 1500,
+              "networkSlicingP": false,
+              "payloadLength": 1000,
+              "pdnType": "ipv4",
+              "pdnTypeNonIp": false,
+              "portRange": 5000,
+              "ratTypeP": "sa",
+              "serverIpAddress": "20.10.10.1",
+              "sessionDuration": 600,
+              "startDelay": 5,
+              "subsLen": 1,
+              "subscriberGroup": [
+                -1
+              ],
+              "transportProtocol": "udp",
+              "vonrSupportP": true
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

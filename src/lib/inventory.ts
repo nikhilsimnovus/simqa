@@ -429,17 +429,57 @@ export function uesimApiOptsFromInventory(inv: Inventory): { host: string; usern
  * UESIM if id is unset. Multi-user simqa picks the system per request so two
  * teammates can test different boxes in parallel.
  */
+/**
+ * REST API credentials for a box that speaks the Simnovator API.
+ *
+ * The API user is `uesim.username` / `uesim.password`, falling back to the
+ * box's own default of admin/admin. It deliberately does NOT fall back to the
+ * system's `username` / `password`: those are SSH_FIELDS, and loadInventory()
+ * merges defaults.ssh into every system that does not set its own — so a
+ * Simnovator registered without an API block came out carrying the lab's SSH
+ * account ('sysadmin'), every API call to it logged in as sysadmin, and the
+ * box answered 401 UNAUTHORIZED.
+ *
+ * That is exactly why 192.168.1.94 (sys-13, the only Simnovator with no
+ * `uesim:` block) read as offline in the station monitor and showed no running
+ * testcases, while accepting admin/admin without complaint. Verified against
+ * the lab: sysadmin/admin → 401, admin/admin → 200.
+ *
+ * `||` rather than `??` on purpose — an empty-string username in a half-filled
+ * `uesim:` block must fall through to the default, not be sent as the user.
+ *
+ * runner.ts and validator.ts already resolved it this way; the other call
+ * sites had drifted into including the SSH fields.
+ */
+export function uesimApiCredentials(s?: { uesim?: { username?: string; password?: string } } | null): { username: string; password: string } {
+  return {
+    username: s?.uesim?.username || 'admin',
+    password: s?.uesim?.password || 'admin',
+  };
+}
+
 export function uesimApiOptsForSystem(inv: Inventory, systemId?: string): { systemId: string; host: string; name: string; username: string; password: string } | undefined {
+  // With no systemId, prefer a box that actually SERVES the testcase API.
+  //
+  // This used to take the first UESIM-like system in inventory order, which is
+  // sys-2 — 192.168.1.101, a bare UE host with no REST API. Every call that
+  // omitted systemId therefore 404'd on login and came back with no metadata,
+  // which downstream reads as "this testcase has no executions": opening a
+  // testcase without ?systemId= showed an empty Validation panel for a
+  // testcase the Simnovator had run minutes earlier.
+  //
+  // A UESIM-like entry is still the fallback, so a lab with no Simnovator
+  // registered behaves as before rather than resolving to nothing.
   const target = systemId
     ? inv.systems.find((s) => s.id === systemId && (isUesimLike(s) || s.type === 'CALLBOX'))
-    : inv.systems.find(isUesimLike);
+    : inv.systems.find((s) => s.type === 'SIMNOVATOR_GUI' || s.type === 'SIMNOVATOR')
+      ?? inv.systems.find(isUesimLike);
   if (!target) return undefined;
   return {
     systemId: target.id,
     name: target.name,
     host: target.host,
-    username: target.uesim?.username ?? target.username ?? 'admin',
-    password: target.uesim?.password ?? target.password ?? 'admin',
+    ...uesimApiCredentials(target),
   };
 }
 

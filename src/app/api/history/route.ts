@@ -34,6 +34,12 @@ function parseSurfaces(url: URL): Surface[] | undefined {
   return all.length > 0 ? all : undefined;
 }
 
+/** A hostname/IP, or undefined. Guards fields that hold a host on success and
+ *  an error message on failure. */
+function hostLike(v: unknown): string | undefined {
+  return typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,62}$/.test(v) ? v : undefined;
+}
+
 /** Read every data/runs/<id>.json and project it as a HistoryEntry with
  *  surface='end-to-end'. The legacy runner pre-dates the history store,
  *  so without this folding the old runs would silently vanish from the
@@ -59,12 +65,20 @@ function legacyRunsAsHistory(): HistoryEntry[] {
           label: `${r.dryRun ? 'Work Flow' : 'Run Test'} · ${r.testcaseName ?? r.testcaseId ?? '?'}`,
           startedAt: r.startedAt,
           finishedAt: r.finishedAt ?? r.startedAt,
-          targetHost: r.steps?.find?.((s: any) => s.name === 'preflight-login')?.detail,
+          // The preflight-login step's detail is the host on success and the
+          // FAILURE TEXT on failure — one run recorded a whole 299-character
+          // Apache 404 page as its host that way, which then showed up in
+          // /runs as a selectable "system". Only take it if it looks like one.
+          targetHost: hostLike(r.steps?.find?.((s: any) => s.name === 'preflight-login')?.detail),
           buildVersion: r.boxVersion?.version,
           total: 1, passed, failed,
           detailPath: `data/runs/${r.id}.json`,
           meta: {
             testcaseId: r.testcaseId,
+            // Carried so /runs can show which testcase ran without re-reading
+            // the run file. Without it the Test Case Name column is blank for
+            // every legacy run even though the name is sitting right here.
+            testcaseName: r.testcaseName,
             topology: r.topology,
             dryRun: !!r.dryRun,
             stepCount: r.steps?.length ?? 0,

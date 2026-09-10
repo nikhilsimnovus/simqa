@@ -205,6 +205,120 @@ export async function getTestcase(opts: ApiOpts, id: string): Promise<TestcaseSu
   return apiGet(opts, `/testcases/${encodeURIComponent(id)}`);
 }
 
+/**
+ * Resolve a testcase NAME to the id /v2/testcases/export will accept.
+ *
+ * Needed because the box's in-progress endpoint
+ * (secureAPI/v1.0/executor/latest_testcase_details) reports only
+ * test_case_name — no id of any kind — so a passive watcher that sees an
+ * execution start has a name and nothing else.
+ *
+ * This is the FALLBACK path. POST /v2/testcases/search does support filtering —
+ * with { field, operator, value }, which is what the watcher now uses to find
+ * running executions and their exportable ids in one call. What it does NOT do
+ * is reject a filter shape it does not recognise: { testCaseName: … } returns
+ * all 894 testcases with the wanted row often sorted first, which reads exactly
+ * like a working filter. This name-paging path stays for builds whose search
+ * cannot filter, and for the legacy in-progress endpoint, which reports a test
+ * name and no id of any kind.
+ *
+ * The map is cached per host because a testcase list changes far more slowly than
+ * executions start, and rebuilding it is nine round-trips.
+ */
+const nameIndex = new Map<string, { at: number; byName: Map<string, string> }>();
+const NAME_INDEX_TTL_MS = 5 * 60_000;
+
+export async function resolveTestcaseIdByName(opts: ApiOpts, name: string): Promise<string | undefined> {
+  const want = name.trim();
+  if (!want) return undefined;
+
+  const cached = nameIndex.get(opts.host);
+  if (cached && Date.now() - cached.at < NAME_INDEX_TTL_MS) {
+    const hit = cached.byName.get(want);
+    if (hit) return hit;
+  }
+
+  // offset is a PAGE INDEX on this endpoint, not a row offset.
+  const byName = new Map<string, string>();
+  const seen = new Set<string>();
+  const pageSize = 100;
+  for (let page = 0; page < 50; page++) {
+    const r = await listTestcases(opts, pageSize, page);
+    const items = r.items ?? [];
+    if (!items.length) break;
+    let fresh = 0;
+    for (const t of items) {
+      const id = String((t as any)?.id ?? '');
+      const nm = String((t as any)?.name ?? '');
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      fresh += 1;
+      // Some rows carry a NAME where the id should be, and the box then refuses
+      // them with 400 "Invalid testCaseId format". Prefer a uuid-shaped id, and
+      // never let one of those overwrite a good entry.
+      const looksLikeId = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(id);
+      if (nm && (looksLikeId || !byName.has(nm))) byName.set(nm, id);
+    }
+    if (fresh === 0) break;              // re-reading a page we already have
+    if (items.length < pageSize) break;
+  }
+
+  nameIndex.set(opts.host, { at: Date.now(), byName });
+  return byName.get(want);
+}
+
+/**
+ * The testcase EXPORT the Simnovator GUI's own download button produces.
+ *
+ * Not the same thing as getTestcase(). GET /testcases/{id} returns the record:
+ * status ("ABORTED"), validationStatus, metadata.lastExecution and a whole
+ * metadata.executionHistory. None of that is configuration — it is the result of
+ * having run the thing — so a backup built on it stores a testcase mixed in with
+ * whatever happened to it last.
+ *
+ * This is the call behind the per-row download in the GUI, found in the box's own
+ * SPA bundle (there is no OpenAPI for this API; /assets/index-*.js is the spec):
+ *
+ *   const vt = { scope: 'single', testCaseIds: [test_id], output: { type: 'json', fileName: name } };
+ *   bCe(vt)  // POST v2/testcases/export, responseType: 'blob'
+ *
+ * It answers with { test_case_details: [ { Test_Id, Test_Name, State, Type,
+ * Config_File.config, Test_Config_Intermediate_Object } ] } — configuration only,
+ * and in the shape POST /v2/testcases/import accepts back.
+ *
+ * Returns the RAW body rather than a parsed object, so what gets stored is
+ * byte-for-byte what the GUI would have saved.
+ *
+ * NOTE the scope: this is the SINGLE-testcase form. The bulk form of the same
+ * endpoint is the one that silently drops rows (SIM40-2010: 1048 requested, 77
+ * returned), which is why this is called once per testcase rather than once per
+ * box. See src/lib/testcaseBackup.ts for that history.
+ */
+export async function exportTestcaseConfig(opts: ApiOpts, id: string, fileName: string): Promise<string> {
+  const token = await ensureToken(opts.host, opts.username, opts.password);
+  const res = await fetch(`http://${opts.host}/v2/testcases/export`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      scope: 'single',
+      testCaseIds: [id],
+      output: { type: 'json', fileName },
+    }),
+    signal: AbortSignal.timeout(POST_TIMEOUT_MS()),
+  });
+  if (!res.ok) {
+    throw new Error(`UESIM POST /testcases/export (${id}): ${res.status} ${await res.text().catch(() => '')}`.slice(0, 300));
+  }
+  const text = await res.text();
+  // A 200 carrying no test_case_details means the box accepted the request and
+  // exported nothing — the SIM40-2010 failure mode. Refuse it rather than store
+  // an empty file over a good backup.
+  if (!text.includes('test_case_details')) {
+    throw new Error(`export of ${id} returned no test_case_details (${text.length} bytes)`);
+  }
+  return text;
+}
+
 export interface SimulatorEntry {
   id: string;
   name: string;

@@ -1,12 +1,11 @@
 'use client';
 
-// /backup — backup and restore simqa's persisted configuration, plus
-// download all testcases from a Simnovator system, plus snapshot/restore
-// the lab gNB + MME config trees on a remote box.
+// /backup — SimQA's own configuration backup, plus the automatic backup of every
+// lab system.
 //
-// Three cards on this page:
+// Two cards on this page:
 //
-//   1. Configuration backup (simqa's own state)
+//   1. Configuration backup (SimQA's own state)
 //      • Download — fetches /api/backup/config which returns inventory.yaml
 //        + .env.local + ui-test baselines as one JSON file. Browser saves it
 //        with the timestamped filename the server suggests.
@@ -15,40 +14,29 @@
 //        applies a strict path whitelist and ALWAYS preserves existing
 //        files as <path>.bak-<timestamp> before overwriting (so this can
 //        never silently destroy your current inventory).
+//      • This is the one thing the automatic backup does NOT cover: it backs up
+//        the lab boxes, not SimQA itself.
 //
-//   2. Testcase export (from a remote Simnovator)
-//      • Pick a Simnovator system from inventory.
-//      • Click Export — server paginates /v2/testcases/search and streams
-//        the result back as a single JSON download. Workaround for the
-//        SIM40-2010 bulk-export bug.
-//      • Note: metadata-only today (no cfg text — that's blocked on
-//        SIM40-2060). A header X-Simqa-Server-Total tells you how many the
-//        server *thinks* it has, vs X-Simqa-Pulled which is how many we
-//        actually got — if those differ, we caught a silent dropout.
+//   2. Automatic backup (AutoBackupCard.tsx)
+//      • Unlike the card above, nothing here is triggered by the user: a
+//        background job snapshots every system in Systems Management every
+//        five minutes and this card browses what it holds. See
+//        src/lib/backup/ for the store, collectors and scheduler.
 //
-//   3. Lab gNB / MME backup (from a remote box)
-//      • Pick a Simnovator system from inventory.
-//      • Download — SSH'es into the box, walks /root/enb/config and
-//        /root/mme/config, base64-encodes every file, returns them as one
-//        JSON archive. Binary-safe (.pem certs round-trip cleanly).
-//      • Restore — pick a previously-downloaded archive + a target system.
-//        Strict whitelist (must be under /root/enb/config or
-//        /root/mme/config); every existing remote file is preserved as
-//        <path>.bak-<timestamp> before overwriting.
+// REMOVED, deliberately: "Testcase export" and "Lab gNB / MME backup" used to
+// sit between the two. Both were manual, one-shot versions of what the automatic
+// backup now does continuously — testcases land in the Testcases category, and
+// the enb/mme cfg trees in enb_config / mme_config — so keeping them meant two
+// routes to the same data, one of which was only as fresh as the last time
+// somebody remembered to press it. Their API routes (/api/backup/testcases and
+// /api/backup/gnb) are untouched and still serve the export and the
+// snapshot/restore pair, including the restore path, which has no UI now.
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Header } from '@/components/Header';
+import { AutoBackupCard } from './AutoBackupCard';
 import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
-import {
-  Download, Upload, Database, ListChecks, CheckCircle2, AlertTriangle, Loader2, FileJson, Server, Radio,
-} from 'lucide-react';
-
-interface TestSystem {
-  id: string;
-  name: string;
-  host: string;
-  type: string;
-}
+import { Download, Upload, Database, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
 
 interface RestoreResp {
   ok: boolean;
@@ -60,38 +48,9 @@ interface RestoreResp {
 }
 
 export default function BackupPage() {
-  const [systems, setSystems] = useState<TestSystem[] | null>(null);
-  const [tcSystem, setTcSystem] = useState<string>('');
-  const [tcBusy, setTcBusy] = useState(false);
-  const [tcDetail, setTcDetail] = useState<{ pulled: number; serverTotal: number } | null>(null);
-  const [tcErr, setTcErr] = useState<string | null>(null);
-
   const [backupBusy, setBackupBusy] = useState(false);
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreResult, setRestoreResult] = useState<RestoreResp | null>(null);
-
-  // ─── Lab gNB / MME backup state ───
-  const [gnbSystem, setGnbSystem] = useState<string>('');
-  const [gnbBackupBusy, setGnbBackupBusy] = useState(false);
-  const [gnbBackupDetail, setGnbBackupDetail] = useState<{ files: number; bytes: number } | null>(null);
-  const [gnbRestoreBusy, setGnbRestoreBusy] = useState(false);
-  const [gnbRestoreResult, setGnbRestoreResult] = useState<RestoreResp | null>(null);
-  const [gnbErr, setGnbErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetch('/api/ui-tests/systems')
-      .then((r) => r.json())
-      .then((j) => {
-        const list: TestSystem[] = j.systems ?? [];
-        setSystems(list);
-        if (list.length > 0 && !tcSystem) setTcSystem(list[0].id);
-        // Default the gNB selector to the first SIMNOVATOR-typed system
-        // (more useful than just the first one) — falls back to first overall.
-        const firstSim = list.find((s) => s.type === 'SIMNOVATOR') ?? list[0];
-        if (firstSim && !gnbSystem) setGnbSystem(firstSim.id);
-      })
-      .catch(() => setSystems([]));
-  }, []);
 
   // ── Configuration backup ──
   async function downloadBackup() {
@@ -136,85 +95,11 @@ export default function BackupPage() {
     }
   }
 
-  // ── Lab gNB / MME backup ──
-  async function downloadGnbBackup() {
-    if (!gnbSystem) return;
-    setGnbBackupBusy(true); setGnbErr(null); setGnbBackupDetail(null);
-    try {
-      const r = await fetch(`/api/backup/gnb?systemId=${encodeURIComponent(gnbSystem)}`, { cache: 'no-store' });
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
-        throw new Error(j.error || `HTTP ${r.status}`);
-      }
-      const files = Number(r.headers.get('X-Simqa-File-Count') ?? 0);
-      const bytes = Number(r.headers.get('X-Simqa-Total-Bytes') ?? 0);
-      setGnbBackupDetail({ files, bytes });
-      const blob = await r.blob();
-      const cd = r.headers.get('Content-Disposition') || '';
-      const m = cd.match(/filename="([^"]+)"/);
-      const filename = m?.[1] ?? `gnb-mme-${gnbSystem}.json`;
-      saveBlobAs(blob, filename);
-    } catch (e: any) {
-      setGnbErr(e?.message ?? String(e));
-    } finally {
-      setGnbBackupBusy(false);
-    }
-  }
-
-  async function restoreGnbFromFile(file: File) {
-    if (!gnbSystem) return;
-    setGnbRestoreBusy(true); setGnbRestoreResult(null); setGnbErr(null);
-    try {
-      const text = await file.text();
-      let body: unknown;
-      try { body = JSON.parse(text); } catch (e: any) {
-        setGnbRestoreResult({ ok: false, errors: [`File is not valid JSON: ${e?.message ?? e}`] });
-        return;
-      }
-      const r = await fetch(`/api/backup/gnb?systemId=${encodeURIComponent(gnbSystem)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const j: RestoreResp = await r.json();
-      setGnbRestoreResult(j);
-    } catch (e: any) {
-      setGnbRestoreResult({ ok: false, errors: [e?.message ?? String(e)] });
-    } finally {
-      setGnbRestoreBusy(false);
-    }
-  }
-
-  // ── Testcase export ──
-  async function exportTestcases() {
-    if (!tcSystem) return;
-    setTcBusy(true); setTcErr(null); setTcDetail(null);
-    try {
-      const r = await fetch(`/api/backup/testcases?systemId=${encodeURIComponent(tcSystem)}`, { cache: 'no-store' });
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
-        throw new Error(j.error || `HTTP ${r.status}`);
-      }
-      const pulled      = Number(r.headers.get('X-Simqa-Pulled') ?? 0);
-      const serverTotal = Number(r.headers.get('X-Simqa-Server-Total') ?? 0);
-      setTcDetail({ pulled, serverTotal });
-      const blob = await r.blob();
-      const cd = r.headers.get('Content-Disposition') || '';
-      const m = cd.match(/filename="([^"]+)"/);
-      const filename = m?.[1] ?? `testcases-${tcSystem}.json`;
-      saveBlobAs(blob, filename);
-    } catch (e: any) {
-      setTcErr(e?.message ?? String(e));
-    } finally {
-      setTcBusy(false);
-    }
-  }
-
   return (
     <>
       <Header
         title="Backup"
-        subtitle="Export simqa configuration + testcase snapshots for safekeeping and cross-machine moves"
+        subtitle="Automatic five-minute backups of every lab system, plus backup and restore of SimQA's own configuration"
       />
       <main className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50">
 
@@ -296,198 +181,8 @@ export default function BackupPage() {
           </CardBody>
         </Card>
 
-        {/* ── Card 2: Testcase export ──────────────────────────────── */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <ListChecks className="h-4 w-4 text-primary-600" />
-              Testcase export
-            </CardTitle>
-          </CardHeader>
-          <CardBody className="space-y-4">
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Pulls every testcase off the selected Simnovator system as one JSON file. The export
-              paginates <code className="font-mono text-[11px] bg-slate-100 px-1 rounded">/v2/testcases/search</code>{' '}
-              under the hood — a workaround for{' '}
-              <a className="text-primary-700 hover:underline" href="https://simnovus.atlassian.net/browse/SIM40-2010" target="_blank" rel="noreferrer">SIM40-2010</a>{' '}
-              (the bulk-export endpoint silently drops cases). <span className="font-semibold">Metadata only today</span>{' '}
-              — testcase cfg payloads need <a className="text-primary-700 hover:underline" href="https://simnovus.atlassian.net/browse/SIM40-2060" target="_blank" rel="noreferrer">SIM40-2060</a>{' '}
-              on the product side.
-            </p>
-
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-slate-700 flex items-center gap-1.5">
-                  <Server className="h-3.5 w-3.5" /> Source system
-                </label>
-                {systems === null ? (
-                  <div className="text-xs text-slate-500 flex items-center gap-1.5 h-9 px-3"><Loader2 className="h-3 w-3 animate-spin" /> loading…</div>
-                ) : systems.length === 0 ? (
-                  <div className="text-xs text-slate-500 h-9 flex items-center px-3">No UESIM-capable systems in inventory.yaml.</div>
-                ) : (
-                  <select
-                    value={tcSystem}
-                    onChange={(e) => setTcSystem(e.target.value)}
-                    className="w-full md:w-[420px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-surface text-slate-700"
-                  >
-                    {systems.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name} ({s.host}) — {s.type}</option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              <Button onClick={exportTestcases} disabled={!tcSystem || tcBusy} className="bg-primary-600 hover:bg-primary-700 text-on-accent">
-                {tcBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileJson className="h-4 w-4" />}
-                <span className="ml-1.5">Export testcases</span>
-              </Button>
-            </div>
-
-            {tcDetail ? (
-              <div className={
-                'rounded-md border p-3 text-xs leading-relaxed ' +
-                (tcDetail.pulled === tcDetail.serverTotal
-                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                  : 'border-amber-200 bg-amber-50 text-amber-900')
-              }>
-                <div className="font-semibold flex items-center gap-1.5">
-                  {tcDetail.pulled === tcDetail.serverTotal
-                    ? <><CheckCircle2 className="h-3.5 w-3.5" /> Exported {tcDetail.pulled} testcases</>
-                    : <><AlertTriangle className="h-3.5 w-3.5" /> Partial export: {tcDetail.pulled} of {tcDetail.serverTotal} pulled</>
-                  }
-                </div>
-                {tcDetail.pulled !== tcDetail.serverTotal ? (
-                  <div className="mt-0.5">
-                    The server reported a total of {tcDetail.serverTotal} but pagination stopped after {tcDetail.pulled}.
-                    This is consistent with the SIM40-2010 silent-dropout pattern. The file has been downloaded;
-                    you may want to retry or open a ticket if the gap persists.
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {tcErr ? (
-              <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 flex gap-2">
-                <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-none" />
-                <div>{tcErr}</div>
-              </div>
-            ) : null}
-          </CardBody>
-        </Card>
-
-        {/* ── Card 3: Lab gNB / MME backup + restore ───────────────── */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Radio className="h-4 w-4 text-primary-600" />
-              Lab gNB / MME backup
-            </CardTitle>
-          </CardHeader>
-          <CardBody className="space-y-4">
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Snapshots the Amarisoft cfg trees on a remote Simnovator box —{' '}
-              <code className="font-mono text-[11px] bg-slate-100 px-1 rounded">/root/enb/config</code>{' '}
-              and{' '}
-              <code className="font-mono text-[11px] bg-slate-100 px-1 rounded">/root/mme/config</code>{' '}
-              — into a single JSON archive. Reads over SSH + sudo,
-              base64-encodes every file so binary content (.pem, .der, etc.)
-              round-trips cleanly. Restore is whitelist-strict — only those
-              two trees can be touched on the target box — and every existing
-              file is preserved as{' '}
-              <code className="font-mono text-[11px] bg-slate-100 px-1 rounded">&lt;path&gt;.bak-&lt;timestamp&gt;</code>{' '}
-              before overwrite.
-            </p>
-
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-slate-700 flex items-center gap-1.5">
-                  <Server className="h-3.5 w-3.5" /> Target system
-                </label>
-                {systems === null ? (
-                  <div className="text-xs text-slate-500 flex items-center gap-1.5 h-9 px-3"><Loader2 className="h-3 w-3 animate-spin" /> loading…</div>
-                ) : systems.length === 0 ? (
-                  <div className="text-xs text-slate-500 h-9 flex items-center px-3">No systems in inventory.yaml.</div>
-                ) : (
-                  <select
-                    value={gnbSystem}
-                    onChange={(e) => setGnbSystem(e.target.value)}
-                    className="w-full md:w-[420px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-surface text-slate-700"
-                  >
-                    {systems.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name} ({s.host}) — {s.type}</option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              <Button onClick={downloadGnbBackup} disabled={!gnbSystem || gnbBackupBusy} className="bg-primary-600 hover:bg-primary-700 text-on-accent">
-                {gnbBackupBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                <span className="ml-1.5">Download backup</span>
-              </Button>
-
-              <label className={
-                'inline-flex items-center gap-1.5 px-4 h-9 rounded-md text-sm font-medium border cursor-pointer ' +
-                (gnbRestoreBusy || !gnbSystem
-                  ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
-                  : 'bg-surface text-slate-700 border-slate-300 hover:bg-slate-50')
-              }>
-                {gnbRestoreBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                <span>Restore from file…</span>
-                <input
-                  type="file"
-                  accept=".json,application/json"
-                  className="hidden"
-                  disabled={gnbRestoreBusy || !gnbSystem}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) restoreGnbFromFile(f);
-                    e.target.value = '';
-                  }}
-                />
-              </label>
-            </div>
-
-            {gnbBackupDetail ? (
-              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 flex gap-1.5 items-center">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                <span>Downloaded {gnbBackupDetail.files} file(s), ~{(gnbBackupDetail.bytes / 1024).toFixed(1)} KB total.</span>
-              </div>
-            ) : null}
-
-            {gnbRestoreResult ? (
-              <div className={
-                'rounded-md border p-3 text-xs leading-relaxed space-y-1.5 ' +
-                (gnbRestoreResult.ok
-                  ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                  : 'border-red-200 bg-red-50 text-red-700')
-              }>
-                <div className="flex items-center gap-1.5 font-semibold">
-                  {gnbRestoreResult.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
-                  {gnbRestoreResult.ok ? 'Restore complete' : 'Restore failed'}
-                </div>
-                {gnbRestoreResult.restoredFiles && gnbRestoreResult.restoredFiles.length > 0 ? (
-                  <FileList label="Restored" tone="green" files={gnbRestoreResult.restoredFiles} />
-                ) : null}
-                {gnbRestoreResult.backedUpFiles && gnbRestoreResult.backedUpFiles.length > 0 ? (
-                  <FileList label="Preserved as .bak" tone="slate" files={gnbRestoreResult.backedUpFiles} />
-                ) : null}
-                {gnbRestoreResult.rejectedFiles && gnbRestoreResult.rejectedFiles.length > 0 ? (
-                  <FileList label="Rejected (outside whitelist)" tone="amber" files={gnbRestoreResult.rejectedFiles} />
-                ) : null}
-                {gnbRestoreResult.errors && gnbRestoreResult.errors.length > 0 ? (
-                  <FileList label="Errors" tone="red" files={gnbRestoreResult.errors} />
-                ) : null}
-              </div>
-            ) : null}
-
-            {gnbErr ? (
-              <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 flex gap-2">
-                <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-none" />
-                <div>{gnbErr}</div>
-              </div>
-            ) : null}
-          </CardBody>
-        </Card>
+        {/* ── Card 2: Automatic backup ───────────────────── */}
+        <AutoBackupCard />
 
       </main>
     </>

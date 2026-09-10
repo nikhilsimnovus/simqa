@@ -5,12 +5,15 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Header } from '@/components/Header';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
+import { SearchableSelect } from '@/components/SearchableSelect';
 import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
 import { ChevronLeft, FileText, Download, Square, Play, Loader2 } from 'lucide-react';
 import {
-  type RunStatus, type PastRunSummary, type LiveEntry,
+  type RunStatus, type PastRunSummary, type LiveEntry, type FullReport, type CheckRowData,
   PastRunsPanel,
 } from '@/app/run-validate/ValidationReport';
+import { boxExecutionsOf } from '@/lib/boxExecutions';
+import { boxMetricName, explainBoxCheck } from '@/lib/checkExplain';
 
 interface PreviewBundle {
   files: Record<string, string>;
@@ -45,6 +48,10 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
   // Carried from the list page so the lookup hits the box you were browsing.
   const systemId = useSearchParams().get('systemId') ?? '';
   const boxQs = systemId ? `?systemId=${encodeURIComponent(systemId)}` : '';
+  // Display-only, passed by Run History, which already knows the name. Used
+  // solely as the heading fallback so this page never titles itself with a raw
+  // UUID while the box is being queried — or if the box can't be reached.
+  const nameHint = useSearchParams().get('name') || undefined;
   const [tc, setTc] = useState<any>(null);
   const [bundle, setBundle] = useState<PreviewBundle | null>(null);
   const [activeFile, setActiveFile] = useState<string | null>(null);
@@ -52,7 +59,7 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
 
   // What the BOX is executing (not what this page started). The box runs one
   // testcase at a time, so this drives both the warning and the Stop button.
-  const [busy, setBusy] = useState<{ simulatorName?: string; simulatorId: string; testCaseId?: string; testCaseName?: string } | null>(null);
+  const [busy, setBusy] = useState<{ simulatorName?: string; simulatorId: string; testCaseId?: string; testCaseName?: string; executionId?: string } | null>(null);
   const [stopping, setStopping] = useState(false);
 
   const pollBusy = useCallback(async () => {
@@ -116,6 +123,76 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
   }, [decoded, boxQs]);
 
   useEffect(() => { loadPreview(); }, [loadPreview]);
+
+  /** Just the testcase record — the half that carries executionHistory. The
+   *  preview bundle is the expensive call and does not change while a run is in
+   *  flight, so the poll below re-reads only this. */
+  const loadTestcaseOnly = useCallback(async () => {
+    try {
+      const t = await fetch(`/api/testcases/${encodeURIComponent(decoded)}${boxQs}`, { cache: 'no-store' }).then((r) => r.json());
+      // An error payload would wipe the metadata we already have and blank the
+      // Validation panel mid-run; keep what is on screen instead.
+      if (t && !t.error) setTc(t);
+    } catch { /* keep what we have */ }
+  }, [decoded, boxQs]);
+
+  /**
+   * Re-read the testcase when the box stops executing.
+   *
+   * The box's execution history — and therefore the Validation entry for a run
+   * started from the Simnovator's own GUI — lives on the testcase record, which
+   * is otherwise fetched once on mount. Without this, a colleague running the
+   * testcase from the box while this page is open shows up only after a manual
+   * reload. pollBusy already watches the box every 5s, so the transition from
+   * executing to idle is the signal; nothing new is polled for it.
+   */
+  // Holds the testcase the box was last seen executing. It has to be the id
+  // captured WHILE busy, not read on the falling edge — by then `busy` is null
+  // and there is nothing left to compare against.
+  const busyTestcaseRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = busyTestcaseRef.current;
+    const mine = (id: string | null) => id !== null && (id === '' || id === decoded);
+
+    if (busy) {
+      const now = busy.testCaseId ?? '';
+      busyTestcaseRef.current = now;
+      // Rising edge: refetch so the run APPEARS while it is still going. The
+      // testcase is otherwise read once on mount, so starting it from the
+      // Simnovator with this page already open showed nothing at all until a
+      // manual reload.
+      if (previous === null && mine(now)) loadPreview();
+      return;
+    }
+
+    busyTestcaseRef.current = null;
+    // Falling edge: refetch so the running entry becomes the finished verdict.
+    // The check uses the id captured while busy — by now the box reports
+    // nothing to compare against. An unattributed finish still refetches: the
+    // box runs one testcase at a time, so a redundant read is cheaper than
+    // leaving a stale "Running" on screen.
+    if (mine(previous)) loadPreview();
+  }, [busy, decoded, loadPreview]);
+
+  /**
+   * Keep re-reading the testcase while the box is executing it.
+   *
+   * The rising-edge refetch above fires the instant the box reports BUSY, and
+   * that is usually too early: starting an execution takes the box ~26s, so its
+   * executionHistory often has no entry for the new run yet. One read at that
+   * moment leaves the panel showing the PREVIOUS verdict for the whole run —
+   * which is what "no validation while it is executing" looks like.
+   *
+   * `busyForThis` is a boolean rather than the busy object, because that object
+   * is replaced every 5s poll: keying the effect on it would tear down and
+   * rebuild the interval before it ever fired.
+   */
+  const busyForThis = !!busy && (!busy.testCaseId || busy.testCaseId === decoded);
+  useEffect(() => {
+    if (!busyForThis) return;
+    const t = setInterval(loadTestcaseOnly, 10_000);
+    return () => clearInterval(t);
+  }, [busyForThis, loadTestcaseOnly]);
 
   /** Tab label only — the real file key (used for activeFile / downloads /
    *  everything else) is untouched. Role tabs read as short acronyms (UE,
@@ -375,15 +452,32 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
     if (status && !status.running && status.runId) void loadPreview();
   }, [status?.running, status?.runId, loadPreview]);
 
-  async function startValidation() {
+  /**
+   * Start a validation.
+   *
+   * `attach` validates the execution the box is ALREADY running instead of
+   * starting one — for a testcase launched from the Simnovator's own GUI. The
+   * runner adopts that execution and runs the same During / Completion / After
+   * checks against it, so a run SimQA did not start still gets a real
+   * validation rather than only the box's own verdict. No cfg selection is
+   * sent: the run is already under way and its configs are on the boxes.
+   */
+  async function startValidation(attach = false) {
     if (!systemId) { setStartErr('Open this testcase from the Test Cases list so SimQA knows which system to run it on.'); return; }
     setStartErr(null); setStatus(null);
     try {
-      const body = {
-        systemId,
-        testcaseId: decoded,
-        cfgSelection: { enb: selEnb || undefined, mme: selMme || undefined, ims: selIms || undefined },
-      };
+      // The selection goes with an attach too, even though nothing will be
+      // linked: the cfg check reports which files were NOT applied, and it can
+      // only name them if it is told. Sending them does not link them — see
+      // preflight-cfg-bring-up, which refuses outright while attached.
+      const cfgSelection = { enb: selEnb || undefined, mme: selMme || undefined, ims: selIms || undefined };
+      const body = attach
+        ? { systemId, testcaseId: decoded, attach: true, cfgSelection }
+        : {
+          systemId,
+          testcaseId: decoded,
+          cfgSelection,
+        };
       const r = await fetch('/api/end-to-end/run', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
@@ -402,6 +496,42 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
       await fetch(`/api/end-to-end/abort?runId=${encodeURIComponent(runId)}`, { method: 'POST' });
     } catch { /* swallow */ }
   }
+
+
+  /**
+   * Attach SimQA's validation to an execution the box is running, unasked.
+   *
+   * This was a "Validate this run" button, on the reasoning that pointing our
+   * polling at whatever a colleague launched was not SimQA's call to make. The
+   * ask is the opposite: a testcase executed from the Simnovator should be
+   * validated the same as one executed from here, without anyone remembering
+   * to click. So it attaches itself.
+   *
+   * Once per execution, and only when nothing is already validating — the
+   * server runs one validation at a time, and the adopt-on-mount effect above
+   * resolves asynchronously, so a second tab could otherwise race it. The
+   * status call settles that immediately before starting.
+   */
+  const autoAttachedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const execId = busy?.executionId ?? '';
+    if (!busyForThis || running || !systemId || !execId) return;
+    if (autoAttachedRef.current === execId) return;
+    autoAttachedRef.current = execId;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/end-to-end/status', { cache: 'no-store' });
+        const j: RunStatus = await r.json();
+        if (cancelled || j?.running) return;
+      } catch { /* status unavailable — attaching is still the right default */ }
+      if (!cancelled) void startValidation(true);
+    })();
+    return () => { cancelled = true; };
+    // startValidation is stable for a given testcase/box; re-running this on
+    // its identity would re-attach on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busyForThis, running, systemId, busy?.executionId]);
 
   // ── Validation history for THIS testcase ──
   const [allRuns, setAllRuns] = useState<PastRunSummary[] | null>(null);
@@ -422,31 +552,195 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
     return allRuns.filter((r) => r.testcaseId === decoded && (!systemId || r.systemId === systemId));
   }, [allRuns, decoded, systemId]);
 
-  // One validation, not a growing history: re-running replaces what's shown
-  // rather than adding beside it. While a run is live, the live entry IS
-  // that one row — the previous historical result is hidden until this run
-  // finishes and its own report takes that same single slot.
-  const visibleValidationRuns = running ? [] : runsForThisTestcase;
+  // One SimQA validation, not a growing history: re-running replaces what's
+  // shown rather than adding beside it. While a run is live, the live entry IS
+  // that row — the previous historical result is hidden until this run
+  // finishes and its own report takes that same slot.
+  /**
+   * The box's own executions, shaped so they sit in the Validation panel
+   * alongside SimQA's runs.
+   *
+   * A testcase run from the Simnovator's GUI never touched SimQA's validation
+   * engine, so there is no data/runs record to fetch — but the box does keep a
+   * verdict and the checks behind it, on the testcase itself. Those become the
+   * report, handed to the panel directly via prefetchedReports.
+   *
+   * Each check carries its numbers (required vs measured), because the verdict
+   * alone is not enough to judge a run by: a testcase whose only condition is
+   * Avg_DL_BLER<=5% passes with a measured BLER of 0, which is also what zero
+   * attached UEs produces.
+   */
+  const boxValidation = useMemo(() => {
+    const summaries: PastRunSummary[] = [];
+    const reports: Record<string, FullReport> = {};
 
-  // A testcase can have real execution history on the box (shown as "Last
-  // Result" / "Last Executed" on the Test Cases list, from tc.metadata)
-  // without ever having been run through SimQA's own validation engine —
-  // e.g. it was executed from the Simnovator's own GUI, or before this
-  // page existed. That run has no check-by-check report to show, but the
-  // panel should say so plainly instead of implying nothing ever ran.
-  const lastBoxExecution = tc?.metadata?.lastExecution;
-  const validationEmptyMessage = lastBoxExecution?.executedOn ? (
-    <>
-      Last executed on the Simnovator {new Date(lastBoxExecution.executedOn).toLocaleString()}
-      {lastBoxExecution.result ? <> — result <span className="font-medium text-slate-700">{lastBoxExecution.result}</span></> : null}.
-      {' '}That run didn't go through SimQA's validation engine, so there's no check-by-check report for it — click Run above for a full validation.
-    </>
-  ) : 'No validation runs for this testcase yet. Run it above to see a full pass/fail report here.';
+    for (const x of boxExecutionsOf(tc?.metadata)) {
+      const runId = `box:${x.executionId || x.startedAt || Math.random()}`;
+      const passed = x.checks.filter((c) => c.verdict).length;
+      const failed = x.checks.length - passed;
+
+      // Decided in boxExecutions.ts, where it is unit-tested — a run the box is
+      // still executing reports no result, no checks and an empty details blob,
+      // and treated as finished that came out as "0 failures, therefore PASS".
+      const isRunning = x.running;
+
+      // The box's own PASS/FAIL is the authority on the verdict; the checks
+      // explain it. With neither — still running, or finished having recorded
+      // nothing — the verdict stays UNKNOWN rather than being inferred from an
+      // empty check list.
+      const ok = isRunning ? undefined
+        : x.result ? x.result.toUpperCase() === 'PASS'
+        : x.checks.length > 0 ? failed === 0
+        : undefined;
+
+      // Rendered by the same RunProgress as a SimQA validation, so these land
+      // in the five-stage flow with the same per-stage "N/M Passed" counts.
+      //
+      // 'during' rather than 'completion': every condition the box evaluates —
+      // BLER, message counters, throughput — is measured on the traffic while
+      // the test runs, which is exactly what the During Test stage describes.
+      // Filing them under Test Completion put them in the stage that confirms
+      // the execution finished, which is not what they check.
+      //
+      // 'critical' because these ARE the box's pass/fail conditions: one not
+      // met is why it reports FAIL, so it must not read as a non-critical fail.
+      const measured: CheckRowData[] = x.checks.map((c, i) => ({
+        id: `${runId}:${c.group}:${c.name}:${i}`,
+        // Achieved_Avg_DL_Throughput is a field name, not something to read.
+        name: boxMetricName(c.name),
+        phase: 'during',
+        severity: 'critical',
+        description: c.condition || `${c.group} check`,
+        status: c.verdict ? 'pass' : 'fail',
+        // A failing condition says what fell short, in words. The raw numbers
+        // stay in `detail` as the evidence behind it — replacing them made the
+        // technical details echo the sentence instead of backing it up.
+        plain: c.verdict ? undefined : explainBoxCheck(c.name, c.condition, c.demand, c.achieved),
+        detail: [
+          c.demand !== undefined ? `required ${c.demand}` : null,
+          c.achieved !== undefined ? `measured ${c.achieved}` : null,
+        ].filter(Boolean).join(' · ') || undefined,
+      }));
+
+      // ONLY what the box actually measured.
+      //
+      // An earlier version synthesised the other four stages from fields on the
+      // execution record, so a box-driven run rendered the full Before /
+      // Starting / During / Completion / After flow. That flow is SimQA's own
+      // validation, and presenting a reconstruction of it for a run SimQA never
+      // performed reads as though it had. The honest report for a run started
+      // on the Simnovator is the box's own success conditions — and if you want
+      // the real five-stage validation, "Validate this run" attaches SimQA to
+      // the live execution and produces a genuine one.
+      //
+      // boxStageChecks() in boxExecutions.ts built those rows and is now
+      // unused; it is kept, with its tests, in case the reconstruction is
+      // wanted somewhere it cannot be confused for a SimQA run.
+      const results: CheckRowData[] = measured;
+
+      summaries.push({
+        runId,
+        startedAt: x.startedAt ?? '',
+        finishedAt: x.finishedAt,
+        ok,
+        systemId: systemId || '',
+        systemHost: tc?.host,
+        testcaseId: decoded,
+        testcaseName: tc?.name,
+        // Carried so the merge below can recognise this as the same event as a
+        // SimQA validation that drove it.
+        executionId: x.executionId,
+        running: isRunning,
+        // Counts describe what is actually rendered, including the stages SimQA
+        // did not observe — a row saying "1 Passed · 0 Failed" above a report
+        // listing five skips would not add up.
+        // Omitted while running: "0 Passed · 0 Failed" reads as a finished run
+        // that measured nothing, rather than one still in flight.
+        counts: isRunning ? undefined : {
+          total: results.length,
+          passed: results.filter((r) => r.status === 'pass').length,
+          failed: results.filter((r) => r.status === 'fail').length,
+          skipped: results.filter((r) => r.status === 'skip').length,
+        },
+      });
+
+      reports[runId] = {
+        runId,
+        startedAt: x.startedAt ?? '',
+        finishedAt: x.finishedAt,
+        ok,
+        systemId: systemId || '',
+        systemHost: tc?.host ?? '',
+        testcaseId: decoded,
+        testcaseName: tc?.name,
+        executionId: x.executionId,
+        // The box's own verdict, in the box's own words. Not derived from `ok`:
+        // INCOMPLETE and ABORTED are neither a pass nor a fail, and the point of
+        // showing this field is that it says what the Simnovator says.
+        verdict: x.result,
+        finalDetail: x.parseError
+          ? `Executed on the Simnovator — ${x.parseError}`
+          : isRunning
+            // Say what is happening and what will replace it. A running box
+            // execution has no checks yet, so the stage flow below is empty —
+            // without this the panel would expand to nothing at all.
+            ? `Running on the Simnovator, started ${x.startedAt ? new Date(x.startedAt).toLocaleTimeString() : 'just now'}. Its verdict and the checks behind it appear here as soon as the box finishes.`
+            : x.checks.length === 0
+              ? `Executed on the Simnovator, which recorded no success conditions for this run — there is nothing to check it against.`
+              : `Executed on the Simnovator. Its verdict means the success conditions below held, not that the test exercised the network.`,
+        observedDurationSec: x.durationSec,
+        results,
+      };
+    }
+
+    return { summaries, reports };
+  }, [tc, decoded, systemId]);
+
+  /**
+   * Exactly ONE validation: the most recent execution of this testcase, from
+   * whichever source ran it.
+   *
+   * Both sources are candidates and the newest timestamp wins — a run started
+   * from this page and a run started from the Simnovator's own GUI are the same
+   * event class, so the panel shows the latest state of the testcase rather
+   * than one entry per tool. Executing it again anywhere replaces what's here.
+   */
+  const visibleValidationRuns = useMemo(() => {
+    if (running) return [];
+    const simqa = runsForThisTestcase ?? [];
+    if (runsForThisTestcase === null && boxValidation.summaries.length === 0) return null;
+
+    // A run SimQA drove appears TWICE — once as its own validation, once as the
+    // execution the box recorded for it. They are one event, and the SimQA
+    // record is strictly richer: it carries the box's verdict plus its own
+    // Before/Starting/During/Completion/After checks. Sorting them together let
+    // the box's copy win on a timestamp a minute later, so finishing a run from
+    // this page replaced the live During Test checks with the box's eight
+    // derived rows. Drop the box's copy of an execution SimQA already has.
+    const simqaExecutions = new Set(simqa.map((r) => r.executionId).filter(Boolean));
+    const boxOnly = boxValidation.summaries.filter((b) => !b.executionId || !simqaExecutions.has(b.executionId));
+
+    return [...simqa, ...boxOnly]
+      .sort((a, b) => (Date.parse(b.startedAt) || 0) - (Date.parse(a.startedAt) || 0))
+      .slice(0, 1);
+  }, [running, runsForThisTestcase, boxValidation]);
+
+  // Reached only when the testcase has NEITHER a SimQA validation NOR any
+  // execution on the box. It used to carry a "last executed on the Simnovator,
+  // but no report exists" explanation; that case now produces a real entry in
+  // the panel above, built from the box's own verdict, so the explanation
+  // would never be seen.
+  const validationEmptyMessage =
+    'No validation runs for this testcase yet. Run it above, or execute it from the Simnovator, to see a result here.';
 
   return (
-    <>
+    // The page owns the full height of the app shell's content column and
+    // scrolls inside itself, so the Header stays put. As a bare fragment it was
+    // the shell's column that scrolled and the Header — which is only `sticky`
+    // — travelled with it, taking Run/Stop and Back out of reach.
+    <div className="flex-1 min-h-0 flex flex-col">
       <Header
-        title={tc?.name ?? decoded}
+        title={tc?.name ?? nameHint ?? decoded}
         left={<BackToRunHistory />}
         right={
           <div className="flex items-center gap-2">
@@ -458,6 +752,11 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
             {/* One toggle, not two buttons: Stop covers both "the box is
                 busy" and "SimQA is mid-validation" — stopTest() handles
                 both regardless of which (or both) is true. */}
+            {/* "Validate this run" used to live here, for the case where the
+                box is executing this testcase and SimQA is not validating it.
+                It is automatic now — see the attach effect above — so there is
+                no button: an execution started from the Simnovator gets
+                validated wherever it was started from. */}
             {busy || running ? (
               <Button size="sm" onClick={stopTest} disabled={stopping}
                 className="!bg-red-600 hover:!bg-red-700 !border-red-600">
@@ -478,7 +777,8 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
           </div>
         }
       />
-      <main className="p-6 space-y-3">
+      {/* The only scrolling region on the page. */}
+      <main className="flex-1 min-h-0 overflow-y-auto p-6 space-y-3">
         {err ? <div className="rounded bg-red-50 text-red-700 p-3 text-sm">{err}</div> : null}
 
         {busy ? (
@@ -508,41 +808,39 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
               <div className="text-xs text-slate-500 flex items-center gap-1.5"><Loader2 className="h-3 w-3 animate-spin" /> loading callbox configs…</div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {/* All three are searchable: the callbox carries 108 radio cfg
+                    files and 27 core ones, with long shared prefixes, so
+                    picking one out of a native dropdown meant scrolling and
+                    reading rather than typing what you already know. */}
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-slate-700">ENB Configuration</label>
-                  <select
+                  <SearchableSelect
+                    ariaLabel="ENB Configuration"
                     value={selEnb}
-                    onChange={(e) => setSelEnb(e.target.value)}
+                    onChange={setSelEnb}
+                    options={cfgOpts.radioFiles}
                     disabled={running}
-                    className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-sm bg-white text-slate-700 disabled:bg-slate-100 disabled:text-slate-400"
-                  >
-                    <option value="">— none —</option>
-                    {cfgOpts.radioFiles.map((f) => <option key={f} value={f}>{f}</option>)}
-                  </select>
+                  />
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-slate-700">MME Configuration</label>
-                  <select
+                  <SearchableSelect
+                    ariaLabel="MME Configuration"
                     value={selMme}
-                    onChange={(e) => setSelMme(e.target.value)}
+                    onChange={setSelMme}
+                    options={cfgOpts.coreFiles}
                     disabled={running}
-                    className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-sm bg-white text-slate-700 disabled:bg-slate-100 disabled:text-slate-400"
-                  >
-                    <option value="">— none —</option>
-                    {cfgOpts.coreFiles.map((f) => <option key={f} value={f}>{f}</option>)}
-                  </select>
+                  />
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-slate-700">IMS Configuration</label>
-                  <select
+                  <SearchableSelect
+                    ariaLabel="IMS Configuration"
                     value={selIms}
-                    onChange={(e) => setSelIms(e.target.value)}
+                    onChange={setSelIms}
+                    options={cfgOpts.coreFiles}
                     disabled={running}
-                    className="w-full border border-slate-300 rounded-md px-3 py-1.5 text-sm bg-white text-slate-700 disabled:bg-slate-100 disabled:text-slate-400"
-                  >
-                    <option value="">— none —</option>
-                    {cfgOpts.coreFiles.map((f) => <option key={f} value={f}>{f}</option>)}
-                  </select>
+                  />
                 </div>
               </div>
             )}
@@ -577,6 +875,7 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
             checks: status.checks ?? [],
             counts: status.counts,
           } : undefined}
+          prefetchedReports={boxValidation.reports}
         />
 
         {bundle ? (
@@ -719,6 +1018,6 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
           <Card><CardBody><div className="text-sm text-slate-500">Generating preview…</div></CardBody></Card>
         ) : null}
       </main>
-    </>
+    </div>
   );
 }

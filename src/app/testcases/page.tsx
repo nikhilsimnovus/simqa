@@ -5,8 +5,20 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Header } from '@/components/Header';
 import { Card, CardBody, CardHeader, Input, Badge, Button } from '@/components/ui';
-import { cn } from '@/lib/cn';
 import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { useColumnWidths, ResizeHandle, ColGroup } from '@/components/resizableColumns';
+import { formatDuration, windowOf, endFromDuration } from '@/lib/timeFormat';
+
+/** The table's columns, and the width each one starts at. Drag any column's
+ *  right-hand edge to resize it, spreadsheet-style. */
+const TC_COLUMNS: Array<{ label: string; key: 'name' | 'result' | 'executed' | null }> = [
+  { label: 'Test Case', key: 'name' },
+  { label: 'Result',    key: 'result' },
+  { label: 'Execution', key: 'executed' },
+  { label: 'Action',    key: null },
+];
+// Execution holds two lines now — how long it ran, and the window under it.
+const TC_COL_WIDTHS = [430, 150, 250, 130];
 
 interface Tc {
   id: string;
@@ -23,6 +35,26 @@ const LS_SYSTEM = 'simqa-testcases-system';
 /** Verdicts the box actually reports, plus the two states it has no verdict
  *  for: currently executing, and never executed. */
 type ResultKey = 'inprogress' | 'pass' | 'incomplete' | 'fail' | 'error' | 'norun';
+
+/**
+ * The look every control in the toolbar shares.
+ *
+ * SIM and Last executed were hand-rolled as `border-slate-300 rounded-md`, the
+ * Last result button as a third variant, and Search is the app's <Input> —
+ * three different border colours and two radii sitting side by side. These are
+ * the <Input>'s own values, so the whole strip now reads as one row of
+ * controls rather than four things that happen to be next to each other.
+ */
+const TOOLBAR_CONTROL =
+  'h-8 rounded-lg border border-line-strong bg-surface px-2 text-sm text-slate-900 transition-colors ' +
+  'focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/25';
+
+/** Seconds a box execution ran. The Simnovator reports this under two names
+ *  depending on build; both are seconds. */
+function durationSecOf(last: any): number | undefined {
+  const n = Number(last?.durationSeconds ?? last?.testDuration ?? NaN);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
 
 const RESULT_FILTERS: Array<{ key: ResultKey; label: string }> = [
   { key: 'inprogress', label: 'In progress' },
@@ -79,22 +111,14 @@ export default function TestcasesPage() {
   // render fetched with an empty systemId, then setSystemId re-fired the same
   // request — two full box round-trips on every visit.
   const [systemsReady, setSystemsReady] = useState(false);
-  // The page <Header> is sticky at 56px (h-14) inside the scrolling content
-  // column. The toolbar sticks directly below it, and the table head below the
-  // toolbar — whose height changes when the controls wrap, so measure it
-  // rather than hard-coding an offset.
-  const HEADER_H = 56;
-  const toolbarRef = useRef<HTMLDivElement | null>(null);
-  const [toolbarH, setToolbarH] = useState(0);
-  useEffect(() => {
-    const el = toolbarRef.current;
-    if (!el) return;
-    const measure = () => setToolbarH(el.getBoundingClientRect().height);
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [systems.length]);
+  const { colWidths, tableWidth, startResize } = useColumnWidths(TC_COL_WIDTHS);
+  // Cells clip with an ellipsis rather than spilling once a column is narrowed.
+  const tdCls = 'px-4 py-2 border-r border-slate-100 last:border-r-0 truncate';
+
+  // A HEADER_H constant and a ResizeObserver measuring the toolbar lived here,
+  // feeding `top:` offsets to two sticky layers. Both are gone: the layout now
+  // nests a real scroll pane (see the return below), so the header, toolbar and
+  // column headings are fixed by structure and there is nothing to measure.
 
   useEffect(() => {
     fetch('/api/ui-tests/systems')
@@ -231,7 +255,7 @@ export default function TestcasesPage() {
     return `${results.size} selected`;
   }, [results]);
 
-  /** Text shown in the Last Result column — what sorting should follow. */
+  /** Text shown in the Result column — what sorting should follow. */
   const resultText = useCallback((tc: Tc) => (
     tc.id === runningId ? 'IN PROGRESS' : (tc.metadata?.lastExecution?.result ?? '')
   ), [runningId]);
@@ -274,9 +298,12 @@ export default function TestcasesPage() {
   const rows = useMemo(() => sorted.slice(0, visible), [sorted, visible]);
 
   // Sentinel just past the last rendered row — when it scrolls into view, add
-  // another page. Uses the viewport as root so it works regardless of which
-  // ancestor is the scroll container.
+  // another page. The root is the card body, which is now the scroll container;
+  // with the viewport as root the sentinel is clipped by that pane and the
+  // 200px pre-load margin measures against the wrong box. Falls back to the
+  // viewport before the ref attaches.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const scrollPaneRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el || shown >= sorted.length) return;
@@ -284,24 +311,29 @@ export default function TestcasesPage() {
       if (entries.some((e) => e.isIntersecting)) {
         setVisible((v) => Math.min(v + PAGE, sorted.length));
       }
-    }, { rootMargin: '200px' });
+    }, { root: scrollPaneRef.current ?? null, rootMargin: '200px' });
     io.observe(el);
     return () => io.disconnect();
   }, [shown, sorted.length]);
 
   return (
-    <>
+    // The page owns the full height of the app shell's content column and
+    // scrolls inside itself, so the Header and the toolbar below are genuinely
+    // fixed. They were `sticky` at hand-computed offsets (top: HEADER_H, then
+    // top: HEADER_H + measured toolbar height) which drifted whenever the
+    // controls wrapped; nothing is measured now.
+    <div className="flex-1 min-h-0 flex flex-col">
       <Header
         title="Test Case and Validate"
-        subtitle={total != null ? `Showing ${shown} of ${sorted.length} items` : 'loading…'}
+        subtitle="This section is used to execute the test case and validate whether the test results are working as expected. It helps verify the configuration, execution status, and final results."
         uesimHost={host || undefined}
       />
-      <main className="p-6">
-        <Card>
+      {/* pt-0: the card sits flush under the header — the 6-unit top padding
+          was dead space above the toolbar. */}
+      <main className="flex-1 min-h-0 flex flex-col px-6 pb-6 pt-0">
+        <Card className="flex-1 min-h-0 flex flex-col">
           <CardHeader
-            ref={toolbarRef}
-            style={{ top: HEADER_H }}
-            className="flex flex-wrap items-center gap-3 justify-start sticky z-20 bg-white rounded-t-lg px-4 py-2.5"
+            className="shrink-0 flex flex-wrap items-center gap-3 justify-start bg-white rounded-t-xl px-4 py-2.5"
           >
             <div className="flex items-center gap-2 flex-wrap">
               {systems.length > 0 && (
@@ -310,7 +342,7 @@ export default function TestcasesPage() {
                   <select
                     value={systemId}
                     onChange={(e) => chooseSystem(e.target.value)}
-                    className="border border-slate-300 rounded-md px-2 py-1 text-sm"
+                    className={TOOLBAR_CONTROL}
                   >
                     {systems.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.host})</option>)}
                   </select>
@@ -328,11 +360,11 @@ export default function TestcasesPage() {
                   verdicts at once. */}
               <div className="relative" ref={resultMenuRef}>
                 <label className="flex items-center gap-1.5">
-                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Last result</span>
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Result</span>
                   <button
                     type="button"
                     onClick={() => setResultOpen((o) => !o)}
-                    className="border border-slate-300 rounded-md px-2 py-1 text-sm bg-white min-w-[150px] text-left flex items-center justify-between gap-2"
+                    className={`${TOOLBAR_CONTROL} min-w-[150px] text-left flex items-center justify-between gap-2`}
                   >
                     <span className="truncate">{resultSummary}</span>
                     <span className="text-slate-400 text-[10px]">▼</span>
@@ -369,11 +401,11 @@ export default function TestcasesPage() {
                 )}
               </div>
               <label className="flex items-center gap-1.5">
-                <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Last executed</span>
+                <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Execution</span>
                 <select
                   value={executed}
                   onChange={(e) => setExecuted(e.target.value as typeof executed)}
-                  className="border border-slate-300 rounded-md px-2 py-1 text-sm"
+                  className={TOOLBAR_CONTROL}
                 >
                   <option value="any">Any time</option>
                   <option value="1d">Last 24 hours</option>
@@ -383,8 +415,18 @@ export default function TestcasesPage() {
                 </select>
               </label>
             </div>
+
+            {/* The "Showing N of M" count used to be the page subtitle; the
+                subtitle now describes what this section is for, so the count
+                lives here beside the controls it responds to. ml-auto keeps it
+                at the right-hand end of the toolbar. */}
+            <span className="ml-auto shrink-0 text-xs text-slate-500 tabular-nums">
+              {total != null ? `Showing ${shown} of ${sorted.length} items` : 'loading…'}
+            </span>
           </CardHeader>
-          <CardBody className="p-0">
+          {/* The only scrolling region on the page: the rows travel, the
+              toolbar above and the column headings stay put. */}
+          <CardBody ref={scrollPaneRef} className="p-0 flex-1 min-h-0 overflow-auto">
             {err ? (
               <div className="p-5 text-sm text-red-700 bg-red-50">Error: {err}</div>
             ) : loading ? (
@@ -396,36 +438,32 @@ export default function TestcasesPage() {
                 {/* No overflow-x wrapper here: any non-visible overflow would
                     become the sticky containing block and the header row would
                     stop pinning to the page. */}
-                <table className="w-full text-sm">
+                {/* table-fixed + <colgroup> is what makes the dragged widths
+                    authoritative; under auto layout the browser re-derives them
+                    from the content and a resize springs back. */}
+                <table className="text-sm table-fixed" style={{ width: tableWidth, minWidth: '100%' }}>
+                  <ColGroup widths={colWidths} />
                   {/* sticky lives on the <th>s — sticky <thead> is unreliable. */}
                   <thead className="text-left text-xs uppercase tracking-wider text-slate-500">
                     <tr>
-                      {([
-                        { label: 'Test Case',     key: 'name' as const },
-                        { label: 'Last Result',   key: 'result' as const },
-                        { label: 'Last Executed', key: 'executed' as const },
-                        { label: 'Action',        key: null },
-                      ]).map(({ label, key }) => (
+                      {TC_COLUMNS.map(({ label, key }, i) => (
                         <th
                           key={label}
-                          style={{ top: HEADER_H + toolbarH }}
-                          className={cn(
-                            'px-4 py-2 font-medium sticky z-10 bg-slate-50 border-b border-slate-200',
-                            key === null && 'text-right',
-                          )}
+                          className="relative select-none px-4 py-2 font-medium sticky top-0 z-10 bg-slate-50 border-b border-r border-slate-200 last:border-r-0"
                         >
                           {key ? (
                             <button
                               onClick={() => toggleSort(key)}
                               title={`Sort by ${label}`}
-                              className="inline-flex items-center gap-1 uppercase tracking-wider hover:text-slate-800"
+                              className="flex w-full items-center justify-between gap-1 uppercase tracking-wider hover:text-slate-800"
                             >
-                              {label}
+                              <span className="truncate">{label}</span>
                               {sortKey === key
-                                ? (sortDir === 'asc' ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)
-                                : <ArrowUpDown className="h-3 w-3 opacity-30" />}
+                                ? (sortDir === 'asc' ? <ArrowUp className="h-3 w-3 shrink-0" /> : <ArrowDown className="h-3 w-3 shrink-0" />)
+                                : <ArrowUpDown className="h-3 w-3 shrink-0 opacity-30" />}
                             </button>
                           ) : label}
+                          <ResizeHandle onMouseDown={startResize(i)} />
                         </th>
                       ))}
                     </tr>
@@ -434,8 +472,8 @@ export default function TestcasesPage() {
                     {rows.map((tc) => {
                       const last = tc.metadata?.lastExecution;
                       return (
-                        <tr key={tc.id} className="hover:bg-slate-50 transition-colors">
-                          <td className="px-4 py-2">
+                        <tr key={tc.id} className="hover:bg-sky-50/60 even:bg-slate-50/40 transition-colors">
+                          <td className={tdCls}>
                             <Link
                               href={`/testcases/${encodeURIComponent(tc.id)}${systemId ? `?systemId=${encodeURIComponent(systemId)}` : ''}`}
                               title={tc.name || tc.id}
@@ -444,11 +482,27 @@ export default function TestcasesPage() {
                               {tc.name || tc.id}
                             </Link>
                           </td>
-                          <td className="px-4 py-2"><ResultBadge value={last?.result} inProgress={tc.id === runningId} /></td>
-                          <td className="px-4 py-2 text-xs text-slate-500">
-                            {tc.id === runningId ? 'running now' : last?.executedOn ? new Date(last.executedOn).toLocaleString() : '—'}
+                          <td className={tdCls}><ResultBadge value={last?.result} inProgress={tc.id === runningId} /></td>
+                          {/* How long it ran, and under it when — the same
+                              shape the dashboard's Recent Runs uses, so one
+                              execution reads the same on both pages. The box
+                              records a duration but no end time, so the end is
+                              start + duration. */}
+                          <td className={tdCls}>
+                            {tc.id === runningId ? (
+                              <span className="text-xs text-primary-700">running now</span>
+                            ) : last?.executedOn ? (
+                              <>
+                                <div className="text-sm text-slate-700 num truncate">{formatDuration(durationSecOf(last))}</div>
+                                <div className="text-xs text-slate-500 truncate">
+                                  {windowOf(last.executedOn, endFromDuration(last.executedOn, durationSecOf(last)))}
+                                </div>
+                              </>
+                            ) : (
+                              <span className="text-xs text-slate-500">—</span>
+                            )}
                           </td>
-                          <td className="px-4 py-2 text-right">
+                          <td className={tdCls}>
                             <Link href={`/testcases/${encodeURIComponent(tc.id)}${systemId ? `?systemId=${encodeURIComponent(systemId)}` : ''}`}>
                               <Button size="sm" variant="ghost">Preview</Button>
                             </Link>
@@ -468,7 +522,7 @@ export default function TestcasesPage() {
           </CardBody>
         </Card>
       </main>
-    </>
+    </div>
   );
 }
 

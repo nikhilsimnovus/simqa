@@ -51,6 +51,18 @@ export interface RunCtx {
   configuredDurationSec?: number;
   /** Wall-clock when TRIGGER fired — for measuring observed duration. */
   triggeredAt?: number;
+  /**
+   * Set when this run ADOPTED an execution the box was already running rather
+   * than starting one itself — a testcase launched from the Simnovator's own
+   * GUI, which SimQA can still validate.
+   *
+   * Three checks have to know: the simulator-availability preflight (BUSY is
+   * the precondition here, not a failure), the trigger POST (must never fire —
+   * it would start a second execution) and the execution-id discovery (already
+   * answered). Everything in the During / Completion / After phases works
+   * unchanged: it all keys off executionId, which is set up front here.
+   */
+  attachedExecution?: { executionId: string; startedAt: number };
   /** Wall-clock when COMPLETION saw a terminal status. */
   finishedAt?: number;
 

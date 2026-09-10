@@ -9,7 +9,7 @@
 // blocking: false can warn without stopping the job.
 
 import * as net from 'node:net';
-import { loadInventory } from '../inventory';
+import { loadInventory, uesimApiCredentials } from '../inventory';
 import { listSimulators } from '../uesimClient';
 import { getSetup, type JobSetup } from './setups';
 import type { ResourceCheckItem, ResourceCheckResult } from './types';
@@ -84,8 +84,7 @@ export async function runResourceCheck(setupHost: string): Promise<ResourceCheck
   const sim = inv.systems.find((s) => s.id === setup.systemId);
   const opts = {
     host: setup.host,
-    username: sim?.uesim?.username ?? sim?.username ?? 'admin',
-    password: sim?.uesim?.password ?? sim?.password ?? 'admin',
+    ...uesimApiCredentials(sim),
   };
   let simulators: any[] = [];
   let apiUp = false;
