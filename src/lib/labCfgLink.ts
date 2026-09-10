@@ -266,3 +266,47 @@ async function waitForRadio(callbox: InventorySystem): Promise<{ ok: boolean; de
       + `${lastErr ? ` (last read error: ${lastErr})` : ''} — refusing to trigger into a restarting radio`,
   };
 }
+
+/**
+ * Which subscriber DB EVERY MME config pulls in, in ONE ssh round trip.
+ *
+ * The per-file version below (ueDbFor) opens a connection each call. Looping
+ * it over a real callbox's ~46 MME configs took 88s and left the scenario
+ * editor sitting on "reading the callbox…". One `grep -H` across the whole
+ * directory answers the same question in a single round trip.
+ *
+ * Returns a map of cfg basename -> DB filenames. Best-effort: an unreadable
+ * box yields {} rather than an error, and the picker just shows no DB hint.
+ */
+export async function ueDbForAll(callbox: InventorySystem): Promise<Record<string, string[]>> {
+  const dir = '/root/mme/config';
+  try {
+    // The glob MUST expand inside the sudo'd shell. Written as
+    // `sudo -n grep ... /root/mme/config/*.cfg`, the CALLING shell expands it
+    // first — and on a box with /root at 0700 the unprivileged user matches
+    // nothing, so grep receives a literal '*.cfg' and returns empty. Wrapping
+    // in `sudo sh -c` lets root do the expansion.
+    const out = await readCommand(
+      callbox,
+      `sudo -n sh -c 'grep -H -E "^[[:space:]]*include" ${dir}/*.cfg' 2>/dev/null `
+      + `|| sh -c 'grep -H -E "^[[:space:]]*include" ${dir}/*.cfg' 2>/dev/null || true`,
+    );
+    const map: Record<string, string[]> = {};
+    for (const line of out.split(String.fromCharCode(10))) {
+      // grep -H gives "<path>:<the include line>"
+      const sep = line.indexOf('.cfg:');
+      if (sep < 0) continue;
+      const file = line.slice(0, sep + 4);
+      const rest = line.slice(sep + 5);
+      const name = file.slice(file.lastIndexOf('/') + 1);
+      const inc = /include\s+"([^"]+)"/.exec(rest)?.[1];
+      // Subscriber/PLMN databases only — configs also include fragments like
+      // 1000UE.mme.cfg that are not databases.
+      if (!inc || !/db|subscriber|ue/i.test(inc)) continue;
+      (map[name] ??= []).push(inc);
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}

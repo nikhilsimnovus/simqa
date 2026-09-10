@@ -7,7 +7,7 @@
 // dropdown without the page orchestrating four round trips.
 import { NextResponse } from 'next/server';
 import { loadInventory, callboxForSimnovator, callboxForProfile, getProfile } from '@/lib/inventory';
-import { currentCfgLinks, ueDbFor } from '@/lib/labCfgLink';
+import { currentCfgLinks, ueDbForAll } from '@/lib/labCfgLink';
 import { readCommand } from '@/lib/configFidelity/ssh';
 
 export const dynamic = 'force-dynamic';
@@ -47,14 +47,10 @@ export async function GET(req: Request) {
     currentCfgLinks(box).catch(() => ({})),
   ]);
 
-  // Which DB each MME config includes — derived, read-only context. Capped so
-  // a box with hundreds of configs doesn't turn one page load into hundreds
-  // of SSH reads; the UI asks for the rest on demand.
-  const ueDb: Record<string, string[]> = {};
-  for (const name of mmeFiles.filter((n) => /mme/i.test(n)).slice(0, 40)) {
-    const dbs = await ueDbFor(box, name);
-    if (dbs.length) ueDb[name] = dbs;
-  }
+  // Which DB each MME config includes — derived, read-only context, in ONE
+  // ssh round trip. Doing this per-file took 88s on the real callbox and left
+  // the editor stuck on "reading the callbox…".
+  const ueDb = await ueDbForAll(box).catch(() => ({}));
 
   return NextResponse.json({
     ok: true,
