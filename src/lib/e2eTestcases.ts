@@ -25,7 +25,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import type { Inventory, InventorySystem } from './inventory';
-import { getSystem, uesimApiOptsForSystem } from './inventory';
+import { getSystem, uesimApiOptsForSystem, callboxForProfile } from './inventory';
 import { getTestcase, ensureToken } from './uesimClient';
 import { readCommand, writeRemoteFile } from './configFidelity/ssh';
 import { createFromDefinition, sanitizeTestcaseName } from './automation/duplicateTestcase';
@@ -168,7 +168,7 @@ export async function captureE2ETestcase(inv: Inventory, req: CaptureRequest): P
   const profile = req.topologyId
     ? inv.profiles.find((p) => p.id === req.topologyId)
     : inv.profiles.find((p) => p.simnovator === sim.id);
-  const callbox = profile?.callbox ? getSystem(inv, profile.callbox) : undefined;
+  const callbox = callboxForProfile(inv, profile);
 
   // 1. The test case definition.
   let definition: unknown;
@@ -280,7 +280,7 @@ export async function replayE2ETestcase(inv: Inventory, req: ReplayRequest): Pro
   // 1. Configs first — the radio has to be right before the test runs.
   if (req.pushConfigs !== false && Object.keys(rec.files).length) {
     const profile = inv.profiles.find((p) => p.simnovator === sim.id);
-    const callbox = profile?.callbox ? getSystem(inv, profile.callbox) : undefined;
+    const callbox = callboxForProfile(inv, profile);
     if (!callbox) {
       warnings.push(`No callbox bound to ${sim.host} in its topology, so the captured configs were not pushed.`);
     } else {

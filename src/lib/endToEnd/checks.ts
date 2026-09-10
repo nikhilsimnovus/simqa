@@ -551,6 +551,10 @@ const triggerStart: CheckDef = {
     // simulatorId — the testcase's last-used simulator, else the first
     // registered one.
     const simulatorId = await resolveSimulatorId(ctx);
+    // Remember which simulator we started on: the next check falls back to
+    // asking it directly when the testcase's own metadata is slow to (or
+    // never does) publish the execution id.
+    ctx.simulatorId = simulatorId;
     const r = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/${encodeURIComponent(ctx.testcaseId)}/executions`, {
       method: 'POST',
       headers: { ...authHeaders(ctx), 'Content-Type': 'application/json' },
@@ -586,20 +590,42 @@ const triggerExecutionDiscovered: CheckDef = {
     // executedOn timestamp against ctx.triggeredAt).
     const seenBefore = ctx.testcaseMetadata?.lastExecution?.executionId as string | undefined;
     const triggeredAtIso = new Date(ctx.triggeredAt).toISOString();
+    // Where the id was found — reported in the detail so a run that only the
+    // fallback could see is visibly different from the normal path.
+    let source = 'metadata';
     const r = await pollUntil(async () => {
+      // 1) The documented source: the testcase's own lastExecution metadata.
       const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/${encodeURIComponent(ctx.testcaseId)}`, { headers: authHeaders(ctx) });
-      if (f.status !== 200) return undefined;
-      const last = f.body?.metadata?.lastExecution;
-      if (!last?.executionId) return undefined;
-      // Treat as newly-discovered if either id changed or executedOn >= triggeredAt.
-      if (last.executionId !== seenBefore) return last.executionId;
-      const execAt = String(last.executedOn ?? '');
-      if (execAt && execAt >= triggeredAtIso.slice(0, 19)) return last.executionId;
+      if (f.status === 200) {
+        const last = f.body?.metadata?.lastExecution;
+        if (last?.executionId) {
+          // Treat as newly-discovered if either id changed or executedOn >= triggeredAt.
+          if (last.executionId !== seenBefore) { source = 'metadata'; return last.executionId; }
+          const execAt = String(last.executedOn ?? '');
+          if (execAt && execAt >= triggeredAtIso.slice(0, 19)) { source = 'metadata'; return last.executionId; }
+        }
+      }
+      // 2) Fallback: ask the simulator we actually triggered on. Some
+      //    testcases (observed with imported packs that carry no duration)
+      //    never publish lastExecution.executionId, yet the simulator goes
+      //    BUSY and reports currentExecutionId straight away. The execution
+      //    is genuinely running in that case, so failing here reported a
+      //    healthy run as broken.
+      if (ctx.simulatorId) {
+        const s = await jsonFetch(`${apiBase(ctx.systemHost)}/simulators/${encodeURIComponent(ctx.simulatorId)}/status`, { headers: authHeaders(ctx) });
+        if (s.status === 200) {
+          const execId = s.body?.currentExecutionId;
+          // Guard against latching onto an unrelated execution: the
+          // simulator must be busy with THIS testcase.
+          const onThisTestcase = String(s.body?.testCaseId ?? '') === ctx.testcaseId;
+          if (execId && execId !== seenBefore && onThisTestcase) { source = 'simulator'; return String(execId); }
+        }
+      }
       return undefined;
     }, { intervalMs: 2000, timeoutMs: 30000, isCanceled: ctx.isCanceled });
-    if (!r.ok) return makeResult(base, 'fail', `no new execution id after ${(r.elapsedMs / 1000).toFixed(1)}s (reason=${r.reason})`, { durationMs: r.elapsedMs });
+    if (!r.ok) return makeResult(base, 'fail', `no new execution id after ${(r.elapsedMs / 1000).toFixed(1)}s (reason=${r.reason}; checked testcase metadata${ctx.simulatorId ? ` and simulator ${ctx.simulatorId}` : ''})`, { durationMs: r.elapsedMs });
     ctx.executionId = r.value!;
-    return makeResult(base, 'pass', `executionId=${ctx.executionId} discovered in ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs });
+    return makeResult(base, 'pass', `executionId=${ctx.executionId} discovered in ${(r.elapsedMs / 1000).toFixed(1)}s via ${source}`, { durationMs: r.elapsedMs });
   },
 };
 
@@ -615,12 +641,24 @@ const duringStatusRunning: CheckDef = {
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
     const r = await pollUntil(async () => {
       const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/${encodeURIComponent(ctx.testcaseId)}`, { headers: authHeaders(ctx) });
-      if (f.status !== 200) return undefined;
-      const status = String(f.body?.metadata?.lastExecution?.status ?? '').toUpperCase();
-      if (status === 'RUNNING' || status === 'IN_PROGRESS' || status === 'STARTED') return status;
-      // Terminal status reached before we ever saw RUNNING — that's a failure of this check.
-      if (['COMPLETED', 'FAILED', 'STOPPED', 'ABORTED', 'INCOMPLETE'].includes(status)) {
-        throw new Error(`reached terminal status "${status}" without going through RUNNING`);
+      if (f.status === 200) {
+        const status = String(f.body?.metadata?.lastExecution?.status ?? '').toUpperCase();
+        if (status === 'RUNNING' || status === 'IN_PROGRESS' || status === 'STARTED') return status;
+        // Terminal status reached before we ever saw RUNNING — that's a failure of this check.
+        if (['COMPLETED', 'FAILED', 'STOPPED', 'ABORTED', 'INCOMPLETE'].includes(status)) {
+          throw new Error(`reached terminal status "${status}" without going through RUNNING`);
+        }
+      }
+      // Same fallback as trigger-execution-id-discovered: when the testcase
+      // publishes no lastExecution.status, the simulator still reports BUSY
+      // on our execution, which is the same fact by another route.
+      if (ctx.simulatorId) {
+        const s = await jsonFetch(`${apiBase(ctx.systemHost)}/simulators/${encodeURIComponent(ctx.simulatorId)}/status`, { headers: authHeaders(ctx) });
+        if (s.status === 200
+          && String(s.body?.availability ?? '').toUpperCase() === 'BUSY'
+          && String(s.body?.currentExecutionId ?? '') === ctx.executionId) {
+          return 'RUNNING (simulator BUSY)';
+        }
       }
       return undefined;
     }, { intervalMs: 2000, timeoutMs: 30000, isCanceled: ctx.isCanceled });

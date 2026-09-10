@@ -6,7 +6,7 @@
 // this route never writes anything, so it's safe to hit on every page load.
 
 import { NextResponse } from 'next/server';
-import { loadInventory, getSystem } from '@/lib/inventory';
+import { loadInventory, getSystem, callboxForProfile } from '@/lib/inventory';
 import { readCommand, writeRemoteFile } from '@/lib/configFidelity/ssh';
 import { currentCfgLinks } from '@/lib/labCfgLink';
 
@@ -17,7 +17,7 @@ export const dynamic = 'force-dynamic';
  *  of the UE. */
 function callboxForSimnovator(inv: ReturnType<typeof loadInventory>, simnovatorId: string) {
   const profile = inv.profiles.find((p) => p.simnovator === simnovatorId);
-  return profile?.callbox ? getSystem(inv, profile.callbox) : undefined;
+  return callboxForProfile(inv, profile);
 }
 
 /** `ls -1 <dir>` -> real filenames, blank/noise lines dropped. */

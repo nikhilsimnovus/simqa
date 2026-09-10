@@ -409,6 +409,36 @@ export function getSystem(inv: Inventory, id: string): InventorySystem | undefin
   return inv.systems.find((s) => s.id === id);
 }
 
+/**
+ * The callbox a topology profile binds.
+ *
+ * Reads the RADIO slots first, because the dedicated `callbox` role was
+ * retired on 2026-08-27: a topology now names the box in `enb`/`gnb`, both of
+ * which accept a CALLBOX system. The legacy `callbox` key is still honoured
+ * last so inventories written before that change keep resolving.
+ *
+ * Prefers a system actually typed CALLBOX; falls back to whatever the slots
+ * name, since a split lab may register dedicated ENB/GNB boxes instead.
+ */
+export function callboxForProfile(inv: Inventory, profile?: TopologyProfile): InventorySystem | undefined {
+  if (!profile) return undefined;
+  const ids = [profile.enb, profile.gnb, (profile as { callbox?: string }).callbox].filter(Boolean) as string[];
+  for (const id of ids) {
+    const sys = getSystem(inv, id);
+    if (sys?.type === 'CALLBOX') return sys;
+  }
+  for (const id of ids) {
+    const sys = getSystem(inv, id);
+    if (sys) return sys;
+  }
+  return undefined;
+}
+
+/** The callbox bound to a Simnovator, via its topology profile. */
+export function callboxForSimnovator(inv: Inventory, simnovatorId: string): InventorySystem | undefined {
+  return callboxForProfile(inv, inv.profiles.find((p) => p.simnovator === simnovatorId));
+}
+
 export function getProfile(inv: Inventory, id: string): TopologyProfile | undefined {
   return inv.profiles.find((p) => p.id === id);
 }
