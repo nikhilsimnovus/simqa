@@ -137,10 +137,20 @@ export async function linkAndRestart(
       const r = await ssh.execCommand('sudo service lte restart');
       if (r.code !== 0) throw new Error(r.stderr || r.stdout || `restart exit ${r.code}`);
     });
-    // Same 15s settle Automation Suite waits out before considering the
-    // radio stack up — the enb/mme/ims processes need a moment to bind.
-    await new Promise((r) => setTimeout(r, 15_000));
-    stamp('cfg-restart', true, 'lte restarted (enb+mme+ims) + 15s settle', t0);
+    // Wait for the radio to actually be READY, not a fixed sleep.
+    //
+    // The old blind 15s was too short and produced the exact failure the DISH
+    // runbook warns about — "do not start the test while the radio is
+    // restarting, the UEs will fail to attach". Measured on the two-core
+    // two-cell build: lte restarted 04:18:41, NG setup completed 04:19:02 —
+    // 21s. The run triggered at 15s and attached 0/30 UEs.
+    //
+    // OTS rotates /tmp/gnb0.log on restart, so ANY setup response in the new
+    // file is this bring-up's. Accept the NR (NGAP) or LTE (S1AP) marker.
+    const ready = await waitForRadio(callbox);
+    stamp('cfg-restart', ready.ok,
+      `lte restarted — ${ready.detail}`, t0);
+    if (!ready.ok) return { ok: false, steps };
   } catch (e: any) {
     stamp('cfg-restart', false, e?.message ?? String(e), t0);
     return { ok: false, steps };
@@ -203,4 +213,56 @@ export async function ueDbFor(callbox: InventorySystem, mmeCfgName: string): Pro
   } catch {
     return [];
   }
+}
+
+/** How long to wait for the radio to report a completed setup before giving
+ *  up. Generous: a two-core build takes ~21s, a cold SDR can take longer. */
+const RADIO_READY_TIMEOUT_MS = 120_000;
+const RADIO_POLL_MS = 3_000;
+/**
+ * Extra settle after the core setup completes, before we let a testcase fire.
+ *
+ * Measured on the two-core DISH build: `lte` restarted at 04:28:01, NG setup
+ * completed ~21s later, but the first UE did not register until 04:29:04 —
+ * 63s after the restart. Triggering at ~20s produced either 0/30 attached or
+ * a 500 "failed to start UE" from the simulator. 40s past NG setup lands
+ * safely past that window without padding every run unnecessarily.
+ */
+const RADIO_SETTLE_MS = 40_000;
+
+/**
+ * Poll the gNB log until it reports a completed setup with the core(s).
+ *
+ * Returns ok:false rather than throwing so the caller records a failed step
+ * with a readable reason instead of a stack trace — and, importantly, does
+ * NOT trigger a testcase into a radio that never came up.
+ */
+async function waitForRadio(callbox: InventorySystem): Promise<{ ok: boolean; detail: string }> {
+  const started = Date.now();
+  let lastErr = '';
+  while (Date.now() - started < RADIO_READY_TIMEOUT_MS) {
+    try {
+      const out = await readCommand(
+        callbox,
+        `sudo -n grep -c -E "NG setup response|S1 setup response" /tmp/gnb0.log 2>/dev/null `
+        + `|| grep -c -E "NG setup response|S1 setup response" /tmp/gnb0.log 2>/dev/null || echo 0`,
+      );
+      // Last line only: the sudo/non-sudo fallback can emit two counts.
+      const parts = out.trim().split(String.fromCharCode(10));
+      const n = parseInt((parts[parts.length - 1] || '0').trim(), 10);
+      if (n > 0) {
+        await new Promise((r) => setTimeout(r, RADIO_SETTLE_MS));
+        const waited = Math.round((Date.now() - started) / 1000);
+        return { ok: true, detail: `${n} core setup response(s) after ${waited}s, +${RADIO_SETTLE_MS / 1000}s settle` };
+      }
+    } catch (e: any) {
+      lastErr = e?.message ?? String(e);
+    }
+    await new Promise((r) => setTimeout(r, RADIO_POLL_MS));
+  }
+  return {
+    ok: false,
+    detail: `radio did not report a completed core setup within ${RADIO_READY_TIMEOUT_MS / 1000}s`
+      + `${lastErr ? ` (last read error: ${lastErr})` : ''} — refusing to trigger into a restarting radio`,
+  };
 }

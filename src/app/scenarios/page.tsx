@@ -20,6 +20,7 @@ import { cn } from '@/lib/cn';
 interface Scenario {
   id: string; name: string;
   testcaseId: string; testcaseName?: string;
+  topologyId?: string; lastTopologyId?: string;
   systemId?: string; lastSystemId?: string;
   lastRunAt?: string; lastRunId?: string;
   notes?: string; createdBy?: string;
@@ -43,6 +44,7 @@ const CFG_SLOTS: { key: keyof CfgSel; label: string; from: 'enb' | 'mme'; hint: 
   { key: 'ims',  label: 'IMS config',       from: 'mme', hint: 'becomes ims.cfg' },
 ];
 interface SystemRow { id: string; name: string; host: string; type: string }
+interface TopologyRow { id: string; name: string; simnovator?: string; enb?: string; gnb?: string }
 interface TestcaseRow { id: string; name: string }
 
 const SELECT_CLS =
@@ -52,6 +54,7 @@ const SELECT_CLS =
 export default function ScenariosPage() {
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [systems, setSystems] = useState<SystemRow[]>([]);
+  const [topologies, setTopologies] = useState<TopologyRow[]>([]);
   const [testcases, setTestcases] = useState<TestcaseRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -75,6 +78,9 @@ export default function ScenariosPage() {
       // filter the rest of the app uses.
       const inv = await fetch('/api/inventory', { cache: 'no-store' }).then((x) => x.json()).catch(() => null);
       setSystems((inv?.systems ?? []).filter((s: SystemRow) => s.type === 'SIMNOVATOR' || s.type === 'SIMNOVATOR_GUI' || s.type === 'UESIM'));
+      // Topology is the unit a scenario runs against: it names the Simnovator
+      // that owns the testcase AND the callbox whose configs get linked.
+      setTopologies(inv?.profiles ?? []);
       const tc = await fetch('/api/testcases?limit=500', { cache: 'no-store' }).then((x) => x.json()).catch(() => null);
       setTestcases((tc?.items ?? []).map((t: any) => ({ id: t.id, name: t.name })));
       setLoading(false);
@@ -87,17 +93,25 @@ export default function ScenariosPage() {
     return s ? `${s.name} · ${s.host}` : id;
   }, [systems]);
 
-  async function run(s: Scenario, systemId?: string) {
+  const topologyLabel = useCallback((id?: string) => {
+    if (!id) return null;
+    const t = topologies.find((x) => x.id === id);
+    if (!t) return id;
+    const sim = systems.find((x) => x.id === t.simnovator);
+    return sim ? `${t.name} · ${sim.host}` : t.name;
+  }, [topologies, systems]);
+
+  async function run(s: Scenario, topologyId?: string) {
     setBusyId(s.id);
     try {
       const r = await fetch(`/api/scenarios/${encodeURIComponent(s.id)}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(systemId ? { systemId } : {}),
+        body: JSON.stringify(topologyId ? { topologyId } : {}),
       });
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
-      flash('ok', `${s.name} started on ${systemLabel(j.systemId)} — run ${j.runId}`);
+      flash('ok', `${s.name} started on ${topologyLabel(j.topologyId) ?? systemLabel(j.systemId)} — run ${j.runId}`);
       await reload();
     } catch (e: any) {
       flash('err', `${s.name}: ${e?.message ?? e}`);
@@ -131,6 +145,7 @@ export default function ScenariosPage() {
       <main className="p-5 space-y-4">
         {creating ? (
           <NewScenarioForm
+            topologies={topologies}
             systems={systems}
             testcases={testcases}
             onCancel={() => setCreating(false)}
@@ -156,7 +171,7 @@ export default function ScenariosPage() {
             <table className="w-full text-sm">
               <thead className="text-left text-xs uppercase tracking-wider text-slate-500">
                 <tr>
-                  {['Scenario', 'Test case', 'Callbox configs', 'Last run', 'System', 'Action'].map((label, i) => (
+                  {['Scenario', 'Test case', 'Callbox configs', 'Last run', 'Topology', 'Action'].map((label, i) => (
                     <th
                       key={label}
                       className={cn(
@@ -172,7 +187,8 @@ export default function ScenariosPage() {
                   <ScenarioRow
                     key={s.id}
                     s={s}
-                    systems={systems}
+                    topologies={topologies}
+                    topologyLabel={topologyLabel}
                     systemLabel={systemLabel}
                     busy={busyId === s.id}
                     onRun={(sysId) => run(s, sysId)}
@@ -189,15 +205,20 @@ export default function ScenariosPage() {
 }
 
 function ScenarioRow({
-  s, systems, systemLabel, busy, onRun, onDelete,
+  s, topologies, topologyLabel, systemLabel, busy, onRun, onDelete,
 }: {
-  s: Scenario; systems: SystemRow[]; systemLabel: (id?: string) => string | null;
-  busy: boolean; onRun: (systemId?: string) => void; onDelete: () => void;
+  s: Scenario; topologies: TopologyRow[];
+  topologyLabel: (id?: string) => string | null;
+  systemLabel: (id?: string) => string | null;
+  busy: boolean; onRun: (topologyId?: string) => void; onDelete: () => void;
 }) {
-  // The box this click would use, resolved the same way the API resolves it.
-  const remembered = s.systemId || s.lastSystemId;
+  // What this click would target, resolved the same way the API resolves it:
+  // pinned topology, else the one it last ran on. Legacy scenarios that only
+  // ever had a bare system fall back to showing that.
+  const remembered = s.topologyId || s.lastTopologyId;
+  const legacySystem = !remembered ? (s.systemId || s.lastSystemId) : undefined;
   const [choice, setChoice] = useState<string>('');
-  const needsChoice = !(choice || remembered);
+  const needsChoice = !(choice || remembered || legacySystem);
   const cfgs = CFG_SLOTS.filter((sl) => s.cfgSelection?.[sl.key]);
 
   return (
@@ -234,11 +255,15 @@ function ScenarioRow({
         <select
           value={choice}
           onChange={(e) => setChoice(e.target.value)}
-          className={cn(SELECT_CLS, 'w-full max-w-[14rem]')}
-          aria-label={`System for ${s.name}`}
+          className={cn(SELECT_CLS, 'w-full max-w-[15rem]')}
+          aria-label={`Topology for ${s.name}`}
         >
-          <option value="">{remembered ? `Last: ${systemLabel(remembered)}` : '— choose —'}</option>
-          {systems.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.host}</option>)}
+          <option value="">
+            {remembered ? `Last: ${topologyLabel(remembered)}`
+              : legacySystem ? `Legacy: ${systemLabel(legacySystem)}`
+              : '— choose —'}
+          </option>
+          {topologies.map((t) => <option key={t.id} value={t.id}>{topologyLabel(t.id)}</option>)}
         </select>
       </td>
 
@@ -263,14 +288,14 @@ function ScenarioRow({
 }
 
 function NewScenarioForm({
-  systems, testcases, onCancel, onCreated, onError,
+  topologies, systems, testcases, onCancel, onCreated, onError,
 }: {
-  systems: SystemRow[]; testcases: TestcaseRow[];
+  topologies: TopologyRow[]; systems: SystemRow[]; testcases: TestcaseRow[];
   onCancel: () => void; onCreated: () => void; onError: (t: string) => void;
 }) {
   const [name, setName] = useState('');
   const [testcaseId, setTestcaseId] = useState('');
-  const [systemId, setSystemId] = useState('');
+  const [topologyId, setTopologyId] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [q, setQ] = useState('');
@@ -281,16 +306,16 @@ function NewScenarioForm({
   // Cfg files live on the callbox bound to the chosen Simnovator, so the
   // pickers can only be populated once a system is picked.
   useEffect(() => {
-    if (!systemId) { setOpts(null); return; }
+    if (!topologyId) { setOpts(null); return; }
     let cancelled = false;
     setOptsLoading(true);
-    fetch(`/api/scenarios/cfg-options?systemId=${encodeURIComponent(systemId)}`, { cache: 'no-store' })
+    fetch(`/api/scenarios/cfg-options?topologyId=${encodeURIComponent(topologyId)}`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((j) => { if (!cancelled && j?.ok) { setOpts(j); setCfg(j.current ?? {}); } })
       .catch(() => { if (!cancelled) setOpts(null); })
       .finally(() => { if (!cancelled) setOptsLoading(false); });
     return () => { cancelled = true; };
-  }, [systemId]);
+  }, [topologyId]);
 
   // The subscriber DB the chosen MME config pulls in — shown, not chosen.
   const ueDb = cfg.mme ? (opts?.ueDb?.[cfg.mme] ?? []) : [];
@@ -311,7 +336,7 @@ function NewScenarioForm({
         body: JSON.stringify({
           name: name.trim(), testcaseId,
           testcaseName: testcases.find((t) => t.id === testcaseId)?.name,
-          systemId: systemId || undefined,
+          topologyId: topologyId || undefined,
           cfgSelection: Object.values(cfg).some(Boolean) ? cfg : undefined,
           notes: notes.trim() || undefined,
         }),
@@ -334,10 +359,13 @@ function NewScenarioForm({
           <Field label="Name" hint="what the card shows, e.g. DishDemo">
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="DishDemo" />
           </Field>
-          <Field label="System" hint="optional — leave empty to use whichever box it last ran on">
-            <select value={systemId} onChange={(e) => setSystemId(e.target.value)} className={cn(SELECT_CLS, 'w-full')}>
-              <option value="">— remember the last-used box —</option>
-              {systems.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.host}</option>)}
+          <Field label="Topology" hint="names both the Simnovator that runs the testcase and the callbox whose configs get linked">
+            <select value={topologyId} onChange={(e) => setTopologyId(e.target.value)} className={cn(SELECT_CLS, 'w-full')}>
+              <option value="">— remember the last-used topology —</option>
+              {topologies.map((t) => {
+                const sim = systems.find((x) => x.id === t.simnovator);
+                return <option key={t.id} value={t.id}>{sim ? `${t.name} · ${sim.host}` : t.name}</option>;
+              })}
             </select>
           </Field>
         </div>
@@ -352,7 +380,7 @@ function NewScenarioForm({
         </select>
         {/* Callbox config set — only meaningful once a system (hence a bound
             callbox) is chosen. */}
-        {systemId ? (
+        {topologyId ? (
           <div className="rounded-lg border border-line bg-panel p-3">
             <div className="mb-2 flex items-baseline gap-2">
               <span className="font-mono text-[10px] font-semibold uppercase tracking-label text-slate-500">
@@ -361,7 +389,7 @@ function NewScenarioForm({
               <span className="text-[11px] font-light text-slate-500">
                 {optsLoading ? 'reading the callbox…'
                   : opts?.callbox ? `${opts.callbox.name} · ${opts.callbox.host} — linked before each run, then one lte restart`
-                  : 'no callbox bound to this system in the topology — REST-only run'}
+                  : 'this topology binds no callbox — REST-only run'}
               </span>
             </div>
             {opts?.callbox ? (

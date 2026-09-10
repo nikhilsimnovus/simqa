@@ -1,11 +1,12 @@
-// GET /api/scenarios/cfg-options?systemId=<simnovator id>
+// GET /api/scenarios/cfg-options?topologyId=<profile id>  (or ?systemId= for
+// legacy callers)
 //
 // The cfg files available on the callbox bound to a given Simnovator, split
 // by slot, plus what is currently linked and which subscriber DB each MME
 // config pulls in. One call so the scenario editor can populate every
 // dropdown without the page orchestrating four round trips.
 import { NextResponse } from 'next/server';
-import { loadInventory, callboxForSimnovator } from '@/lib/inventory';
+import { loadInventory, callboxForSimnovator, callboxForProfile, getProfile } from '@/lib/inventory';
 import { currentCfgLinks, ueDbFor } from '@/lib/labCfgLink';
 import { readCommand } from '@/lib/configFidelity/ssh';
 
@@ -22,10 +23,18 @@ async function listDir(box: any, dir: string): Promise<string[]> {
 }
 
 export async function GET(req: Request) {
-  const systemId = new URL(req.url).searchParams.get('systemId') ?? '';
-  if (!systemId) return NextResponse.json({ ok: false, error: 'systemId required' }, { status: 400 });
+  const url = new URL(req.url);
+  const topologyId = url.searchParams.get('topologyId') ?? '';
+  const systemId = url.searchParams.get('systemId') ?? '';
+  if (!topologyId && !systemId) {
+    return NextResponse.json({ ok: false, error: 'topologyId (or legacy systemId) required' }, { status: 400 });
+  }
   const inv = loadInventory();
-  const box = callboxForSimnovator(inv, systemId);
+  // Topology first — it names the callbox directly, so no guessing which box
+  // a bare system is wired to.
+  const box = topologyId
+    ? callboxForProfile(inv, getProfile(inv, topologyId))
+    : callboxForSimnovator(inv, systemId);
   if (!box) {
     // Not an error: a REST-only setup has no callbox, and the editor should
     // simply show no cfg pickers rather than a failure.

@@ -27,8 +27,21 @@ export interface Scenario {
   /** Testcase name captured at save time, so the card stays readable even if
    *  the box is unreachable when the page loads. */
   testcaseName?: string;
-  /** Inventory id of the system to run on. When unset, a run uses
-   *  `lastSystemId` — that is the "use the last-ran system" behaviour. */
+  /**
+   * Topology profile to run against — the PRIMARY selection.
+   *
+   * A topology is the right unit, not a bare system: it names the Simnovator
+   * that owns the testcase AND the callbox whose configs get linked, so one
+   * choice settles both. Picking a system alone left the callbox implicit.
+   */
+  topologyId?: string;
+  /** Topology the last run actually used — the "same as last time" default. */
+  lastTopologyId?: string;
+  /**
+   * LEGACY: a bare system id. Scenarios saved before topology selection
+   * existed carry this, and it still resolves, so old cards keep working.
+   * New scenarios should set `topologyId`.
+   */
   systemId?: string;
   /** Inventory id of the system the last run actually used. */
   lastSystemId?: string;
@@ -115,6 +128,7 @@ export function createScenario(input: Partial<Scenario> & { name: string; testca
     name: input.name.trim(),
     testcaseId: input.testcaseId,
     testcaseName: input.testcaseName,
+    topologyId: input.topologyId,
     systemId: input.systemId,
     cfgSelection: input.cfgSelection,
     notes: input.notes,
@@ -146,15 +160,27 @@ export function deleteScenario(id: string): boolean {
   return true;
 }
 
-/** Record that a run fired, so the next one can default to the same box. */
-export function recordRun(id: string, systemId: string, runId: string): void {
-  updateScenario(id, { lastSystemId: systemId, lastRunAt: new Date().toISOString(), lastRunId: runId });
+/** Record that a run fired, so the next one can default to the same target. */
+export function recordRun(id: string, systemId: string, runId: string, topologyId?: string): void {
+  updateScenario(id, {
+    lastSystemId: systemId,
+    ...(topologyId ? { lastTopologyId: topologyId } : {}),
+    lastRunAt: new Date().toISOString(),
+    lastRunId: runId,
+  });
 }
 
 /**
- * Which system a run should target: an explicit choice wins, then the
- * scenario's pinned system, then the box it last ran on. Returns undefined
- * when the scenario has never run and pins nothing — the caller must ask.
+ * Which topology a run should target: an explicit choice wins, then the
+ * scenario's pinned topology, then the one it last ran on.
+ */
+export function resolveTopologyId(s: Scenario, explicit?: string): string | undefined {
+  return explicit || s.topologyId || s.lastTopologyId;
+}
+
+/**
+ * Legacy fallback for scenarios saved before topology selection: a bare
+ * system id. Only consulted when no topology resolves.
  */
 export function resolveSystemId(s: Scenario, explicit?: string): string | undefined {
   return explicit || s.systemId || s.lastSystemId;

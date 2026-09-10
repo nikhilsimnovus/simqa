@@ -32,6 +32,7 @@ export async function POST(req: Request) {
   const s = createScenario({
     name, testcaseId,
     testcaseName: body?.testcaseName ? String(body.testcaseName) : undefined,
+    topologyId: body?.topologyId ? String(body.topologyId) : undefined,
     systemId: body?.systemId ? String(body.systemId) : undefined,
     cfgSelection: pickCfg(body?.cfgSelection),
     notes: body?.notes ? String(body.notes) : undefined,
