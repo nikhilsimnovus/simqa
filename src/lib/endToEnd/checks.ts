@@ -1043,6 +1043,38 @@ function ueAttached(row: any): boolean {
  *  ue_id FIRST, because ue_data is a time series (one row per UE per sample;
  *  counting raw rows would over-count by the sample factor and trivially
  *  satisfy any "all N UEs attached" threshold — see latestPerUe). */
+/**
+ * WHEN THIS REPORTS ZERO — read this before blaming the endpoint.
+ *
+ * A previous commit message (5343e92) claimed /statistics/ues had a "box-side
+ * association problem" that made stats unretrievable for scenario-triggered
+ * executions. That was WRONG, and this note is the correction.
+ *
+ * The pipeline is fine. Verified by reading the box's own database:
+ *   host   192.168.1.95, container simnovator-timescaledb
+ *   db     testcase_and_kpi, table uestats
+ *   key    iteration_id — which IS the execution id the API queries
+ *   time   utc, in SECONDS (matches the API's startTime/endTime)
+ * One execution that this check reported as 0 UEs had 36,000 rows sitting in
+ * that table under its own id, carrying the expected IMSIs.
+ *
+ * The catch was timing, not addressing. Those rows spanned 23:52-00:13 while
+ * the execution's own executedOn said 22:59 — the UEs did not attach for ~54
+ * minutes, and only started once app-manager was restarted on the UE-Sim
+ * host. The endpoint returned nothing because at query time nothing existed
+ * yet, and this check correctly reported what it saw.
+ *
+ * So a zero here means ZERO UEs ATTACHED, not a broken query. The failure
+ * mode behind it: after a callbox `lte` restart the UE simulator may fail to
+ * attach and stay that way until `simnovator-agent` + `app-manager` are
+ * restarted on the simulator host (see labCfgLink's radio-readiness note for
+ * the settle this already waits out).
+ *
+ * To check the DB yourself:
+ *   podman exec simnovator-timescaledb psql -U postgres -d testcase_and_kpi  *     -c "set max_parallel_workers_per_gather=0;  *         select count(*) from uestats where iteration_id='<execId>';"
+ * The `set` matters — the container's /dev/shm is 62.5MB and a parallel
+ * aggregate over this table dies with "No space left on device".
+ */
 async function fetchTotalUes(ctx: RunCtx): Promise<number | undefined> {
   const { start, end } = statsWindowSec(120);
   const f = await jsonFetch(`${apiBase(ctx.systemHost)}/testcases/executions/${encodeURIComponent(ctx.executionId!)}/statistics/ues?startTime=${start}&endTime=${end}`, { headers: authHeaders(ctx) });
