@@ -12,13 +12,24 @@ import { readCommand } from '@/lib/configFidelity/ssh';
 
 export const dynamic = 'force-dynamic';
 
-async function listDir(box: any, dir: string): Promise<string[]> {
+/**
+ * List a callbox config directory, reporting a failure instead of hiding it.
+ *
+ * This used to `catch` and return [], so a read that failed — typically a cold
+ * SSH handshake on the first request after the server starts — came back as an
+ * EMPTY list. The editor then rendered empty dropdowns, indistinguishable from
+ * a callbox that genuinely has no configs, and nothing reached the server log:
+ * a real request showed 0 eNB / 0 MME against a box holding 171 and 46.
+ */
+async function listDir(box: any, dir: string): Promise<{ files: string[]; error?: string }> {
   try {
     // sudo first: /root is 0700 on some callboxes.
     const out = await readCommand(box, `sudo -n ls -1 ${dir} 2>/dev/null || ls -1 ${dir} 2>/dev/null || true`);
-    return out.split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.cfg')).sort();
-  } catch {
-    return [];
+    return { files: out.split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.cfg')).sort() };
+  } catch (e: any) {
+    const error = e?.message ?? String(e);
+    console.error(`[scenarios/cfg-options] could not list ${dir} on ${box?.host}: ${error}`);
+    return { files: [], error };
   }
 }
 
@@ -38,10 +49,10 @@ export async function GET(req: Request) {
   if (!box) {
     // Not an error: a REST-only setup has no callbox, and the editor should
     // simply show no cfg pickers rather than a failure.
-    return NextResponse.json({ ok: true, callbox: null, enb: [], mme: [], current: {}, ueDb: {} });
+    return NextResponse.json({ ok: true, callbox: null, enb: [], mme: [], current: {}, ueDb: {}, readErrors: [] });
   }
 
-  const [enbFiles, mmeFiles, current] = await Promise.all([
+  const [enbRes, mmeRes, current] = await Promise.all([
     listDir(box, '/root/enb/config'),
     listDir(box, '/root/mme/config'),
     currentCfgLinks(box).catch(() => ({})),
@@ -55,6 +66,13 @@ export async function GET(req: Request) {
   return NextResponse.json({
     ok: true,
     callbox: { id: box.id, name: box.name, host: box.host },
-    enb: enbFiles, mme: mmeFiles, current, ueDb,
+    enb: enbRes.files, mme: mmeRes.files, current, ueDb,
+    // Non-empty means a list above may be empty because the READ failed, not
+    // because the directory is — the editor says so instead of showing blank
+    // dropdowns.
+    readErrors: [
+      ...(enbRes.error ? [`/root/enb/config: ${enbRes.error}`] : []),
+      ...(mmeRes.error ? [`/root/mme/config: ${mmeRes.error}`] : []),
+    ],
   });
 }

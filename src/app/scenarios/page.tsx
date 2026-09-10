@@ -32,6 +32,8 @@ interface CfgOptions {
   enb: string[]; mme: string[];
   current: CfgSel;
   ueDb: Record<string, string[]>;
+  /** A list above may be empty because reading it FAILED — see cfg-options. */
+  readErrors?: string[];
 }
 /** The five symlink slots, and which directory listing feeds each. The UE
  *  database is absent on purpose: it is an `include` inside the MME config,
@@ -324,6 +326,8 @@ function ScenarioForm({
   const [cfg, setCfg] = useState<CfgSel>(existing?.cfgSelection ?? {});
   const [opts, setOpts] = useState<CfgOptions | null>(null);
   const [optsLoading, setOptsLoading] = useState(false);
+  // Bumped by Retry to re-run the fetch below without changing the topology.
+  const [optsNonce, setOptsNonce] = useState(0);
 
   // Cfg files live on the callbox bound to the chosen Simnovator, so the
   // pickers can only be populated once a system is picked.
@@ -340,12 +344,12 @@ function ScenarioForm({
         // editing, the scenario's saved selection is the answer — overwriting
         // it with whatever the callbox happens to be wearing would silently
         // rewrite the thing being edited.
-        if (!editing) setCfg(j.current ?? {});
+        if (!editing && optsNonce === 0) setCfg(j.current ?? {});
       })
       .catch(() => { if (!cancelled) setOpts(null); })
       .finally(() => { if (!cancelled) setOptsLoading(false); });
     return () => { cancelled = true; };
-  }, [topologyId]);
+  }, [topologyId, optsNonce]);
 
   // The subscriber DB the chosen MME config pulls in — shown, not chosen.
   const ueDb = cfg.mme ? (opts?.ueDb?.[cfg.mme] ?? []) : [];
@@ -427,6 +431,19 @@ function ScenarioForm({
                   : 'this topology binds no callbox — REST-only run'}
               </span>
             </div>
+            {opts?.readErrors?.length ? (
+              <div className="mb-2 flex items-start justify-between gap-3 rounded-md border border-amber-600/25 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800">
+                <span>
+                  Couldn&apos;t read part of the callbox, so a list below may be incomplete rather than
+                  genuinely empty — {opts.readErrors.join('; ')}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setOptsNonce((n) => n + 1)}
+                  className="shrink-0 font-medium text-amber-900 underline hover:no-underline"
+                >Retry</button>
+              </div>
+            ) : null}
             {opts?.callbox ? (
               <>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
