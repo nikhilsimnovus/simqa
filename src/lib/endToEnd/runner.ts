@@ -166,7 +166,12 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
     testcaseId,
     evidenceDir,
     cfgSelection: req.cfgSelection,
-    callbox: callboxForSimnovator(inv, target.systemId),
+    // The topology the caller chose names its callbox directly. Deriving it
+    // from the Simnovator instead takes whichever topology lists that
+    // Simnovator first — the wrong callbox once two topologies share one.
+    callbox: req.topologyId
+      ? callboxForProfile(inv, inv.profiles.find((p) => p.id === req.topologyId))
+      : callboxForSimnovator(inv, target.systemId),
     isCanceled: () => activeRuns.get(runId)?.canceled === true,
     emit: () => { /* runner manages liveStatus directly; checks don't need to emit */ },
     // Pre-seeded in attach mode so the During / Completion / After checks —

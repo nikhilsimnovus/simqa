@@ -129,6 +129,10 @@ export interface RunRequest {
    *  src/lib/labCfgLink.ts — before preflight proceeds. Omit for a plain
    *  REST-only validation run (unchanged default behaviour). */
   cfgSelection?: { enb?: string; gnb?: string; mme?: string; mme2?: string; ims?: string };
+  /** Topology the caller chose, when it chose one. It names the callbox that
+   *  cfgSelection is linked on; without it the runner falls back to the first
+   *  topology listing `systemId` as its Simnovator. */
+  topologyId?: string;
 }
 
 export interface RunOptions {

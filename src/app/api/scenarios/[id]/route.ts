@@ -1,6 +1,6 @@
 // GET / PUT / DELETE a single scenario.
 import { NextResponse } from 'next/server';
-import { getScenario, updateScenario, deleteScenario } from '@/lib/scenarios';
+import { getScenario, updateScenario, deleteScenario, normalizeCfgSelection } from '@/lib/scenarios';
 import { userFromRequest } from '@/lib/identity';
 
 export const dynamic = 'force-dynamic';
@@ -10,21 +10,6 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const s = getScenario(id);
   if (!s) return NextResponse.json({ ok: false, error: 'not found' }, { status: 404 });
   return NextResponse.json({ ok: true, scenario: s });
-}
-
-/** Keep only the five known cfg slots, as non-empty strings — the same
- *  filtering POST does, so an edit can't store a shape a run would later feed
- *  to a symlink. `null` means "clear the selection" and is preserved as such;
- *  `undefined` means "leave it alone". */
-function normalizeCfg(raw: unknown): Record<string, string> | null | undefined {
-  if (raw === null) return null;
-  if (!raw || typeof raw !== 'object') return undefined;
-  const out: Record<string, string> = {};
-  for (const k of ['enb', 'gnb', 'mme', 'mme2', 'ims']) {
-    const v = (raw as Record<string, unknown>)[k];
-    if (typeof v === 'string' && v.trim()) out[k] = v.trim();
-  }
-  return Object.keys(out).length ? out : null;
 }
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -50,8 +35,18 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     patch.testcaseId = t;
   }
 
+  // The target is a topology XOR a system, so switching kinds in the editor
+  // sends the other one as null, meaning "clear it". Set to undefined so the
+  // JSON write drops the key, rather than storing a null in the file.
+  for (const k of ['topologyId', 'systemId', 'testcaseSystemId']) {
+    if (k in patch) {
+      const v = patch[k];
+      patch[k] = typeof v === 'string' && v.trim() ? v.trim() : undefined;
+    }
+  }
+
   if ('cfgSelection' in patch) {
-    const cfg = normalizeCfg(patch.cfgSelection);
+    const cfg = normalizeCfgSelection(patch.cfgSelection);
     // undefined would be dropped by the JSON round-trip and silently keep the
     // old value, so a cleared selection is stored as an explicit absence.
     if (cfg === null) patch.cfgSelection = undefined;

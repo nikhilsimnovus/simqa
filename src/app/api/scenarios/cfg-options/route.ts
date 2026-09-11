@@ -63,10 +63,16 @@ export async function GET(req: Request) {
   // the editor stuck on "reading the callbox…".
   const ueDb = await ueDbForAll(box).catch(() => ({}));
 
+  // gnb.cfg is not a slot the editor offers — OTS loads only enb.cfg, for LTE
+  // and NR alike — so it is not reported as "current" either. On .107 a stale
+  // gnb.cfg link would otherwise pre-fill a selection nothing reads.
+  const currentSlots: Record<string, unknown> = { ...current };
+  delete currentSlots.gnb;
+
   return NextResponse.json({
     ok: true,
     callbox: { id: box.id, name: box.name, host: box.host },
-    enb: enbRes.files, mme: mmeRes.files, current, ueDb,
+    enb: enbRes.files, mme: mmeRes.files, current: currentSlots, ueDb,
     // Non-empty means a list above may be empty because the READ failed, not
     // because the directory is — the editor says so instead of showing blank
     // dropdowns.

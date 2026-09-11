@@ -36,18 +36,28 @@ const PANEL_MAX_H = 340;
  *  gets a small scroller rather than a sliver. */
 const MIN_PANEL_H = 160;
 
+/** A bare string is its own value and label (a cfg filename). The object form
+ *  is for rows whose value is not what a person reads — a testcase UUID shown
+ *  by name. `hint` is dim text on the right of the row; search matches all three. */
+export type SearchableOption = string | { value: string; label: string; hint?: string };
+
 interface Props {
   value: string;
   onChange: (v: string) => void;
-  options: string[];
+  options: SearchableOption[];
   disabled?: boolean;
   /** Placeholder for the search box, e.g. "Search 108 files…". */
   placeholder?: string;
   /** Accessible name, since the visible label sits outside this component. */
   ariaLabel?: string;
+  /** What one row is, for the footer and the no-match line. Default "file". */
+  noun?: string;
+  /** Shown on the button when `value` is not among the options — still
+   *  loading, say, so an edit form shows the saved choice rather than a UUID. */
+  valueLabel?: string;
 }
 
-export function SearchableSelect({ value, onChange, options, disabled, placeholder, ariaLabel }: Props) {
+export function SearchableSelect({ value, onChange, options, disabled, placeholder, ariaLabel, noun = 'file', valueLabel }: Props) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   /** Index into `filtered`, or -1 for the "none" row above it. */
@@ -59,11 +69,22 @@ export function SearchableSelect({ value, onChange, options, disabled, placehold
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
+  const opts = useMemo(
+    () => options.map((o) => (typeof o === 'string' ? { value: o, label: o, hint: undefined as string | undefined } : o)),
+    [options],
+  );
+
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    if (!needle) return options;
-    return options.filter((o) => o.toLowerCase().includes(needle));
-  }, [options, q]);
+    if (!needle) return opts;
+    return opts.filter((o) =>
+      o.label.toLowerCase().includes(needle)
+      || o.value.toLowerCase().includes(needle)
+      || (o.hint ?? '').toLowerCase().includes(needle));
+  }, [opts, q]);
+
+  const shown = value ? (opts.find((o) => o.value === value)?.label ?? valueLabel ?? value) : '';
+  const plural = (n: number) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
   /** Where the panel goes: under the button, or above it when the viewport has
    *  no room below (these controls sit low on the page often enough). */
@@ -149,7 +170,7 @@ export function SearchableSelect({ value, onChange, options, disabled, placehold
     }
     if (e.key === 'Enter') {
       e.preventDefault();
-      pick(cursor < 0 ? '' : filtered[cursor] ?? '');
+      pick(cursor < 0 ? '' : filtered[cursor]?.value ?? '');
     }
   };
 
@@ -173,7 +194,7 @@ export function SearchableSelect({ value, onChange, options, disabled, placehold
           value={q}
           onChange={(e) => { setQ(e.target.value); setCursor(-1); }}
           onKeyDown={onKeyDown}
-          placeholder={placeholder ?? `Search ${options.length} files…`}
+          placeholder={placeholder ?? `Search ${plural(opts.length)}…`}
           className="w-full bg-transparent text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none"
         />
       </div>
@@ -189,21 +210,22 @@ export function SearchableSelect({ value, onChange, options, disabled, placehold
         </button>
 
         {filtered.length === 0 ? (
-          <div className="px-3 py-2 text-xs text-slate-500">No file matches “{q}”.</div>
+          <div className="px-3 py-2 text-xs text-slate-500">No {noun} matches “{q}”.</div>
         ) : filtered.map((o, i) => (
           <button
-            key={o}
+            key={o.value}
             type="button"
             data-idx={i}
-            onClick={() => pick(o)}
-            title={o}
+            onClick={() => pick(o.value)}
+            title={o.label === o.value ? o.label : `${o.label} — ${o.value}`}
             className={
-              'block w-full truncate px-3 py-1.5 text-left text-sm hover:bg-slate-100 ' +
-              (o === value ? 'font-medium text-primary-700 ' : 'text-slate-800 ') +
+              'flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-sm hover:bg-slate-100 ' +
+              (o.value === value ? 'font-medium text-primary-700 ' : 'text-slate-800 ') +
               (cursor === i ? 'bg-slate-100' : '')
             }
           >
-            {o}
+            <span className="min-w-0 flex-1 truncate">{o.label}</span>
+            {o.hint ? <span className="shrink-0 text-[11px] font-normal text-slate-400">{o.hint}</span> : null}
           </button>
         ))}
       </div>
@@ -211,9 +233,9 @@ export function SearchableSelect({ value, onChange, options, disabled, placehold
       {/* Says how much of the list you are looking at — with 108 files, a
           filter that hides 104 of them should say so. */}
       <div className="shrink-0 border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
-        {filtered.length === options.length
-          ? `${options.length} file${options.length === 1 ? '' : 's'}`
-          : `${filtered.length} of ${options.length} files`}
+        {filtered.length === opts.length
+          ? plural(opts.length)
+          : `${filtered.length} of ${plural(opts.length)}`}
       </div>
     </div>,
     document.body,
@@ -235,8 +257,8 @@ export function SearchableSelect({ value, onChange, options, disabled, placehold
           'disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400'
         }
       >
-        <span className={`flex-1 truncate ${value ? 'text-slate-900' : 'text-slate-400'}`} title={value || NONE_LABEL}>
-          {value || NONE_LABEL}
+        <span className={`flex-1 truncate ${value ? 'text-slate-900' : 'text-slate-400'}`} title={shown || NONE_LABEL}>
+          {shown || NONE_LABEL}
         </span>
         {/* Clearing without opening the panel — the common correction after
             picking the wrong file. A <button> inside a <button> is invalid, so

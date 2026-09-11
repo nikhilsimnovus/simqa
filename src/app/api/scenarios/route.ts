@@ -1,22 +1,10 @@
 // GET  /api/scenarios       — list saved scenarios
 // POST /api/scenarios       — create one
 import { NextResponse } from 'next/server';
-import { listScenarios, createScenario } from '@/lib/scenarios';
+import { listScenarios, createScenario, normalizeCfgSelection } from '@/lib/scenarios';
 import { userFromRequest } from '@/lib/identity';
 
 export const dynamic = 'force-dynamic';
-
-/** Keep only the five known slots, as non-empty strings. Anything else a
- *  client sends is dropped rather than stored and later fed to a symlink. */
-function pickCfg(raw: any): { enb?: string; gnb?: string; mme?: string; mme2?: string; ims?: string } | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const out: Record<string, string> = {};
-  for (const k of ['enb', 'gnb', 'mme', 'mme2', 'ims']) {
-    const v = raw[k];
-    if (typeof v === 'string' && v.trim()) out[k] = v.trim();
-  }
-  return Object.keys(out).length ? out : undefined;
-}
 
 export async function GET() {
   return NextResponse.json({ ok: true, scenarios: listScenarios() });
@@ -29,12 +17,16 @@ export async function POST(req: Request) {
   const testcaseId = String(body?.testcaseId ?? '').trim();
   if (!name) return NextResponse.json({ ok: false, error: 'name required' }, { status: 400 });
   if (!testcaseId) return NextResponse.json({ ok: false, error: 'testcaseId required' }, { status: 400 });
+  const topologyId = body?.topologyId ? String(body.topologyId) : undefined;
   const s = createScenario({
     name, testcaseId,
     testcaseName: body?.testcaseName ? String(body.testcaseName) : undefined,
-    topologyId: body?.topologyId ? String(body.topologyId) : undefined,
-    systemId: body?.systemId ? String(body.systemId) : undefined,
-    cfgSelection: pickCfg(body?.cfgSelection),
+    testcaseSystemId: body?.testcaseSystemId ? String(body.testcaseSystemId) : undefined,
+    topologyId,
+    // Topology XOR system — a topology already names its Simnovator.
+    systemId: !topologyId && body?.systemId ? String(body.systemId) : undefined,
+    // Only a topology binds a callbox for these to be linked on.
+    cfgSelection: topologyId ? (normalizeCfgSelection(body?.cfgSelection) ?? undefined) : undefined,
     notes: body?.notes ? String(body.notes) : undefined,
   }, userFromRequest(req));
   return NextResponse.json({ ok: true, scenario: s });
