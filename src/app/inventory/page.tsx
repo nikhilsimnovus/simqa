@@ -145,7 +145,33 @@ const TYPE_META: Record<string, { icon: React.ComponentType<{ className?: string
   MME:        { icon: Network,     ring: 'ring-slate-200',  bg: 'bg-slate-50',    text: 'text-slate-700',    label: 'MME' },
   IMS:        { icon: Globe,       ring: 'ring-slate-200',  bg: 'bg-slate-50',    text: 'text-slate-700',    label: 'IMS' },
   APPSERVER:  { icon: Database,    ring: 'ring-slate-200',  bg: 'bg-slate-50',    text: 'text-slate-700',    label: 'App Server' },
+  // A system added but not yet given a type. Its own entry, not the UESIM
+  // fallback below, so an untyped row never reads as a real type.
+  '':         { icon: Server,      ring: 'ring-red-200',    bg: 'bg-red-50',      text: 'text-red-700',      label: 'No type' },
 };
+
+/** Every topology field that holds a system id. */
+const PROFILE_REF_KEYS = ['simnovator', 'uesim', 'callbox', 'appserver', 'enb', 'gnb', 'mme', 'ims'] as const;
+
+/**
+ * Old id -> new id for systems whose ID was edited, matched by IP address.
+ *
+ * Topologies refer to systems by id, so a rename used to leave every chain
+ * pointing at an id that no longer exists. Matched only when exactly one NEW
+ * id carries the old host; a box whose id AND address both changed is not
+ * guessed at — the topology editor shows that reference as not registered.
+ */
+function idRenames(before: InventorySystem[], after: InventorySystem[]): Map<string, string> {
+  const afterIds = new Set(after.map((s) => s.id));
+  const beforeIds = new Set(before.map((s) => s.id));
+  const out = new Map<string, string>();
+  for (const old of before) {
+    if (afterIds.has(old.id) || !old.host) continue;
+    const matches = after.filter((s) => s.host === old.host && !beforeIds.has(s.id));
+    if (matches.length === 1) out.set(old.id, matches[0].id);
+  }
+  return out;
+}
 
 function TypeChip({ type }: { type: string }) {
   const m = TYPE_META[type] ?? TYPE_META.UESIM;
@@ -235,20 +261,35 @@ export default function InventoryPage() {
   async function save() {
     setSaving(true); setMsg(null);
     try {
+      // Carry renamed system ids into the topologies that reference them.
+      let savedBefore: InventorySystem[] = [];
+      try { savedBefore = JSON.parse(savedSystems); } catch { /* baseline unreadable — no cascade */ }
+      const renames = idRenames(savedBefore, systems);
+      const nextProfiles = renames.size === 0 ? profiles : profiles.map((p) => {
+        const q: Record<string, unknown> = { ...p };
+        for (const k of PROFILE_REF_KEYS) {
+          const v = q[k];
+          if (typeof v === 'string' && renames.has(v)) q[k] = renames.get(v);
+        }
+        return q as unknown as TopologyProfile;
+      });
       const r = await fetch('/api/inventory', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...otherDoc, systems, profiles }),
+        body: JSON.stringify({ ...otherDoc, systems, profiles: nextProfiles }),
       });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error ?? `HTTP ${r.status}`);
       setSavedSystems(JSON.stringify(systems));
+      setProfiles(nextProfiles);
       // Collapse the open row. Add system opens an editor to type the details
       // into; once those details are saved the form has done its job, and
       // leaving it expanded reads as "not saved yet".
       setEditingIdx(null);
-      setMsg('Saved');
-      setTimeout(() => setMsg(null), 1500);
+      setMsg(renames.size
+        ? `Saved — topologies updated for ${renames.size} renamed ID${renames.size === 1 ? '' : 's'}`
+        : 'Saved');
+      setTimeout(() => setMsg(null), renames.size ? 4000 : 1500);
     } catch (e: any) {
       setMsg(`Error: ${e?.message ?? e}`);
     } finally {
@@ -274,7 +315,12 @@ export default function InventoryPage() {
       setSysQuery('');
       setSysType('');
       setTab('systems');
-      return [...s, { id: `sys-${n}`, type: 'SIMNOVATOR_GUI', name: '', host: '' }];
+      // No default type. It used to start as SIMNOVATOR_GUI, so a box saved
+      // without touching Type silently became a Simnovator — and got a bench
+      // of its own from the auto-sync. That is how the app server at .124 was
+      // registered as a Simnovator and never appeared in the App server picker.
+      // Save is blocked until a type is chosen (see `untyped`).
+      return [...s, { id: `sys-${n}`, type: '', name: '', host: '' }];
     });
   }
   function removeSystem(idx: number) {
@@ -306,6 +352,9 @@ export default function InventoryPage() {
     for (const s of systems) seen.set(s.id, (seen.get(s.id) ?? 0) + 1);
     return [...seen.entries()].filter(([, n]) => n > 1).map(([id]) => id);
   }, [systems]);
+
+  /** Systems with no type chosen yet — Save waits for them. */
+  const untyped = useMemo(() => systems.filter((s) => !s.type), [systems]);
 
   /** Filtered rows, each carrying its index in the UNFILTERED array — every
    *  handler addresses systems by position, so filtering must not renumber
@@ -343,6 +392,10 @@ export default function InventoryPage() {
           <div className="flex items-center gap-2">
             {msg ? (
               <span className={`text-xs ${msg.startsWith('Error') ? 'text-red-600' : 'text-emerald-600'}`}>{msg}</span>
+            ) : untyped.length ? (
+              <span className="text-xs text-red-600">
+                Choose a type for {untyped.map((s) => s.name || s.host || s.id).join(', ')}
+              </span>
             ) : dirty ? (
               <span className="text-xs text-amber-600">Unsaved changes</span>
             ) : null}
@@ -354,8 +407,9 @@ export default function InventoryPage() {
             <BackToDashboard />
             <Button size="sm" variant="secondary" onClick={addSystem}><Plus className="h-4 w-4" />Add system</Button>
             {/* Blocked while ids collide — saving would persist a document in
-                which lookups resolve to the wrong machine. */}
-            <Button size="sm" onClick={save} disabled={saving || duplicateIds.length > 0 || !dirty}>
+                which lookups resolve to the wrong machine — or while a system
+                has no type, which no role or runner can use. */}
+            <Button size="sm" onClick={save} disabled={saving || duplicateIds.length > 0 || untyped.length > 0 || !dirty}>
               {saving ? 'Saving…' : dirty ? 'Save changes' : 'Saved'}
             </Button>
           </div>
@@ -711,6 +765,7 @@ function SystemCard({
               onChange={(e) => onPatch({ type: e.target.value })}
               className={SELECT_CLS}
             >
+              {!sys.type ? <option value="">— choose type —</option> : null}
               {typeOptions(sys.type).map((t) => (
                 <option key={t} value={t}>{TYPE_META[t]?.label ?? t}</option>
               ))}
@@ -964,7 +1019,17 @@ function deriveProfiles(systems: InventorySystem[], existing: TopologyProfile[])
   const isOrphan = (p: TopologyProfile) =>
     ![p.simnovator, p.uesim, p.callbox, p.appserver].some((id) => id && systems.some((s) => s.id === id));
 
-  for (const p of existing) if (!claimed.has(p.id) && !isOrphan(p)) out.push(p);
+  // RETYPED is the other exception: a chain whose Simnovator is still
+  // registered but is no longer typed as one (changed to App Server, say).
+  // Nothing above claims it, and with no Delete on the cards it would stay
+  // forever — a bench for a machine that is not a Simnovator. The app server
+  // at .124, saved under the old Simnovator default, got exactly that.
+  const isRetyped = (p: TopologyProfile) => {
+    const s = p.simnovator ? systems.find((x) => x.id === p.simnovator) : undefined;
+    return !!s && !isSimnovator(s);
+  };
+
+  for (const p of existing) if (!claimed.has(p.id) && !isOrphan(p) && !isRetyped(p)) out.push(p);
   return out;
 }
 
@@ -1049,7 +1114,7 @@ function TopologySetupSection({
         // removed, and a chain disappearing from the page with no explanation
         // is exactly the silent deletion the derivation warns about.
         const n = -delta;
-        flash('ok', `Removed ${n} setup${n === 1 ? '' : 's'} whose systems are no longer registered`);
+        flash('ok', `Removed ${n} setup${n === 1 ? '' : 's'} with no registered Simnovator`);
       } else {
         flash('ok', 'Chains updated from your systems');
       }
@@ -1230,7 +1295,10 @@ function SetupCard({
             const sys = lookupSystem(systems, refId);
             return (
               <div key={role.key} className="flex items-center">
-                <RoleChip role={role} system={sys} shared={isShared} missing={role.required && !sys} />
+                <RoleChip
+                  role={role} system={sys} shared={isShared} missing={role.required && !sys}
+                  dangling={refId && !sys ? refId : undefined}
+                />
                 {idx < PROFILE_ROLES.length - 1 ? (
                   <ArrowRight className="h-5 w-5 text-slate-300 mx-3 shrink-0" />
                 ) : null}
@@ -1262,16 +1330,34 @@ function formatUpdated(iso: string): string {
 }
 
 function RoleChip({
-  role, system, shared, missing,
+  role, system, shared, missing, dangling,
 }: {
   role: TopologyRoleDef;
   system?: InventorySystem;
   shared?: boolean;
   missing?: boolean;
+  /** An id this role is bound to that is not in the Systems list. */
+  dangling?: string;
 }) {
   const Icon = role.icon;
   const t = TOPOLOGY_TONE_CLASSES[role.tone];
   const BOX = 'rounded-xl border px-4 py-3 min-w-[190px]';
+
+  // Said plainly. This used to render as "— not set —", indistinguishable from
+  // a role nobody bound, while the chain still pointed at a removed system.
+  if (dangling) {
+    return (
+      <div
+        className={`${BOX} border-dashed border-amber-300 bg-amber-50/70`}
+        title="This setup points at a system ID that is not in the Systems list — it was removed, or its ID and address both changed. Edit the setup to pick it again."
+      >
+        <div className="flex items-center gap-1.5 text-amber-800 text-sm font-semibold">
+          <Icon className="h-4 w-4" />{role.label}
+        </div>
+        <div className="text-amber-700 text-xs mt-1.5 font-medium">&ldquo;{dangling}&rdquo; not registered</div>
+      </div>
+    );
+  }
 
   if (missing) {
     return (
@@ -1385,6 +1471,13 @@ function RoleSelector({
   const value = (draft as any)[role.key] as string | undefined;
   const usingCallbox = role.shareable && !!callbox && value === callbox.id;
   const setUsingCallbox = (yes: boolean) => onChange(yes ? callbox?.id : undefined);
+  // The bound value when it is NOT one of the offered systems: removed from
+  // inventory, or registered under a type this role does not take. A native
+  // <select> with a value matching no option silently displays another row,
+  // so it gets its own option and a line saying why.
+  const current = lookupSystem(systems, value);
+  const offPicklist = !!value && !candidates.some((s) => s.id === value);
+  const typesLabel = role.types.map((ty) => TYPE_META[ty]?.label ?? ty).join(', ');
 
   return (
     <div className="rounded-xl border border-line bg-surface p-4 transition-colors">
@@ -1423,12 +1516,33 @@ function RoleSelector({
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value || undefined)}
           className={SELECT_CLS}
-          disabled={candidates.length === 0}
+          disabled={candidates.length === 0 && !offPicklist}
         >
           <option value="">{role.required ? '— pick a system —' : '— none —'}</option>
+          {offPicklist ? (
+            <option value={value}>
+              {current
+                ? `${current.name || current.id} · ${current.host} — registered as ${TYPE_META[current.type]?.label ?? current.type}`
+                : `${value} — not registered`}
+            </option>
+          ) : null}
           {candidates.map((s) => <option key={s.id} value={s.id}>{(s.name || s.id) + ' · ' + s.host}</option>)}
         </select>
       )}
+
+      {/* Why a box is or isn't in the list — the question behind "my app
+          server isn't showing up": the list is filtered by system TYPE. */}
+      {!locked && !usingCallbox ? (
+        offPicklist ? (
+          <div className="mt-2 text-[11px] text-amber-700">
+            {current
+              ? `This role takes ${typesLabel} systems, and ${current.name || current.id} is registered as ${TYPE_META[current.type]?.label ?? current.type}. Change its type under Systems, or pick another.`
+              : `“${value}” is not in the Systems list — removed, or its ID changed. Pick the system again.`}
+          </div>
+        ) : candidates.length > 0 ? (
+          <div className="mt-1.5 text-[11px] text-slate-400">Lists {typesLabel} systems</div>
+        ) : null
+      ) : null}
 
       {candidates.length === 0 && !locked ? (
         <div className="mt-2 text-[11px] text-slate-500">
