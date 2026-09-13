@@ -6,7 +6,7 @@ import { BackToDashboard } from '@/components/BackToDashboard';
 import { Card, CardBody, CardHeader, CardTitle, Button, Input, Field, Badge } from '@/components/ui';
 import {
   Plus, Trash2, Server, Radio, Cpu, Network, Globe, Database, ShieldCheck, Layers,
-  Check, X, ArrowRight, ChevronDown, ChevronRight, Search } from 'lucide-react';
+  Pencil, Check, X, ArrowRight, ChevronDown, ChevronRight, Search } from 'lucide-react';
 
 interface InventorySystem {
   id: string;
@@ -993,6 +993,9 @@ function TopologySetupSection({
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const lastSyncSig = useRef<string | null>(null);
+  /** Id of the chain open in the editor — the SAVED id, which the form cannot change. */
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<TopologyProfile | null>(null);
 
   const flash = (kind: 'ok' | 'err', text: string) => {
     setMsg({ kind, text });
@@ -1054,9 +1057,73 @@ function TopologySetupSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedSystemsSig, systems, profiles]);
 
-  // startEdit / cancelEdit / saveDraft lived here. Removed with the Edit
-  // button: chains are now derived from the Systems section and shown
-  // read-only. persist() is still used by the auto-sync effect above.
+  // Editing is safe alongside the auto-sync above: deriveProfiles keeps every
+  // binding an existing chain already has and only fills EMPTY roles, so a
+  // corrected pairing is not reverted by the next sync. (Edit was removed on
+  // 2026-09-10 on the belief that it would be — which left a wrong positional
+  // guess, badged "auto-linked · check", with no way to correct it short of
+  // hand-editing inventory.yaml.)
+  function startEdit(p: TopologyProfile) {
+    setDraft({ ...p });
+    setEditingId(p.id);
+  }
+
+  function cancelEdit() {
+    setDraft(null);
+    setEditingId(null);
+  }
+
+  async function saveDraft() {
+    if (!draft || !editingId) return;
+    const before = profiles.find((p) => p.id === editingId);
+    if (!before) {
+      flash('err', 'This setup was removed while you were editing it');
+      cancelEdit();
+      return;
+    }
+    if (!draft.uesim) { flash('err', 'Pick a UE system'); return; }
+    if (!draft.name?.trim()) { flash('err', 'Give the setup a name'); return; }
+
+    // The eNB/gNB/MME/IMS slots are not in the editor, but callboxForProfile
+    // (src/lib/inventory.ts) reads enb/gnb BEFORE callbox. A slot still naming
+    // the old callbox would keep Scenarios linking configs on the box you just
+    // moved this setup away from. So any slot that followed the old callbox
+    // follows it to the new one (or is cleared with it).
+    const followed: Partial<TopologyProfile> = {};
+    if (before.callbox !== draft.callbox) {
+      for (const k of ['enb', 'gnb', 'mme', 'ims'] as const) {
+        if (before[k] && before[k] === before.callbox) followed[k] = draft.callbox || undefined;
+      }
+    }
+
+    // A human has now chosen these bindings, so the "auto-linked" caveat no
+    // longer applies. id and simnovator come from the SAVED record: both are
+    // locked in the form, and the write is matched on editingId. The old
+    // editor matched on draft.id with an editable ID field, so changing the id
+    // matched nothing — it said "Setup updated" and saved nothing.
+    const confirmed: TopologyProfile = {
+      ...draft,
+      ...followed,
+      id: before.id,
+      simnovator: before.simnovator,
+      name: draft.name.trim(),
+      // "— none —" is stored as '' rather than dropped. deriveProfiles fills
+      // any role that is ABSENT (prior.callbox ?? positional guess), so a
+      // dropped key would get the guessed box put back on the next Systems
+      // save. '' survives that `??`, and every reader treats it as unset
+      // (callboxForProfile filters Boolean; runner/setups/buildValidation
+      // check truthiness).
+      callbox: draft.callbox || '',
+      appserver: draft.appserver || '',
+      autoLinked: undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    const ok = await persist(profiles.map((p) => (p.id === editingId ? confirmed : p)));
+    if (ok) {
+      flash('ok', 'Setup updated');
+      cancelEdit();
+    }
+  }
 
   return (
     <>
@@ -1068,9 +1135,9 @@ function TopologySetupSection({
             which machines belong to the same test bench.
           </p>
         </div>
-        {/* Read-only, and no "New setup" button: a chain exists for each
-            Simnovator you register and is created, re-paired and removed
-            automatically from the Systems section above. */}
+        {/* No "New setup" button: a chain exists for each Simnovator you
+            register, created automatically. Each one is editable, because the
+            automatic pairing is positional and can guess wrong. */}
         {msg ? <span className={`text-xs shrink-0 ${msg.kind === 'err' ? 'text-red-600' : 'text-emerald-600'}`}>{msg.text}</span> : null}
       </div>
 
@@ -1082,7 +1149,29 @@ function TopologySetupSection({
         />
       ) : (
         <div className="grid grid-cols-1 gap-4">
-          {profiles.map((p) => <SetupCard key={p.id} setup={p} systems={systems} />)}
+          {profiles.map((p) =>
+            editingId === p.id && draft ? (
+              <SetupForm
+                key={p.id}
+                draft={draft}
+                systems={systems}
+                onChange={setDraft}
+                onCancel={cancelEdit}
+                onSave={saveDraft}
+                saving={saving}
+              />
+            ) : (
+              <SetupCard
+                key={p.id}
+                setup={p}
+                systems={systems}
+                onEdit={() => startEdit(p)}
+                // One chain open at a time: a second open draft would be saved
+                // over by whichever Save lands last.
+                busy={saving || !!editingId}
+              />
+            ),
+          )}
         </div>
       )}
     </>
@@ -1092,10 +1181,13 @@ function TopologySetupSection({
 // ───── card view ─────
 
 function SetupCard({
-  setup, systems,
+  setup, systems, onEdit, busy,
 }: {
   setup: TopologyProfile;
   systems: InventorySystem[];
+  onEdit: () => void;
+  /** Disables Edit while a save is in flight or another chain is open. */
+  busy: boolean;
 }) {
   const callboxId = setup.callbox;
   return (
@@ -1118,10 +1210,17 @@ function SetupCard({
               </span>
             ) : null}
           </div>
-          {/* Read-only. No Edit, and no delete either: a chain belongs to a
-              Simnovator, so it is created, re-paired and removed by the Systems
-              section above, and a control here would just be undone by the next
-              auto-sync. */}
+          {/* Edit only — no delete. A chain belongs to a Simnovator: remove the
+              Simnovator in the Systems section and its chain goes with it. A
+              delete here would just be recreated by the next auto-sync. */}
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={busy}
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-line-strong px-3 h-8 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+          >
+            <Pencil className="h-3.5 w-3.5" /> Edit
+          </button>
         </div>
 
         <div className="flex flex-wrap items-stretch gap-y-3">
@@ -1211,9 +1310,10 @@ function RoleChip({
 
 // ───── form view ─────
 
-/* UNUSED since the Topology cards became read-only — kept, not deleted, so
-   restoring an edit path is re-wiring a button rather than rewriting the
-   editor. SetupForm and RoleSelector below have no call sites. */
+/** Edits one chain in place of its card. The ID and the Simnovator are shown
+ *  but locked: Scenarios and runs refer to a setup by id, and a chain belongs
+ *  to its Simnovator — pointing it at another would make the auto-sync create
+ *  a second chain for the one left behind. */
 function SetupForm({
   draft, systems, onChange, onCancel, onSave, saving, isNew,
 }: {
@@ -1245,14 +1345,18 @@ function SetupForm({
       <div className="p-5 space-y-5">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Name *"><Input value={draft.name} onChange={(e) => patch({ name: e.target.value })} placeholder="Topology 1" /></Field>
-          <Field label="ID" hint="auto-generated; only change if you know what you're doing">
-            <Input value={draft.id} onChange={(e) => patch({ id: e.target.value })} />
+          <Field label="ID" hint="fixed — Scenarios and runs refer to a setup by this id">
+            <Input value={draft.id} readOnly disabled />
           </Field>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {PROFILE_ROLES.map((role) => (
-            <RoleSelector key={role.key} role={role} draft={draft} systems={systems} callbox={callbox} onChange={(value) => patch({ [role.key]: value } as any)} />
+            <RoleSelector
+              key={role.key} role={role} draft={draft} systems={systems} callbox={callbox}
+              locked={!isNew && role.key === 'simnovator'}
+              onChange={(value) => patch({ [role.key]: value } as any)}
+            />
           ))}
         </div>
 
@@ -1265,13 +1369,15 @@ function SetupForm({
 }
 
 function RoleSelector({
-  role, draft, systems, callbox, onChange,
+  role, draft, systems, callbox, onChange, locked,
 }: {
   role: TopologyRoleDef;
   draft: TopologyProfile;
   systems: InventorySystem[];
   callbox?: InventorySystem;
   onChange: (val?: string) => void;
+  /** Show the bound system without a picker — see SetupForm. */
+  locked?: boolean;
 }) {
   const Icon = role.icon;
   const t = TOPOLOGY_TONE_CLASSES[role.tone];
@@ -1296,7 +1402,15 @@ function RoleSelector({
         ) : null}
       </div>
 
-      {usingCallbox ? (
+      {locked ? (
+        <div className="rounded-lg bg-slate-50 ring-1 ring-line px-3 py-2 text-[12px] text-slate-700">
+          <span className="font-medium">{lookupSystem(systems, value)?.name || value || '—'}</span>{' '}
+          <span className="font-mono text-[11px] text-slate-500">{lookupSystem(systems, value)?.host}</span>
+          <div className="mt-1 text-[11px] text-slate-500">
+            Fixed — this setup belongs to this Simnovator. Its chain follows the Systems list above.
+          </div>
+        </div>
+      ) : usingCallbox ? (
         <div className={`rounded-lg ${t.soft} ring-1 ${t.ring} px-3 py-2 text-[12px]`}>
           <div className="flex items-center gap-2 text-slate-700">
             <ArrowRight className="h-3.5 w-3.5 text-slate-400" />
@@ -1316,7 +1430,7 @@ function RoleSelector({
         </select>
       )}
 
-      {candidates.length === 0 ? (
+      {candidates.length === 0 && !locked ? (
         <div className="mt-2 text-[11px] text-slate-500">
           No <span className="font-mono">{role.types.join(' / ')}</span> systems in inventory.
         </div>
