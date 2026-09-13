@@ -7,8 +7,7 @@
 // dropdown without the page orchestrating four round trips.
 import { NextResponse } from 'next/server';
 import { loadInventory, callboxForSimnovator, callboxForProfile, getProfile } from '@/lib/inventory';
-import { currentCfgLinks, ueDbForAll } from '@/lib/labCfgLink';
-import { readCommand } from '@/lib/configFidelity/ssh';
+import { currentCfgLinks, ueDbForAll, listCfgDir } from '@/lib/labCfgLink';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,12 +19,13 @@ export const dynamic = 'force-dynamic';
  * EMPTY list. The editor then rendered empty dropdowns, indistinguishable from
  * a callbox that genuinely has no configs, and nothing reached the server log:
  * a real request showed 0 eNB / 0 MME against a box holding 171 and 46.
+ *
+ * Newest first, every file — see listCfgDir. (This was `ls` sorted A–Z and
+ * filtered to *.cfg, which hid extensionless configs like Prime-SA-1cell.)
  */
 async function listDir(box: any, dir: string): Promise<{ files: string[]; error?: string }> {
   try {
-    // sudo first: /root is 0700 on some callboxes.
-    const out = await readCommand(box, `sudo -n ls -1 ${dir} 2>/dev/null || ls -1 ${dir} 2>/dev/null || true`);
-    return { files: out.split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.cfg')).sort() };
+    return { files: await listCfgDir(box, dir) };
   } catch (e: any) {
     const error = e?.message ?? String(e);
     console.error(`[scenarios/cfg-options] could not list ${dir} on ${box?.host}: ${error}`);
