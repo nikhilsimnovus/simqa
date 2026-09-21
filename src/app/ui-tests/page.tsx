@@ -397,7 +397,11 @@ export default function UiTestsPage() {
     : 0;
 
   return (
-    <>
+    // Claim the app-shell content column's full height and scroll INSIDE, so
+    // the Header (and the run progress bar under it) stay put while only the
+    // picker + results scroll. A bare fragment let the whole column scroll and
+    // dragged the sticky Header away with it.
+    <div className="flex-1 min-h-0 flex flex-col">
       <Header
         title="UI Tests"
         left={<BackToRunHistory />}
@@ -456,7 +460,7 @@ export default function UiTestsPage() {
         </div>
       ) : null}
 
-      <main className="p-6 grid grid-cols-1 lg:grid-cols-4 gap-4">
+      <main className="flex-1 min-h-0 overflow-y-auto p-6 grid grid-cols-1 lg:grid-cols-4 gap-4 auto-rows-min">
         {/* Sidebar */}
         {/* Sticky so scrolling the (much longer) results column doesn't drag
             the target picker and category list out of view. */}
@@ -887,7 +891,7 @@ export default function UiTestsPage() {
           </Card>
         </section>
       </main>
-    </>
+    </div>
   );
 }
 

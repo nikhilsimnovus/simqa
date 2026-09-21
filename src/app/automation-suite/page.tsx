@@ -308,6 +308,9 @@ export default function AutomationSuitePage() {
   /** Status of each row from the LAST saved run, keyed suiteId → name → passed?
    *  Used to colour the table when nothing is running. */
   const [lastStatus, setLastStatus] = useState<Record<string, Record<string, boolean>>>({});
+  /** Per-row failure/verdict reason, keyed [suiteId][displayName] — shown on
+   *  hover over the Status cell so "Failed" says WHY and from where. */
+  const [lastDetail, setLastDetail] = useState<Record<string, Record<string, string>>>({});
   /** Row being dragged, so a drop knows what to move. */
   const [dragRow, setDragRow] = useState<{ suiteId: string; itemId: string } | null>(null);
 
@@ -370,21 +373,25 @@ export default function AutomationSuitePage() {
     let cancelled = false;
     (async () => {
       const out: Record<string, Record<string, boolean>> = {};
+      const reasons: Record<string, Record<string, string>> = {};
       for (const s of suites) {
         try {
           // Dedicated endpoint: /runs returns summaries WITHOUT steps, so the
           // per-row outcome has to be computed server-side.
           const r = await fetch(`/api/automation/suites/${s.id}/status`).then(r => r.json());
           if (r?.ok && r.statuses) out[s.id] = r.statuses;
+          if (r?.ok && r.details) reasons[s.id] = r.details;
         } catch { /* a suite with no history is fine */ }
       }
-      if (!cancelled) setLastStatus(out);
+      if (!cancelled) { setLastStatus(out); setLastDetail(reasons); }
     })();
     return () => { cancelled = true; };
   }, [suites, statusNonce]);
 
   /** What to show in the Status column for one row. */
-  const statusOf = useCallback((s: SuiteRow, it: SuiteItem): { label: string; dot: string; cls: string } => {
+  const statusOf = useCallback((s: SuiteRow, it: SuiteItem): { label: string; dot: string; cls: string; title?: string } => {
+    // The saved reason for this row's last outcome — the tooltip on the cell.
+    const reason = lastDetail[s.id]?.[it.name];
     // The box itself is the most reliable signal that a row is executing right
     // now: it survives a page refresh and is true even when the run was started
     // from the Simnovator's own GUI rather than here.
@@ -395,13 +402,15 @@ export default function AutomationSuitePage() {
     const livePr = progress && progress.suiteId === s.id ? progress.statuses?.[it.name] : undefined;
     if (livePr === 'running') return { label: 'In Progress', dot: '🟡', cls: 'text-amber-700' };
     if (livePr === 'passed')  return { label: 'Passed',  dot: '🟢', cls: 'text-emerald-700' };
-    if (livePr === 'failed')  return { label: 'Failed',  dot: '🔴', cls: 'text-red-700' };
+    // Live: the finished run's saved reason isn't written yet, so say so rather
+    // than showing a stale one from a previous run.
+    if (livePr === 'failed')  return { label: 'Failed',  dot: '🔴', cls: 'text-red-700', title: 'Failed during this run — the full reason appears once the run finishes' };
     if (livePr === 'skipped') return { label: 'Skipped', dot: '⚫', cls: 'text-slate-500' };
     const prev = lastStatus[s.id]?.[it.name];
-    if (prev === true)  return { label: 'Passed', dot: '🟢', cls: 'text-emerald-700' };
-    if (prev === false) return { label: 'Failed', dot: '🔴', cls: 'text-red-700' };
+    if (prev === true)  return { label: 'Passed', dot: '🟢', cls: 'text-emerald-700', title: reason };
+    if (prev === false) return { label: 'Failed', dot: '🔴', cls: 'text-red-700', title: reason };
     return { label: 'Not Run', dot: '⚪', cls: 'text-slate-400' };
-  }, [progress, lastStatus]);
+  }, [progress, lastStatus, lastDetail, busyBySystem]);
 
   /** Rough wall-clock estimate for a run.
    *
@@ -1084,7 +1093,15 @@ export default function AutomationSuitePage() {
                     // The box runs one testcase at a time. If something is
                     // already executing on this suite's Simnovator, Run would
                     // just 409 — so block it and say why.
-                    const busy = s.uesimSystemId ? busyBySystem[s.uesimSystemId] : null;
+                    //
+                    // Named boxBusy, NOT busy: it used to shadow the component's
+                    // global op-flag `busy`, so every `!!busy` in this block —
+                    // including the row editor's Save — silently meant "the box
+                    // is running something". That disabled Save whenever ANY
+                    // testcase ran on the box, even a different one, though
+                    // saving a row is only a local inventory edit. Run controls
+                    // want box-awareness; Save must not.
+                    const boxBusy = s.uesimSystemId ? busyBySystem[s.uesimSystemId] : null;
                     return (
                     <React.Fragment key={s.id}>
                     <tr>
@@ -1109,15 +1126,15 @@ export default function AutomationSuitePage() {
                         {/* Stop replaces Run while this suite is going — the two
                             are never both useful, and a Run that does nothing is
                             worse than no button. */}
-                        {running === s.id || (busy && progress?.suiteId === s.id) ? (
+                        {running === s.id || (boxBusy && progress?.suiteId === s.id) ? (
                           <button onClick={() => stopRun(s)}
                             title="Stop the running test case and skip the rest"
                             className="rounded-md bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-3 py-1.5 mr-1">
                             ⏹ Stop
                           </button>
                         ) : (
-                          <button onClick={() => setConfirmRun({ suite: s })} disabled={!!busy}
-                            title={busy ? `${busy.testCaseName} is already running on ${busy.host}` : 'Run every testcase in this suite'}
+                          <button onClick={() => setConfirmRun({ suite: s })} disabled={!!boxBusy}
+                            title={boxBusy ? `${boxBusy.testCaseName} is already running on ${boxBusy.host}` : 'Run every testcase in this suite'}
                             className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xs font-semibold px-3 py-1.5 mr-1">
                             ▶ Run Suite
                           </button>
@@ -1129,7 +1146,7 @@ export default function AutomationSuitePage() {
                             suite: s,
                             rows: (s.items ?? []).filter(i => pickedIn(s.id).has(i.id)),
                           })}
-                          disabled={running === s.id || !!busy || pickedIn(s.id).size === 0}
+                          disabled={running === s.id || !!boxBusy || pickedIn(s.id).size === 0}
                           title={pickedIn(s.id).size === 0 ? 'Tick one or more testcases first' : `Run the ${pickedIn(s.id).size} ticked testcase(s)`}
                           className="rounded-md border border-blue-600 text-blue-700 hover:bg-blue-50 disabled:border-slate-300 disabled:text-slate-400 text-xs font-semibold px-3 py-1.5 mr-1">
                           ▶ Run Selected{pickedIn(s.id).size > 0 ? ` (${pickedIn(s.id).size})` : ''}
@@ -1223,14 +1240,29 @@ export default function AutomationSuitePage() {
                                         </td>
                                       ))}
                                       <td className="px-2 py-1 text-right align-top">
+                                        {/* Store the raw typed number and only raise it to the
+                                            minimum on blur. Clamping on every keystroke made this
+                                            feel uneditable: clearing the field and typing "35" hit
+                                            "3" first, which max(20, 3) snapped straight back to 20,
+                                            so a value below the minimum could never be typed. */}
+                                        {/* Bind to the draft ONLY — not `?? it.durationSec`.
+                                            The draft is seeded from the row when editing starts,
+                                            so the fallback was redundant, and it made the field
+                                            un-clearable: backspacing to empty set durationSec to
+                                            undefined, which fell back to the saved value (a 2x
+                                            number), so you could never clear it to type e.g. 3000. */}
                                         <input type="number" min={MIN_POWER_ON}
-                                          value={rowDraft.durationSec ?? it.durationSec ?? ''}
+                                          value={rowDraft.durationSec ?? ''}
                                           placeholder={String(s.defaultDurationSec ?? MIN_POWER_ON)}
-                                          onChange={e => setRowDraft({ ...rowDraft, durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
+                                          onChange={e => setRowDraft({ ...rowDraft, durationSec: e.target.value === '' ? undefined : Number(e.target.value) })}
+                                          onBlur={e => setRowDraft({ ...rowDraft, durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
                                           className="border border-slate-300 rounded px-1 py-0.5 w-[60px] text-[11px] text-right" />
                                       </td>
                                       <td className="px-2 py-1" />
                                       <td className="px-2 py-1 text-right whitespace-nowrap align-top">
+                                        {/* Gated on the global op-flag (an in-flight save), NOT
+                                            on boxBusy: saving a row is a local inventory edit and
+                                            is fine while the box runs another testcase. */}
                                         <button onClick={() => saveEditRow(s)} disabled={!!busy}
                                           className="rounded bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-[11px] px-2 py-0.5 mr-1">Save</button>
                                         {i > 0 && (
@@ -1270,12 +1302,12 @@ export default function AutomationSuitePage() {
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.mmeCfg ?? '–'}</td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.imsCfg ?? '–'}</td>
                                     <td className="px-2 py-1 text-right">{it.durationSec ?? s.defaultDurationSec ?? 10}</td>
-                                    <td className={`px-2 py-1 whitespace-nowrap ${st.cls}`}>{st.dot} {st.label}</td>
+                                    <td className={`px-2 py-1 whitespace-nowrap ${st.cls} ${st.title ? 'cursor-help' : ''}`} title={st.title}>{st.dot} {st.label}</td>
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
                                       <button
                                         onClick={() => setConfirmRun({ suite: s, rows: [it] })}
-                                        disabled={running === s.id || !!busy}
-                                        title={busy ? `${busy.testCaseName} is already running on ${busy.host}` : `Run only "${it.name}"`}
+                                        disabled={running === s.id || !!boxBusy}
+                                        title={boxBusy ? `${boxBusy.testCaseName} is already running on ${boxBusy.host}` : `Run only "${it.name}"`}
                                         className="rounded bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white text-[11px] px-2 py-0.5 mr-1">
                                         Run
                                       </button>
@@ -1527,7 +1559,8 @@ export default function AutomationSuitePage() {
                 <label className="flex items-center gap-2">
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Power-on duration (sec)</span>
                   <input type="number" min={MIN_POWER_ON} value={defaultDur}
-                    onChange={e => setDefaultDur(Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON))}
+                    onChange={e => setDefaultDur(Number(e.target.value) || 0)}
+                    onBlur={e => setDefaultDur(Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON))}
                     className="border border-slate-300 rounded-md px-2 py-1 w-[80px] text-sm" />
                 </label>
                 <span className="text-[11px] text-slate-500">
@@ -1609,8 +1642,11 @@ export default function AutomationSuitePage() {
                               </td>
                             </>)}
                             <td className="px-2 py-1 text-right">
+                              {/* Raw while typing, clamp to the minimum on blur — see the
+                                  edit-row input above for why per-keystroke clamping broke entry. */}
                               <input type="number" min={MIN_POWER_ON} placeholder={String(defaultDur)} value={it.durationSec ?? ''}
-                                onChange={e => updateItem({ durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
+                                onChange={e => updateItem({ durationSec: e.target.value === '' ? undefined : Number(e.target.value) })}
+                                onBlur={e => updateItem({ durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
                                 className="border border-slate-300 rounded px-1 py-0.5 w-[64px] text-xs text-right" />
                             </td>
                             <td className="px-2 py-1 text-right">
