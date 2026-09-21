@@ -8,7 +8,7 @@
 import { NextResponse } from 'next/server';
 import { loadInventory, getSystem, callboxForProfile } from '@/lib/inventory';
 import { readCommand, writeRemoteFile } from '@/lib/configFidelity/ssh';
-import { currentCfgLinks } from '@/lib/labCfgLink';
+import { currentCfgLinks, listCfgDir } from '@/lib/labCfgLink';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,11 +18,6 @@ export const dynamic = 'force-dynamic';
 function callboxForSimnovator(inv: ReturnType<typeof loadInventory>, simnovatorId: string) {
   const profile = inv.profiles.find((p) => p.simnovator === simnovatorId);
   return callboxForProfile(inv, profile);
-}
-
-/** `ls -1 <dir>` -> real filenames, blank/noise lines dropped. */
-function parseListing(raw: string): string[] {
-  return raw.split('\n').map((s) => s.trim()).filter(Boolean);
 }
 
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
@@ -47,9 +42,10 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   }
 
   try {
-    const [radioRaw, coreRaw, current] = await Promise.all([
-      readCommand(callbox, 'sudo -n ls -1 /root/enb/config 2>/dev/null || ls -1 /root/enb/config 2>/dev/null'),
-      readCommand(callbox, 'sudo -n ls -1 /root/mme/config 2>/dev/null || ls -1 /root/mme/config 2>/dev/null'),
+    // Newest first, so a config just copied onto the box tops the picker.
+    const [radioFiles, coreFiles, current] = await Promise.all([
+      listCfgDir(callbox, '/root/enb/config'),
+      listCfgDir(callbox, '/root/mme/config'),
       currentCfgLinks(callbox),
     ]);
 
@@ -60,12 +56,14 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       testcaseId: id,
       // Radio (eNB/gNB) and core (MME/IMS) cfgs live in different directories
       // on the box, so the picker needs two separate candidate lists.
-      radioFiles: parseListing(radioRaw),
-      coreFiles: parseListing(coreRaw),
+      radioFiles,
+      coreFiles,
       current,
     });
   } catch (e: any) {
-    return NextResponse.json({ error: `${callbox.host} unreachable: ${e?.message ?? e}` }, { status: 502 });
+    // Not always "unreachable" any more: listCfgDir also throws for a config
+    // directory that is missing or unreadable, and says which.
+    return NextResponse.json({ error: `Could not list configs on ${callbox.host}: ${e?.message ?? e}` }, { status: 502 });
   }
 }
 

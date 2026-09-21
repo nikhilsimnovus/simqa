@@ -6,7 +6,7 @@ import { BackToDashboard } from '@/components/BackToDashboard';
 import { Card, CardBody, CardHeader, CardTitle, Button, Input, Field, Badge } from '@/components/ui';
 import {
   Plus, Trash2, Server, Radio, Cpu, Network, Globe, Database, ShieldCheck, Layers,
-  Check, X, ArrowRight, ChevronDown, ChevronRight, Search } from 'lucide-react';
+  Pencil, Check, X, ArrowRight, ChevronDown, ChevronRight, Search } from 'lucide-react';
 
 interface InventorySystem {
   id: string;
@@ -145,7 +145,33 @@ const TYPE_META: Record<string, { icon: React.ComponentType<{ className?: string
   MME:        { icon: Network,     ring: 'ring-slate-200',  bg: 'bg-slate-50',    text: 'text-slate-700',    label: 'MME' },
   IMS:        { icon: Globe,       ring: 'ring-slate-200',  bg: 'bg-slate-50',    text: 'text-slate-700',    label: 'IMS' },
   APPSERVER:  { icon: Database,    ring: 'ring-slate-200',  bg: 'bg-slate-50',    text: 'text-slate-700',    label: 'App Server' },
+  // A system added but not yet given a type. Its own entry, not the UESIM
+  // fallback below, so an untyped row never reads as a real type.
+  '':         { icon: Server,      ring: 'ring-red-200',    bg: 'bg-red-50',      text: 'text-red-700',      label: 'No type' },
 };
+
+/** Every topology field that holds a system id. */
+const PROFILE_REF_KEYS = ['simnovator', 'uesim', 'callbox', 'appserver', 'enb', 'gnb', 'mme', 'ims'] as const;
+
+/**
+ * Old id -> new id for systems whose ID was edited, matched by IP address.
+ *
+ * Topologies refer to systems by id, so a rename used to leave every chain
+ * pointing at an id that no longer exists. Matched only when exactly one NEW
+ * id carries the old host; a box whose id AND address both changed is not
+ * guessed at — the topology editor shows that reference as not registered.
+ */
+function idRenames(before: InventorySystem[], after: InventorySystem[]): Map<string, string> {
+  const afterIds = new Set(after.map((s) => s.id));
+  const beforeIds = new Set(before.map((s) => s.id));
+  const out = new Map<string, string>();
+  for (const old of before) {
+    if (afterIds.has(old.id) || !old.host) continue;
+    const matches = after.filter((s) => s.host === old.host && !beforeIds.has(s.id));
+    if (matches.length === 1) out.set(old.id, matches[0].id);
+  }
+  return out;
+}
 
 function TypeChip({ type }: { type: string }) {
   const m = TYPE_META[type] ?? TYPE_META.UESIM;
@@ -235,20 +261,35 @@ export default function InventoryPage() {
   async function save() {
     setSaving(true); setMsg(null);
     try {
+      // Carry renamed system ids into the topologies that reference them.
+      let savedBefore: InventorySystem[] = [];
+      try { savedBefore = JSON.parse(savedSystems); } catch { /* baseline unreadable — no cascade */ }
+      const renames = idRenames(savedBefore, systems);
+      const nextProfiles = renames.size === 0 ? profiles : profiles.map((p) => {
+        const q: Record<string, unknown> = { ...p };
+        for (const k of PROFILE_REF_KEYS) {
+          const v = q[k];
+          if (typeof v === 'string' && renames.has(v)) q[k] = renames.get(v);
+        }
+        return q as unknown as TopologyProfile;
+      });
       const r = await fetch('/api/inventory', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...otherDoc, systems, profiles }),
+        body: JSON.stringify({ ...otherDoc, systems, profiles: nextProfiles }),
       });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error ?? `HTTP ${r.status}`);
       setSavedSystems(JSON.stringify(systems));
+      setProfiles(nextProfiles);
       // Collapse the open row. Add system opens an editor to type the details
       // into; once those details are saved the form has done its job, and
       // leaving it expanded reads as "not saved yet".
       setEditingIdx(null);
-      setMsg('Saved');
-      setTimeout(() => setMsg(null), 1500);
+      setMsg(renames.size
+        ? `Saved — topologies updated for ${renames.size} renamed ID${renames.size === 1 ? '' : 's'}`
+        : 'Saved');
+      setTimeout(() => setMsg(null), renames.size ? 4000 : 1500);
     } catch (e: any) {
       setMsg(`Error: ${e?.message ?? e}`);
     } finally {
@@ -274,7 +315,12 @@ export default function InventoryPage() {
       setSysQuery('');
       setSysType('');
       setTab('systems');
-      return [...s, { id: `sys-${n}`, type: 'SIMNOVATOR_GUI', name: '', host: '' }];
+      // No default type. It used to start as SIMNOVATOR_GUI, so a box saved
+      // without touching Type silently became a Simnovator — and got a bench
+      // of its own from the auto-sync. That is how the app server at .124 was
+      // registered as a Simnovator and never appeared in the App server picker.
+      // Save is blocked until a type is chosen (see `untyped`).
+      return [...s, { id: `sys-${n}`, type: '', name: '', host: '' }];
     });
   }
   function removeSystem(idx: number) {
@@ -306,6 +352,9 @@ export default function InventoryPage() {
     for (const s of systems) seen.set(s.id, (seen.get(s.id) ?? 0) + 1);
     return [...seen.entries()].filter(([, n]) => n > 1).map(([id]) => id);
   }, [systems]);
+
+  /** Systems with no type chosen yet — Save waits for them. */
+  const untyped = useMemo(() => systems.filter((s) => !s.type), [systems]);
 
   /** Filtered rows, each carrying its index in the UNFILTERED array — every
    *  handler addresses systems by position, so filtering must not renumber
@@ -343,6 +392,10 @@ export default function InventoryPage() {
           <div className="flex items-center gap-2">
             {msg ? (
               <span className={`text-xs ${msg.startsWith('Error') ? 'text-red-600' : 'text-emerald-600'}`}>{msg}</span>
+            ) : untyped.length ? (
+              <span className="text-xs text-red-600">
+                Choose a type for {untyped.map((s) => s.name || s.host || s.id).join(', ')}
+              </span>
             ) : dirty ? (
               <span className="text-xs text-amber-600">Unsaved changes</span>
             ) : null}
@@ -354,8 +407,9 @@ export default function InventoryPage() {
             <BackToDashboard />
             <Button size="sm" variant="secondary" onClick={addSystem}><Plus className="h-4 w-4" />Add system</Button>
             {/* Blocked while ids collide — saving would persist a document in
-                which lookups resolve to the wrong machine. */}
-            <Button size="sm" onClick={save} disabled={saving || duplicateIds.length > 0 || !dirty}>
+                which lookups resolve to the wrong machine — or while a system
+                has no type, which no role or runner can use. */}
+            <Button size="sm" onClick={save} disabled={saving || duplicateIds.length > 0 || untyped.length > 0 || !dirty}>
               {saving ? 'Saving…' : dirty ? 'Save changes' : 'Saved'}
             </Button>
           </div>
@@ -711,6 +765,7 @@ function SystemCard({
               onChange={(e) => onPatch({ type: e.target.value })}
               className={SELECT_CLS}
             >
+              {!sys.type ? <option value="">— choose type —</option> : null}
               {typeOptions(sys.type).map((t) => (
                 <option key={t} value={t}>{TYPE_META[t]?.label ?? t}</option>
               ))}
@@ -964,7 +1019,17 @@ function deriveProfiles(systems: InventorySystem[], existing: TopologyProfile[])
   const isOrphan = (p: TopologyProfile) =>
     ![p.simnovator, p.uesim, p.callbox, p.appserver].some((id) => id && systems.some((s) => s.id === id));
 
-  for (const p of existing) if (!claimed.has(p.id) && !isOrphan(p)) out.push(p);
+  // RETYPED is the other exception: a chain whose Simnovator is still
+  // registered but is no longer typed as one (changed to App Server, say).
+  // Nothing above claims it, and with no Delete on the cards it would stay
+  // forever — a bench for a machine that is not a Simnovator. The app server
+  // at .124, saved under the old Simnovator default, got exactly that.
+  const isRetyped = (p: TopologyProfile) => {
+    const s = p.simnovator ? systems.find((x) => x.id === p.simnovator) : undefined;
+    return !!s && !isSimnovator(s);
+  };
+
+  for (const p of existing) if (!claimed.has(p.id) && !isOrphan(p) && !isRetyped(p)) out.push(p);
   return out;
 }
 
@@ -993,6 +1058,9 @@ function TopologySetupSection({
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const lastSyncSig = useRef<string | null>(null);
+  /** Id of the chain open in the editor — the SAVED id, which the form cannot change. */
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<TopologyProfile | null>(null);
 
   const flash = (kind: 'ok' | 'err', text: string) => {
     setMsg({ kind, text });
@@ -1046,7 +1114,7 @@ function TopologySetupSection({
         // removed, and a chain disappearing from the page with no explanation
         // is exactly the silent deletion the derivation warns about.
         const n = -delta;
-        flash('ok', `Removed ${n} setup${n === 1 ? '' : 's'} whose systems are no longer registered`);
+        flash('ok', `Removed ${n} setup${n === 1 ? '' : 's'} with no registered Simnovator`);
       } else {
         flash('ok', 'Chains updated from your systems');
       }
@@ -1054,9 +1122,73 @@ function TopologySetupSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedSystemsSig, systems, profiles]);
 
-  // startEdit / cancelEdit / saveDraft lived here. Removed with the Edit
-  // button: chains are now derived from the Systems section and shown
-  // read-only. persist() is still used by the auto-sync effect above.
+  // Editing is safe alongside the auto-sync above: deriveProfiles keeps every
+  // binding an existing chain already has and only fills EMPTY roles, so a
+  // corrected pairing is not reverted by the next sync. (Edit was removed on
+  // 2026-09-10 on the belief that it would be — which left a wrong positional
+  // guess, badged "auto-linked · check", with no way to correct it short of
+  // hand-editing inventory.yaml.)
+  function startEdit(p: TopologyProfile) {
+    setDraft({ ...p });
+    setEditingId(p.id);
+  }
+
+  function cancelEdit() {
+    setDraft(null);
+    setEditingId(null);
+  }
+
+  async function saveDraft() {
+    if (!draft || !editingId) return;
+    const before = profiles.find((p) => p.id === editingId);
+    if (!before) {
+      flash('err', 'This setup was removed while you were editing it');
+      cancelEdit();
+      return;
+    }
+    if (!draft.uesim) { flash('err', 'Pick a UE system'); return; }
+    if (!draft.name?.trim()) { flash('err', 'Give the setup a name'); return; }
+
+    // The eNB/gNB/MME/IMS slots are not in the editor, but callboxForProfile
+    // (src/lib/inventory.ts) reads enb/gnb BEFORE callbox. A slot still naming
+    // the old callbox would keep Scenarios linking configs on the box you just
+    // moved this setup away from. So any slot that followed the old callbox
+    // follows it to the new one (or is cleared with it).
+    const followed: Partial<TopologyProfile> = {};
+    if (before.callbox !== draft.callbox) {
+      for (const k of ['enb', 'gnb', 'mme', 'ims'] as const) {
+        if (before[k] && before[k] === before.callbox) followed[k] = draft.callbox || undefined;
+      }
+    }
+
+    // A human has now chosen these bindings, so the "auto-linked" caveat no
+    // longer applies. id and simnovator come from the SAVED record: both are
+    // locked in the form, and the write is matched on editingId. The old
+    // editor matched on draft.id with an editable ID field, so changing the id
+    // matched nothing — it said "Setup updated" and saved nothing.
+    const confirmed: TopologyProfile = {
+      ...draft,
+      ...followed,
+      id: before.id,
+      simnovator: before.simnovator,
+      name: draft.name.trim(),
+      // "— none —" is stored as '' rather than dropped. deriveProfiles fills
+      // any role that is ABSENT (prior.callbox ?? positional guess), so a
+      // dropped key would get the guessed box put back on the next Systems
+      // save. '' survives that `??`, and every reader treats it as unset
+      // (callboxForProfile filters Boolean; runner/setups/buildValidation
+      // check truthiness).
+      callbox: draft.callbox || '',
+      appserver: draft.appserver || '',
+      autoLinked: undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    const ok = await persist(profiles.map((p) => (p.id === editingId ? confirmed : p)));
+    if (ok) {
+      flash('ok', 'Setup updated');
+      cancelEdit();
+    }
+  }
 
   return (
     <>
@@ -1068,9 +1200,9 @@ function TopologySetupSection({
             which machines belong to the same test bench.
           </p>
         </div>
-        {/* Read-only, and no "New setup" button: a chain exists for each
-            Simnovator you register and is created, re-paired and removed
-            automatically from the Systems section above. */}
+        {/* No "New setup" button: a chain exists for each Simnovator you
+            register, created automatically. Each one is editable, because the
+            automatic pairing is positional and can guess wrong. */}
         {msg ? <span className={`text-xs shrink-0 ${msg.kind === 'err' ? 'text-red-600' : 'text-emerald-600'}`}>{msg.text}</span> : null}
       </div>
 
@@ -1082,7 +1214,29 @@ function TopologySetupSection({
         />
       ) : (
         <div className="grid grid-cols-1 gap-4">
-          {profiles.map((p) => <SetupCard key={p.id} setup={p} systems={systems} />)}
+          {profiles.map((p) =>
+            editingId === p.id && draft ? (
+              <SetupForm
+                key={p.id}
+                draft={draft}
+                systems={systems}
+                onChange={setDraft}
+                onCancel={cancelEdit}
+                onSave={saveDraft}
+                saving={saving}
+              />
+            ) : (
+              <SetupCard
+                key={p.id}
+                setup={p}
+                systems={systems}
+                onEdit={() => startEdit(p)}
+                // One chain open at a time: a second open draft would be saved
+                // over by whichever Save lands last.
+                busy={saving || !!editingId}
+              />
+            ),
+          )}
         </div>
       )}
     </>
@@ -1092,10 +1246,13 @@ function TopologySetupSection({
 // ───── card view ─────
 
 function SetupCard({
-  setup, systems,
+  setup, systems, onEdit, busy,
 }: {
   setup: TopologyProfile;
   systems: InventorySystem[];
+  onEdit: () => void;
+  /** Disables Edit while a save is in flight or another chain is open. */
+  busy: boolean;
 }) {
   const callboxId = setup.callbox;
   return (
@@ -1118,10 +1275,17 @@ function SetupCard({
               </span>
             ) : null}
           </div>
-          {/* Read-only. No Edit, and no delete either: a chain belongs to a
-              Simnovator, so it is created, re-paired and removed by the Systems
-              section above, and a control here would just be undone by the next
-              auto-sync. */}
+          {/* Edit only — no delete. A chain belongs to a Simnovator: remove the
+              Simnovator in the Systems section and its chain goes with it. A
+              delete here would just be recreated by the next auto-sync. */}
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={busy}
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-line-strong px-3 h-8 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+          >
+            <Pencil className="h-3.5 w-3.5" /> Edit
+          </button>
         </div>
 
         <div className="flex flex-wrap items-stretch gap-y-3">
@@ -1131,7 +1295,10 @@ function SetupCard({
             const sys = lookupSystem(systems, refId);
             return (
               <div key={role.key} className="flex items-center">
-                <RoleChip role={role} system={sys} shared={isShared} missing={role.required && !sys} />
+                <RoleChip
+                  role={role} system={sys} shared={isShared} missing={role.required && !sys}
+                  dangling={refId && !sys ? refId : undefined}
+                />
                 {idx < PROFILE_ROLES.length - 1 ? (
                   <ArrowRight className="h-5 w-5 text-slate-300 mx-3 shrink-0" />
                 ) : null}
@@ -1163,16 +1330,34 @@ function formatUpdated(iso: string): string {
 }
 
 function RoleChip({
-  role, system, shared, missing,
+  role, system, shared, missing, dangling,
 }: {
   role: TopologyRoleDef;
   system?: InventorySystem;
   shared?: boolean;
   missing?: boolean;
+  /** An id this role is bound to that is not in the Systems list. */
+  dangling?: string;
 }) {
   const Icon = role.icon;
   const t = TOPOLOGY_TONE_CLASSES[role.tone];
   const BOX = 'rounded-xl border px-4 py-3 min-w-[190px]';
+
+  // Said plainly. This used to render as "— not set —", indistinguishable from
+  // a role nobody bound, while the chain still pointed at a removed system.
+  if (dangling) {
+    return (
+      <div
+        className={`${BOX} border-dashed border-amber-300 bg-amber-50/70`}
+        title="This setup points at a system ID that is not in the Systems list — it was removed, or its ID and address both changed. Edit the setup to pick it again."
+      >
+        <div className="flex items-center gap-1.5 text-amber-800 text-sm font-semibold">
+          <Icon className="h-4 w-4" />{role.label}
+        </div>
+        <div className="text-amber-700 text-xs mt-1.5 font-medium">&ldquo;{dangling}&rdquo; not registered</div>
+      </div>
+    );
+  }
 
   if (missing) {
     return (
@@ -1211,9 +1396,10 @@ function RoleChip({
 
 // ───── form view ─────
 
-/* UNUSED since the Topology cards became read-only — kept, not deleted, so
-   restoring an edit path is re-wiring a button rather than rewriting the
-   editor. SetupForm and RoleSelector below have no call sites. */
+/** Edits one chain in place of its card. The ID and the Simnovator are shown
+ *  but locked: Scenarios and runs refer to a setup by id, and a chain belongs
+ *  to its Simnovator — pointing it at another would make the auto-sync create
+ *  a second chain for the one left behind. */
 function SetupForm({
   draft, systems, onChange, onCancel, onSave, saving, isNew,
 }: {
@@ -1245,14 +1431,18 @@ function SetupForm({
       <div className="p-5 space-y-5">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Name *"><Input value={draft.name} onChange={(e) => patch({ name: e.target.value })} placeholder="Topology 1" /></Field>
-          <Field label="ID" hint="auto-generated; only change if you know what you're doing">
-            <Input value={draft.id} onChange={(e) => patch({ id: e.target.value })} />
+          <Field label="ID" hint="fixed — Scenarios and runs refer to a setup by this id">
+            <Input value={draft.id} readOnly disabled />
           </Field>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {PROFILE_ROLES.map((role) => (
-            <RoleSelector key={role.key} role={role} draft={draft} systems={systems} callbox={callbox} onChange={(value) => patch({ [role.key]: value } as any)} />
+            <RoleSelector
+              key={role.key} role={role} draft={draft} systems={systems} callbox={callbox}
+              locked={!isNew && role.key === 'simnovator'}
+              onChange={(value) => patch({ [role.key]: value } as any)}
+            />
           ))}
         </div>
 
@@ -1265,13 +1455,15 @@ function SetupForm({
 }
 
 function RoleSelector({
-  role, draft, systems, callbox, onChange,
+  role, draft, systems, callbox, onChange, locked,
 }: {
   role: TopologyRoleDef;
   draft: TopologyProfile;
   systems: InventorySystem[];
   callbox?: InventorySystem;
   onChange: (val?: string) => void;
+  /** Show the bound system without a picker — see SetupForm. */
+  locked?: boolean;
 }) {
   const Icon = role.icon;
   const t = TOPOLOGY_TONE_CLASSES[role.tone];
@@ -1279,6 +1471,13 @@ function RoleSelector({
   const value = (draft as any)[role.key] as string | undefined;
   const usingCallbox = role.shareable && !!callbox && value === callbox.id;
   const setUsingCallbox = (yes: boolean) => onChange(yes ? callbox?.id : undefined);
+  // The bound value when it is NOT one of the offered systems: removed from
+  // inventory, or registered under a type this role does not take. A native
+  // <select> with a value matching no option silently displays another row,
+  // so it gets its own option and a line saying why.
+  const current = lookupSystem(systems, value);
+  const offPicklist = !!value && !candidates.some((s) => s.id === value);
+  const typesLabel = role.types.map((ty) => TYPE_META[ty]?.label ?? ty).join(', ');
 
   return (
     <div className="rounded-xl border border-line bg-surface p-4 transition-colors">
@@ -1296,7 +1495,15 @@ function RoleSelector({
         ) : null}
       </div>
 
-      {usingCallbox ? (
+      {locked ? (
+        <div className="rounded-lg bg-slate-50 ring-1 ring-line px-3 py-2 text-[12px] text-slate-700">
+          <span className="font-medium">{lookupSystem(systems, value)?.name || value || '—'}</span>{' '}
+          <span className="font-mono text-[11px] text-slate-500">{lookupSystem(systems, value)?.host}</span>
+          <div className="mt-1 text-[11px] text-slate-500">
+            Fixed — this setup belongs to this Simnovator. Its chain follows the Systems list above.
+          </div>
+        </div>
+      ) : usingCallbox ? (
         <div className={`rounded-lg ${t.soft} ring-1 ${t.ring} px-3 py-2 text-[12px]`}>
           <div className="flex items-center gap-2 text-slate-700">
             <ArrowRight className="h-3.5 w-3.5 text-slate-400" />
@@ -1309,14 +1516,35 @@ function RoleSelector({
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value || undefined)}
           className={SELECT_CLS}
-          disabled={candidates.length === 0}
+          disabled={candidates.length === 0 && !offPicklist}
         >
           <option value="">{role.required ? '— pick a system —' : '— none —'}</option>
+          {offPicklist ? (
+            <option value={value}>
+              {current
+                ? `${current.name || current.id} · ${current.host} — registered as ${TYPE_META[current.type]?.label ?? current.type}`
+                : `${value} — not registered`}
+            </option>
+          ) : null}
           {candidates.map((s) => <option key={s.id} value={s.id}>{(s.name || s.id) + ' · ' + s.host}</option>)}
         </select>
       )}
 
-      {candidates.length === 0 ? (
+      {/* Why a box is or isn't in the list — the question behind "my app
+          server isn't showing up": the list is filtered by system TYPE. */}
+      {!locked && !usingCallbox ? (
+        offPicklist ? (
+          <div className="mt-2 text-[11px] text-amber-700">
+            {current
+              ? `This role takes ${typesLabel} systems, and ${current.name || current.id} is registered as ${TYPE_META[current.type]?.label ?? current.type}. Change its type under Systems, or pick another.`
+              : `“${value}” is not in the Systems list — removed, or its ID changed. Pick the system again.`}
+          </div>
+        ) : candidates.length > 0 ? (
+          <div className="mt-1.5 text-[11px] text-slate-400">Lists {typesLabel} systems</div>
+        ) : null
+      ) : null}
+
+      {candidates.length === 0 && !locked ? (
         <div className="mt-2 text-[11px] text-slate-500">
           No <span className="font-mono">{role.types.join(' / ')}</span> systems in inventory.
         </div>

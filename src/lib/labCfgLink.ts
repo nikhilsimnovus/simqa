@@ -162,6 +162,88 @@ export async function linkAndRestart(
 /** What is CURRENTLY symlinked, for pre-filling a picker with today's state
  *  rather than a blank one. Best-effort — a read failure just means "unknown"
  *  for that role, never an error surfaced to the caller. */
+/** `x.cfg`, or a named variant `x.cfg_LEO_Fixed_NoCM` — but not `x.cfg.bak`. */
+const CONFIG_NAME = /\.cfg(_[^.]*)?$/;
+
+/**
+ * The link names the pickers SET. Never a valid choice: picking enb.cfg as the
+ * eNB config links enb.cfg to itself, destroying the radio config. They used
+ * to sit among 171 alphabetised names; newest-first puts them at the very top,
+ * because relinking bumps their mtime — so they are dropped here.
+ */
+const SLOT_LINK_NAMES = new Set(['enb.cfg', 'gnb.cfg', 'mme.cfg', 'mme2.cfg', 'ims.cfg']);
+
+/**
+ * Parse the `find -printf '%T@\t%y%Y\t%m\t%f\n'` listing listCfgDir runs into
+ * the config names a picker should offer, NEWEST FIRST.
+ *
+ * Which entries count as configs was decided from what is actually in
+ * /root/enb/config on .122 (264 entries, 171 of them *.cfg), not guessed:
+ *   - dotted names: only *.cfg and *.cfg_<variant>. The rest are backups
+ *     (.bak, .bak.<ts>, .save, .orig, .pre-dish-…), SIB includes (.asn),
+ *     scripts, archives and captures — and being recently touched, they
+ *     would otherwise crowd the top of a newest-first list;
+ *   - no extension: kept when it resolves to a regular file that is not an
+ *     executable. The lab keeps real configs this way — .122's enb.cfg points
+ *     at "Prime-SA-1cell" — while `rf_driver` (a link to a directory) and
+ *     `mme-ifup` (a 755 script) are not configs.
+ * Anything resolving to something other than a regular file is dropped.
+ */
+export function parseCfgListing(raw: string): string[] {
+  const out: { mtime: number; name: string }[] = [];
+  for (const line of raw.split('\n')) {
+    const [mtime, types, mode, ...rest] = line.split('\t');
+    const name = rest.join('\t').trim();
+    if (isPickableCfg(name, types, mode)) out.push({ mtime: Number(mtime) || 0, name });
+  }
+  return out
+    .sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name))
+    .map((f) => f.name);
+}
+
+/**
+ * Whether one directory entry is a config a picker should offer — the rule
+ * described on parseCfgListing, shared so every cfg picker (Scenarios, the
+ * testcase page, Automation Suite) offers the same files.
+ *
+ * `types` is find's `%y%Y` (own type, type after following links); `mode` is
+ * find's `%m`.
+ */
+export function isPickableCfg(name: string, types: string | undefined, mode: string | undefined): boolean {
+  if (!name || !types || types.length < 2) return false;
+  if (SLOT_LINK_NAMES.has(name)) return false;
+  const [ownType, targetType] = [types[0], types[1]];
+  if (targetType !== 'f') return false;
+  if (name.includes('.')) return CONFIG_NAME.test(name);
+  // A symlink's own mode is always 777, so only a real file's mode says
+  // whether it is a script.
+  const executable = ownType === 'f' && (parseInt(mode ?? '0', 8) & 0o111) !== 0;
+  return !executable;
+}
+
+/**
+ * The config files in a callbox config directory, NEWEST FIRST by
+ * modification time — the config someone just copied onto the box is at the
+ * top of the picker instead of somewhere among 171 alphabetised names.
+ * Which entries count as configs: see parseCfgListing.
+ *
+ * Same `find` over `sudo -n` Automation Suite's callbox-configs route already
+ * uses (proved on .106/.122, where /root is readable on one and 0700 on the
+ * other).
+ *
+ * `dir` must be a fixed path chosen by the caller, never request input — this
+ * runs as root. Throws when the directory is missing or unreadable, so a
+ * failed read is not mistaken for an empty directory.
+ */
+export async function listCfgDir(box: InventorySystem, dir: string): Promise<string[]> {
+  const find = `find ${dir} -maxdepth 1 -not -type d ! -name '.*' -printf '%T@\t%y%Y\t%m\t%f\n'`;
+  const raw = await readCommand(box, `sudo -n ${find} 2>/dev/null || ${find}`);
+  if (/No such file or directory|Permission denied/i.test(raw)) {
+    throw new Error(`${dir} is not present or not readable on ${box.host}`);
+  }
+  return parseCfgListing(raw);
+}
+
 export async function currentCfgLinks(callbox: InventorySystem): Promise<CfgSelection> {
   const read = async (path: string) => {
     try {

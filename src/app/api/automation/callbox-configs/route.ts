@@ -12,6 +12,7 @@
 import { NextResponse } from 'next/server';
 import { loadInventory, getSystem } from '@/lib/inventory';
 import { readCommand } from '@/lib/configFidelity/ssh';
+import { isPickableCfg } from '@/lib/labCfgLink';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,7 +49,8 @@ export async function GET(req: Request) {
     // which showed up as an empty picker with no explanation. -n keeps it
     // non-interactive, so a box without passwordless sudo drops straight to the
     // fallback instead of hanging on a password prompt.
-    const find = `find ${dir} -maxdepth 1 -not -type d ! -name '.*' -printf '%T@\t%s\t%f\n'`;
+    // %y%Y and %m feed isPickableCfg (see below).
+    const find = `find ${dir} -maxdepth 1 -not -type d ! -name '.*' -printf '%T@\t%s\t%y%Y\t%m\t%f\n'`;
     const cmd = `sudo -n ${find} 2>/dev/null || ${find}`;
     const raw = await readCommand(sys, cmd);
     // A find error means the path is not there — say so instead of returning
@@ -59,18 +61,24 @@ export async function GET(req: Request) {
         error: `${sys.name || sys.host}: ${dir} is not present (or not readable). This callbox does not keep its configs there.`,
       });
     }
+    // Only entries that are configs — the same rule as the Scenarios and
+    // testcase pickers (isPickableCfg). Unfiltered, a newest-first list opened
+    // with whatever was touched last: on .122 that was NTN-Handover.tar.gz, a
+    // stray "root@192.168.1.57" and the enb.cfg link itself, which as a choice
+    // would link enb.cfg to itself.
     const files = raw.split('\n').filter(Boolean).map(line => {
-      const [epoch, size, ...nameParts] = line.split('\t');
+      const [epoch, size, types, mode, ...nameParts] = line.split('\t');
       const name = nameParts.join('\t');
       const epochNum = Number(epoch) || 0;
       return {
         name,
+        pickable: isPickableCfg(name, types, mode),
         size: Number(size) || 0,
         mtimeEpoch: epochNum,
         // Pretty mtime for the UI — ISO is sortable + unambiguous.
         mtime: epochNum ? new Date(epochNum * 1000).toISOString().slice(0, 19).replace('T', ' ') : '',
       };
-    }).filter(f => f.name);
+    }).filter(f => f.name && f.pickable).map(({ pickable: _p, ...f }) => f);
     // Sort newest first.
     files.sort((a, b) => b.mtimeEpoch - a.mtimeEpoch);
     return NextResponse.json({ ok: true, host: sys.host, dir, files });
