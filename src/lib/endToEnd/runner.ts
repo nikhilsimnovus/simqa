@@ -173,6 +173,7 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
     testcaseId,
     evidenceDir,
     cfgSelection: req.cfgSelection,
+    cfgMode: req.cfgMode,
     // The topology the caller chose names its callbox directly. Deriving it
     // from the Simnovator instead takes whichever topology lists that
     // Simnovator first — the wrong callbox once two topologies share one.

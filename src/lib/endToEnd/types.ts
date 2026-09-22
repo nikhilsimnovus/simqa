@@ -143,6 +143,11 @@ export interface RunRequest {
    *  src/lib/labCfgLink.ts — before preflight proceeds. Omit for a plain
    *  REST-only validation run (unchanged default behaviour). */
   cfgSelection?: { enb?: string; gnb?: string; mme?: string; mme2?: string; ims?: string };
+  /** 'shared' — another user is executing on this callbox, so run on the
+   *  config already linked: no symlink, no `service lte restart` (which would
+   *  drop their test). Chosen by the operator in the "someone else is
+   *  executing" prompt. Omitted = apply cfgSelection if it is safe to. */
+  cfgMode?: 'shared';
   /** Topology the caller chose, when it chose one. It names the callbox that
    *  cfgSelection is linked on; without it the runner falls back to the first
    *  topology listing `systemId` as its Simnovator. */

@@ -22,6 +22,8 @@
 import { loadInventory, getSystem, uesimApiOptsForSystem, type AutomationSuite, type SuiteItem } from '../inventory';
 import { withSsh, readCommand } from '../configFidelity/ssh';
 import { sudoLink } from '../labCfgLink';
+import { bringUpDecision, callboxUsage } from '../callboxUsage';
+import { describeOthers, describeCfg } from '../callboxShare';
 import { saveRun, newRunId, type RunRecord } from './runStore';
 import { triggerPerfQaCollection, DEFAULT_PERFQA_URL } from './diagnostics';
 import { duplicateTestcase } from './duplicateTestcase';
@@ -448,7 +450,37 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   // The total bumps by 3 instead of 1 to reflect the multi-step bring-up.
   const totalWithBringUp = (cfg ? 3 : 0) + tcs.length;
 
-  if (cfg && !opts.signal?.aborted) {
+  // The callbox is shared by every user of the Simnovator, and the restart
+  // below drops the radio under all of them. Nobody is here to answer a prompt,
+  // so take the safe answer: if someone else is executing, run on the config
+  // already linked. If the pick is already linked, there is nothing to restart.
+  let sharedSkip: string | null = null;
+  if (cfg && !opts.signal?.aborted && suite.uploadedConfigs?.[cfg]) {
+    // An upload is new file content, so the name alone says nothing about
+    // whether it changed — it is always applied, but never under someone else.
+    try {
+      const u = await callboxUsage(inv, sys, { me: ueOpts.boxUser });
+      if (u.others.length) {
+        sharedSkip = `${describeOthers(u.others)} is executing on this callbox — the uploaded ${cfg} was not applied; ran on the current config (${describeCfg(u.current)}), no lte restart`;
+      }
+    } catch { /* could not check — the normal bring-up runs */ }
+  } else if (cfg && !opts.signal?.aborted) {
+    try {
+      const d = await bringUpDecision(inv, sys, ueOpts.boxUser, { enb: safe(cfg) });
+      if (d.action === 'blocked') {
+        sharedSkip = `${describeOthers(d.others)} is executing on this callbox — ran on its current config (${describeCfg(d.current)}); no link and no lte restart`;
+      } else if (d.action === 'unchanged') {
+        sharedSkip = `already linked (${describeCfg(d.current)}) — no lte restart needed`;
+      }
+    } catch { /* could not check — the normal bring-up runs */ }
+  }
+  if (sharedSkip) {
+    steps.push({ testcaseId: `cfg-link:${cfg}`, status: 200, ok: true, detail: sharedSkip, durationMs: 0 });
+    passed += 1;
+    done += 3;
+  }
+
+  if (cfg && !opts.signal?.aborted && !sharedSkip) {
     const safeName = safe(cfg);
     const target = `/root/enb/config/${safeName}`;
     const linkPath = `/root/enb/config/enb.cfg`;
@@ -774,7 +806,33 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     // actually running.) Names with commas/spaces are handled by quoting the
     // shell args, not by renaming the file. Uploads — configs not already on the
     // box — are pushed up under their own name first.
-    if (callboxSys && item.callboxCfg) {
+    // Same rule per row: never restart LTE under another user's execution.
+    let rowSharedSkip: string | null = null;
+    const rowHasUpload = !!(item.callboxCfg && suite.uploadedConfigs?.[item.callboxCfg])
+      || !!(item.mmeCfg && suite.uploadedConfigs?.[item.mmeCfg])
+      || !!(item.imsCfg && suite.uploadedConfigs?.[item.imsCfg]);
+    if (callboxSys && item.callboxCfg && rowHasUpload) {
+      // Uploads are new content — applied, but never under someone else.
+      try {
+        const u = await callboxUsage(inv, callboxSys, { me: ueOpts.boxUser });
+        if (u.others.length) {
+          rowSharedSkip = `cfg: ${describeOthers(u.others)} is executing on this callbox — uploaded config not applied; ran on the current config (${describeCfg(u.current)}), no lte restart`;
+        }
+      } catch { /* could not check — the normal bring-up runs */ }
+    } else if (callboxSys && item.callboxCfg) {
+      try {
+        const d = await bringUpDecision(inv, callboxSys, ueOpts.boxUser,
+          { enb: item.callboxCfg, mme: item.mmeCfg, ims: item.imsCfg });
+        if (d.action === 'blocked') {
+          rowSharedSkip = `cfg: ${describeOthers(d.others)} is executing on this callbox — ran on its current config (${describeCfg(d.current)}); no link and no lte restart`;
+        } else if (d.action === 'unchanged') {
+          rowSharedSkip = `cfg: already linked (${describeCfg(d.current)}) — no lte restart needed`;
+        }
+      } catch { /* could not check — the normal bring-up runs */ }
+    }
+    if (rowSharedSkip) stepDetails.push(rowSharedSkip);
+
+    if (callboxSys && item.callboxCfg && !rowSharedSkip) {
       const cfg = item.callboxCfg;
       const linkPath = `/root/enb/config/enb.cfg`;
       const blob = suite.uploadedConfigs?.[cfg];

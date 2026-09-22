@@ -33,7 +33,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import type { Inventory, InventorySystem } from './inventory';
-import { getSystem, uesimApiOptsForSystem } from './inventory';
+import { getSystem, uesimApiOptsForSystem, uesimApiCredentials } from './inventory';
 import { linkAndRestart } from './labCfgLink';
 import { fetchBoxBuild } from './buildVersion';
 import { appendHistoryEntry } from './historyStore';
@@ -723,7 +723,30 @@ async function groupRunTests(
       startedAt: cfgStartedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - tCfg,
     });
   } else {
+    // The callbox is shared by every user of this Simnovator; the restart below
+    // would stop anyone else's test. Build Check has to run on ITS config (a
+    // verdict on another one means nothing), so it waits rather than sharing.
+    let shared: { blocked?: string; unchanged?: string } = {};
     try {
+      const { bringUpDecision } = await import('./callboxUsage');
+      const { describeOthers, describeCfg } = await import('./callboxShare');
+      const d = await bringUpDecision(inv, callbox, uesimApiCredentials(sim).username, { ...BUILD_CHECK_CFG });
+      if (d.action === 'blocked') {
+        shared.blocked = `${describeOthers(d.others)} is executing on ${callbox.host}. Build Check needs its own config and restarting lte would stop their test — wait for it to finish, then run Build Check again.`;
+      } else if (d.action === 'unchanged') {
+        shared.unchanged = `${callbox.host}: already on the Build Check config (${describeCfg(d.current)}) — no lte restart needed`;
+      }
+    } catch { /* could not check — the normal bring-up runs */ }
+
+    if (shared.blocked || shared.unchanged) {
+      steps.push({
+        id: 'cfg-link', label: 'Callbox configuration',
+        status: shared.blocked ? 'fail' : 'pass',
+        detail: (shared.blocked ?? shared.unchanged)!,
+        expected: `enb/mme/ims linked to ${BUILD_CHECK_CFG.enb} / ${BUILD_CHECK_CFG.mme} / ${BUILD_CHECK_CFG.ims}`,
+        startedAt: cfgStartedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - tCfg,
+      });
+    } else try {
       const link = await linkAndRestart(callbox, { ...BUILD_CHECK_CFG });
       steps.push({
         id: 'cfg-link',

@@ -491,6 +491,35 @@ const preflightCfgBringUp: CheckDef = {
       return makeResult(base, 'fail', 'no callbox bound to this Simnovator in Systems Management → Topology Setup — cannot link the selected files');
     }
     const t0 = Date.now();
+
+    // The callbox is shared by every user of this Simnovator, and a restart
+    // drops the radio under all of them. Decide before touching it — see
+    // callboxShare.ts. This is the server-side half of the prompt on the
+    // testcase page: it holds even for a caller that never showed it.
+    const { callboxUsage } = await import('../callboxUsage');
+    const { decideBringUp, describeOthers, describeCfg } = await import('../callboxShare');
+    const { loadInventory } = await import('../inventory');
+    const usage = await callboxUsage(loadInventory(), ctx.callbox, { me: ctx.apiUser, exceptRunId: ctx.runId });
+
+    if (ctx.cfgMode === 'shared') {
+      return makeResult(base, 'skip',
+        `ran on the callbox's current config (${describeCfg(usage.current)}) — no link and no lte restart`
+        + (usage.others.length ? `, because ${describeOthers(usage.others)} is executing on it` : ''),
+        { durationMs: Date.now() - t0 });
+    }
+    const decision = decideBringUp(sel, usage.current, usage.others);
+    if (decision.action === 'unchanged') {
+      return makeResult(base, 'pass',
+        `already linked (${describeCfg(decision.current)}) — no lte restart needed`,
+        { durationMs: Date.now() - t0 });
+    }
+    if (decision.action === 'blocked') {
+      return makeResult(base, 'fail',
+        `${describeOthers(decision.others)} is executing on this callbox. Changing the config (${decision.changes.join('; ')}) `
+        + `would restart lte and stop their test. Wait for it to finish, or run with the current config (${describeCfg(decision.current)}).`,
+        { durationMs: Date.now() - t0 });
+    }
+
     const { linkAndRestart } = await import('../labCfgLink');
     const r = await linkAndRestart(ctx.callbox, sel);
     const detail = r.steps.map((s) => `${s.step}${s.ok ? '' : ' FAILED'}: ${s.detail}`).join('; ');

@@ -15,6 +15,7 @@ import {
 } from '@/app/run-validate/ValidationReport';
 import { boxExecutionsOf } from '@/lib/boxExecutions';
 import { boxMetricName, explainBoxCheck } from '@/lib/checkExplain';
+import { decideBringUp, describeCfg, type OtherExecution, type CfgPick } from '@/lib/callboxShare';
 
 interface PreviewBundle {
   files: Record<string, string>;
@@ -456,6 +457,10 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
   // ── Run + live validation status ──
   const [runId, setRunId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  /** Set when Run found someone else executing on the shared callbox and this
+   *  run would change its config — drives the Wait / Run-with-current prompt. */
+  const [shareDialog, setShareDialog] = useState<{ others: OtherExecution[]; current: CfgPick; changes: string[]; callboxHost?: string } | null>(null);
+  const [checkingShare, setCheckingShare] = useState(false);
   /** This testcase is executing — started here, or on the box by anyone.
    *  Editing its definition is locked for as long as that is true. */
   const testcaseRunning = running || busyForThis;
@@ -516,7 +521,7 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
    * validation rather than only the box's own verdict. No cfg selection is
    * sent: the run is already under way and its configs are on the boxes.
    */
-  async function startValidation(attach = false) {
+  async function startValidation(attach = false, opts: { cfgMode?: 'shared'; cfg?: CfgPick; checked?: boolean } = {}) {
     if (!systemId) { setStartErr('Open this testcase from the Test Cases list so SimQA knows which system to run it on.'); return; }
     setStartErr(null); setStatus(null);
     try {
@@ -524,7 +529,30 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
       // linked: the cfg check reports which files were NOT applied, and it can
       // only name them if it is told. Sending them does not link them — see
       // preflight-cfg-bring-up, which refuses outright while attached.
-      const cfgSelection = { enb: selEnb || undefined, mme: selMme || undefined, ims: selIms || undefined };
+      const cfgSelection = opts.cfg ?? { enb: selEnb || undefined, mme: selMme || undefined, ims: selIms || undefined };
+
+      // The callbox is shared by every user on this Simnovator, and applying a
+      // config restarts LTE under all of them. Ask who else is on it BEFORE
+      // starting; if someone is executing and this run would change the
+      // config, let the operator wait or run on what is already linked.
+      // The server makes the same decision again, so this is the prompt, not
+      // the protection.
+      if (!attach && !opts.cfgMode && !opts.checked) {
+        setCheckingShare(true);
+        try {
+          const qs = new URLSearchParams({ systemId });
+          if (boxUserId) qs.set('boxUserId', boxUserId);
+          const u = await fetch(`/api/callbox-usage?${qs}`, { cache: 'no-store' }).then((r) => r.json());
+          if (u?.ok) {
+            const d = decideBringUp(cfgSelection, u.current, u.others ?? []);
+            if (d.action === 'blocked') {
+              setShareDialog({ others: d.others, current: d.current, changes: d.changes, callboxHost: u.callbox?.host });
+              return;
+            }
+          }
+        } catch { /* could not ask — the server-side check still protects the callbox */ }
+        finally { setCheckingShare(false); }
+      }
       // boxUserId rides along on BOTH paths: an attached run still has to poll
       // the box as somebody, and it should be the account the operator picked.
       const body = attach
@@ -534,6 +562,7 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
           testcaseId: decoded,
           cfgSelection,
           boxUserId: boxUserId || undefined,
+          cfgMode: opts.cfgMode,
         };
       const r = await fetch('/api/end-to-end/run', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -830,12 +859,12 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
               <Button
                 size="sm"
                 onClick={() => startValidation()}
-                disabled={!systemId}
+                disabled={!systemId || checkingShare}
                 className="bg-primary-600 hover:bg-primary-700 text-white"
-                title="Symlink the selected configs into place on the callbox, restart, then execute this testcase with full validation checks."
+                title="Apply the selected configs on the callbox (only when no other user is executing on it), then execute this testcase with full validation checks."
               >
-                <Play className="h-4 w-4 fill-current" />
-                <span className="ml-1.5">Run</span>
+                {checkingShare ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
+                <span className="ml-1.5">{checkingShare ? 'Checking callbox…' : 'Run'}</span>
               </Button>
             )}
           </div>
@@ -1118,6 +1147,62 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
           <Card><CardBody><div className="text-sm text-slate-500">Generating preview…</div></CardBody></Card>
         ) : null}
       </main>
-    </div>
+    
+      {/* Someone else is executing on the shared callbox, and this run would
+          change its config — which restarts LTE under their test. */}
+      {shareDialog ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-lg rounded-xl border border-line bg-surface shadow-xl">
+            <div className="px-5 pt-4 pb-3 border-b border-slate-100">
+              <div className="text-base font-semibold text-slate-900">Another user is executing on this callbox</div>
+              <div className="text-xs text-slate-500 mt-0.5">
+                {shareDialog.callboxHost ? <>Callbox <span className="font-mono">{shareDialog.callboxHost}</span> is shared by every user of this Simnovator.</> : 'The callbox is shared by every user of this Simnovator.'}
+              </div>
+            </div>
+            <div className="px-5 py-4 space-y-3 text-sm">
+              <ul className="space-y-1">
+                {shareDialog.others.map((o, i) => (
+                  <li key={i} className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-sky-500 animate-pulse shrink-0" />
+                    <span className="font-medium text-slate-900">{o.user ?? 'Another user'}</span>
+                    <span className="text-slate-600 truncate">
+                      {o.state === 'starting' ? 'is starting' : 'is executing'}{o.testcaseName ? <> <span className="font-medium">{o.testcaseName}</span></> : null}{o.simulator ? <> on {o.simulator}</> : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Config in use on the callbox</div>
+                <div className="font-mono text-slate-800 break-all">{describeCfg(shareDialog.current)}</div>
+              </div>
+              <div className="text-xs text-slate-600">
+                Your selection changes {shareDialog.changes.join('; ')}. Applying it restarts LTE, which would stop their test.
+                Wait for it to finish, or run now with the config already in use — no soft link and no LTE restart.
+              </div>
+            </div>
+            <div className="px-5 pb-4 flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setShareDialog(null)}>Wait</Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  const cur = shareDialog.current;
+                  setShareDialog(null);
+                  // Show what the run actually uses, then run on it as-is.
+                  setSelEnb(cur.enb ?? '');
+                  setSelMme(cur.mme ?? '');
+                  setSelIms(cur.ims ?? '');
+                  void startValidation(false, {
+                    cfgMode: 'shared',
+                    cfg: { enb: cur.enb || undefined, mme: cur.mme || undefined, ims: cur.ims || undefined },
+                  });
+                }}
+              >
+                Run with current config
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+</div>
   );
 }

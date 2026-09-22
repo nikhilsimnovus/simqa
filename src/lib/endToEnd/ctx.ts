@@ -34,6 +34,11 @@ export interface RunCtx {
    *  run's preflight checks proceed. Unset for a plain REST-only validation
    *  run — the cfg-link checks are only added to the plan when this is set. */
   cfgSelection?: CfgSelection;
+  /** 'shared' — another user is executing on this callbox, so run on the
+   *  config already linked: no symlink, no `service lte restart` (which would
+   *  drop their test). Chosen by the operator in the "someone else is
+   *  executing" prompt. Omitted = apply cfgSelection if it is safe to. */
+  cfgMode?: 'shared';
   /** The callbox resolved from the target Simnovator's topology profile.
    *  Required for cfgSelection to do anything; absence is reported as a
    *  failed preflight check rather than silently skipping the bring-up. */
