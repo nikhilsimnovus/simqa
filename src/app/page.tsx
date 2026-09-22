@@ -8,7 +8,7 @@ import { listRuns } from '@/lib/runStore';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { ensureStationMonitor } from '@/lib/stationMonitor';
 import { ensureFidelityWatcher } from '@/lib/liveFidelity/watcher';
-import { Wifi, WifiOff } from 'lucide-react';
+import { Wifi, WifiOff, Play, History } from 'lucide-react';
 import * as net from 'node:net';
 import Link from 'next/link';
 import { RecentRunsTable } from './RecentRunsTable';
@@ -232,7 +232,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
 
   const toRow = (e: BoxExecution) => ({
     key: `exec:${e.executionId}`,
-    href: `/testcases/${encodeURIComponent(e.testcaseId)}?systemId=${encodeURIComponent(primary!.id)}`,
+    href: testcaseHref(primary!.id, e.testcaseId, e.user),
     name: e.testcaseName,
     at: Date.parse(e.startedAt),
     startedAt: e.startedAt,
@@ -516,6 +516,19 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   );
 }
 
+/**
+ * A testcase's validation page, opened AS the user who ran it — an operator's
+ * testcase is invisible to every other login, so without boxUserId the page
+ * reads it through the default account and 404s. Usernames resolve as login
+ * ids (uesimApiCredentials matches either). from=dashboard puts "Back to
+ * Dashboard" on the page.
+ */
+function testcaseHref(systemId: string, testcaseId: string, user?: string): string {
+  const p = new URLSearchParams({ systemId, from: 'dashboard' });
+  if (user) p.set('boxUserId', user);
+  return `/testcases/${encodeURIComponent(testcaseId)}?${p}`;
+}
+
 /** Who is on the box: one tile per registered login. */
 function BoxUsersCard({ host, users, systemId }: { host: string; users: BoxUserState[]; systemId: string }) {
   const running = users.filter((u) => u.running).length;
@@ -546,18 +559,34 @@ function BoxUsersCard({ host, users, systemId }: { host: string; users: BoxUserS
                   : u.error ? u.error : 'no simulator assigned'}
                 {u.discovered ? <span className="text-slate-400" title="Named by the Simnovator's own user assignments — not a login registered in System Management"> · from box</span> : null}
               </div>
+              {/* Both open the testcase's validation page, as this user. */}
               {u.running ? (
                 <Link
-                  href={`/testcases/${encodeURIComponent(u.running.testcaseId)}?systemId=${encodeURIComponent(systemId)}`}
-                  className="mt-1.5 block text-xs text-sky-800 truncate hover:underline"
-                  title={u.running.testcaseName}
+                  href={testcaseHref(systemId, u.running.testcaseId, u.username)}
+                  className="mt-2 flex items-center gap-2 rounded-md border border-sky-200 bg-white px-2 py-1.5 hover:border-sky-400 hover:bg-sky-50"
+                  title={`${u.running.testcaseName} — executing now. Open its validation page.`}
                 >
-                  ▶ {u.running.testcaseName}
+                  <Play className="h-3.5 w-3.5 shrink-0 fill-sky-600 text-sky-600 animate-pulse" />
+                  <span className="min-w-0">
+                    <span className="block text-[10px] uppercase tracking-wider text-sky-700 font-medium">Executing now</span>
+                    <span className="block text-xs font-medium text-slate-900 truncate">{u.running.testcaseName}</span>
+                  </span>
                 </Link>
               ) : u.last ? (
-                <div className="mt-1.5 text-xs text-slate-600 truncate" title={u.last.testcaseName}>
-                  last: {u.last.testcaseName} · <span className="text-slate-500">{u.last.status}</span>
-                </div>
+                <Link
+                  href={testcaseHref(systemId, u.last.testcaseId, u.username)}
+                  className="mt-2 flex items-center gap-2 rounded-md border border-line bg-white px-2 py-1.5 hover:border-slate-400 hover:bg-slate-50"
+                  title={`${u.last.testcaseName} — last executed (${u.last.status}). Open its validation page.`}
+                >
+                  <History className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[10px] uppercase tracking-wider text-slate-500 font-medium">Last executed</span>
+                    <span className="block text-xs font-medium text-slate-900 truncate">{u.last.testcaseName}</span>
+                  </span>
+                  <Badge tone={u.last.status === 'passed' ? 'success' : u.last.status === 'failed' || u.last.status === 'error' ? 'danger' : 'warning'}>
+                    {u.last.status}
+                  </Badge>
+                </Link>
               ) : !u.error ? (
                 <div className="mt-1.5 text-xs text-slate-400">no executions yet</div>
               ) : null}

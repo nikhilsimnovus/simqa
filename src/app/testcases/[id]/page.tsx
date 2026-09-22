@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Header } from '@/components/Header';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
+import { BackToDashboard } from '@/components/BackToDashboard';
 import { SearchableSelect } from '@/components/SearchableSelect';
 import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
 import { ChevronLeft, FileText, Download, Square, Play, Loader2 } from 'lucide-react';
@@ -51,7 +52,15 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
   // Carried over from the Test Cases list: the catalogue you were looking at
   // was that person's, so Run as should not silently switch to someone else.
   const urlBoxUserId = query.get('boxUserId') ?? '';
-  const boxQs = systemId ? `?systemId=${encodeURIComponent(systemId)}` : '';
+  // Box AND login: every read of this testcase goes through the account that
+  // can see it. Without the login, a testcase opened from another user's
+  // dashboard tile reads through the default account and comes back 404.
+  const boxQs = (() => {
+    const p = new URLSearchParams();
+    if (systemId) p.set('systemId', systemId);
+    if (urlBoxUserId) p.set('boxUserId', urlBoxUserId);
+    return p.toString() ? `?${p}` : '';
+  })();
   // Display-only, passed by Run History, which already knows the name. Used
   // solely as the heading fallback so this page never titles itself with a raw
   // UUID while the box is being queried — or if the box can't be reached.
@@ -144,7 +153,10 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
           const users = j.users ?? [];
           const has = (id: string) => !!id && users.some((u: any) => u.id === id);
           if (has(cur)) return cur;
-          if (has(urlBoxUserId)) return urlBoxUserId;
+          // The URL may name the login by id (from the Test Cases list) or by
+          // username (from the dashboard, which only knows who ran it).
+          const fromUrl = users.find((u: any) => u.id === urlBoxUserId || u.username === urlBoxUserId);
+          if (fromUrl) return fromUrl.id;
           return users[0]?.id ?? '';
         });
       })
@@ -781,6 +793,9 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
           <div className="flex items-center gap-2">
             {/* Carry the box back with you — returning to an unqualified
                 /testcases would reset the SIM picker to the first UESIM. */}
+            {/* Only when opened from the dashboard (?from=dashboard) — the
+                same contract as Run History. */}
+            <BackToDashboard />
             <Link href={`/testcases${boxQs}`}>
               <Button size="sm" variant="ghost"><ChevronLeft className="h-4 w-4" />Back</Button>
             </Link>

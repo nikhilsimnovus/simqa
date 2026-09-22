@@ -90,9 +90,11 @@ function capturedUeCfg(ip: string, testcaseId: string): { text: string; startedA
  *  from a different box's copy of the testcase. */
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
-  const systemId = new URL(req.url).searchParams.get('systemId') ?? undefined;
+  const q = new URL(req.url).searchParams;
+  const systemId = q.get('systemId') ?? undefined;
+  const boxUserId = q.get('boxUserId') ?? undefined;   // see ../route.ts
   const inv = loadInventory();
-  const opts = uesimApiOptsForSystem(inv, systemId);
+  const opts = uesimApiOptsForSystem(inv, systemId, boxUserId);
   if (!opts) {
     return NextResponse.json(
       { error: systemId ? `system "${systemId}" is not a testable UESIM` : 'no UESIM in inventory' },

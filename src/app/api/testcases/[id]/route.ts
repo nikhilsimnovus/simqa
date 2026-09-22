@@ -9,9 +9,14 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
-  const systemId = new URL(req.url).searchParams.get('systemId') ?? undefined;
+  const q = new URL(req.url).searchParams;
+  const systemId = q.get('systemId') ?? undefined;
+  // WHOSE testcase: an operator's token only sees their own, so sruthi's
+  // testcase read through simuser's login is a 404. Opened from the
+  // dashboard's user tiles with ?boxUserId=<that user>.
+  const boxUserId = q.get('boxUserId') ?? undefined;
   const inv = loadInventory();
-  const opts = uesimApiOptsForSystem(inv, systemId);
+  const opts = uesimApiOptsForSystem(inv, systemId, boxUserId);
   if (!opts) {
     return NextResponse.json(
       { error: systemId ? `system "${systemId}" is not a testable UESIM` : 'no UESIM in inventory' },
