@@ -96,3 +96,80 @@ export function diffSections(current: any, edited: any, currentName?: string): S
   }
   return { changes, rename, warnings };
 }
+
+// ── Keeping a cell self-consistent after a hand edit ─────────────────────────
+//
+// A cell's gain arrays are per antenna: rxGain has one entry per DL antenna and
+// txGain one per UL antenna (true of every one of 79 cells on .95), and the box
+// rejects a mismatch outright — "rxGain array size (4) must match DL antenna
+// count (2)". Its own GUI never lets that happen because changing the antenna
+// count rewrites the arrays (read from the box's web bundle):
+//
+//   antennas.dl → rxGain = dl × (O-RU ? 40 : 10); O-RU also ruAntennaConfig
+//                 and eAxCIDConfig.dlEAxCIDs.sectionType1 = [0..dl-1]
+//   antennas.ul → txGain = ul × (O-RU ? -40 : 80); O-RU also ruAntennaConfig
+//                 and ulEAxCIDs = { sectionType1: [0..ul-1], sectionType3: [ul..2ul-1] }
+//   a SUL second cell mirrors cell 0's antennas and gains
+//
+// Editing the JSON by hand skips all of that, so a one-number change of DL 4
+// → 2 was refused. This applies the same rules, but keeps the gains the cell
+// already had rather than resetting them to defaults.
+
+/** Resize to n entries, keeping what is there and padding with the last value. */
+function fitArray(arr: unknown, n: number, fallback: number): number[] {
+  const src = Array.isArray(arr) ? arr.map(Number).filter((x) => Number.isFinite(x)) : [];
+  const pad = src.length ? src[src.length - 1] : fallback;
+  return Array.from({ length: n }, (_, i) => (i < src.length ? src[i] : pad));
+}
+
+const range = (from: number, n: number) => Array.from({ length: n }, (_, i) => from + i);
+
+/**
+ * Make each cell's per-antenna arrays match its antenna counts, in place.
+ * Returns what was changed, for the save result — nothing is changed silently.
+ */
+export function reconcileCellArrays(cellConfig: any): string[] {
+  const notes: string[] = [];
+  const cells: any[] = Array.isArray(cellConfig?.cells) ? cellConfig.cells : [];
+
+  cells.forEach((cell, i) => {
+    if (!cell || typeof cell !== 'object') return;
+    const dl = Number(cell.antennas?.dl);
+    const ul = Number(cell.antennas?.ul);
+    const oru = cell.oruConfig?.ru?.[0];
+
+    if (Number.isInteger(dl) && dl > 0 && (!Array.isArray(cell.rxGain) || cell.rxGain.length !== dl)) {
+      const was = Array.isArray(cell.rxGain) ? cell.rxGain.length : 0;
+      cell.rxGain = fitArray(cell.rxGain, dl, oru ? 40 : 10);
+      notes.push(`cell ${i}: rxGain resized ${was} → ${dl} to match ${dl} DL antenna${dl === 1 ? '' : 's'}`);
+    }
+    if (Number.isInteger(ul) && ul > 0 && (!Array.isArray(cell.txGain) || cell.txGain.length !== ul)) {
+      const was = Array.isArray(cell.txGain) ? cell.txGain.length : 0;
+      cell.txGain = fitArray(cell.txGain, ul, oru ? -40 : 80);
+      notes.push(`cell ${i}: txGain resized ${was} → ${ul} to match ${ul} UL antenna${ul === 1 ? '' : 's'}`);
+    }
+
+    // O-RU cells carry the antenna counts a second time, plus one eAxC id per antenna.
+    if (oru && Number.isInteger(dl) && Number.isInteger(ul) && dl > 0 && ul > 0) {
+      const cfg = oru.ruAntennaConfig;
+      if (!cfg || cfg.dl !== dl || cfg.ul !== ul) {
+        oru.ruAntennaConfig = { ul, dl };
+        oru.eAxCIDConfig = oru.eAxCIDConfig ?? {};
+        oru.eAxCIDConfig.dlEAxCIDs = { sectionType1: range(0, dl) };
+        oru.eAxCIDConfig.ulEAxCIDs = { sectionType1: range(0, ul), sectionType3: range(ul, ul) };
+        notes.push(`cell ${i}: O-RU antenna config and eAxC ids set to ${dl} DL / ${ul} UL`);
+      }
+    }
+  });
+
+  // A SUL second cell shares cell 0's radio: same antennas, same gains.
+  const [c0, c1] = cells;
+  if (c0 && c1 && c1.duplexMode === 'SUL') {
+    const before = stableJson([c1.antennas, c1.rxGain, c1.txGain]);
+    c1.antennas = { ...(c1.antennas ?? {}), dl: c0.antennas?.dl, ul: c0.antennas?.ul };
+    if (Array.isArray(c0.rxGain)) c1.rxGain = [...c0.rxGain];
+    if (Array.isArray(c0.txGain)) c1.txGain = [...c0.txGain];
+    if (stableJson([c1.antennas, c1.rxGain, c1.txGain]) !== before) notes.push('cell 1 (SUL): antennas and gains copied from cell 0');
+  }
+  return notes;
+}

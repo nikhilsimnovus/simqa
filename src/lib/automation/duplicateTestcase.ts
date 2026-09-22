@@ -11,7 +11,7 @@
 // settings finalises the case.
 
 import { ensureToken, getTestcase, listTestcases, type ApiOpts } from '../uesimClient';
-import { diffSections, type SectionName } from '../testcaseSections';
+import { diffSections, reconcileCellArrays, type SectionName } from '../testcaseSections';
 
 /**
  * The box rejects any testcase name outside [A-Za-z0-9_-] ("only letters,
@@ -361,9 +361,14 @@ export async function updateTestcaseInPlace(
   const td: any = JSON.parse(JSON.stringify(testDefinition));
   const currentName = String(current?.name ?? '');
 
+  // Do what the box's own GUI does when an antenna count changes — resize
+  // the per-antenna gain arrays — or a hand edit like DL 4 → 2 is refused
+  // ("rxGain array size (4) must match DL antenna count (2)").
+  const adjusted = td.cellConfig ? reconcileCellArrays(td.cellConfig) : [];
+
   const diff = diffSections(curTd, td, currentName);
   const finalName = diff.rename ?? currentName ?? testcaseId;
-  const warnings = [...diff.warnings];
+  const warnings = [...adjusted, ...diff.warnings];
   const updated: SectionName[] = [];
   const id = encodeURIComponent(testcaseId);
 

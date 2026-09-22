@@ -72,3 +72,59 @@ test('removing mobility is reported, not silently ignored', () => {
 test('stable JSON ignores key order and undefined', () => {
   assert.equal(stableJson({ b: 1, a: [2, { d: 3, c: undefined }] }), stableJson({ a: [2, { d: 3 }], b: 1 }));
 });
+
+// ── per-antenna arrays follow the antenna counts ──────────────────────────
+
+const { reconcileCellArrays } = await import('./testcaseSections.ts');
+
+test('DL 4 → 2 shrinks rxGain to 2, keeping the gains already set', () => {
+  // The exact edit that was refused: "rxGain array size (4) must match DL antenna count (2)".
+  const cfg = { cells: [{ antennas: { dl: 2, ul: 2 }, rxGain: [12, 11, 10, 10], txGain: [80, 80] }] };
+  const notes = reconcileCellArrays(cfg);
+  assert.deepEqual(cfg.cells[0].rxGain, [12, 11]);
+  assert.deepEqual(cfg.cells[0].txGain, [80, 80]);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /rxGain resized 4 → 2/);
+});
+
+test('raising the count pads with the last gain the cell had', () => {
+  const cfg = { cells: [{ antennas: { dl: 4, ul: 4 }, rxGain: [12, 11], txGain: [70, 75] }] };
+  reconcileCellArrays(cfg);
+  assert.deepEqual(cfg.cells[0].rxGain, [12, 11, 11, 11]);
+  assert.deepEqual(cfg.cells[0].txGain, [70, 75, 75, 75]);
+});
+
+test('a missing gain array gets the box GUI defaults', () => {
+  const cfg: any = { cells: [{ antennas: { dl: 2, ul: 1 } }] };
+  reconcileCellArrays(cfg);
+  assert.deepEqual(cfg.cells[0].rxGain, [10, 10]);
+  assert.deepEqual(cfg.cells[0].txGain, [80]);
+});
+
+test('a consistent cell is left exactly as it is', () => {
+  const cell = { antennas: { dl: 4, ul: 2 }, rxGain: [10, 10, 10, 10], txGain: [80, 80] };
+  const cfg = { cells: [JSON.parse(JSON.stringify(cell))] };
+  assert.deepEqual(reconcileCellArrays(cfg), []);
+  assert.deepEqual(cfg.cells[0], cell);
+});
+
+test('an O-RU cell also gets its antenna config and eAxC ids', () => {
+  const cfg = { cells: [{ antennas: { dl: 2, ul: 1 }, rxGain: [40, 40, 40, 40], txGain: [-40], oruConfig: { ru: [{ ruAntennaConfig: { dl: 4, ul: 1 } }] } }] };
+  reconcileCellArrays(cfg);
+  const ru = (cfg.cells[0] as any).oruConfig.ru[0];
+  assert.deepEqual(ru.ruAntennaConfig, { ul: 1, dl: 2 });
+  assert.deepEqual(ru.eAxCIDConfig.dlEAxCIDs, { sectionType1: [0, 1] });
+  assert.deepEqual(ru.eAxCIDConfig.ulEAxCIDs, { sectionType1: [0], sectionType3: [1] });
+  assert.deepEqual(cfg.cells[0].rxGain, [40, 40]);
+});
+
+test('a SUL second cell mirrors cell 0', () => {
+  const cfg = { cells: [
+    { antennas: { dl: 2, ul: 1 }, rxGain: [10, 10], txGain: [80] },
+    { duplexMode: 'SUL', antennas: { dl: 4, ul: 2 }, rxGain: [10, 10, 10, 10], txGain: [80, 80] },
+  ] };
+  reconcileCellArrays(cfg);
+  assert.deepEqual(cfg.cells[1].antennas, { dl: 2, ul: 1 });
+  assert.deepEqual(cfg.cells[1].rxGain, [10, 10]);
+  assert.deepEqual(cfg.cells[1].txGain, [80]);
+});
