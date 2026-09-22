@@ -12,6 +12,7 @@
 // almost always wants sampleSize set (full runs of >50 cases take hours).
 
 import { NextResponse } from 'next/server';
+import { userFromRequest } from '@/lib/identity';
 import { loadInventory } from '@/lib/inventory';
 import { executeBulkTestcases } from '@/lib/bulkTests/executor';
 import { getState, readManifest } from '@/lib/bulkTests/state';
@@ -65,6 +66,8 @@ export async function POST(req: Request) {
       try {
         appendHistoryEntry({
           surface: 'bulk-execute',
+      // Who ran it — from the signed session, not the body.
+      user: userFromRequest(req) || undefined,
           label: `Bulk execute · ${summary.total} sampled · ${summary.passed} pass / ${summary.failed} fail`,
           startedAt: summary.startedAt,
           finishedAt: summary.finishedAt,

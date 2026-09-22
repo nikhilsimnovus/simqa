@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Header } from '@/components/Header';
 import { BackToDashboard } from '@/components/BackToDashboard';
-import { Card, CardBody, CardHeader, CardTitle, Button, Input, Field, Badge } from '@/components/ui';
+import { Card, CardBody, CardHeader, CardTitle, Button, Input, PasswordInput, Field, Badge } from '@/components/ui';
 import {
   Plus, Trash2, Server, Radio, Cpu, Network, Globe, Database, ShieldCheck, Layers,
   Pencil, Check, X, ArrowRight, ChevronDown, ChevronRight, Search } from 'lucide-react';
@@ -23,6 +23,9 @@ interface InventorySystem {
   sudoPassword?: string;
   vendor?: string;
   uesim?: { username?: string; password?: string };
+  /** Box logins this setup offers, so different people execute as themselves.
+   *  Mirrors BoxUser in lib/inventory.ts. */
+  uesimUsers?: Array<{ id: string; username: string; password: string; label?: string }>;
   cockpitPort?: number;
   cockpitUser?: string;
   cockpitPassword?: string;
@@ -133,6 +136,46 @@ function typeOptions(current?: string): string[] {
   return current && !SYSTEM_TYPES.includes(current) ? [...SYSTEM_TYPES, current] : SYSTEM_TYPES;
 }
 
+/**
+ * Does this setup have a box login at all?
+ *
+ * Only the Simnovator serves the REST API that executions authenticate
+ * against. A UE, callbox or app server is never logged into with a box
+ * account — SimQA only shells into those — so offering a username and
+ * password beside their IP collects credentials nothing would ever use, and
+ * makes the "no credentials yet" warning fire on setups that need none.
+ *
+ * A setup registered before this rule keeps the block if it already carries
+ * a login, so existing credentials stay editable instead of being stranded
+ * in the file with no field that reaches them.
+ */
+function wantsBoxLogin(sys: InventorySystem): boolean {
+  if (sys.type === 'SIMNOVATOR_GUI' || sys.type === 'SIMNOVATOR') return true;
+  return !!(sys.uesim?.username || sys.uesim?.password || (sys.uesimUsers ?? []).length);
+}
+
+/** True once a box-login setup names at least one account it can execute as. */
+function hasCreds(sys: InventorySystem): boolean {
+  return !!(sys.uesimUsers ?? []).some((u) => u.username.trim()) || !!sys.uesim?.username;
+}
+
+/** "Simnovator-95", "App Server-100" — derived from type + last IP octet.
+ *  The Name field was removed from the form (nobody wants to invent one), so
+ *  it is generated; a name typed before that change is left alone. */
+function autoName(type?: string, host?: string): string {
+  const label = TYPE_META[type ?? '']?.label ?? 'System';
+  const octet = String(host ?? '').split('.').filter(Boolean).pop();
+  return octet ? `${label}-${octet}` : label;
+}
+
+/** A patch that also refreshes the derived name — but only when the current
+ *  name is still auto-generated (or blank), so a hand-picked name like "CSI"
+ *  survives an IP correction. */
+function withAutoName(sys: InventorySystem, patch: Partial<InventorySystem>): Partial<InventorySystem> {
+  const next = { ...sys, ...patch };
+  const wasAuto = !sys.name || sys.name === autoName(sys.type, sys.host);
+  return wasAuto ? { ...patch, name: autoName(next.type, next.host) } : patch;
+}
 const TYPE_META: Record<string, { icon: React.ComponentType<{ className?: string }>; ring: string; bg: string; text: string; label: string }> = {
   // SIMNOVATOR is the Build Check install target — surfaced as "Cockpit",
   // since that's the admin UI the install actually goes through.
@@ -273,23 +316,51 @@ export default function InventoryPage() {
         }
         return q as unknown as TopologyProfile;
       });
+      // Carry REMOVALS into the topologies too. Clearing the systems list
+      // alone left every topology still naming the deleted box: the role
+      // looked filled, resolved to nothing at run time, and the only hint was
+      // a run failing later. A reference to a system that no longer exists is
+      // not a binding, so it is dropped here rather than kept as a ghost.
+      const liveIds = new Set(systems.map((x) => x.id));
+      let clearedRefs = 0;
+      let droppedProfiles = 0;
+      const cascaded = nextProfiles
+        .map((prof) => {
+          const q: Record<string, unknown> = { ...prof };
+          for (const k of PROFILE_REF_KEYS) {
+            const v = q[k];
+            if (typeof v === 'string' && v && !liveIds.has(v)) { delete q[k]; clearedRefs += 1; }
+          }
+          return q as unknown as TopologyProfile;
+        })
+        // A topology left naming no machine at all is a husk — already hidden
+        // from the list by isOrphan, and useless to every runner. Drop it so
+        // removing the last box actually removes its bench.
+        .filter((prof) => {
+          const anyLeft = PROFILE_REF_KEYS.some((k) => (prof as unknown as Record<string, unknown>)[k]);
+          if (!anyLeft) { droppedProfiles += 1; return false; }
+          return true;
+        });
+
       const r = await fetch('/api/inventory', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...otherDoc, systems, profiles: nextProfiles }),
+        body: JSON.stringify({ ...otherDoc, systems, profiles: cascaded }),
       });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error ?? `HTTP ${r.status}`);
       setSavedSystems(JSON.stringify(systems));
-      setProfiles(nextProfiles);
+      setProfiles(cascaded);
       // Collapse the open row. Add system opens an editor to type the details
       // into; once those details are saved the form has done its job, and
       // leaving it expanded reads as "not saved yet".
       setEditingIdx(null);
-      setMsg(renames.size
-        ? `Saved — topologies updated for ${renames.size} renamed ID${renames.size === 1 ? '' : 's'}`
-        : 'Saved');
-      setTimeout(() => setMsg(null), renames.size ? 4000 : 1500);
+      const notes: string[] = [];
+      if (renames.size) notes.push(`${renames.size} renamed ID${renames.size === 1 ? '' : 's'} carried into topologies`);
+      if (clearedRefs) notes.push(`${clearedRefs} topology reference${clearedRefs === 1 ? '' : 's'} to removed systems cleared`);
+      if (droppedProfiles) notes.push(`${droppedProfiles} empty topolog${droppedProfiles === 1 ? 'y' : 'ies'} removed`);
+      setMsg(notes.length ? `Saved — ${notes.join(', ')}` : 'Saved');
+      setTimeout(() => setMsg(null), notes.length ? 5000 : 1500);
     } catch (e: any) {
       setMsg(`Error: ${e?.message ?? e}`);
     } finally {
@@ -722,7 +793,6 @@ function SystemCard({
   onRemove: () => void;
 }) {
   const isUesimLike = sys.type === 'SIMNOVATOR' || sys.type === 'SIMNOVATOR_GUI' || sys.type === 'UESIM';
-  const hasApi = !!(sys.uesim?.username || sys.uesim?.password);
   const hasSsh = !!(sys.username && (sys.password || sys.privateKey));
   const hasCockpit = !!(sys.cockpitUser || sys.cockpitPassword || sys.cockpitPort);
   const dupWarn = !sys.id.trim() || !sys.host.trim();
@@ -757,12 +827,17 @@ function SystemCard({
         {/* Two balanced columns rather than four cramped ones — each field
             keeps a full-width input at every breakpoint the card is used in. */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-          <Field label="ID"><Input value={sys.id} onChange={(e) => onPatch({ id: e.target.value })} /></Field>
-          <Field label="Name"><Input value={sys.name} onChange={(e) => onPatch({ name: e.target.value })} /></Field>
+          {/* Allocated by Add system and never typed: runs, topologies and
+              scenarios all refer to a setup by this id, so letting it be edited
+              silently re-points them. (Editing it is how CSI once collided with
+              sys-9 and resolved to the wrong machine.) */}
+          <Field label="ID" hint="allocated automatically — everything refers to a setup by this id">
+            <Input value={sys.id} readOnly disabled />
+          </Field>
           <Field label="Type">
             <select
               value={sys.type}
-              onChange={(e) => onPatch({ type: e.target.value })}
+              onChange={(e) => onPatch(withAutoName(sys, { type: e.target.value }))}
               className={SELECT_CLS}
             >
               {!sys.type ? <option value="">— choose type —</option> : null}
@@ -772,31 +847,26 @@ function SystemCard({
             </select>
           </Field>
           <Field label="IP address">
-            <Input value={sys.host} onChange={(e) => onPatch({ host: e.target.value })} placeholder="192.168.1.95" />
+            <Input value={sys.host} onChange={(e) => onPatch(withAutoName(sys, { host: e.target.value }))} placeholder="192.168.1.95" />
           </Field>
         </div>
+
+        {/* Logins live in this same block rather than behind a fold: a
+            Simnovator with no account cannot execute anything, and every
+            execution now picks one of these people. Any number of them —
+            the first is what runs when a job does not name a user. */}
+        {wantsBoxLogin(sys) ? <BoxUsersEditor sys={sys} onPatch={onPatch} /> : null}
+        {/* Said rather than enforced: blocking Save would trap anyone editing a
+            setup registered before credentials were required. */}
+        {wantsBoxLogin(sys) && sys.host && !hasCreds(sys) ? (
+          <div className="mt-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+            No login yet — executions on this setup would fall back to admin/admin and may be rejected.
+          </div>
+        ) : null}
       </div>
 
       {/* ── Everything else, folded away by default ─────────────────────── */}
       <div className="p-4 space-y-2.5">
-        {/* UESIM REST API — SIMNOVATOR + UESIM types only */}
-        {isUesimLike ? (
-          <CardSection
-            title="REST API"
-            hint="how SimQA talks to this box"
-            summary={{ text: hasApi ? 'configured' : 'defaults', ok: hasApi }}
-          >
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-              <Field label="API user">
-                <Input value={sys.uesim?.username ?? ''} onChange={(e) => onPatch({ uesim: { ...(sys.uesim ?? {}), username: e.target.value } })} placeholder="admin" />
-              </Field>
-              <Field label="API password">
-                <Input type="password" value={sys.uesim?.password ?? ''} onChange={(e) => onPatch({ uesim: { ...(sys.uesim ?? {}), password: e.target.value } })} placeholder="••••" />
-              </Field>
-            </div>
-          </CardSection>
-        ) : null}
-
         {/* Cockpit — SIMNOVATOR only */}
         {sys.type === 'SIMNOVATOR' ? (
           <CardSection
@@ -814,8 +884,8 @@ function SystemCard({
                 />
               </Field>
               <Field label="Password" hint={`default ${COCKPIT_DEFAULT_PASSWORD}`}>
-                <Input
-                  type="password"
+                <PasswordInput
+                  
                   value={sys.cockpitPassword ?? ''}
                   onChange={(e) => onPatch({ cockpitPassword: e.target.value || undefined })}
                   placeholder={COCKPIT_DEFAULT_PASSWORD}
@@ -895,7 +965,7 @@ function SshCredentialsBlock({
       </Field>
       {authMode === 'password' ? (
         <Field label="SSH password" hint="local-lab convenience only">
-          <Input type="password" value={sys.password ?? ''} onChange={(e) => onPatch({ password: e.target.value })} />
+          <PasswordInput  value={sys.password ?? ''} onChange={(e) => onPatch({ password: e.target.value })} />
         </Field>
       ) : (
         <>
@@ -911,12 +981,12 @@ function SshCredentialsBlock({
             </Field>
           </div>
           <Field label="Key passphrase" hint="if encrypted">
-            <Input type="password" value={sys.passphrase ?? ''} onChange={(e) => onPatch({ passphrase: e.target.value })} />
+            <PasswordInput  value={sys.passphrase ?? ''} onChange={(e) => onPatch({ passphrase: e.target.value })} />
           </Field>
         </>
       )}
       <Field label="sudo password" hint="needed for /root/* mv + systemctl restart unless NOPASSWD">
-        <Input type="password" value={sys.sudoPassword ?? ''} onChange={(e) => onPatch({ sudoPassword: e.target.value })} />
+        <PasswordInput  value={sys.sudoPassword ?? ''} onChange={(e) => onPatch({ sudoPassword: e.target.value })} />
       </Field>
     </div>
   );
@@ -1068,6 +1138,19 @@ function TopologySetupSection({
   };
 
   async function persist(nextProfiles: TopologyProfile[]): Promise<boolean> {
+    // NEVER let a topology save blank the systems list.
+    //
+    // PUT is a full-document replace and this function sends `systems` straight
+    // from its props. The auto-sync below fires on load, which races the two
+    // GETs that populate those props — so a sync landing before the systems
+    // arrive writes `systems: []` and erases every registered box. Observed
+    // doing exactly that: 12 systems gone, profiles left pointing at ids that
+    // no longer existed. Nothing this function legitimately does can empty the
+    // list, so an empty one is a bug, not an intention.
+    if (systems.length === 0) {
+      flash('err', 'Not saved — the systems list was still loading. Reload and try again.');
+      return false;
+    }
     setSaving(true);
     try {
       const r = await fetch('/api/inventory', {
@@ -1549,6 +1632,171 @@ function RoleSelector({
           No <span className="font-mono">{role.types.join(' / ')}</span> systems in inventory.
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The logins a Simnovator executes under — any number of them.
+ *
+ * One box, several people, each with their own account: this is the list every
+ * execution surface picks a "Run as" from. The FIRST row is the setup default,
+ * used by anything that does not name a user, and it is mirrored into the
+ * legacy single-pair field so the older code paths that read it directly
+ * (validator, runner, box reachability) resolve the same account rather than
+ * quietly falling back to admin/admin.
+ *
+ * A setup saved before the list existed shows its old pair as row one, so its
+ * credentials stay visible and editable instead of being stranded in the file.
+ */
+function BoxUsersEditor({
+  sys,
+  onPatch,
+}: {
+  sys: InventorySystem;
+  onPatch: (patch: Partial<InventorySystem>) => void;
+}) {
+  // Legacy pair shown as row one until the list is written for the first time.
+  // What the box says each login owns. Filled only when someone asks — these
+  // are real logins against real hardware, not something to fire on render.
+  const [probe, setProbe] = useState<Record<string, { simulator?: { id: string; name?: string; availability?: string } | null; reason?: string }>>({});
+  const [checking, setChecking] = useState(false);
+  const [probeErr, setProbeErr] = useState<string | null>(null);
+
+  const check = async () => {
+    setChecking(true);
+    setProbeErr(null);
+    try {
+      const j = await fetch(`/api/box-users?systemId=${encodeURIComponent(sys.id)}&probe=1`).then((r) => r.json());
+      if (!j?.ok) throw new Error(j?.error ?? 'the box could not be asked');
+      const next: Record<string, any> = {};
+      for (const u of j.users ?? []) next[u.id] = { simulator: u.simulator ?? null, reason: u.reason };
+      setProbe(next);
+    } catch (e: any) {
+      // Unsaved edits are the usual cause — say so rather than blaming the box.
+      setProbeErr(`${e?.message ?? e}. Save first if you just changed a login.`);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const users: NonNullable<InventorySystem['uesimUsers']> =
+    sys.uesimUsers
+    ?? (sys.uesim?.username || sys.uesim?.password
+      ? [{ id: 'default', username: sys.uesim.username ?? '', password: sys.uesim.password ?? '' }]
+      // A new Simnovator opens with one blank Username/Password row rather
+      // than an empty list behind an Add button: picking the type is the
+      // moment to say which account executes, so the fields are just there.
+      // Typing into it creates the first login; nothing is saved while blank.
+      : [{ id: 'default', username: '', password: '' }]);
+
+  const setUsers = (next: NonNullable<InventorySystem['uesimUsers']>) =>
+    onPatch({
+      uesimUsers: next,
+      // Keep the default in step with row one.
+      uesim: next.length
+        ? { ...(sys.uesim ?? {}), username: next[0].username, password: next[0].password }
+        : sys.uesim,
+    });
+
+  const addUser = () => {
+    // Random id, not an index: rows get removed, and an index-based id would
+    // silently re-point a suite's saved selection at a different person.
+    const id = `bu-${Math.random().toString(36).slice(2, 9)}`;
+    setUsers([...users, { id, username: '', password: '' }]);
+  };
+  const patchUser = (id: string, patch: Partial<{ username: string; password: string; label: string }>) =>
+    setUsers(users.map((u) => (u.id === id ? { ...u, ...patch } : u)));
+  const removeUser = (id: string) => setUsers(users.filter((u) => u.id !== id));
+
+  const dupes = new Set(
+    users
+      .map((u) => u.username.trim().toLowerCase())
+      .filter((n, i, all) => n && all.indexOf(n) !== i),
+  );
+
+  return (
+    <div className="mt-4 rounded-lg border border-line bg-slate-50/60 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium text-slate-700">
+            Box logins{users.some((u) => u.username.trim()) ? <span className="ml-1.5 text-slate-400 font-normal">{users.filter((u) => u.username.trim()).length}</span> : null}
+          </div>
+          <div className="text-[11px] text-slate-500">
+            Add as many as execute on this box — each person runs under their own account.
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Each login owns one simulator on the box, which is what lets these
+              people execute at the same time instead of queueing. Asking the
+              box is the only way to know — the assignment is made over there. */}
+          <Button size="sm" variant="secondary" onClick={check} disabled={checking || !sys.host || users.length === 0}>
+            {checking ? 'Checking…' : 'Check on box'}
+          </Button>
+          <Button size="sm" variant="secondary" onClick={addUser}>Add login</Button>
+        </div>
+      </div>
+      {probeErr ? <div className="mt-2 text-[11px] text-amber-700">{probeErr}</div> : null}
+
+      {users.length === 0 ? (
+        <div className="mt-2 text-[11px] text-slate-400">
+          None yet — add the account SimQA should execute as.
+        </div>
+      ) : (
+        <div className="mt-2.5 space-y-2">
+          {users.map((u, i) => {
+            const dupe = !!u.username.trim() && dupes.has(u.username.trim().toLowerCase());
+            return (
+              <div key={u.id} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2 items-end">
+                <Field label={i === 0 ? 'Username · default' : 'Username'}>
+                  <Input
+                    value={u.username}
+                    onChange={(e) => patchUser(u.id, { username: e.target.value })}
+                    placeholder="simuser"
+                  />
+                </Field>
+                <Field label="Password">
+                  <PasswordInput
+                    value={u.password}
+                    onChange={(e) => patchUser(u.id, { password: e.target.value })}
+                    placeholder="••••"
+                  />
+                </Field>
+                <button
+                  type="button"
+                  onClick={() => removeUser(u.id)}
+                  className="mb-1 rounded border border-red-300 text-red-600 hover:bg-red-50 text-xs px-2 py-1.5"
+                >
+                  Remove
+                </button>
+                {/* What the box says this login owns. A login with no
+                    simulator can authenticate but has nothing to execute on. */}
+                {probe[u.id] ? (
+                  <div className="sm:col-span-3 -mt-1 text-[11px]">
+                    {probe[u.id].simulator ? (
+                      <span className="text-slate-600">
+                        runs on <span className="font-medium text-slate-800">{probe[u.id].simulator!.name ?? `simulator ${probe[u.id].simulator!.id}`}</span>
+                        {probe[u.id].simulator!.availability
+                          ? <span className="text-slate-400"> · {probe[u.id].simulator!.availability!.toLowerCase()}</span>
+                          : null}
+                      </span>
+                    ) : (
+                      <span className="text-amber-700">no simulator — {probe[u.id].reason ?? 'the box did not say'}</span>
+                    )}
+                  </div>
+                ) : null}
+                {/* Two rows with the same username would resolve to whichever
+                    came first — a silent wrong-account execution. */}
+                {dupe ? (
+                  <div className="sm:col-span-3 -mt-1 text-[11px] text-amber-700">
+                    “{u.username.trim()}” is listed twice — executions would always pick the first one.
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

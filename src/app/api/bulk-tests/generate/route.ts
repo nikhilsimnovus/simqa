@@ -7,6 +7,7 @@
 // track progress.
 
 import { NextResponse } from 'next/server';
+import { userFromRequest } from '@/lib/identity';
 import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
 import { generateBulkTestcases } from '@/lib/bulkTests/generator';
 import { executeBulkTestcases } from '@/lib/bulkTests/executor';
@@ -64,6 +65,8 @@ export async function POST(req: Request) {
       try {
         appendHistoryEntry({
           surface: 'bulk-generate',
+      // Who ran it — from the signed session, not the body.
+      user: userFromRequest(req) || undefined,
           label: `Bulk generate (${sweep}) · ${result.total} planned · ${result.passed} created · ${result.failed} fail · ${result.skipped} skip`,
           startedAt: result.startedAt,
           finishedAt: result.finishedAt,
@@ -103,6 +106,8 @@ export async function POST(req: Request) {
           try {
             appendHistoryEntry({
               surface: 'bulk-execute',
+      // Who ran it — from the signed session, not the body.
+      user: userFromRequest(req) || undefined,
               label: `Bulk execute · ${execSummary.total} sampled · ${execSummary.passed} pass / ${execSummary.failed} fail`,
               startedAt: execSummary.startedAt,
               finishedAt: execSummary.finishedAt,

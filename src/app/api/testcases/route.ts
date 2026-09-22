@@ -1,8 +1,14 @@
-// GET /api/testcases?limit&offset&systemId&refresh
+// GET /api/testcases?limit&offset&systemId&boxUserId&refresh
 //
 // systemId picks WHICH box to list from — without it you always got the first
 // UESIM in inventory, so a second box's testcases were unreachable from the UI.
 // The response echoes the resolved host so the page can show what it listed.
+//
+// boxUserId picks WHOSE catalogue. The Simnovator scopes /v2/testcases by the
+// token: on 192.168.1.95 admin sees 233 testcases, simuser 129, sruthi and
+// mohan exactly one each — their own. So the listing is per login, not per
+// box, and the cache key has to carry the login or one operator is served
+// another's catalogue from cache.
 //
 // The box takes ~2.3s to return 500 testcases, which made every visit to the
 // Test Cases page feel broken. Results are held in a short-lived in-process
@@ -65,8 +71,9 @@ async function listAll(opts: any, limit: number, startPage: number) {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const systemId = url.searchParams.get('systemId') ?? undefined;
+  const boxUserId = url.searchParams.get('boxUserId') ?? undefined;
   const inv = loadInventory();
-  const opts = uesimApiOptsForSystem(inv, systemId);
+  const opts = uesimApiOptsForSystem(inv, systemId, boxUserId);
   if (!opts) {
     return NextResponse.json(
       { error: systemId ? `system "${systemId}" is not a testable UESIM` : 'no UESIM in inventory' },
@@ -78,7 +85,9 @@ export async function GET(req: Request) {
   const offset = Number(url.searchParams.get('offset') ?? 0);
   const refresh = url.searchParams.get('refresh') === '1';
 
-  const key = `${opts.systemId}|${limit}|${offset}`;
+  // opts.boxUser, not boxUserId: two ids can resolve to the same account, and
+  // it is the ACCOUNT that decides which testcases come back.
+  const key = `${opts.systemId}|${opts.boxUser}|${limit}|${offset}`;
   const hit = cache.get(key);
   if (!refresh && hit && Date.now() - hit.at < TTL_MS) {
     return NextResponse.json({ ...hit.payload, cached: true, ageMs: Date.now() - hit.at });
@@ -86,7 +95,7 @@ export async function GET(req: Request) {
 
   try {
     const r = await listAll(opts, limit, offset);
-    const payload = { ...r, systemId: opts.systemId, host: opts.host, name: opts.name };
+    const payload = { ...r, systemId: opts.systemId, host: opts.host, name: opts.name, boxUser: opts.boxUser };
     cache.set(key, { at: Date.now(), payload });
     return NextResponse.json({ ...payload, cached: false, ageMs: 0 });
   } catch (e: any) {

@@ -326,6 +326,11 @@ export interface SimulatorEntry {
   connectivity?: string;
   stability?: string;
   availability?: string;
+  lastUpdated?: string;
+  /** Who this simulator belongs to. Populated for an admin token only — an
+   *  operator is simply not shown anyone else's, so the list itself is the
+   *  answer. See simulatorScope.ts. */
+  nodes?: { assignedUsers?: { username?: string; userId?: string; isDefault?: boolean }[] };
 }
 
 export async function listSimulators(opts: ApiOpts): Promise<{ items: SimulatorEntry[]; total?: number }> {

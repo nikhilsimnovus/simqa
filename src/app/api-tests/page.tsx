@@ -104,6 +104,26 @@ export default function ApiTestsPage() {
   // to test, so they're filtered out here rather than in the shared route.
   const [systems, setSystems] = useState<TestSystem[] | null>(null);
   const [targetSystemId, setTargetSystemId] = useState<string>('');
+  // Which box login the sweep signs in as. The Simnovator answers per account
+  // — an operator sees only their own testcases and simulator — so a sweep is
+  // only meaningful against a named login.
+  const [boxUsers, setBoxUsers] = useState<Array<{ id: string; username: string; label?: string }>>([]);
+  const [boxUserId, setBoxUserId] = useState<string>('');
+  useEffect(() => {
+    if (!targetSystemId) { setBoxUsers([]); setBoxUserId(''); return; }
+    let cancelled = false;
+    fetch(`/api/box-users?systemId=${encodeURIComponent(targetSystemId)}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled || !j?.ok) return;
+        const users = j.users ?? [];
+        setBoxUsers(users);
+        setBoxUserId((cur) => (cur && users.some((u: any) => u.id === cur) ? cur : (users[0]?.id ?? '')));
+      })
+      .catch(() => { /* a setup with no logins sweeps as the default */ });
+    return () => { cancelled = true; };
+  }, [targetSystemId]);
+
   useEffect(() => {
     fetch('/api/ui-tests/systems').then((r) => r.json()).then((j) => {
       const list: TestSystem[] = (j.systems ?? []).filter(
@@ -144,6 +164,7 @@ export default function ApiTestsPage() {
           categories: Array.from(enabled),
           includeDestructive, includeLongRunning,
           targetSystemId: targetSystemId || undefined,
+          boxUserId: boxUserId || undefined,
         }),
         // A sweep with exports enabled legitimately runs for minutes. Without a
         // ceiling a stalled box leaves the page spinning with no explanation.
@@ -312,6 +333,23 @@ export default function ApiTestsPage() {
                   ))}
                 </select>
               )}
+              {/* Only when the setup offers a choice. */}
+              {boxUsers.length > 1 ? (
+                <label className="mt-2 block">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Run as</span>
+                  <select
+                    value={boxUserId}
+                    onChange={(e) => setBoxUserId(e.target.value)}
+                    disabled={busy}
+                    className="mt-1 w-full text-xs border border-slate-300 rounded px-2 py-1.5 bg-surface"
+                    title="The box login this sweep authenticates as"
+                  >
+                    {boxUsers.map((u) => (
+                      <option key={u.id} value={u.id}>{u.label ? `${u.username} — ${u.label}` : u.username}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
             </CardBody>
           </Card>
           <Card>

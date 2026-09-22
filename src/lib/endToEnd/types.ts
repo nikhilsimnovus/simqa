@@ -108,6 +108,15 @@ export interface FinalReport {
 /** Request body to POST /api/end-to-end/run. */
 export interface RunRequest {
   systemId: string;
+  /**
+   * Which of the setup's box logins to execute as (BoxUser id, or its
+   * username). Omitted = the setup's default login, which is what every
+   * pre-multi-user caller means.
+   */
+  boxUserId?: string;
+  /** The SimQA account that started this run, captured in the API route where
+   *  the session cookie is readable — the runner itself has no request scope. */
+  user?: string;
   /** Testcase to execute. Required unless `useLastExecution` is set. */
   testcaseId?: string;
   /** If set, the runner finds the most recent /v2/executions entry on the

@@ -25,7 +25,10 @@ export async function POST(req: Request) {
   if (!body.testcaseId && !body.useLastExecution) {
     return NextResponse.json({ ok: false, error: 'either testcaseId or useLastExecution must be set' }, { status: 400 });
   }
-  const r = await startRun(body);
+  // Attribution comes from the signed session, never from the body — a client
+  // could otherwise claim to be anyone. The runner has no request scope of its
+  // own, so this is the only place it can be read.
+  const r = await startRun({ ...body, user: userFromRequest(req) || undefined });
   if (!r.ok) return NextResponse.json(r, { status: 400 });
 
   // A validation run executes a real testcase on the box — record who put it

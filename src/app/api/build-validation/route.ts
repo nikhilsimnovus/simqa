@@ -7,6 +7,7 @@
 // for that path and shows per-group progress from the returned report.
 
 import { NextResponse } from 'next/server';
+import { userFromRequest } from '@/lib/identity';
 import { loadInventory } from '@/lib/inventory';
 import {
   runBuildValidation, listReports, loadReport, observeInstallProgress, cancelRun,
@@ -35,7 +36,8 @@ export async function POST(req: Request) {
     }
 
     const inv = loadInventory();
-    const report = await runBuildValidation(inv, body);
+    // Attribution from the signed session, never the body.
+    const report = await runBuildValidation(inv, { ...body, user: userFromRequest(req) || undefined });
     return NextResponse.json({ ok: true, report });
   } catch (e: any) {
     // Always answer JSON — the page parses the body, and an HTML 500 page

@@ -46,7 +46,11 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
   const decoded = decodeURIComponent(id);
   const router = useRouter();
   // Carried from the list page so the lookup hits the box you were browsing.
-  const systemId = useSearchParams().get('systemId') ?? '';
+  const query = useSearchParams();
+  const systemId = query.get('systemId') ?? '';
+  // Carried over from the Test Cases list: the catalogue you were looking at
+  // was that person's, so Run as should not silently switch to someone else.
+  const urlBoxUserId = query.get('boxUserId') ?? '';
   const boxQs = systemId ? `?systemId=${encodeURIComponent(systemId)}` : '';
   // Display-only, passed by Run History, which already knows the name. Used
   // solely as the heading fallback so this page never titles itself with a raw
@@ -123,6 +127,30 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
   }, [decoded, boxQs]);
 
   useEffect(() => { loadPreview(); }, [loadPreview]);
+
+  // The setup's box logins, so the operator can execute as themselves.
+  useEffect(() => {
+    if (!systemId) { setBoxUsers([]); setBoxUserId(''); return; }
+    let cancelled = false;
+    fetch(`/api/box-users?systemId=${encodeURIComponent(systemId)}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled || !j?.ok) return;
+        setBoxUsers(j.users ?? []);
+        // Default to the first login rather than forcing a choice — that is
+        // exactly what the runner does when none is named, so the picker and
+        // the server agree instead of quietly disagreeing.
+        setBoxUserId((cur) => {
+          const users = j.users ?? [];
+          const has = (id: string) => !!id && users.some((u: any) => u.id === id);
+          if (has(cur)) return cur;
+          if (has(urlBoxUserId)) return urlBoxUserId;
+          return users[0]?.id ?? '';
+        });
+      })
+      .catch(() => { /* a setup with no users just shows the default */ });
+    return () => { cancelled = true; };
+  }, [systemId, urlBoxUserId]);
 
   /** Just the testcase record — the half that carries executionHistory. The
    *  preview bundle is the expensive call and does not change while a run is in
@@ -298,6 +326,10 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
   // ── Run Configuration: real cfg files already on the bound callbox ──
   const [cfgOpts, setCfgOpts] = useState<CallboxConfigs | null>(null);
   const [cfgErr, setCfgErr] = useState<string | null>(null);
+  /** Which box login this execution runs as. Empty = the setup's default.
+   *  Loaded from /api/box-users, which never sends passwords. */
+  const [boxUsers, setBoxUsers] = useState<Array<{ id: string; username: string; label?: string }>>([]);
+  const [boxUserId, setBoxUserId] = useState('');
   const [selEnb, setSelEnb] = useState('');
   const [selMme, setSelMme] = useState('');
   const [selIms, setSelIms] = useState('');
@@ -471,12 +503,15 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
       // only name them if it is told. Sending them does not link them — see
       // preflight-cfg-bring-up, which refuses outright while attached.
       const cfgSelection = { enb: selEnb || undefined, mme: selMme || undefined, ims: selIms || undefined };
+      // boxUserId rides along on BOTH paths: an attached run still has to poll
+      // the box as somebody, and it should be the account the operator picked.
       const body = attach
-        ? { systemId, testcaseId: decoded, attach: true, cfgSelection }
+        ? { systemId, testcaseId: decoded, attach: true, cfgSelection, boxUserId: boxUserId || undefined }
         : {
           systemId,
           testcaseId: decoded,
           cfgSelection,
+          boxUserId: boxUserId || undefined,
         };
       const r = await fetch('/api/end-to-end/run', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -798,6 +833,27 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
         <Card>
           <CardHeader className="py-3"><CardTitle>Pick Configuration</CardTitle></CardHeader>
           <CardBody className="space-y-3 py-4">
+            {/* Who this execution authenticates to the box as. Shown only when
+                the setup actually offers a choice — a one-login setup would
+                just be a dropdown with a single entry. */}
+            {systemId && boxUsers.length > 1 ? (
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-medium text-slate-700 whitespace-nowrap">Run as</label>
+                <select
+                  value={boxUserId}
+                  onChange={(e) => setBoxUserId(e.target.value)}
+                  disabled={running}
+                  className="h-9 rounded-lg border border-line-strong bg-surface px-2 text-sm text-slate-900 disabled:bg-slate-100 disabled:text-slate-400"
+                >
+                  {boxUsers.map((u) => (
+                    <option key={u.id} value={u.id}>{u.label ? `${u.username} — ${u.label}` : u.username}</option>
+                  ))}
+                </select>
+                <span className="text-[11px] text-slate-500">
+                  the box login this run executes and is recorded under
+                </span>
+              </div>
+            ) : null}
             {!systemId ? (
               <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
                 Open this testcase from the Test Cases list so SimQA knows which Simnovator — and its bound callbox — to run against.

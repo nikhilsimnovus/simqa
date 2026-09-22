@@ -35,6 +35,10 @@ interface ActiveRun {
   systemId: string;
   systemHost: string;
   systemName: string;
+  /** Who started it (SimQA account) and which box login it executed as —
+   *  carried through so the history entry written at the end can attribute it. */
+  user?: string;
+  boxUser?: string;
   testcaseId: string;
   testcaseName?: string;
   startedAt: string;
@@ -79,7 +83,10 @@ function callboxForSimnovator(inv: Inventory, simnovatorId: string) {
 
 export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: string; error?: string }> {
   const inv = loadInventory();
-  const target = uesimApiOptsForSystem(inv, req.systemId);
+  // Resolve against the requested box login, so two people running on the same
+  // Simnovator authenticate as themselves. ensureToken() keys its cache on
+  // (host, username), so their sessions never overwrite each other.
+  const target = uesimApiOptsForSystem(inv, req.systemId, req.boxUserId);
   if (!target) return { ok: false, error: `system "${req.systemId}" not found or not UESIM-capable` };
 
   // ATTACH mode inverts the busy guard below: a run already in flight is the
@@ -188,6 +195,8 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
     systemId: target.systemId,
     systemHost: target.host,
     systemName: target.name,
+    user: req.user || undefined,
+    boxUser: target.boxUser,
     testcaseId,
     startedAt,
     options,
@@ -527,6 +536,11 @@ function saveReport(ar: ActiveRun, results?: CheckResult[]): void {
         label: `Test Case · ${ar.testcaseName ?? ar.ctx.testcaseId} · ${passed} pass / ${failed} fail${skipped ? ` / ${skipped} skip` : ''}`,
         startedAt: report.startedAt,
         finishedAt: report.finishedAt,
+        user: ar.user,
+        boxUser: ar.boxUser,
+        // Filled by the TRIGGER phase once it knows which simulator it started
+        // on; absent for a run that never got that far.
+        simulator: ar.ctx.simulatorId,
         targetSystemId: ar.ctx.systemId,
         targetHost: ar.ctx.systemHost,
         buildVersion: build?.version,

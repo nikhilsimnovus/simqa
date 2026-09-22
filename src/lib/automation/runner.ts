@@ -323,7 +323,7 @@ async function waitForSimulatorIdle(host: string, token: string, maxSec: number,
 async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<SuiteRunResult> {
   const startedAt = new Date().toISOString();
   const inv = loadInventory();
-  const ueOpts = uesimApiOptsForSystem(inv, suite.uesimSystemId ?? '');
+  const ueOpts = uesimApiOptsForSystem(inv, suite.uesimSystemId ?? '', suite.boxUserId);
   if (!ueOpts) throw new Error(`suite uesimSystemId "${suite.uesimSystemId}" not testable`);
   const token = await login(ueOpts.host, ueOpts.username, ueOpts.password);
   const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
@@ -419,7 +419,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   const inv = loadInventory();
   const sys = suite.callboxSystemId ? getSystem(inv, suite.callboxSystemId) : undefined;
   if (!sys || sys.type !== 'CALLBOX') throw new Error(`suite callboxSystemId "${suite.callboxSystemId}" is not a CALLBOX`);
-  const ueOpts = uesimApiOptsForSystem(inv, suite.uesimSystemId ?? '');
+  const ueOpts = uesimApiOptsForSystem(inv, suite.uesimSystemId ?? '', suite.boxUserId);
   if (!ueOpts) throw new Error(`suite uesimSystemId "${suite.uesimSystemId}" not testable`);
 
   const safe = (s: string) => s.replace(/[^\w.\-]/g, '_');
@@ -656,7 +656,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
 async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpts): Promise<SuiteRunResult & { buildVersion?: string }> {
   const startedAt = new Date().toISOString();
   const inv = loadInventory();
-  const ueOpts = uesimApiOptsForSystem(inv, suite.uesimSystemId ?? '');
+  const ueOpts = uesimApiOptsForSystem(inv, suite.uesimSystemId ?? '', suite.boxUserId);
   if (!ueOpts) throw new Error(`suite uesimSystemId "${suite.uesimSystemId}" not testable`);
   const callboxSys = suite.kind === 'uesim+callbox' && suite.callboxSystemId
     ? getSystem(inv, suite.callboxSystemId)
@@ -1095,6 +1095,10 @@ export async function runSuite(suite: AutomationSuite, opts: RunOpts = {}): Prom
       label: `Automation suite "${suite.name}" · ${rec.total} steps · ${rec.passed} pass / ${rec.failed} fail`,
       startedAt: rec.startedAt,
       finishedAt: rec.finishedAt,
+      // The box account this suite executed as, and the SimQA account that
+      // started it — resolved the same way the execution itself was.
+      user: opts.submittedBy,
+      boxUser: uesimApiOptsForSystem(loadInventory(), suite.uesimSystemId ?? '', suite.boxUserId)?.boxUser,
       targetSystemId: suite.uesimSystemId,
       targetHost: rec.uesimHost,
       buildVersion: rec.buildVersion,

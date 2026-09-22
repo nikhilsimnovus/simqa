@@ -67,6 +67,7 @@ type RunProfile = 'smoke' | 'regression' | 'full' | 'custom';
 interface RunStatus {
   running: boolean;
   targetSystemId?: string;
+  boxUserId?: string;
   targetHost?: string;
   targetName?: string;
   startedAt?: string;
@@ -135,6 +136,26 @@ export default function UiTestsPage() {
   const [savingBaseline, setSavingBaseline] = useState(false);
   const [systems, setSystems] = useState<TestSystem[] | null>(null);
   const [targetSystemId, setTargetSystemId] = useState<string>('');
+  // Which box login the sweep signs in as. The Simnovator answers per account
+  // — an operator sees only their own testcases and simulator — so a sweep is
+  // only meaningful against a named login.
+  const [boxUsers, setBoxUsers] = useState<Array<{ id: string; username: string; label?: string }>>([]);
+  const [boxUserId, setBoxUserId] = useState<string>('');
+  useEffect(() => {
+    if (!targetSystemId) { setBoxUsers([]); setBoxUserId(''); return; }
+    let cancelled = false;
+    fetch(`/api/box-users?systemId=${encodeURIComponent(targetSystemId)}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled || !j?.ok) return;
+        const users = j.users ?? [];
+        setBoxUsers(users);
+        setBoxUserId((cur) => (cur && users.some((u: any) => u.id === cur) ? cur : (users[0]?.id ?? '')));
+      })
+      .catch(() => { /* a setup with no logins sweeps as the default */ });
+    return () => { cancelled = true; };
+  }, [targetSystemId]);
+
   const [otherActiveRuns, setOtherActiveRuns] = useState<RunStatus[]>([]);
 
   // Profile presets
@@ -226,6 +247,7 @@ export default function UiTestsPage() {
       if (opts?.onlyId) body.onlyId = opts.onlyId;
       if (opts?.idsToRun && opts.idsToRun.length > 0) body.idsToRun = opts.idsToRun;
       if (targetSystemId) body.targetSystemId = targetSystemId;
+      if (boxUserId) body.boxUserId = boxUserId;
       const r = await fetch('/api/ui-tests', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const text = await r.text();
       if (!r.ok)         { setErr(`server returned ${r.status} ${r.statusText}: ${text.slice(0, 400)}`); return; }
@@ -484,6 +506,24 @@ export default function UiTestsPage() {
                   ))}
                 </select>
               )}
+              {/* Only when the setup offers a choice. */}
+              {boxUsers.length > 1 ? (
+                <label className="mt-2 block">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Run as</span>
+                  <select
+                    value={boxUserId}
+                    onChange={(e) => setBoxUserId(e.target.value)}
+                    disabled={busy}
+                    className="mt-1 w-full text-xs border border-slate-300 rounded px-2 py-1.5 bg-surface"
+                    title="The box login this sweep authenticates as"
+                  >
+                    {boxUsers.map((u) => (
+                      <option key={u.id} value={u.id}>{u.label ? `${u.username} — ${u.label}` : u.username}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
               {otherActiveRuns.length > 0 ? (
                 <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5 mt-2">
                   <div className="font-medium mb-0.5 flex items-center gap-1">

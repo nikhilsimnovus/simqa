@@ -5,6 +5,7 @@
 // assert each generated testcase (sampled) renders + is searchable.
 
 import { NextResponse } from 'next/server';
+import { userFromRequest } from '@/lib/identity';
 import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
 import { validateBulkTestcasesViaUI } from '@/lib/bulkTests/uiValidator';
 import { getState, readManifest } from '@/lib/bulkTests/state';
@@ -60,6 +61,8 @@ export async function POST(req: Request) {
       try {
         appendHistoryEntry({
           surface: 'bulk-validate-ui',
+      // Who ran it — from the signed session, not the body.
+      user: userFromRequest(req) || undefined,
           label: `Bulk validate (UI) · ${summary.sampleSize} sampled of ${result.created.length} · ${summary.passed} pass / ${summary.failed} fail`,
           startedAt: summary.startedAt,
           finishedAt: summary.finishedAt,

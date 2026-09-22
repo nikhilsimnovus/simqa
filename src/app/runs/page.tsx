@@ -28,6 +28,9 @@ interface HistoryEntry {
   label: string;
   startedAt: string;
   finishedAt: string;
+  user?: string;
+  boxUser?: string;
+  simulator?: string;
   targetSystemId?: string;
   targetHost?: string;
   buildVersion?: string;
@@ -83,7 +86,7 @@ const selectStyle: React.CSSProperties = {
 };
 
 /** Every column sorts. Keys are the column, not the underlying field name. */
-type SortKey = 'surface' | 'testcase' | 'execTime' | 'execDate' | 'system' | 'build' | 'passed' | 'failed' | 'skipped' | 'total';
+type SortKey = 'surface' | 'testcase' | 'execTime' | 'execDate' | 'user' | 'system' | 'build' | 'passed' | 'failed' | 'skipped' | 'total';
 
 /** Columns that should open on their HIGHEST value — a count or a date is
  *  almost always wanted newest/most-first, whereas a name is wanted A→Z. */
@@ -94,6 +97,7 @@ const COLUMNS: Array<{ key: SortKey; label: string }> = [
   { key: 'testcase', label: 'Test Case' },
   { key: 'execTime', label: 'Execution Time' },
   { key: 'execDate', label: 'Execution Date' },
+  { key: 'user',     label: 'User' },
   { key: 'system',   label: 'System' },
   { key: 'build',    label: 'Build' },
   { key: 'passed',   label: 'Pass' },
@@ -105,7 +109,7 @@ const COLUMNS: Array<{ key: SortKey; label: string }> = [
 /** Starting column widths in px, in table order — the ten sortable columns
  *  above plus Preview. Every column can then be dragged wider or narrower by
  *  its right-hand edge, the way a spreadsheet does it. */
-const DEFAULT_COL_WIDTHS = [132, 168, 172, 124, 124, 152, 66, 66, 66, 72, 104];
+const DEFAULT_COL_WIDTHS = [132, 168, 172, 124, 136, 124, 152, 66, 66, 66, 72, 104];
 
 const SURFACE_TONE: Record<string, string> = {
   'end-to-end':       'bg-slate-100 text-slate-700 border-slate-200',
@@ -380,6 +384,7 @@ export default function RunsPage() {
       // a day's runs stay together and the time column breaks the tie below.
       case 'execTime': return new Date(e.startedAt).getTime() || 0;
       case 'execDate': return new Date(e.startedAt).setHours(0, 0, 0, 0) || 0;
+      case 'user':     return (e.user ?? e.boxUser ?? '').toLowerCase();
       case 'system':   return (hostOf(e) ?? '').toLowerCase();
       case 'build':    return displayBuild(e.buildVersion).toLowerCase();
       case 'passed':   return e.passed;
@@ -595,6 +600,21 @@ export default function RunsPage() {
                     </td>
                     <td className={`${tdCls} tabular-nums text-slate-700`} title={e.label}>{formatExecutedTime(e.startedAt, e.finishedAt)}</td>
                     <td className={`${tdCls} tabular-nums text-slate-700`}>{formatExecutedDate(e.startedAt)}</td>
+                    {/* Who ran it. The SimQA account is the headline; the box
+                        login sits under it only when they differ, since on a
+                        setup with one shared login repeating the same name
+                        twice is noise. Runs recorded before attribution
+                        existed honestly show "—" rather than a guess. */}
+                    <td className={tdCls} title={[e.boxUser ? `box login: ${e.boxUser}` : '', e.simulator ? `simulator ${e.simulator}` : ''].filter(Boolean).join(' · ') || undefined}>
+                      {e.user || e.boxUser ? (
+                        <>
+                          <span className="text-slate-700">{e.user ?? e.boxUser}</span>
+                          {e.boxUser && e.boxUser !== e.user ? (
+                            <span className="block text-[10px] text-slate-400 font-mono truncate">as {e.boxUser}{e.simulator ? ` · sim ${e.simulator}` : ''}</span>
+                          ) : null}
+                        </>
+                      ) : <span className="text-slate-400">—</span>}
+                    </td>
                     <td className={`${tdCls} font-mono text-[11px] text-slate-600`}>{host ?? '—'}</td>
                     <td className={`${tdCls} font-mono text-[11px] text-slate-600`} title={e.buildVersion}>{displayBuild(e.buildVersion)}</td>
                     <td className={`${tdCls} tabular-nums text-emerald-700`}>{e.passed}</td>

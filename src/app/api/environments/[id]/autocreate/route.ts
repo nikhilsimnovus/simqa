@@ -8,6 +8,7 @@
 //                 caller polls /api/environments/autocreate-status.
 
 import { NextResponse } from 'next/server';
+import { userFromRequest } from '@/lib/identity';
 import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
 import { getEnvironment } from '@/lib/environment/store';
 import { expandMatrix, type AutoCreateMatrix } from '@/lib/environment/generator';
@@ -64,6 +65,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       try {
         appendHistoryEntry({
           surface: 'bulk-generate',
+      // Who ran it — from the signed session, not the body.
+      user: userFromRequest(req) || undefined,
           label: `Env auto-create "${env.name}" · ${result.total} variants · ${result.created.length} created · ${result.failures.length} fail`,
           startedAt: result.startedAt,
           finishedAt: result.finishedAt,

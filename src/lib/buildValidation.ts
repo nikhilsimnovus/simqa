@@ -95,6 +95,11 @@ export interface BuildValidationRequest {
    * filename.
    */
   runId?: string;
+  /** The SimQA account that started this run, captured by the API route — this
+   *  module has no request scope of its own. */
+  user?: string;
+  /** Which of the setup's box logins to validate as. Omitted = the default. */
+  boxUserId?: string;
 }
 
 export interface BuildValidationReport {
@@ -843,7 +848,9 @@ export async function runBuildValidation(inv: Inventory, req: BuildValidationReq
   const app = req.appServerSystemId ? getSystem(inv, req.appServerSystemId) : undefined;
   // Credentials via the shared resolver, which already knows the uesim → top
   // level → default fallback order used everywhere else.
-  const creds = uesimApiOptsForSystem(inv, sim.id);
+  // Validate as the requested box login, so the run authenticates and is
+  // recorded as that person rather than the setup default.
+  const creds = uesimApiOptsForSystem(inv, sim.id, req.boxUserId);
   const username = creds?.username ?? 'admin';
   const password = creds?.password ?? 'admin';
 
@@ -959,6 +966,11 @@ export async function runBuildValidation(inv: Inventory, req: BuildValidationReq
       surface: 'build-check',
       label: `Build Validation · ${ok ? 'PASSED' : 'FAILED'} · ${passed} pass / ${failed} fail`,
       startedAt, finishedAt,
+      // Who ran it: the SimQA account (passed in by the route, which is the
+      // only place the session is readable) and the box login the checks
+      // actually authenticated as.
+      user: req.user,
+      boxUser: username,
       targetSystemId: sim.id, targetHost: sim.host,
       buildVersion: build?.version,
       total: groups.length, passed, failed, skipped,

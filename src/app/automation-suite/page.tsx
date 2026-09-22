@@ -57,6 +57,8 @@ interface SuiteRow {
   id: string; name: string;
   kind?: 'uesim-only' | 'uesim+callbox';
   uesimSystemId?: string; callboxSystemId?: string;
+  /** BoxUser id this suite executes as; absent = the setup's default login. */
+  boxUserId?: string;
   uploadedConfigs?: Record<string, string>;
   callboxConfig?: string;
   testcaseIds: string[];
@@ -132,6 +134,10 @@ export default function AutomationSuitePage() {
   const [name, setName]               = useState<string>('');
   const [kind, setKind]               = useState<Kind>('uesim-only');
   const [uesimSystemId, setUesim]     = useState<string>('');
+  /** Box logins the chosen Simnovator offers, and which one this suite runs as.
+   *  Fetched from /api/box-users, which never returns passwords. */
+  const [suiteBoxUsers, setSuiteBoxUsers] = useState<Array<{ id: string; username: string; label?: string }>>([]);
+  const [boxUserId, setBoxUserId]     = useState<string>('');
   const [callboxSystemId, setCbx]     = useState<string>('');
 
   // UESIM-only data: testcases pulled from Simnovator REST
@@ -549,6 +555,24 @@ export default function AutomationSuitePage() {
   useEffect(() => {
     if (!uesimSystemId && uesimSystems.length) setUesim(uesimSystems[0].id);
   }, [uesimSystemId, uesimSystems]);
+
+  // Box logins follow the chosen Simnovator. Keeping the current selection when
+  // it still exists means switching system and back does not silently re-point
+  // the suite at a different person.
+  useEffect(() => {
+    if (!uesimSystemId) { setSuiteBoxUsers([]); return; }
+    let cancelled = false;
+    fetch(`/api/box-users?systemId=${encodeURIComponent(uesimSystemId)}`)
+      .then(r => r.json())
+      .then(j => {
+        if (cancelled || !j?.ok) return;
+        const users = j.users ?? [];
+        setSuiteBoxUsers(users);
+        setBoxUserId(cur => (cur && users.some((u: any) => u.id === cur) ? cur : (users[0]?.id ?? '')));
+      })
+      .catch(() => { /* no users configured — the runner uses the setup default */ });
+    return () => { cancelled = true; };
+  }, [uesimSystemId]);
   // Pair the callbox to the chosen Simnovator via its topology profile, so
   // picking 192.168.1.102 selects ITS callbox rather than whichever happens to
   // be first in inventory. Falls back to the first callbox when the Simnovator
@@ -650,6 +674,9 @@ export default function AutomationSuitePage() {
     setEditingName(s.name);
     setKind(s.kind ?? 'uesim-only');
     setUesim(s.uesimSystemId ?? '');
+    // Restore the suite's box login; the effect above keeps it if the
+    // system still offers it, and falls back to the first otherwise.
+    setBoxUserId(s.boxUserId ?? '');
     setCbx(s.callboxSystemId ?? '');
     setUploads(s.uploadedConfigs ?? {});
     setSelectedCfg(s.callboxConfig ?? '');
@@ -768,6 +795,7 @@ export default function AutomationSuitePage() {
     const basePayload = {
       kind,
       uesimSystemId,
+      boxUserId: boxUserId || undefined,
       callboxSystemId: kind === 'uesim+callbox' ? callboxSystemId : undefined,
       uploadedConfigs: trimmedItemUploads ?? trimmedUploads,
       // Legacy fields stay populated for old consumers, but the runner
@@ -1514,6 +1542,20 @@ export default function AutomationSuitePage() {
                   ))}
                 </select>
               </label>
+              {/* The box login this suite executes as. Stored on the suite, not
+                  chosen per run, so the same suite always lands in history under
+                  the same account rather than under whoever pressed Run. Hidden
+                  when the setup offers no choice. */}
+              {suiteBoxUsers.length > 1 && (
+                <label className="flex flex-col">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Run as (box user)</span>
+                  <select value={boxUserId} onChange={e => setBoxUserId(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm">
+                    {suiteBoxUsers.map(u => (
+                      <option key={u.id} value={u.id}>{u.label ? `${u.username} — ${u.label}` : u.username}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {kind === 'uesim+callbox' && (
                 <label className="flex flex-col">
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Callbox system</span>

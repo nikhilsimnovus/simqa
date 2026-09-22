@@ -106,6 +106,10 @@ export interface UiTesterRequest {
    * Playwright sessions). If omitted, defaults to the first UESIM system.
    */
   targetSystemId?: string;
+  /** Which of the setup's box logins to drive the UI as. The Simnovator's own
+   *  pages are scoped per account, so a sweep signed in as the wrong person
+   *  tests a different catalogue than the one under test. */
+  boxUserId?: string;
 }
 
 export interface UiTesterResponse {
@@ -5890,7 +5894,7 @@ export function abortCurrentRun(targetHost?: string): boolean {
 
 export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<UiTesterResponse> {
   const startedAt = new Date().toISOString();
-  const target = uesimApiOptsForSystem(inv, req.targetSystemId);
+  const target = uesimApiOptsForSystem(inv, req.targetSystemId, req.boxUserId);
   if (!target) {
     return {
       startedAt, finishedAt: new Date().toISOString(),

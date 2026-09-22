@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { userFromRequest } from '@/lib/identity';
 import { runApiTests, type ApiTesterRequest } from '@/lib/apiTester';
 import { loadInventory } from '@/lib/inventory';
 import { appendHistoryEntry } from '@/lib/historyStore';
@@ -20,11 +21,14 @@ export async function POST(req: Request) {
     const counts = r.counts ?? { total: 0, passed: 0, failed: 0, skipped: 0 };
     appendHistoryEntry({
       surface: 'api-tests',
+      // Who ran it — from the signed session, not the body.
+      user: userFromRequest(req) || undefined,
       label: `API sweep · ${counts.total} tests · ${counts.passed} pass / ${counts.failed} fail${counts.skipped ? ` / ${counts.skipped} skip` : ''}`,
       startedAt: r.startedAt,
       finishedAt: r.finishedAt,
       targetSystemId: body?.targetSystemId,
       targetHost: r.targetHost,
+      boxUser: r.boxUser,
       buildVersion: r.buildVersion,
       total: counts.total,
       passed: counts.passed,

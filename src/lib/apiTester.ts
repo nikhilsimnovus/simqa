@@ -86,9 +86,17 @@ export interface ApiTesterRequest {
    *  system is used (legacy behaviour). Lets two teammates target different
    *  boxes from the same simqa install. */
   targetSystemId?: string;
+  /** Which of the setup's box logins to sweep as. Omitted = the setup default,
+   *  which is what a pre-multi-user caller means. The box answers differently
+   *  per account — an operator sees only their own testcases and simulator —
+   *  so a sweep is only meaningful against a stated login. */
+  boxUserId?: string;
 }
 
 export interface ApiTesterResponse {
+  /** The box account the sweep authenticated as — recorded in run history so
+   *  a failure can be traced to the login it was seen under. */
+  boxUser?: string;
   startedAt: string;
   finishedAt: string;
   ok: boolean;
@@ -2670,7 +2678,7 @@ export async function runApiTests(inv: Inventory, req: ApiTesterRequest): Promis
   // behaviour). This lets the UI offer a target dropdown the same way
   // /ui-tests does, so two teammates can test different boxes in parallel.
   const apiOpts = req.targetSystemId
-    ? uesimApiOptsForSystem(inv, req.targetSystemId)
+    ? uesimApiOptsForSystem(inv, req.targetSystemId, req.boxUserId)
     : uesimApiOptsFromInventory(inv);
   if (!apiOpts) {
     return {
@@ -2712,6 +2720,7 @@ export async function runApiTests(inv: Inventory, req: ApiTesterRequest): Promis
       // "a sweep against nothing in particular failed". The build is genuinely
       // unknown here — we never got far enough to ask the box.
       targetHost: apiOpts.host,
+      boxUser: apiOpts.username,
     };
   }
 
@@ -2789,6 +2798,7 @@ export async function runApiTests(inv: Inventory, req: ApiTesterRequest): Promis
     ok: counts.failed === 0,
     counts, results, byCategory,
     targetHost: apiOpts.host,
+    boxUser: apiOpts.username,
     buildVersion: boxBuild?.version,
   };
 }

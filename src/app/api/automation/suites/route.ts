@@ -34,6 +34,10 @@ export async function POST(req: Request) {
       updatedBy: by,
       kind,
       uesimSystemId: body.uesimSystemId,
+      // Which box login the suite executes as. Validated as a plain string
+      // here; the runner resolves it against the setup and falls back to the
+      // default if it no longer exists.
+      boxUserId: typeof body.boxUserId === 'string' && body.boxUserId.trim() ? body.boxUserId.trim() : undefined,
       callboxSystemId: body.callboxSystemId,
       uploadedConfigs: body.uploadedConfigs && typeof body.uploadedConfigs === 'object' ? body.uploadedConfigs : undefined,
       callboxConfig: typeof body.callboxConfig === 'string' && body.callboxConfig.trim() ? body.callboxConfig.trim() : undefined,

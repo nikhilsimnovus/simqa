@@ -9,6 +9,7 @@
 
 import * as React from 'react';
 import { cn } from '@/lib/cn';
+import { Eye, EyeOff } from 'lucide-react';
 
 // ---------- Card ----------
 
@@ -175,3 +176,43 @@ export function Stat({ label, value, hint }: { label: string; value: React.React
     </Card>
   );
 }
+
+/**
+ * A password field you can actually check.
+ *
+ * Every credential in this app is typed blind into a dotted box, and a
+ * mistyped box password surfaces much later as an opaque 401 from the
+ * Simnovator rather than as "you typed it wrong". The eye reveals it while
+ * held open so the value can be verified at the moment it is entered.
+ *
+ * Defaults back to hidden on every mount — revealing is a deliberate act, so
+ * a page reopened over someone's shoulder never starts by showing secrets.
+ */
+export const PasswordInput = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
+  function PasswordInput({ className, disabled, ...rest }, ref) {
+    const [shown, setShown] = React.useState(false);
+    return (
+      <div className="relative">
+        <Input
+          ref={ref}
+          type={shown ? 'text' : 'password'}
+          disabled={disabled}
+          // Room for the button so a long password does not run under it.
+          className={cn('pr-9', className)}
+          {...rest}
+        />
+        <button
+          type="button"
+          tabIndex={-1}
+          disabled={disabled}
+          onClick={() => setShown((v) => !v)}
+          title={shown ? 'Hide' : 'Show'}
+          aria-label={shown ? 'Hide password' : 'Show password'}
+          className="absolute inset-y-0 right-0 flex items-center px-2.5 text-slate-400 hover:text-slate-700 disabled:opacity-40 disabled:hover:text-slate-400"
+        >
+          {shown ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </button>
+      </div>
+    );
+  },
+);

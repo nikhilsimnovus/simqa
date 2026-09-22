@@ -43,6 +43,27 @@ export interface HistoryEntry {
   label: string;
   startedAt: string;
   finishedAt: string;
+  /**
+   * Who ran it.
+   *
+   * Two different identities, recorded separately because they answer
+   * different questions and can legitimately differ:
+   *   • `user`    — the SimQA account that clicked Run (from currentUser()).
+   *   • `boxUser` — the box login the execution actually authenticated as.
+   * A run started by a background scheduler has no `user` but still has a
+   * `boxUser`; both stay undefined rather than '' when genuinely unknown, so an
+   * un-attributed row reads as such instead of claiming an empty name.
+   */
+  user?: string;
+  boxUser?: string;
+  /**
+   * The simulator the execution actually ran on.
+   *
+   * On a multi-user Simnovator each login owns one, so two runs at the same
+   * timestamp on the same host are not a contradiction — they were different
+   * hardware. Without this the history cannot tell that apart from a bug.
+   */
+  simulator?: string;
   /** Inventory system id the run targeted (lab-uesim / sys-2 / sys-6 …). */
   targetSystemId?: string;
   /** The system's network host (192.168.x.x), surfaced for filtering. */

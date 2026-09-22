@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import { loadInventory, uesimApiCredentials, type Inventory } from '../inventory';
 import { runBuildInstall, buildInstallCommand, type InstallEvent, type BuildInstallRequest } from '../buildInstaller';
 import { listTestcases, getTestcase, listSimulators, startExecution, type ApiOpts } from '../uesimClient';
+import { pickUserSimulator, isBusy } from '../simulatorScope';
 import { getSetup, installHostsFor, resolveInstallTarget, type JobSetup } from './setups';
 import { getPlaylist } from './playlists';
 import { appendLog, getJob, saveJob, updateJob } from './store';
@@ -71,24 +72,35 @@ async function testcasesByName(opts: ApiOpts): Promise<Map<string, string>> {
 async function pickSimulator(opts: ApiOpts): Promise<{ id: string; name?: string } | null> {
   try {
     const sims = (await listSimulators(opts)).items ?? [];
+    // Whoever this job runs as owns one simulator; the others belong to other
+    // operators and may be mid-execution for them. Taking "the first available
+    // one" is how a job lands on somebody else's hardware.
+    const mine = pickUserSimulator(sims, opts.username);
+    if (mine) return { id: mine.id, name: mine.name };   // BUSY is fine — we wait for idle separately
     const usable = sims.find((s: any) => String(s?.availability ?? '').toUpperCase() === 'AVAILABLE');
     const busy = sims.find((s: any) => String(s?.availability ?? '').toUpperCase() === 'BUSY');
-    const chosen = usable ?? busy;   // BUSY is fine — we wait for idle separately
+    const chosen = usable ?? busy;
     return chosen ? { id: String(chosen.id), name: chosen.name } : null;
   } catch {
     return null;
   }
 }
 
-/** Wait until no simulator reports BUSY. Returns the blocker's name if it never
- *  went idle, so the log can say what we were waiting for. */
-async function waitForIdle(opts: ApiOpts, maxSec: number): Promise<string | null> {
+/** Wait until THIS job's simulator is free. Returns the blocker's name if it
+ *  never went idle, so the log can say what we were waiting for.
+ *
+ *  Scoped to one simulator on purpose: waiting for the whole box to fall quiet
+ *  would park a job behind an unrelated operator's run on hardware it is not
+ *  going to touch. */
+async function waitForIdle(opts: ApiOpts, maxSec: number, simulatorId?: string): Promise<string | null> {
   const deadline = Date.now() + maxSec * 1000;
   let blocker: string | null = null;
   while (Date.now() < deadline) {
     try {
       const sims = await listSimulators(opts);
-      const busy = (sims.items ?? []).find((s: any) => String(s?.availability ?? '').toUpperCase() === 'BUSY');
+      const items = sims.items ?? [];
+      const watched = simulatorId ? items.filter((s: any) => String(s?.id) === String(simulatorId)) : items;
+      const busy = watched.find((s: any) => isBusy(s));
       if (!busy) return null;
       blocker = busy.name ?? busy.id ?? 'a simulator';
     } catch {
@@ -346,10 +358,10 @@ export async function executeJob(key: string): Promise<void> {
     }
 
     log(key, 'step', `[${i + 1}/${names.length}] ${name} — waiting for an execution slot…`);
-    const blocker = await waitForIdle(opts, IDLE_WAIT_SEC);
+    const blocker = await waitForIdle(opts, IDLE_WAIT_SEC, sim.id);
     if (blocker) {
       failed++;
-      setTc(i, { status: 'failed', detail: `Box never went idle — ${blocker} still running.`, finishedAt: new Date().toISOString() });
+      setTc(i, { status: 'failed', detail: `${sim.name ?? `Simulator ${sim.id}`} never went idle — ${blocker} still running.`, finishedAt: new Date().toISOString() });
       log(key, 'error', `[${i + 1}/${names.length}] ${name} — FAILED: box busy for ${IDLE_WAIT_SEC}s (${blocker}).`);
       continue;
     }

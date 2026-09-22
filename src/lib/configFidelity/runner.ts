@@ -22,6 +22,9 @@ import { appendHistoryEntry } from '../historyStore';
 import { resolveBoxBuild } from '../buildVersion';
 
 export interface CfRunRequest extends MatrixRequest {
+  /** SimQA account that started the run, set by the API route — this module
+   *  runs detached and has no request scope. */
+  user?: string;
   targetSystemId?: string;   // API target (Simnovator). Defaults to first UESIM-like.
   ueSimSystemId?: string;    // SSH host where ue.cfg is written. Defaults to target.
   keepOnFail?: boolean;      // leave failing testcases on the box for triage
@@ -163,6 +166,10 @@ async function runLoop(active: ActiveRun, apiOpts: ApiOpts, ueSim: InventorySyst
       const c = report.counts;
       appendHistoryEntry({
         surface: 'config-fidelity',
+        // Attribution: the SimQA account that started the matrix run (passed
+        // in by the route) and the box login it authenticated as.
+        user: req.user,
+        boxUser: apiOpts.username,
         label: `Config Fidelity · ${c.total} case(s) · ${c.passed} pass / ${c.failed + c.error} fail${c.skipped ? ` / ${c.skipped} skip` : ''}`,
         startedAt: report.startedAt,
         finishedAt: report.finishedAt ?? new Date().toISOString(),

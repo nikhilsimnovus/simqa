@@ -6,6 +6,7 @@
 // /api/bulk-tests/status for progress.
 
 import { NextResponse } from 'next/server';
+import { userFromRequest } from '@/lib/identity';
 import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
 import { validateBulkTestcases } from '@/lib/bulkTests/validator';
 import { getState, readManifest, writeValidationSummary } from '@/lib/bulkTests/state';
@@ -73,6 +74,8 @@ export async function POST(req: Request) {
       try {
         appendHistoryEntry({
           surface: 'bulk-validate',
+      // Who ran it — from the signed session, not the body.
+      user: userFromRequest(req) || undefined,
           label: `Bulk validate · ${summary.total} testcases · ${summary.passed} pass / ${summary.failed} fail`,
           startedAt: summary.startedAt,
           finishedAt: summary.finishedAt,

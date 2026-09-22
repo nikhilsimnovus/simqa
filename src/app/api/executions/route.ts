@@ -1,10 +1,11 @@
-// GET  /api/executions?systemId  -> what the box is currently running
-// POST /api/executions?systemId  -> stop whatever it is running
+// GET  /api/executions?systemId&boxUserId  -> what THIS login is running
+// POST /api/executions?systemId&boxUserId  -> stop what THIS login is running
 //
-// The box enforces a system-wide execution mutex: one testcase at a time per
-// simulator. A simulator reports availability=BUSY plus currentExecutionId
-// while a run is in flight, which is both how we warn "already running" before
-// triggering and how we find the execution to stop.
+// One testcase at a time per SIMULATOR, not per box: each operator on a
+// multi-user Simnovator owns one, so three people run three testcases at once.
+// The answers here are therefore scoped to the login — asking box-wide is what
+// made one operator's run look like a reason to refuse another's, and would
+// make Stop reach for hardware that is not theirs.
 
 import { NextResponse } from 'next/server';
 import { stopExecution } from '@/lib/uesimClient';
@@ -13,29 +14,31 @@ import { uesimApiOptsForSystem, loadInventory } from '@/lib/inventory';
 
 export const dynamic = 'force-dynamic';
 
-function resolve(systemId: string | null) {
-  const opts = uesimApiOptsForSystem(loadInventory(), systemId ?? undefined);
+function resolve(systemId: string | null, boxUserId?: string | null) {
+  const opts = uesimApiOptsForSystem(loadInventory(), systemId ?? undefined, boxUserId ?? undefined);
   if (!opts) throw new Error(systemId ? `system "${systemId}" is not a testable UESIM` : 'no UESIM in inventory');
   return opts;
 }
 
 export async function GET(req: Request) {
-  const systemId = new URL(req.url).searchParams.get('systemId');
+  const q = new URL(req.url).searchParams;
+  const systemId = q.get('systemId');
   try {
-    const opts = resolve(systemId);
+    const opts = resolve(systemId, q.get('boxUserId'));
     const busy = await findBusy(opts);
-    return NextResponse.json({ ok: true, host: opts.host, busy: !!busy, execution: busy });
+    return NextResponse.json({ ok: true, host: opts.host, boxUser: opts.boxUser, busy: !!busy, execution: busy });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 502 });
   }
 }
 
 export async function POST(req: Request) {
-  const systemId = new URL(req.url).searchParams.get('systemId');
+  const q = new URL(req.url).searchParams;
+  const systemId = q.get('systemId');
   try {
-    const opts = resolve(systemId);
+    const opts = resolve(systemId, q.get('boxUserId'));
     const busy = await findBusy(opts);
-    if (!busy) return NextResponse.json({ ok: false, error: `nothing is running on ${opts.host}` }, { status: 409 });
+    if (!busy) return NextResponse.json({ ok: false, error: `${opts.boxUser} is not running anything on ${opts.host}` }, { status: 409 });
     if (!busy.executionId) {
       return NextResponse.json(
         { ok: false, error: `${opts.host} reports simulator ${busy.simulatorId} BUSY but gave no execution id to stop` },

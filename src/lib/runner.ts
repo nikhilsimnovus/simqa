@@ -5,7 +5,7 @@ import {
   ensureToken, getTestcase, listSimulators,
   startExecution, getBoxVersion, type TestcaseSummary,
 } from './uesimClient';
-import { findBusy } from './executions';
+import { findBusy, resolveUserSimulator } from './executions';
 import { runRunVerification } from './verification';
 import { generateConfigs, type UesimTestDefinition } from './cfgGenerator';
 import { deployBundle } from './deploy';
@@ -223,14 +223,16 @@ export async function executeRun(inv: Inventory, req: RunRequest): Promise<RunRe
   if (req.dryRun || req.noTrigger) {
     run.steps.push(step('trigger', true, req.dryRun ? 'skipped (dry-run)' : 'skipped (--no-trigger)'));
   } else {
-    // The box runs ONE testcase at a time. Starting a second gives an opaque
-    // API error, so check first and fail with something the user can act on.
+    // One testcase at a time PER SIMULATOR, and each box login owns one — so
+    // this asks what OUR simulator is doing, not what the box is doing.
+    // Another operator's run on their own simulator must not refuse ours.
     try {
       const busy = await findBusy(apiOpts);
       if (busy) {
         const what = busy.testCaseName ?? busy.testCaseId ?? 'another test case';
+        const where = busy.simulatorName ? ` on ${busy.simulatorName}` : '';
         run.steps.push(step('trigger', false,
-          `A test case is already running — testcase ${what}. Stop it before starting another, or try again once it finishes.`));
+          `${apiOpts.username} is already running ${what}${where}. Stop it before starting another, or try again once it finishes.`));
         run.status = 'failed';
         run.finishedAt = new Date().toISOString();
         saveRun(run);
@@ -240,7 +242,11 @@ export async function executeRun(inv: Inventory, req: RunRequest): Promise<RunRe
 
     try {
       const t0 = Date.now();
-      const r = await startExecution(apiOpts, req.testcaseId, {});
+      // Builds since 4.0.0_260609 reject a start with no simulatorId ("No
+      // default simulator found"), and on a shared box the box's idea of a
+      // default is not necessarily the one this login owns.
+      const sim = await resolveUserSimulator(apiOpts).catch(() => null);
+      const r = await startExecution(apiOpts, req.testcaseId, sim ? { simulatorId: sim.id } : {});
       run.steps.push(step('trigger', true, JSON.stringify(r), Date.now() - t0));
     } catch (e: any) {
       run.steps.push(step('trigger', false, e?.message ?? String(e)));

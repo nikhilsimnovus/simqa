@@ -37,6 +37,22 @@ export function isSimnovatorTarget(s: { type: SystemType }): boolean {
 
 export type SshAuthMode = 'password' | 'privateKey';
 
+/**
+ * One box login configured on a setup.
+ *
+ * `id` is what execution requests carry, so renaming the box account does not
+ * orphan a suite or a saved selection; `username`/`password` are what actually
+ * get sent to the box's /v2/login.
+ */
+export interface BoxUser {
+  /** Stable within the system. Generated when the row is added. */
+  id: string;
+  username: string;
+  password: string;
+  /** Optional human label shown in pickers, e.g. "Mohan — operator". */
+  label?: string;
+}
+
 export interface InventorySystem {
   /** Unique slug, e.g. "lab-callbox-1". */
   id: string;
@@ -86,11 +102,29 @@ export interface InventorySystem {
   collect?: string[];
   /** Per-module path overrides, e.g. { ue: '/opt/ue/ue.cfg' }. */
   collectPaths?: Record<string, string>;
-  /** UESIM REST credentials (only meaningful for type === 'UESIM'). */
+  /**
+   * UESIM REST credentials — the SETUP-WIDE default login.
+   *
+   * Kept for every inventory written before `uesimUsers` existed, and still the
+   * fallback when a setup lists no users. New setups should prefer
+   * `uesimUsers`, which is what lets two people execute on the same box under
+   * their own box accounts.
+   */
   uesim?: {
     username?: string;
     password?: string;
   };
+  /**
+   * Box logins available on this setup, so different people can execute under
+   * their own account on the same Simnovator rather than sharing one.
+   *
+   * The box itself enforces the separation — ensureToken() caches a token per
+   * (host, username), so two entries here never share a session. Passwords live
+   * in inventory.yaml alongside every other lab credential, which means anyone
+   * who can read that file can read them; this is a shared lab config, not a
+   * secret store.
+   */
+  uesimUsers?: BoxUser[];
   /**
    * For SIMNOVATOR-typed systems: the Cockpit web admin UI port (default 9090).
    * Cockpit is the way builds get installed onto a Simnovator VM — the user
@@ -190,6 +224,14 @@ export interface AutomationSuite {
    *  existed, and on anything created outside a browser session. */
   createdBy?: string;
   updatedBy?: string;
+  /**
+   * Which of the setup's box logins this suite executes as (BoxUser id).
+   *
+   * Stored on the suite rather than chosen per run so a suite always executes
+   * under the same box account — otherwise the same suite would land in history
+   * under whoever happened to press Run. Absent = the setup's default login.
+   */
+  boxUserId?: string;
   /** Ordered list of test rows. Each row pairs a Simnovator testcase
    *  with (optionally) a callbox eNB cfg. New in 2026-06 — supersedes
    *  the flat `testcaseIds` + `callboxConfig` pair, which the runner
@@ -481,14 +523,56 @@ export function uesimApiOptsFromInventory(inv: Inventory): { host: string; usern
  * runner.ts and validator.ts already resolved it this way; the other call
  * sites had drifted into including the SSH fields.
  */
-export function uesimApiCredentials(s?: { uesim?: { username?: string; password?: string } } | null): { username: string; password: string } {
+/** Shape accepted by the credential helpers — the real InventorySystem, or the
+ *  narrow duck-typed object older call sites hand over. */
+type CredSource = { uesim?: { username?: string; password?: string }; uesimUsers?: BoxUser[] } | null | undefined;
+
+/**
+ * Every box login this setup offers, newest model first.
+ *
+ * A setup that predates `uesimUsers` still yields one entry, synthesised from
+ * the legacy `uesim` block, so existing inventories keep working and the "Run
+ * as" picker always has something to show rather than appearing broken.
+ */
+export function listBoxUsers(s?: CredSource): BoxUser[] {
+  const listed = (s?.uesimUsers ?? []).filter((u) => u && u.username);
+  if (listed.length) return listed;
+  const legacy = s?.uesim;
+  if (legacy?.username) {
+    return [{ id: 'default', username: legacy.username, password: legacy.password ?? '', label: 'setup default' }];
+  }
+  return [];
+}
+
+/**
+ * The credentials to authenticate to a setup's box with.
+ *
+ * `boxUserId` selects WHICH configured login to use — matched on id first, then
+ * username so a caller holding only a name still resolves. An unknown or absent
+ * selector falls back to the setup's first login, and a setup with none at all
+ * falls back to admin/admin, which is what every install did before users
+ * existed.
+ */
+export function uesimApiCredentials(s?: CredSource, boxUserId?: string): { username: string; password: string } {
+  const users = listBoxUsers(s);
+  if (boxUserId) {
+    const hit = users.find((u) => u.id === boxUserId || u.username === boxUserId);
+    if (hit) return { username: hit.username, password: hit.password };
+  }
+  if (users.length) return { username: users[0].username, password: users[0].password };
   return {
     username: s?.uesim?.username || 'admin',
     password: s?.uesim?.password || 'admin',
   };
 }
 
-export function uesimApiOptsForSystem(inv: Inventory, systemId?: string): { systemId: string; host: string; name: string; username: string; password: string } | undefined {
+export function uesimApiOptsForSystem(
+  inv: Inventory,
+  systemId?: string,
+  /** Which of the setup's box logins to execute as. Omitted = the setup's
+   *  first/default login, which is what every pre-multi-user caller wants. */
+  boxUserId?: string,
+): { systemId: string; host: string; name: string; username: string; password: string; boxUser: string } | undefined {
   // With no systemId, prefer a box that actually SERVES the testcase API.
   //
   // This used to take the first UESIM-like system in inventory order, which is
@@ -505,11 +589,15 @@ export function uesimApiOptsForSystem(inv: Inventory, systemId?: string): { syst
     : inv.systems.find((s) => s.type === 'SIMNOVATOR_GUI' || s.type === 'SIMNOVATOR')
       ?? inv.systems.find(isUesimLike);
   if (!target) return undefined;
+  const creds = uesimApiCredentials(target, boxUserId);
   return {
     systemId: target.id,
     name: target.name,
     host: target.host,
-    ...uesimApiCredentials(target),
+    ...creds,
+    // Echoed back so the caller can record WHO executed without re-resolving
+    // — run history needs the box account, not just the setup.
+    boxUser: creds.username,
   };
 }
 

@@ -98,6 +98,11 @@ export default function TestcasesPage() {
   const [systems, setSystems] = useState<SystemSummary[]>([]);
   const [systemId, setSystemId] = useState<string>(urlSystemId);
   const [host, setHost] = useState<string>('');
+  // WHOSE catalogue. The Simnovator scopes /v2/testcases by the token — on
+  // .95 simuser sees 129 testcases, sruthi and mohan one each, admin all 233 —
+  // so listing without saying who is asking shows one operator another's box.
+  const [boxUsers, setBoxUsers] = useState<Array<{ id: string; username: string; label?: string }>>([]);
+  const [boxUserId, setBoxUserId] = useState<string>('');
 
   // Persist the choice and mirror it into the URL, so Back and a refresh both
   // land on the same box.
@@ -145,12 +150,32 @@ export default function TestcasesPage() {
       .finally(() => setSystemsReady(true));
   }, []);
 
+  // The logins registered for this setup, so the list can be browsed as the
+  // person who will actually run these testcases.
+  useEffect(() => {
+    if (!systemId) { setBoxUsers([]); setBoxUserId(''); return; }
+    let cancelled = false;
+    fetch(`/api/box-users?systemId=${encodeURIComponent(systemId)}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled || !j?.ok) return;
+        const users = j.users ?? [];
+        setBoxUsers(users);
+        // Default to the first login: that is exactly what the server falls
+        // back to, so the picker and the listing never disagree silently.
+        setBoxUserId((cur) => (cur && users.some((u: any) => u.id === cur) ? cur : (users[0]?.id ?? '')));
+      })
+      .catch(() => { /* a setup with no logins just lists as the default */ });
+    return () => { cancelled = true; };
+  }, [systemId]);
+
   const load = useCallback((refresh = false) => {
     setLoading(true);
     setErr(null);
     // No limit — the route pages the box and returns the whole catalogue.
     const qs = new URLSearchParams();
     if (systemId) qs.set('systemId', systemId);
+    if (boxUserId) qs.set('boxUserId', boxUserId);
     if (refresh) qs.set('refresh', '1');
     fetch(`/api/testcases?${qs}`)
       .then(async (r) => {
@@ -161,7 +186,7 @@ export default function TestcasesPage() {
       .then((d) => { setItems(d.items ?? []); setTotal(d.total ?? null); setHost(d.host ?? ''); })
       .catch((e) => { setItems([]); setTotal(null); setErr(e.message ?? String(e)); })
       .finally(() => setLoading(false));
-  }, [systemId]);
+  }, [systemId, boxUserId]);
 
   // A real browser reload bypasses the route's 30s cache: refreshing the page is
   // how you ask for current state, and serving a cached list then makes it look
@@ -184,7 +209,10 @@ export default function TestcasesPage() {
     let stop = false;
     const tick = async () => {
       try {
-        const qs = systemId ? `?systemId=${encodeURIComponent(systemId)}` : '';
+        const p = new URLSearchParams();
+        if (systemId) p.set('systemId', systemId);
+        if (boxUserId) p.set('boxUserId', boxUserId);
+        const qs = p.toString() ? `?${p}` : '';
         const d = await (await fetch(`/api/executions${qs}`, { cache: 'no-store' })).json();
         if (!stop) setRunningId(d?.busy ? (d.execution?.testCaseId ?? null) : null);
       } catch { /* keep the last known state */ }
@@ -192,7 +220,16 @@ export default function TestcasesPage() {
     tick();
     const t = setInterval(tick, 5000);
     return () => { stop = true; clearInterval(t); };
-  }, [systemsReady, systemId]);
+  }, [systemsReady, systemId, boxUserId]);
+
+  // Both links into a testcase carry the box and the login, so "Run as" opens
+  // on the same person whose catalogue you were just looking at.
+  const detailQs = useMemo(() => {
+    const p = new URLSearchParams();
+    if (systemId) p.set('systemId', systemId);
+    if (boxUserId) p.set('boxUserId', boxUserId);
+    return p.toString() ? `?${p}` : '';
+  }, [systemId, boxUserId]);
 
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase();
@@ -348,6 +385,23 @@ export default function TestcasesPage() {
                   </select>
                 </label>
               )}
+              {/* Only when the setup offers a choice — a single-login setup
+                  would just be a dropdown with one entry in it. */}
+              {boxUsers.length > 1 && (
+                <label className="flex items-center gap-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">USER</span>
+                  <select
+                    value={boxUserId}
+                    onChange={(e) => setBoxUserId(e.target.value)}
+                    className={TOOLBAR_CONTROL}
+                    title="The box login these testcases are listed and executed as"
+                  >
+                    {boxUsers.map((u) => (
+                      <option key={u.id} value={u.id}>{u.label ? `${u.username} — ${u.label}` : u.username}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <Input
                 placeholder="Search Test case…"
                 value={q}
@@ -475,7 +529,7 @@ export default function TestcasesPage() {
                         <tr key={tc.id} className="hover:bg-sky-50/60 even:bg-slate-50/40 transition-colors">
                           <td className={tdCls}>
                             <Link
-                              href={`/testcases/${encodeURIComponent(tc.id)}${systemId ? `?systemId=${encodeURIComponent(systemId)}` : ''}`}
+                              href={`/testcases/${encodeURIComponent(tc.id)}${detailQs}`}
                               title={tc.name || tc.id}
                               className="font-medium text-slate-900 hover:text-primary-700"
                             >
@@ -503,7 +557,7 @@ export default function TestcasesPage() {
                             )}
                           </td>
                           <td className={tdCls}>
-                            <Link href={`/testcases/${encodeURIComponent(tc.id)}${systemId ? `?systemId=${encodeURIComponent(systemId)}` : ''}`}>
+                            <Link href={`/testcases/${encodeURIComponent(tc.id)}${detailQs}`}>
                               <Button size="sm" variant="ghost">Preview</Button>
                             </Link>
                           </td>

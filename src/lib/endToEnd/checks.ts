@@ -20,6 +20,7 @@ import * as net from 'node:net';
 import type { CheckResult, Phase, Severity } from './types';
 import type { RunCtx } from './ctx';
 import { pollUntil, sleep } from './poll';
+import { pickUserSimulator } from '../simulatorScope';
 import { newCheckContext, loginUI, snapshot } from './browser';
 
 // ───────────── Helpers ─────────────
@@ -67,10 +68,16 @@ function makeResult(
  *  an execution (empty body → 500 "No default simulator found") and to
  *  query /testcases/executions/current/status. */
 async function resolveSimulatorId(ctx: RunCtx): Promise<string | undefined> {
-  const lastSim = ctx.testcaseMetadata?.lastExecution?.simulatorId;
-  if (lastSim !== undefined && lastSim !== null && String(lastSim) !== '') return String(lastSim);
+  // The login's OWN simulator comes first. On a multi-user box the testcase's
+  // last execution may have run on somebody else's, and the first entry of an
+  // admin's list belongs to whoever happens to sort first — triggering onto
+  // either runs this validation on hardware we were not given.
   const sims = await jsonFetch(`${apiBase(ctx.systemHost)}/simulators`, { headers: authHeaders(ctx) });
   const arr: any[] = sims.body?.items ?? sims.body?.data ?? [];
+  const mine = pickUserSimulator(arr, ctx.apiUser);
+  if (mine) return mine.id;
+  const lastSim = ctx.testcaseMetadata?.lastExecution?.simulatorId;
+  if (lastSim !== undefined && lastSim !== null && String(lastSim) !== '') return String(lastSim);
   if (arr[0]?.id !== undefined && arr[0]?.id !== null) return String(arr[0].id);
   return undefined;
 }
