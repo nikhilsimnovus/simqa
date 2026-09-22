@@ -334,7 +334,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           added noise rather than information. */}
       <Header
         title="Dashboard"
-        subtitle="Overview of the test environment and recent activity"
+        subtitle="Overview of the Simnovator environment and recent activity"
       />
       {/* The resource cards are computed on the server from live probes, so
           they only change when the page re-renders. Refresh on a timer — a
@@ -576,19 +576,21 @@ function BoxUsersCard({ host, users, systemId, selectedUser }: { host: string; u
           {users.map((u) => (
             <div
               key={u.username}
-              className={`rounded-lg border px-3 py-2.5 ${u.running ? 'border-sky-300 bg-sky-50/60' : 'border-line bg-surface'} ${u.username === selectedUser ? 'ring-2 ring-primary-500' : ''}`}
+              className={`group relative rounded-lg border px-3 py-2.5 transition-shadow hover:shadow-md ${u.running ? 'border-sky-300 bg-sky-50/60' : 'border-line bg-surface hover:border-slate-400'} ${u.username === selectedUser ? 'ring-2 ring-primary-500' : ''}`}
             >
+              {/* The whole tile filters Recent runs to this user (again to
+                  show everyone). A link can't wrap the testcase link inside
+                  it, so this one covers the tile from underneath and the
+                  testcase link sits above it — both stay clickable. */}
+              <Link
+                href={userFilterHref(host, u.username === selectedUser ? undefined : u.username)}
+                scroll={false}
+                className="absolute inset-0 rounded-lg"
+                aria-label={u.username === selectedUser ? 'Show everyone\'s recent runs' : `Show only ${u.username}'s recent runs`}
+                title={u.username === selectedUser ? 'Show everyone\'s recent runs' : `Show only ${u.username}'s recent runs`}
+              />
               <div className="flex items-center justify-between gap-2">
-                {/* The name filters Recent runs to this user; clicking the
-                    selected one again shows everyone. */}
-                <Link
-                  href={userFilterHref(host, u.username === selectedUser ? undefined : u.username)}
-                  scroll={false}
-                  className="font-medium text-slate-900 truncate hover:text-primary-700 hover:underline"
-                  title={u.username === selectedUser ? 'Show everyone\'s recent runs' : `Show only ${u.username}'s recent runs`}
-                >
-                  {u.username}
-                </Link>
+                <span className="font-medium text-slate-900 truncate group-hover:text-primary-700">{u.username}</span>
                 {u.error ? <Badge tone="warning">unreachable</Badge>
                   : u.running ? <Badge tone="info">executing</Badge>
                   : <Badge>idle</Badge>}
@@ -603,7 +605,7 @@ function BoxUsersCard({ host, users, systemId, selectedUser }: { host: string; u
               {u.running ? (
                 <Link
                   href={testcaseHref(systemId, u.running.testcaseId, u.username)}
-                  className="mt-2 flex items-center gap-2 rounded-md border border-sky-200 bg-white px-2 py-1.5 hover:border-sky-400 hover:bg-sky-50"
+                  className="relative z-10 mt-2 flex items-center gap-2 rounded-md border border-sky-200 bg-white px-2 py-1.5 hover:border-sky-400 hover:bg-sky-50"
                   title={`${u.running.testcaseName} — executing now. Open its validation page.`}
                 >
                   <Play className="h-3.5 w-3.5 shrink-0 fill-sky-600 text-sky-600 animate-pulse" />
@@ -618,7 +620,7 @@ function BoxUsersCard({ host, users, systemId, selectedUser }: { host: string; u
               ) : u.last ? (
                 <Link
                   href={testcaseHref(systemId, u.last.testcaseId, u.username)}
-                  className="mt-2 flex items-center gap-2 rounded-md border border-line bg-white px-2 py-1.5 hover:border-slate-400 hover:bg-slate-50"
+                  className="relative z-10 mt-2 flex items-center gap-2 rounded-md border border-line bg-white px-2 py-1.5 hover:border-slate-400 hover:bg-slate-50"
                   title={`${u.last.testcaseName} — last executed (${u.last.status}). Open its validation page.`}
                 >
                   <History className="h-3.5 w-3.5 shrink-0 text-slate-400" />
