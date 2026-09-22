@@ -864,9 +864,6 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
                     <option key={u.id} value={u.id}>{u.label ? `${u.username} — ${u.label}` : u.username}</option>
                   ))}
                 </select>
-                <span className="text-[11px] text-slate-500">
-                  the box login this run executes and is recorded under
-                </span>
               </div>
             ) : null}
             {!systemId ? (
