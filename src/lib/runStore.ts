@@ -29,6 +29,9 @@ export interface RunRecord {
    *  whether the workflow's steps succeeded. */
   testcaseResult?: string;
   topology?: string;            // profile id
+  /** The box login the execution authenticated as — on a multi-user
+   *  Simnovator, the person the run belongs to. */
+  boxUser?: string;
   startedAt: string;
   finishedAt?: string;
   status: RunStatus;

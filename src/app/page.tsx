@@ -3,9 +3,8 @@
 import { Header } from '@/components/Header';
 import { Card, CardBody, CardHeader, CardTitle, Badge } from '@/components/ui';
 import { loadInventory, uesimApiOptsFromInventory, uesimApiCredentials } from '@/lib/inventory';
-import { listTestcases, listSimulators, getTestcase } from '@/lib/uesimClient';
+import { listSimulators, getTestcase } from '@/lib/uesimClient';
 import { listRuns } from '@/lib/runStore';
-import { findBusy } from '@/lib/executions';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { ensureStationMonitor } from '@/lib/stationMonitor';
 import { ensureFidelityWatcher } from '@/lib/liveFidelity/watcher';
@@ -13,6 +12,7 @@ import { Wifi, WifiOff } from 'lucide-react';
 import * as net from 'node:net';
 import Link from 'next/link';
 import { RecentRunsTable } from './RecentRunsTable';
+import { collectBoxActivity, type BoxExecution, type BoxUserState } from '@/lib/boxActivity';
 import { formatDuration, windowOf, endFromDuration } from '@/lib/timeFormat';
 
 export const dynamic = 'force-dynamic';
@@ -207,95 +207,64 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           : undefined,
         status: r.status,
         testcaseId: r.testcaseId,
+        user: r.boxUser as string | undefined,
+        simulator: undefined as string | undefined,
         viaSimqa: true,
       };
     }),
   );
 
-  // Executions the box ran on its own (from its GUI). The box has no
-  // executions endpoint — probed /v2/executions, /v2/history and friends, all
-  // 404 — so each testcase's metadata.lastExecution is the only record.
-  const boxExecutionsP = !boxLive ? Promise.resolve([] as any[]) : cached(
-    `execs:${selectedProbe!.box.host}`,
-    () => safe(
-        () => listTestcases(selectedProbe!.opts, 1000, 0).then((r) =>
-          (r.items ?? []).flatMap((t: any) => {
-            const last = t?.metadata?.lastExecution;
-            if (!last?.executedOn) return [];
-            // Keep the box's own verdict rather than collapsing everything
-            // that isn't PASS into "failed" — INCOMPLETE, ABORTED and ERROR
-            // mean different things when you're triaging.
-            const verdict = String(last.result ?? '').toLowerCase();
-            // The box reports how long its execution ran but not when it
-            // ended, so the end is start + duration. Seconds — same field
-            // boxExecutions.ts and the end-to-end checks read.
-            const dur = Number(last.durationSeconds ?? last.testDuration ?? NaN);
-            const durationSec = Number.isFinite(dur) && dur > 0 ? dur : undefined;
-            return [{
-              key: `exec:${t.id}:${last.executedOn}`,
-              href: `/testcases/${encodeURIComponent(t.id)}?systemId=${encodeURIComponent(selectedProbe!.box.id)}`,
-              name: t.name ?? t.id,
-              at: new Date(last.executedOn).getTime(),
-              startedAt: last.executedOn as string,
-              durationSec,
-              endedAt: endFromDuration(last.executedOn, durationSec),
-              status: verdict === 'pass' ? 'passed' : verdict || 'unknown',
-              testcaseId: String(t.id),
-              viaSimqa: false,
-            }];
-          }),
-        ),
-        [] as any[],
-      ),
-  );
-
-  // Whatever the box is executing right now outranks any recorded verdict —
-  // lastExecution still reports the PREVIOUS result while a test is in flight.
-  const busyP = !boxLive
+  // Executions on the box, whoever ran them.
+  //
+  // The box has no executions endpoint, so each testcase's metadata is the
+  // only record — and on a multi-user Simnovator an operator's token only
+  // lists THEIR testcases. Reading through the setup's default login alone
+  // hid every run by the other users. So the box is read once per registered
+  // login and each execution is attributed to the operator who owns the
+  // simulator it ran on (the box records the simulator, never a username).
+  // See boxActivityCore.ts.
+  const selectedSys = selectedProbe ? inv.systems.find((s) => s.id === selectedProbe.box.id) : undefined;
+  const activityP = !boxLive || !selectedSys
     ? Promise.resolve(null)
-    : cached(`busy:${selectedProbe!.box.host}`, () => safe(() => findBusy(selectedProbe!.opts), null));
+    : cached(`activity:${selectedProbe!.box.host}`, () => safe(() => collectBoxActivity(selectedSys), null));
 
-  // These three hit the box independently — run them together rather than
-  // stacking their latencies.
-  const [simqaRuns, boxExecutions, busy] = await Promise.all([simqaRunsP, boxExecutionsP, busyP]);
+  const [simqaRuns, activity] = await Promise.all([simqaRunsP, activityP]);
 
-  // Merge both sources. A simqa-triggered run ALSO lands in the box's
-  // lastExecution, so drop the box copy when one of ours covers the same
-  // testcase within a couple of minutes — otherwise every run shows twice.
-  // The execution happening RIGHT NOW. The box writes metadata.lastExecution
-  // only when a run completes, so an in-flight one has no record to derive
-  // from — without this row a test running from the Simnovator GUI is simply
-  // missing from the list until it finishes.
-  const liveRow = busy?.testCaseId
-    ? [{
-        key: `live:${busy.executionId ?? busy.testCaseId}`,
-        href: `/testcases/${encodeURIComponent(busy.testCaseId)}?systemId=${encodeURIComponent(primary!.id)}`,
-        name: busy.testCaseName ?? busy.testCaseId,
-        at: busy.lastUpdated ? new Date(busy.lastUpdated).getTime() : Date.now(),
-        startedAt: busy.lastUpdated ?? new Date().toISOString(),
-        status: 'in progress',
-        testcaseId: busy.testCaseId,
-        // Attribute it to simqa only when one of our own runs is driving it.
-        viaSimqa: simqaRuns.some((s) => s.testcaseId === busy.testCaseId && s.status === 'running'),
-      }]
-    : [];
+  const toRow = (e: BoxExecution) => ({
+    key: `exec:${e.executionId}`,
+    href: `/testcases/${encodeURIComponent(e.testcaseId)}?systemId=${encodeURIComponent(primary!.id)}`,
+    name: e.testcaseName,
+    at: Date.parse(e.startedAt),
+    startedAt: e.startedAt,
+    durationSec: e.durationSec,
+    endedAt: e.status === 'in progress' ? undefined : endFromDuration(e.startedAt, e.durationSec),
+    status: e.status,
+    testcaseId: e.testcaseId,
+    user: e.user,
+    simulator: e.simulatorName,
+    viaSimqa: false,
+  });
 
+  // Everything executing right now — one row per busy simulator, so two
+  // users running at once both show, not just whichever the default login
+  // could see.
+  const liveRow = (activity?.executions ?? []).filter((e) => e.status === 'in progress').map(toRow);
+  const boxExecutions = (activity?.executions ?? []).filter((e) => e.status !== 'in progress').map(toRow);
+
+  // Merge both sources. A simqa-triggered run ALSO lands in the box's own
+  // record, so drop the box copy when one of ours covers the same testcase
+  // within a couple of minutes — otherwise every run shows twice.
   const NEAR_MS = 120_000;
   const merged = [
     ...liveRow,
     ...simqaRuns.filter((s) => !liveRow.some((l) => l.testcaseId === s.testcaseId && s.status === 'running')),
     ...boxExecutions.filter((b) =>
-      !simqaRuns.some((s) => s.testcaseId === b.testcaseId && Math.abs(s.at - b.at) < NEAR_MS)
-      // Drop the box's PREVIOUS record for whatever is running now — it holds
-      // the older verdict and would sit next to the live row saying "failed".
-      && !liveRow.some((l) => l.testcaseId === b.testcaseId)),
+      !simqaRuns.some((s) => s.testcaseId === b.testcaseId && Math.abs(s.at - b.at) < NEAR_MS)),
   ]
     .filter((r) => Number.isFinite(r.at))
     .sort((a, b) => b.at - a.at)
-    .slice(0, 6);
-  // The live execution is already its own row above, so nothing else needs
-  // relabelling — an earlier run of the same testcase keeps its own recorded
-  // verdict instead of being rewritten as "in progress".
+    // More than six now that several people's runs share the list.
+    .slice(0, 10);
   const runs = merged;
 
   // The lab machines bound to the focused box by its topology profile — the
@@ -416,6 +385,15 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
             window; Resource Status is three short rows of IP and state and
             Summary is two numbers, so an even split starved the side that
             needed the width. */}
+        {/* ── Users on this box ───────────────────────────────────────────
+            One tile per registered box login: which simulator it owns, and
+            what that person is running right now. The Simnovator executes each
+            user's testcases on their own simulator, so this is the answer to
+            "who is using the box" — several can be running at once. */}
+        {activity && activity.users.length > 0 ? (
+          <BoxUsersCard host={primary?.host ?? ''} users={activity.users} systemId={primary!.id} />
+        ) : null}
+
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
           {/* ── Recent runs ─────────────────────────────────────────────── */}
           <Card className="lg:col-span-2">
@@ -444,6 +422,8 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                     // yet and shows only its start, with the badge saying why.
                     window: windowOf(r.startedAt, r.endedAt),
                     status: r.status,
+                    user: r.user,
+                    simulator: r.simulator,
                   }))}
                 />
               )}
@@ -536,4 +516,56 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   );
 }
 
+/** Who is on the box: one tile per registered login. */
+function BoxUsersCard({ host, users, systemId }: { host: string; users: BoxUserState[]; systemId: string }) {
+  const running = users.filter((u) => u.running).length;
+  return (
+    <Card>
+      <CardHeader className="flex items-center justify-between">
+        <CardTitle>Users on {host}</CardTitle>
+        <span className="text-xs text-slate-500">
+          {running ? `${running} executing now` : 'nobody executing'} · {users.length} login{users.length === 1 ? '' : 's'}
+        </span>
+      </CardHeader>
+      <CardBody className="p-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {users.map((u) => (
+            <div
+              key={u.username}
+              className={`rounded-lg border px-3 py-2.5 ${u.running ? 'border-sky-300 bg-sky-50/60' : 'border-line bg-surface'}`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-slate-900 truncate">{u.username}</span>
+                {u.error ? <Badge tone="warning">unreachable</Badge>
+                  : u.running ? <Badge tone="info">executing</Badge>
+                  : <Badge>idle</Badge>}
+              </div>
+              <div className="text-[11px] text-slate-500 truncate">
+                {u.admin ? 'admin · sees every simulator'
+                  : u.simulator ? (u.simulator.name ?? `simulator ${u.simulator.id}`)
+                  : u.error ? u.error : 'no simulator assigned'}
+                {u.discovered ? <span className="text-slate-400" title="Named by the Simnovator's own user assignments — not a login registered in System Management"> · from box</span> : null}
+              </div>
+              {u.running ? (
+                <Link
+                  href={`/testcases/${encodeURIComponent(u.running.testcaseId)}?systemId=${encodeURIComponent(systemId)}`}
+                  className="mt-1.5 block text-xs text-sky-800 truncate hover:underline"
+                  title={u.running.testcaseName}
+                >
+                  ▶ {u.running.testcaseName}
+                </Link>
+              ) : u.last ? (
+                <div className="mt-1.5 text-xs text-slate-600 truncate" title={u.last.testcaseName}>
+                  last: {u.last.testcaseName} · <span className="text-slate-500">{u.last.status}</span>
+                </div>
+              ) : !u.error ? (
+                <div className="mt-1.5 text-xs text-slate-400">no executions yet</div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
 

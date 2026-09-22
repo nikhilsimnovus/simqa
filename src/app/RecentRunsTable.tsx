@@ -30,10 +30,16 @@ export interface RecentRunRow {
   duration: string;
   window: string;
   status: string;
+  /** Who ran it. On a multi-user Simnovator the box records only the
+   *  simulator, so this is the operator who owns that simulator — see
+   *  boxActivityCore.ts. Undefined when no registered login claims it. */
+  user?: string;
+  /** Which simulator it ran on, shown under the user. */
+  simulator?: string;
 }
 
 /** Test Case gets the width, because the name is what gets clipped. */
-const DEFAULT_COL_WIDTHS = [250, 210, 110];
+const DEFAULT_COL_WIDTHS = [230, 120, 190, 110];
 
 /** Covers simqa's own run states AND the verdicts the box reports for
  *  executions started from its GUI (incomplete / aborted / stopped / error).
@@ -58,10 +64,10 @@ export function RecentRunsTable({ rows }: { rows: RecentRunRow[] }) {
         <ColGroup widths={colWidths} />
         <thead className="bg-slate-50 text-slate-600">
           <tr>
-            {['Test Case', 'Duration', 'Status'].map((label, i) => (
+            {['Test Case', 'User', 'Duration', 'Status'].map((label, i) => (
               <th
                 key={label}
-                className={`relative px-4 py-2 font-medium border-r border-slate-200 last:border-r-0 ${i === 2 ? 'text-right' : 'text-left'}`}
+                className={`relative px-4 py-2 font-medium border-r border-slate-200 last:border-r-0 ${i === 3 ? 'text-right' : 'text-left'}`}
               >
                 <span className="truncate block">{label}</span>
                 {i < colWidths.length - 1 ? <ResizeHandle onMouseDown={startResize(i)} /> : null}
@@ -79,6 +85,13 @@ export function RecentRunsTable({ rows }: { rows: RecentRunRow[] }) {
                 <Link href={r.href} className="block truncate text-sm font-medium text-slate-900" title={r.name}>
                   {r.name}
                 </Link>
+              </td>
+              {/* Who ran it, and on which simulator. A run nobody can be
+                  matched to says so, rather than a blank that reads as if
+                  SimQA ran it. */}
+              <td className="px-4 py-2.5 border-r border-slate-100" title={r.simulator ? `ran on ${r.simulator}` : undefined}>
+                <div className="text-sm text-slate-800 truncate">{r.user ?? <span className="text-slate-400">unknown</span>}</div>
+                {r.simulator ? <div className="text-xs text-slate-500 truncate">{r.simulator}</div> : null}
               </td>
               {/* No host or origin column: the list is already scoped to the
                   selected box, and it deliberately merges runs started from

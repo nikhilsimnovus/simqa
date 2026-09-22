@@ -12,6 +12,7 @@ import { deployBundle } from './deploy';
 import {
   type Inventory, type TopologyProfile, type InventorySystem,
   getProfile, getSystem, uesimApiOptsForSystem,
+  uesimApiCredentials,
 } from './inventory';
 import {
   type RunRecord, type RunStep,
@@ -34,6 +35,8 @@ export interface RunRequest {
   batchId?: string;
   /** Suite id this run was spawned from. */
   suiteId?: string;
+  /** Which of the setup's box logins to execute as. Omitted = the default. */
+  boxUserId?: string;
 }
 
 export interface BatchRunRequest {
@@ -108,13 +111,14 @@ export async function executeRun(inv: Inventory, req: RunRequest): Promise<RunRe
   // profile.uesim is optional as of 2026-05-12 — fall back to inventory
   // default when the topology profile doesn't pin a UESIM box.
   const uesimSys = profile?.uesim ? getSystem(inv, profile.uesim) : undefined;
+  // Credentials through the same resolver every other path uses, so a named
+  // box login is honoured here too rather than always running as the default.
   const apiOpts =
     (uesimSys && {
       host: uesimSys.host,
-      username: uesimSys.uesim?.username ?? 'admin',
-      password: uesimSys.uesim?.password ?? 'admin',
+      ...uesimApiCredentials(uesimSys, req.boxUserId),
     }) ||
-    uesimApiOptsForSystem(inv, req.systemId);
+    uesimApiOptsForSystem(inv, req.systemId, req.boxUserId);
   if (!apiOpts) {
     run.steps.push(step('preflight', false, 'No UESIM system in inventory.yaml'));
     run.status = 'failed';
@@ -122,6 +126,7 @@ export async function executeRun(inv: Inventory, req: RunRequest): Promise<RunRe
     saveRun(run);
     return run;
   }
+  run.boxUser = apiOpts.username;
 
   // 2. Preflight: login + capture box version.
   try {
