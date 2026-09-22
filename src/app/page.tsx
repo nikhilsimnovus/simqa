@@ -263,8 +263,9 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   ]
     .filter((r) => Number.isFinite(r.at))
     .sort((a, b) => b.at - a.at)
-    // More than six now that several people's runs share the list.
-    .slice(0, 10);
+    // Five: the user tiles above already show what each person is running
+    // and last ran, so this is a short tail. View all has the rest.
+    .slice(0, 5);
   const runs = merged;
 
   // The lab machines bound to the focused box by its topology profile — the
