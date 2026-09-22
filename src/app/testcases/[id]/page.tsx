@@ -997,7 +997,7 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
                     <div className="text-[11px] text-slate-500">
                       {editingTcJson
                         ? 'Editing — Save updates this same testcase on the Simnovator. Only what you changed is written.'
-                        : 'Edit the JSON file and click “Save & Apply to Simnovator” to apply the changes directly to Simnovator.'}
+                        : 'Edit the file and save to apply the changes directly to Simnovator.'}
                     </div>
                     {editingTcJson ? (
                       <div className="flex items-center gap-2 flex-none">
