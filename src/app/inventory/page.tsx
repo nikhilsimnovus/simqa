@@ -193,6 +193,24 @@ const TYPE_META: Record<string, { icon: React.ComponentType<{ className?: string
   '':         { icon: Server,      ring: 'ring-red-200',    bg: 'bg-red-50',      text: 'text-red-700',      label: 'No type' },
 };
 
+/**
+ * Does this topology still have the machine it exists for?
+ *
+ * A topology is a bench built AROUND a Simnovator (or, on older labs, a
+ * UESIM) — the id, the name and every run resolve through it. The callbox and
+ * app server hang off it and are often shared: one app server at .100 was
+ * bound into four benches. So "keep it while any system survives" left a bench
+ * alive after its Simnovator was deleted, held up only by a shared app server
+ * it merely pointed at — a card that can never run anything, which is exactly
+ * what deleting the Simnovator was meant to remove.
+ *
+ * The runner applies the same test (topology.ts refuses a profile with neither
+ * a simnovator nor a uesim), so this only removes benches it would reject.
+ */
+function hasAnchor(p: TopologyProfile, liveIds: Set<string>): boolean {
+  return [p.simnovator, p.uesim].some((id) => !!id && liveIds.has(id));
+}
+
 /** Every topology field that holds a system id. */
 const PROFILE_REF_KEYS = ['simnovator', 'uesim', 'callbox', 'appserver', 'enb', 'gnb', 'mme', 'ims'] as const;
 
@@ -333,12 +351,11 @@ export default function InventoryPage() {
           }
           return q as unknown as TopologyProfile;
         })
-        // A topology left naming no machine at all is a husk — already hidden
-        // from the list by isOrphan, and useless to every runner. Drop it so
-        // removing the last box actually removes its bench.
+        // A bench whose Simnovator (and UESIM) are gone is removed with them,
+        // even if a shared callbox or app server is still bound into it — see
+        // hasAnchor. Its remaining links are to machines other benches use.
         .filter((prof) => {
-          const anyLeft = PROFILE_REF_KEYS.some((k) => (prof as unknown as Record<string, unknown>)[k]);
-          if (!anyLeft) { droppedProfiles += 1; return false; }
+          if (!hasAnchor(prof, liveIds)) { droppedProfiles += 1; return false; }
           return true;
         });
 
@@ -1086,8 +1103,10 @@ function deriveProfiles(systems: InventorySystem[], existing: TopologyProfile[])
   // in Systems Management that is not there. The lab had exactly one, a chain
   // named "192.168.1.01" still bound to sys-14/15/16/17 after those four were
   // deleted. A chain with even ONE surviving system is still kept.
-  const isOrphan = (p: TopologyProfile) =>
-    ![p.simnovator, p.uesim, p.callbox, p.appserver].some((id) => id && systems.some((s) => s.id === id));
+  // Anchored on the Simnovator/UESIM, not "any surviving system" — a bench
+  // held up only by a shared app server is still an orphan. See hasAnchor.
+  const liveIds = new Set(systems.map((s) => s.id));
+  const isOrphan = (p: TopologyProfile) => !hasAnchor(p, liveIds);
 
   // RETYPED is the other exception: a chain whose Simnovator is still
   // registered but is no longer typed as one (changed to App Server, say).
