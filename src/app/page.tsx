@@ -336,11 +336,11 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           reaching for F5. */}
       <AutoRefresh seconds={30} />
       <main className="p-6 space-y-5">
-        {/* ── Test Environments ───────────────────────────────────────────
+        {/* ── Simnovator Environments ───────────────────────────────────────────
             One tile per box, so every Simnovator in inventory is visible
             with its own live status instead of only the first. */}
         <section>
-          <SectionLabel>Test Environments</SectionLabel>
+          <SectionLabel>Simnovator Environments</SectionLabel>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {boxes.map((b) => {
               const state = STATION_META[stationStateOf(b)];
@@ -352,11 +352,9 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                     <CardBody className="p-4">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          {/* The type, not a name — systems no longer carry one
-                              (System Management generates "Simnovator-95" from
-                              type + IP, which only repeats the IP below). */}
-                          <div className="text-xs uppercase tracking-wider text-slate-500 truncate">Simnovator</div>
-                          <div className="text-lg font-semibold text-slate-900 mt-0.5">{b.host}</div>
+                          {/* Just the IP. The section heading already says these
+                              are Simnovators, and systems no longer carry a name. */}
+                          <div className="text-lg font-semibold text-slate-900">{b.host}</div>
                         </div>
                         {/* Same three words + colours used everywhere else a
                             station's state shows up, so one colour never
