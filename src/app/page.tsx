@@ -106,7 +106,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">{children}</h2>;
 }
 
-export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ box?: string }> }) {
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ box?: string; user?: string }> }) {
   // Availability history is collected by a background poller. Kick it off here
   // so opening the dashboard after a server restart resumes tracking — it is a
   // no-op once running, and thereafter ticks on its own timer.
@@ -127,6 +127,9 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   // Which box the dashboard is focused on. Kept in the URL so the choice
   // survives a refresh and can be linked to.
   const selectedHost = (await searchParams)?.box ?? '';
+  // Whose runs Recent runs shows. Set by clicking a user — on their tile or in
+  // the User column — and cleared by clicking them again or "All users".
+  const selectedUser = ((await searchParams)?.user ?? '').trim();
 
   // Simnovator boxes only — a plain UESIM/UE host or a callbox has no product
   // GUI to report on, and listing them made the dashboard about the lab rather
@@ -180,7 +183,9 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   const recent = listRuns(200)
     .map((r) => ({ ...r, host: r.steps?.find((s) => s.name === 'preflight-login')?.detail ?? '' }))
     .filter((r) => !primary || r.host === primary.host)
-    .slice(0, 6);
+    // More than the six shown: a user filter is applied after merging, and
+    // cutting to six first would leave that user with none.
+    .slice(0, 30);
 
   const boxLive = !!selectedProbe?.box.online && !!selectedProbe?.opts;
 
@@ -262,6 +267,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
       !simqaRuns.some((s) => s.testcaseId === b.testcaseId && Math.abs(s.at - b.at) < NEAR_MS)),
   ]
     .filter((r) => Number.isFinite(r.at))
+    .filter((r) => !selectedUser || r.user === selectedUser)
     .sort((a, b) => b.at - a.at)
     // Six: the user tiles above already show what each person is running
     // and last ran, so this is a short tail. View all has the rest.
@@ -389,20 +395,32 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
             user's testcases on their own simulator, so this is the answer to
             "who is using the box" — several can be running at once. */}
         {activity && activity.users.length > 0 ? (
-          <BoxUsersCard host={primary?.host ?? ''} users={activity.users} systemId={primary!.id} />
+          <BoxUsersCard host={primary?.host ?? ''} users={activity.users} systemId={primary!.id} selectedUser={selectedUser} />
         ) : null}
 
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
           {/* ── Recent runs ─────────────────────────────────────────────── */}
           <Card className="lg:col-span-2">
             <CardHeader className="flex items-center justify-between">
-              <CardTitle>Recent runs{primary ? ` of ${primary.host}` : ''}</CardTitle>
-              <Link href="/runs?from=dashboard" className="text-xs text-primary-700 hover:underline">View all</Link>
+              <CardTitle>
+                Recent runs{primary ? ` of ${primary.host}` : ''}
+                {selectedUser ? <span className="text-primary-700"> · {selectedUser}</span> : null}
+              </CardTitle>
+              <div className="flex items-center gap-3">
+                {selectedUser ? (
+                  <Link href={userFilterHref(primary?.host)} className="text-xs text-slate-500 hover:text-slate-800 hover:underline">
+                    All users
+                  </Link>
+                ) : null}
+                <Link href="/runs?from=dashboard" className="text-xs text-primary-700 hover:underline">View all</Link>
+              </div>
             </CardHeader>
             <CardBody className="p-0">
               {runs.length === 0 ? (
                 <div className="p-5 text-sm text-slate-500">
-                  No runs yet for {primary?.host ?? 'this box'}. Trigger one from the Test Cases page.
+                  {selectedUser
+                    ? <>No recent runs by <span className="font-medium text-slate-700">{selectedUser}</span> on {primary?.host ?? 'this box'}.</>
+                    : <>No runs yet for {primary?.host ?? 'this box'}. Trigger one from the Test Cases page.</>}
                 </div>
               ) : (
                 /* Spreadsheet-style and column-resizable, like Run History —
@@ -421,6 +439,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                     window: windowOf(r.startedAt, r.endedAt),
                     status: r.status,
                     user: r.user,
+                    userHref: r.user ? userFilterHref(primary?.host, r.user === selectedUser ? undefined : r.user) : undefined,
                     simulator: r.simulator,
                   }))}
                 />
@@ -520,6 +539,14 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   );
 }
 
+/** The dashboard for one box, optionally filtered to one user's runs. */
+function userFilterHref(host?: string, user?: string): string {
+  const p = new URLSearchParams();
+  if (host) p.set('box', host);
+  if (user) p.set('user', user);
+  return p.toString() ? `/?${p}` : '/';
+}
+
 /**
  * A testcase's validation page, opened AS the user who ran it — an operator's
  * testcase is invisible to every other login, so without boxUserId the page
@@ -534,7 +561,7 @@ function testcaseHref(systemId: string, testcaseId: string, user?: string): stri
 }
 
 /** Who is on the box: one tile per registered login. */
-function BoxUsersCard({ host, users, systemId }: { host: string; users: BoxUserState[]; systemId: string }) {
+function BoxUsersCard({ host, users, systemId, selectedUser }: { host: string; users: BoxUserState[]; systemId: string; selectedUser?: string }) {
   const running = users.filter((u) => u.running).length;
   return (
     <Card>
@@ -549,10 +576,19 @@ function BoxUsersCard({ host, users, systemId }: { host: string; users: BoxUserS
           {users.map((u) => (
             <div
               key={u.username}
-              className={`rounded-lg border px-3 py-2.5 ${u.running ? 'border-sky-300 bg-sky-50/60' : 'border-line bg-surface'}`}
+              className={`rounded-lg border px-3 py-2.5 ${u.running ? 'border-sky-300 bg-sky-50/60' : 'border-line bg-surface'} ${u.username === selectedUser ? 'ring-2 ring-primary-500' : ''}`}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="font-medium text-slate-900 truncate">{u.username}</span>
+                {/* The name filters Recent runs to this user; clicking the
+                    selected one again shows everyone. */}
+                <Link
+                  href={userFilterHref(host, u.username === selectedUser ? undefined : u.username)}
+                  scroll={false}
+                  className="font-medium text-slate-900 truncate hover:text-primary-700 hover:underline"
+                  title={u.username === selectedUser ? 'Show everyone\'s recent runs' : `Show only ${u.username}'s recent runs`}
+                >
+                  {u.username}
+                </Link>
                 {u.error ? <Badge tone="warning">unreachable</Badge>
                   : u.running ? <Badge tone="info">executing</Badge>
                   : <Badge>idle</Badge>}

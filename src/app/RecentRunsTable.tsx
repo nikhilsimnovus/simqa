@@ -34,6 +34,8 @@ export interface RecentRunRow {
    *  simulator, so this is the operator who owns that simulator — see
    *  boxActivityCore.ts. Undefined when no registered login claims it. */
   user?: string;
+  /** Where clicking the user goes — the dashboard filtered to their runs. */
+  userHref?: string;
   /** Which simulator it ran on, shown under the user. */
   simulator?: string;
 }
@@ -90,7 +92,13 @@ export function RecentRunsTable({ rows }: { rows: RecentRunRow[] }) {
                   matched to says so, rather than a blank that reads as if
                   SimQA ran it. */}
               <td className="px-4 py-2.5 border-r border-slate-100" title={r.simulator ? `ran on ${r.simulator}` : undefined}>
-                <div className="text-sm text-slate-800 truncate">{r.user ?? <span className="text-slate-400">unknown</span>}</div>
+                <div className="text-sm text-slate-800 truncate">
+                  {r.user && r.userHref ? (
+                    <Link href={r.userHref} scroll={false} className="hover:text-primary-700 hover:underline" title={`Show only ${r.user}'s recent runs`}>
+                      {r.user}
+                    </Link>
+                  ) : r.user ?? <span className="text-slate-400">unknown</span>}
+                </div>
                 {r.simulator ? <div className="text-xs text-slate-500 truncate">{r.simulator}</div> : null}
               </td>
               {/* No host or origin column: the list is already scoped to the
