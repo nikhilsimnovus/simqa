@@ -461,6 +461,26 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
    *  run would change its config — drives the Wait / Run-with-current prompt. */
   const [shareDialog, setShareDialog] = useState<{ others: OtherExecution[]; current: CfgPick; changes: string[]; callboxHost?: string } | null>(null);
   const [checkingShare, setCheckingShare] = useState(false);
+
+  // Who else is running on the shared callbox, kept current while the page is
+  // open — so the message is there BEFORE Run is clicked, not only after.
+  const [othersOnCallbox, setOthersOnCallbox] = useState<OtherExecution[]>([]);
+  useEffect(() => {
+    if (!systemId) return;
+    let stop = false;
+    const tick = async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const qs = new URLSearchParams({ systemId });
+        if (boxUserId) qs.set('boxUserId', boxUserId);
+        const u = await fetch(`/api/callbox-usage?${qs}`, { cache: 'no-store' }).then((r) => r.json());
+        if (!stop && u?.ok) setOthersOnCallbox(u.others ?? []);
+      } catch { /* keep the last answer */ }
+    };
+    tick();
+    const t = setInterval(tick, 20_000);
+    return () => { stop = true; clearInterval(t); };
+  }, [systemId, boxUserId]);
   /** This testcase is executing — started here, or on the box by anyone.
    *  Editing its definition is locked for as long as that is true. */
   const testcaseRunning = running || busyForThis;
@@ -546,6 +566,19 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
           if (u?.ok) {
             const d = decideBringUp(cfgSelection, u.current, u.others ?? []);
             if (d.action === 'blocked') {
+              setOthersOnCallbox(d.others);
+              // The message above Run already told them someone is running and
+              // that Run continues on the config in use — so Run does exactly
+              // that. Only someone who appeared since the message last
+              // refreshed gets the prompt, so nobody is surprised.
+              if (othersOnCallbox.length > 0) {
+                const cur = d.current;
+                setSelEnb(cur.enb ?? ''); setSelMme(cur.mme ?? ''); setSelIms(cur.ims ?? '');
+                return startValidation(false, {
+                  cfgMode: 'shared',
+                  cfg: { enb: cur.enb || undefined, mme: cur.mme || undefined, ims: cur.ims || undefined },
+                });
+              }
               setShareDialog({ others: d.others, current: d.current, changes: d.changes, callboxHost: u.callbox?.host });
               return;
             }
@@ -891,6 +924,25 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
         <Card>
           <CardHeader className="py-3"><CardTitle>Pick Configuration</CardTitle></CardHeader>
           <CardBody className="space-y-3 py-4">
+            {/* Another user is running on the shared callbox: say so before
+                Run is clicked, and what each choice does. */}
+            {othersOnCallbox.length > 0 ? (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+                <div className="font-semibold">
+                  {othersOnCallbox.map((o, i) => (
+                    <span key={i}>
+                      {i > 0 ? ', ' : ''}{o.user ?? 'Another user'} is {o.state === 'starting' ? 'starting' : 'running'}
+                      {o.testcaseName ? <> “{o.testcaseName}”</> : ' a test case'}
+                    </span>
+                  ))}
+                </div>
+                <div className="mt-1 text-xs leading-relaxed">
+                  If you want to continue, click <span className="font-semibold">Run</span> — it executes with the config
+                  already in use, without changing it or restarting LTE. Otherwise, wait until the execution completes,
+                  then pick your config and execute the test case.
+                </div>
+              </div>
+            ) : null}
             {/* Who this execution authenticates to the box as. Shown only when
                 the setup actually offers a choice — a one-login setup would
                 just be a dropdown with a single entry. */}
@@ -1154,7 +1206,7 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4" role="dialog" aria-modal="true">
           <div className="w-full max-w-lg rounded-xl border border-line bg-surface shadow-xl">
             <div className="px-5 pt-4 pb-3 border-b border-slate-100">
-              <div className="text-base font-semibold text-slate-900">Another user is executing on this callbox</div>
+              <div className="text-base font-semibold text-slate-900">Another user is running a test case</div>
               <div className="text-xs text-slate-500 mt-0.5">
                 {shareDialog.callboxHost ? <>Callbox <span className="font-mono">{shareDialog.callboxHost}</span> is shared by every user of this Simnovator.</> : 'The callbox is shared by every user of this Simnovator.'}
               </div>
@@ -1175,9 +1227,15 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
                 <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Config in use on the callbox</div>
                 <div className="font-mono text-slate-800 break-all">{describeCfg(shareDialog.current)}</div>
               </div>
-              <div className="text-xs text-slate-600">
-                Your selection changes {shareDialog.changes.join('; ')}. Applying it restarts LTE, which would stop their test.
-                Wait for it to finish, or run now with the config already in use — no soft link and no LTE restart.
+              <div className="text-sm text-slate-700 space-y-1.5">
+                <p>
+                  If you want to continue, click <span className="font-semibold">Run</span> — your test case executes
+                  with the config already in use (no soft link, no LTE restart, so their test is not affected).
+                </p>
+                <p>
+                  Otherwise, <span className="font-semibold">Wait</span> until their execution completes, then pick your
+                  config and execute the test case.
+                </p>
               </div>
             </div>
             <div className="px-5 pb-4 flex justify-end gap-2">
@@ -1197,7 +1255,8 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
                   });
                 }}
               >
-                Run with current config
+                <Play className="h-4 w-4 fill-current" />
+                <span className="ml-1.5">Run</span>
               </Button>
             </div>
           </div>
