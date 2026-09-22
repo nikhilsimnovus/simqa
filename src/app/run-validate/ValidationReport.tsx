@@ -58,6 +58,7 @@ export interface RunStatus {
   runId?: string;
   systemId?: string;
   systemHost?: string;
+  boxUser?: string;
   testcaseId?: string;
   testcaseName?: string;
   executionId?: string;
@@ -77,6 +78,8 @@ export interface PastRunSummary {
   finishedAt?: string;
   ok?: boolean;
   systemHost?: string;
+  /** The Simnovator login it ran as. */
+  boxUser?: string;
   testcaseName?: string;
   systemId: string;
   testcaseId: string;
@@ -442,6 +445,8 @@ interface RunOverviewData {
   ueSummary?: string;
   /** The Simnovator's own verdict, verbatim. */
   verdict?: string;
+  /** The Simnovator login it ran as. */
+  boxUser?: string;
 }
 
 function OverviewField({ label, value }: { label: string; value?: React.ReactNode }) {
@@ -478,6 +483,8 @@ function RunOverview({ data }: { data: RunOverviewData }) {
     <div className="rounded-lg border border-slate-200 bg-white p-4 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-3">
       <OverviewField label="Test Case" value={data.testcaseName ?? data.testcaseId} />
       <OverviewField label="Simnovator IP" value={data.systemHost ? <span className="font-mono text-xs">{data.systemHost}</span> : undefined} />
+      {/* Who ran it — several people execute on one Simnovator at once. */}
+      <OverviewField label="User" value={data.boxUser} />
       <OverviewField label="Status" value={data.currentStatus} />
       {/* The box's own word for this run, next to SimQA's. They can disagree —
           a Simnovator PASS only means its success conditions held — so both are
@@ -502,9 +509,11 @@ function RunOverview({ data }: { data: RunOverviewData }) {
  *  presentation, so the three call sites below don't each re-derive it. */
 function RunProgress({
   testcaseName, testcaseId, systemHost, running, ok, finalDetail,
-  startedAt, configuredDurationSec, checks, currentPhase, verdict, runId,
+  startedAt, configuredDurationSec, checks, currentPhase, verdict, runId, boxUser,
 }: {
   testcaseName?: string; testcaseId?: string; systemHost?: string;
+  /** The Simnovator login it ran as. */
+  boxUser?: string;
   running: boolean; ok?: boolean; finalDetail?: string;
   startedAt?: string; configuredDurationSec?: number;
   checks: CheckRowData[]; currentPhase?: Phase;
@@ -520,7 +529,7 @@ function RunProgress({
   return (
     <div className="space-y-3">
       <RunOverview data={{
-        testcaseName, testcaseId, systemHost, currentStatus, overallResult,
+        testcaseName, testcaseId, systemHost, boxUser, currentStatus, overallResult,
         startedAt, configuredDurationSec, ueSummary: ueSummaryFrom(checks),
         verdict: verdict ?? boxVerdictFrom(checks),
       }} />
@@ -549,6 +558,7 @@ export interface LiveEntry {
   testcaseName?: string;
   systemId?: string;
   systemHost?: string;
+  boxUser?: string;
   startedAt: string;
   executionId?: string;
   configuredDurationSec?: number;
@@ -646,6 +656,7 @@ export function PastRunsPanel({
                       testcaseName={liveEntry.testcaseName}
                       testcaseId={liveEntry.testcaseId}
                       systemHost={liveEntry.systemHost}
+                      boxUser={liveEntry.boxUser}
                       running
                       startedAt={liveEntry.startedAt}
                       configuredDurationSec={liveEntry.configuredDurationSec}
@@ -696,6 +707,7 @@ export function PastRunsPanel({
                         testcaseName={expandedReport.testcaseName}
                         testcaseId={expandedReport.testcaseId}
                         systemHost={expandedReport.systemHost}
+                        boxUser={expandedReport.boxUser ?? r.boxUser}
                         running={!!r.running}
                         ok={expandedReport.ok}
                         finalDetail={expandedReport.finalDetail}

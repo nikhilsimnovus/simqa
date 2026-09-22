@@ -49,6 +49,8 @@ export interface RunStatusSnapshot {
   runId?: string;
   systemId?: string;
   systemHost?: string;
+  /** The Simnovator login this run executes as. */
+  boxUser?: string;
   testcaseId?: string;
   /** Testcase display name, once preflight has discovered it. Undefined for
    *  the first tick or two of a run. */
@@ -83,6 +85,9 @@ export interface FinalReport {
   runId: string;
   systemId: string;
   systemHost: string;
+  /** The Simnovator login the execution ran as — on a multi-user box, the
+   *  person it belongs to. */
+  boxUser?: string;
   systemName?: string;
   testcaseId: string;
   testcaseName?: string;

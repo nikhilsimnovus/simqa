@@ -456,6 +456,9 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
   // ── Run + live validation status ──
   const [runId, setRunId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  /** This testcase is executing — started here, or on the box by anyone.
+   *  Editing its definition is locked for as long as that is true. */
+  const testcaseRunning = running || busyForThis;
   const [status, setStatus] = useState<RunStatus | null>(null);
   const [startErr, setStartErr] = useState<string | null>(null);
   const pollerRef = useRef<NodeJS.Timeout | null>(null);
@@ -699,6 +702,9 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
         ok,
         systemId: systemId || '',
         systemHost: tc?.host,
+        // The login this testcase was read through: an operator can only see —
+        // and so only run — their own testcases.
+        boxUser: tc?.boxUser,
         testcaseId: decoded,
         testcaseName: tc?.name,
         // Carried so the merge below can recognise this as the same event as a
@@ -725,6 +731,7 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
         ok,
         systemId: systemId || '',
         systemHost: tc?.host ?? '',
+        boxUser: tc?.boxUser,
         testcaseId: decoded,
         testcaseName: tc?.name,
         executionId: x.executionId,
@@ -943,6 +950,7 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
             testcaseName: tc?.name,
             systemId: status.systemId ?? systemId,
             systemHost: status.systemHost,
+            boxUser: status.boxUser,
             startedAt: status.startedAt ?? new Date().toISOString(),
             executionId: status.executionId,
             configuredDurationSec: status.configuredDurationSec,
@@ -994,23 +1002,32 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
               {activeFile === 'testcase.json' ? (
                 <>
                   <div className="flex items-center justify-between gap-2">
-                    <div className="text-[11px] text-slate-500">
-                      {editingTcJson
-                        ? 'Editing — Save updates this same testcase on the Simnovator. Only what you changed is written.'
-                        : 'Edit the file and save to apply the changes directly to Simnovator.'}
+                    {/* Locked while this testcase executes: changing a testcase
+                        under a running execution would leave the run and its
+                        definition disagreeing. The server refuses it too. */}
+                    <div className={`text-[11px] ${testcaseRunning ? 'text-amber-700' : 'text-slate-500'}`}>
+                      {testcaseRunning
+                        ? 'Editing is locked while this test case is running. Stop it or wait for it to finish.'
+                        : editingTcJson
+                          ? 'Editing — Save updates this same testcase on the Simnovator. Only what you changed is written.'
+                          : 'Edit the file and save to apply the changes directly to Simnovator.'}
                     </div>
                     {editingTcJson ? (
                       <div className="flex items-center gap-2 flex-none">
                         <Button size="sm" variant="ghost" onClick={() => { setEditingTcJson(false); setTcJsonErr(null); }} disabled={savingTcJson}>
                           Cancel
                         </Button>
-                        <Button size="sm" onClick={saveTestcaseJson} disabled={!!tcJsonErr || savingTcJson}>
+                        <Button size="sm" onClick={saveTestcaseJson} disabled={!!tcJsonErr || savingTcJson || testcaseRunning}>
                           {savingTcJson ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
                           <span className={savingTcJson ? 'ml-1.5' : ''}>{savingTcJson ? 'Saving…' : 'Save & Apply to Simnovator'}</span>
                         </Button>
                       </div>
                     ) : (
-                      <Button size="sm" variant="secondary" onClick={startEditTcJson} className="flex-none">
+                      <Button
+                        size="sm" variant="secondary" onClick={startEditTcJson} className="flex-none"
+                        disabled={testcaseRunning}
+                        title={testcaseRunning ? 'Locked while this test case is running' : undefined}
+                      >
                         Edit
                       </Button>
                     )}

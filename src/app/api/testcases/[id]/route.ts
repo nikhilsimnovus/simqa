@@ -25,7 +25,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   }
   try {
     const r = await getTestcase(opts, id);
-    return NextResponse.json({ ...r, systemId: opts.systemId, host: opts.host });
+    // boxUser: the login this was read through. An operator can only see —
+    // and so only run — their own testcases, so it is also whose runs these are.
+    return NextResponse.json({ ...r, systemId: opts.systemId, host: opts.host, boxUser: opts.boxUser });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? String(e), systemId: opts.systemId, host: opts.host }, { status: 502 });
   }

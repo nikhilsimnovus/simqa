@@ -9,6 +9,8 @@ import { NextResponse } from 'next/server';
 import { updateTestcaseInPlace } from '@/lib/automation/duplicateTestcase';
 import { normalizeToTestDefinition, EnvironmentParseError } from '@/lib/environment/parse';
 import { uesimApiOptsForSystem, loadInventory } from '@/lib/inventory';
+import { findBusy } from '@/lib/executions';
+import { getTestcase } from '@/lib/uesimClient';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,6 +51,29 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     const msg = e instanceof EnvironmentParseError ? e.message : (e?.message ?? String(e));
     return NextResponse.json({ error: `testcase.json is not valid: ${msg}` }, { status: 400 });
   }
+
+  // Never edit a testcase while it executes: the run would go on under one
+  // definition while the box now holds another. Checked here as well as on
+  // the page, because a page opened before the run started still has Save
+  // enabled. Two signals, since either can be missed on its own: this
+  // login's simulator reporting it busy with this testcase, and the
+  // testcase's own record saying IN_PROGRESS recently enough to be real (the
+  // box can leave a stale IN_PROGRESS behind a run that died).
+  try {
+    const busy = await findBusy(opts).catch(() => null);
+    const tc: any = await getTestcase(opts, id).catch(() => null);
+    const last = tc?.metadata?.lastExecution;
+    const startedMs = last?.executedOn ? Date.parse(last.executedOn) : NaN;
+    const windowMs = ((Number(last?.testDuration) || 0) + 600) * 1000;
+    const recordRunning = String(last?.status ?? '').toUpperCase() === 'IN_PROGRESS'
+      && Number.isFinite(startedMs) && Date.now() - startedMs < windowMs;
+    if ((busy && busy.testCaseId === id) || recordRunning) {
+      return NextResponse.json(
+        { ok: false, error: 'This test case is running. Stop it or wait for it to finish before editing it.' },
+        { status: 409 },
+      );
+    }
+  } catch { /* could not check — the box will refuse anything it cannot apply */ }
 
   try {
     const r = await updateTestcaseInPlace(opts, id, testDefinition);

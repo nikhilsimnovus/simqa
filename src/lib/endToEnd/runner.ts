@@ -273,6 +273,7 @@ export function listRuns(): Array<{
           // wasn't passing them through, so the list showed the raw
           // testcase UUID and the inventory system id instead of a name/IP.
           systemHost: r.systemHost,
+          boxUser: r.boxUser,
           testcaseId: r.testcaseId,
           testcaseName: r.testcaseName,
           // The BOX's execution id for this run. Carried so the testcase page
@@ -501,6 +502,7 @@ function saveReport(ar: ActiveRun, results?: CheckResult[]): void {
     runId: ar.runId,
     systemId: ar.systemId,
     systemHost: ar.systemHost,
+    boxUser: ar.boxUser,
     systemName: ar.systemName,
     testcaseId: ar.testcaseId,
     testcaseName: ar.testcaseName ?? ar.ctx.testcaseName,
@@ -580,6 +582,7 @@ function snapshotOf(r: ActiveRun): RunStatusSnapshot {
     runId: r.runId,
     systemId: r.systemId,
     systemHost: r.systemHost,
+    boxUser: r.boxUser,
     testcaseId: r.testcaseId,
     testcaseName: r.ctx.testcaseName ?? r.testcaseName,
     executionId: r.ctx.executionId,
