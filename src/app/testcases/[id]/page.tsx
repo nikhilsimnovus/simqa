@@ -284,7 +284,8 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
   const [tcJsonDraft, setTcJsonDraft] = useState('');
   const [tcJsonErr, setTcJsonErr] = useState<string | null>(null);
   const [savingTcJson, setSavingTcJson] = useState(false);
-  const [saveErr, setSaveErr] = useState<{ failedStep?: string; error?: string } | null>(null);
+  const [saveErr, setSaveErr] = useState<{ failedStep?: string; error?: string; updated?: string[] } | null>(null);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
   // Leaving the testcase.json tab mid-edit would otherwise leave the edit UI
   // stuck open next time the tab is reselected.
@@ -297,6 +298,7 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
     setEditingTcJson(true);
     setTcJsonErr(null);
     setSaveErr(null);
+    setSaveMsg(null);
   }
 
   function editTcJsonDraft(text: string) {
@@ -307,27 +309,32 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
   async function saveTestcaseJson() {
     let parsed: any;
     try { parsed = JSON.parse(tcJsonDraft); } catch (e: any) { setTcJsonErr(e?.message ?? String(e)); return; }
-    const ok = confirm(
-      'This deletes the current testcase on the Simnovator and recreates it from your edited testcase.json.\n\n' +
-      'The testcase ID WILL CHANGE — any saved links, playlists, or references to the current ID will break.\n\n' +
-      'If a step partway through the recreate fails, the testcase may be left deleted with nothing to replace it.\n\n' +
-      'Continue?',
-    );
-    if (!ok) return;
-    setSavingTcJson(true); setSaveErr(null);
+    setSavingTcJson(true); setSaveErr(null); setSaveMsg(null);
     try {
-      const r = await fetch(`/api/testcases/${encodeURIComponent(decoded)}/recreate`, {
+      // Edited in place: same testcase, same id, only changed sections
+      // written. Nothing is deleted — see /api/testcases/<id>/update.
+      const r = await fetch(`/api/testcases/${encodeURIComponent(decoded)}/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ systemId: systemId || undefined, testcaseJson: parsed }),
+        body: JSON.stringify({
+          systemId: systemId || undefined,
+          // Written as the selected Run as login — the account that owns it.
+          boxUserId: boxUserId || urlBoxUserId || undefined,
+          testcaseJson: parsed,
+        }),
       });
       const j = await r.json();
       if (!r.ok || !j.ok) {
-        setSaveErr({ failedStep: j.failedStep, error: j.error ?? `HTTP ${r.status}` });
+        setSaveErr({ failedStep: j.failedStep, error: j.error ?? `HTTP ${r.status}`, updated: j.updated });
         return;
       }
-      // New id on success — carry the box along and land on the replacement.
-      router.replace(`/testcases/${encodeURIComponent(j.testCaseId)}${boxQs}`);
+      const updated: string[] = j.updated ?? [];
+      setSaveMsg(updated.length
+        ? `Saved to the Simnovator — updated ${updated.join(', ')}.${j.warning ? ` Note: ${j.warning}` : ''}`
+        : 'No changes to save — the testcase already matches.');
+      setEditingTcJson(false);
+      // Same id, so reload in place to show what the box now holds.
+      await loadPreview();
     } catch (e: any) {
       setSaveErr({ error: e?.message ?? String(e) });
     } finally {
@@ -989,8 +996,8 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-[11px] text-slate-500">
                       {editingTcJson
-                        ? 'Editing — Save deletes and recreates this testcase on the Simnovator with a new ID.'
-                        : 'This is the box\'s own testcase export. Edits are applied by deleting and recreating the testcase.'}
+                        ? 'Editing — Save updates this same testcase on the Simnovator. Only what you changed is written.'
+                        : 'This is the box\'s own testcase export. Edit to change the testcase in place.'}
                     </div>
                     {editingTcJson ? (
                       <div className="flex items-center gap-2 flex-none">
@@ -1026,10 +1033,18 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
                   )}
                   {saveErr ? (
                     <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
-                      {saveErr.failedStep ? <span className="font-semibold">Failed at step "{saveErr.failedStep}": </span> : null}
+                      {saveErr.failedStep ? <span className="font-semibold">The Simnovator refused "{saveErr.failedStep}": </span> : null}
                       {saveErr.error}
-                      {saveErr.failedStep && saveErr.failedStep !== 'delete' ? ' — the old testcase was already deleted; check the Simnovator catalogue before retrying.' : ''}
+                      {/* Nothing is deleted on failure — say exactly what did land. */}
+                      {saveErr.failedStep
+                        ? (saveErr.updated?.length
+                          ? ` — ${saveErr.updated.join(', ')} were saved before it; the testcase is otherwise unchanged.`
+                          : ' — nothing was changed; the testcase is as it was.')
+                        : ''}
                     </div>
+                  ) : null}
+                  {saveMsg ? (
+                    <div className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-3 py-2">{saveMsg}</div>
                   ) : null}
                 </>
               ) : activeFile && cfgRoleOf(activeFile) ? (

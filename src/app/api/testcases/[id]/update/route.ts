@@ -1,11 +1,12 @@
-// POST /api/testcases/<id>/recreate — delete this testcase and recreate it
-// from an edited testcase.json. The box has no update API (see
-// duplicateTestcase.ts's module header); this is the only way an edit takes
-// effect on the Simnovator. The id ALWAYS changes on success — the caller
-// should navigate to the new one.
+// POST /api/testcases/<id>/update — save an edited testcase.json onto the SAME
+// testcase on the Simnovator. The id does not change and nothing is deleted:
+// only the sections that differ are written, with the box's own edit endpoint
+// (PUT v2/tests/<id>/<section>). See updateTestcaseInPlace().
+//
+// This replaces /recreate, which deleted the testcase and built a new one.
 
 import { NextResponse } from 'next/server';
-import { recreateTestcase } from '@/lib/automation/duplicateTestcase';
+import { updateTestcaseInPlace } from '@/lib/automation/duplicateTestcase';
 import { normalizeToTestDefinition, EnvironmentParseError } from '@/lib/environment/parse';
 import { uesimApiOptsForSystem, loadInventory } from '@/lib/inventory';
 
@@ -15,9 +16,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const { id } = await ctx.params;
   const body = await req.json().catch(() => null);
   const systemId = body?.systemId as string | undefined;
+  // WHOSE testcase. An operator's testcase is only visible — and so only
+  // editable — through their own login; writing through the setup default
+  // would 404, or edit through the wrong account.
+  const boxUserId = body?.boxUserId as string | undefined;
 
   const inv = loadInventory();
-  const opts = uesimApiOptsForSystem(inv, systemId);
+  const opts = uesimApiOptsForSystem(inv, systemId, boxUserId);
   if (!opts) {
     return NextResponse.json(
       { error: systemId ? `system "${systemId}" is not a testable UESIM` : 'no UESIM in inventory' },
@@ -25,23 +30,16 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     );
   }
 
-  // Accepts the same shapes the environment importer already trusts (the
-  // box's own testcase.json download envelope, a bare testDefinition, or a
-  // raw GET /v2/testcases/<id> response) — the page just sends back whatever
-  // the user edited in the testcase.json tab, unmodified.
+  // Accepts the same shapes the environment importer trusts (the box's own
+  // testcase.json download envelope, a bare testDefinition, or a raw GET
+  // /v2/testcases/<id> response) — the page sends back whatever was edited.
   let testDefinition: any;
   try {
     const normalized = normalizeToTestDefinition(body?.testcaseJson);
     testDefinition = normalized.testDefinition;
-    // The box's own testcase.json export names the testcase in TWO places:
-    // the prominent top-level Test_Name, and a duplicate copy nested at
-    // settings.test_name / settings.testCaseName. normalizeToTestDefinition()
-    // already prefers the top-level field when computing suggestedName (see
-    // nameOf() in environment/parse.ts) — but recreateTestcase() only ever
-    // reads the nested copy. Someone editing the file naturally edits the
-    // prominent top-level name and has no reason to know a duplicate exists
-    // further down; without this, that edit is silently discarded and the
-    // recreated testcase keeps its old name.
+    // The export names the testcase twice: the prominent top-level Test_Name
+    // and a nested settings copy. Someone editing the file edits the one they
+    // can see — carry it into settings so a rename actually takes.
     if (normalized.suggestedName) {
       testDefinition.settings = testDefinition.settings ?? {};
       testDefinition.settings.test_name = normalized.suggestedName;
@@ -53,7 +51,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   }
 
   try {
-    const r = await recreateTestcase(opts, id, testDefinition);
+    const r = await updateTestcaseInPlace(opts, id, testDefinition);
     if (r.failedStep) return NextResponse.json({ ok: false, ...r }, { status: 502 });
     return NextResponse.json({ ok: true, ...r });
   } catch (e: any) {

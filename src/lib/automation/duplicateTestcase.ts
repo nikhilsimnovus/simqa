@@ -11,6 +11,7 @@
 // settings finalises the case.
 
 import { ensureToken, getTestcase, listTestcases, type ApiOpts } from '../uesimClient';
+import { diffSections, type SectionName } from '../testcaseSections';
 
 /**
  * The box rejects any testcase name outside [A-Za-z0-9_-] ("only letters,
@@ -142,8 +143,12 @@ function applyName(td: any, name: string): void {
 }
 
 async function post(opts: ApiOpts, token: string, path: string, body: unknown) {
+  return send(opts, token, 'POST', path, body);
+}
+
+async function send(opts: ApiOpts, token: string, method: 'POST' | 'PUT', path: string, body: unknown) {
   const r = await fetch(`http://${opts.host}/v2${path}`, {
-    method: 'POST',
+    method,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
@@ -258,9 +263,9 @@ export async function duplicateTestcase(
 
 /**
  * The box's 6-step create lifecycle (cells -> subscribers -> user-plane ->
- * power-cycle -> [mobility] -> settings), shared by duplicateTestcase() and
- * recreateTestcase() so there is one implementation of "POST a testDefinition
- * onto the box", not two.
+ * power-cycle -> [mobility] -> settings), used by duplicateTestcase() so there
+ * is one implementation of "POST a testDefinition onto the box". Editing an
+ * existing testcase does not come through here — see updateTestcaseInPlace().
  */
 /** Build a testcase on a box from a full testDefinition, via the box's 6-step
  *  create lifecycle. Exported so e2eTestcases.ts can replay a captured
@@ -321,32 +326,85 @@ export async function createFromDefinition(
   };
 }
 
+export interface UpdateResult {
+  testCaseId: string;
+  name: string;
+  /** Sections written, in order. Empty when the edit changed nothing. */
+  updated: SectionName[];
+  /** The section that was refused. Every section before it WAS written; the
+   *  testcase itself is never deleted, so it is left edited up to that point. */
+  failedStep?: SectionName;
+  error?: string;
+  warning?: string;
+}
+
 /**
- * Delete testcaseId and recreate it from an edited testDefinition, via the
- * same 6-step lifecycle as duplicateTestcase(). The box has no update API
- * (see module header) — this is the only way an edited testcase.json takes
- * effect on the Simnovator. The id ALWAYS changes on success; callers must
- * navigate to the new id.
+ * Save an edited testDefinition onto the SAME testcase.
+ *
+ * This used to delete the testcase and recreate it — new id, broken links and
+ * playlists, and a testcase left deleted outright if any recreate step failed.
+ * It rested on "the box has no update API", which is not so: the Simnovator's
+ * own GUI edits with PUT v2/tests/<id>/<section>, and on 192.168.1.95 a PUT
+ * kept the id and the change (power-on 650 → 657, description rewritten).
+ *
+ * Only sections that differ from what the box holds are written, in the box's
+ * order with settings last. Nothing is ever deleted.
  */
-export async function recreateTestcase(
+export async function updateTestcaseInPlace(
   opts: ApiOpts,
   testcaseId: string,
   testDefinition: any,
-): Promise<DuplicateResult> {
+): Promise<UpdateResult> {
   const token = await ensureToken(opts.host, opts.username, opts.password);
+  const current: any = await getTestcase(opts, testcaseId);
+  const curTd = current?.testDefinition ?? current ?? {};
   const td: any = JSON.parse(JSON.stringify(testDefinition));
-  const finalName = String(td?.settings?.test_name ?? td?.settings?.testCaseName ?? testcaseId);
-  // GET /v2/testcases/<id> — and so the box's own testcase.json export — omits
-  // testCaseName even though POST .../settings requires it non-empty
-  // ("SettingsConfig: testCaseName is required"). applyName() is the same fix
-  // duplicateTestcase() already needs for the same asymmetry; round-tripping
-  // an edit through this function hits it too.
-  applyName(td, finalName);
+  const currentName = String(current?.name ?? '');
 
-  const gone = await del(opts, token, `/testcases/${encodeURIComponent(testcaseId)}`);
-  if (!gone.ok) {
-    return { testCaseId: '', name: finalName, failedStep: 'delete', error: gone.text.slice(0, 300) };
+  const diff = diffSections(curTd, td, currentName);
+  const finalName = diff.rename ?? currentName ?? testcaseId;
+  const warnings = [...diff.warnings];
+  const updated: SectionName[] = [];
+  const id = encodeURIComponent(testcaseId);
+
+  for (const change of diff.changes) {
+    let body: any = { [change.key]: td[change.key] };
+    if (change.section === 'settings') {
+      // A settings write requires testCaseName, which GET never returns —
+      // same asymmetry applyName() fixes for copies.
+      applyName(td, finalName);
+      body = { settings: td.settings };
+    }
+    // Editing cells is PUT tests/<id>/cells; only CREATING a testcase uses
+    // the id-less POST tests/cells, which is never the case here.
+    const path = `/tests/${id}/${change.section}`;
+    let r = await send(opts, token, change.kind === 'add' ? 'POST' : 'PUT', path, body);
+
+    // Same fallback as a copy: a testcase can name a logging profile the box
+    // has since dropped, and settings is refused until it names one it has.
+    if (!r.ok && change.section === 'settings' && /loggingProfileName/i.test(r.text)) {
+      const stale = String(td.settings?.loggingProfileName ?? '');
+      for (const candidate of LOG_PROFILE_FALLBACKS.filter((c) => c !== stale)) {
+        r = await send(opts, token, 'PUT', path, { settings: { ...td.settings, loggingProfileName: candidate } });
+        if (r.ok) {
+          warnings.push(`logging profile "${stale}" does not exist on the box — saved with "${candidate}"`);
+          break;
+        }
+      }
+    }
+
+    if (!r.ok) {
+      return {
+        testCaseId: testcaseId, name: finalName, updated,
+        failedStep: change.section, error: r.text.slice(0, 300),
+        warning: warnings.length ? warnings.join('; ') : undefined,
+      };
+    }
+    updated.push(change.section);
   }
 
-  return createFromDefinition(opts, token, td, finalName);
+  return {
+    testCaseId: testcaseId, name: finalName, updated,
+    warning: warnings.length ? warnings.join('; ') : undefined,
+  };
 }
