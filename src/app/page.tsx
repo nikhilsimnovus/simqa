@@ -352,7 +352,10 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                     <CardBody className="p-4">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <div className="text-xs uppercase tracking-wider text-slate-500 truncate">{b.name}</div>
+                          {/* The type, not a name — systems no longer carry one
+                              (System Management generates "Simnovator-95" from
+                              type + IP, which only repeats the IP below). */}
+                          <div className="text-xs uppercase tracking-wider text-slate-500 truncate">Simnovator</div>
                           <div className="text-lg font-semibold text-slate-900 mt-0.5">{b.host}</div>
                         </div>
                         {/* Same three words + colours used everywhere else a
