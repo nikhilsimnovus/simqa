@@ -487,8 +487,8 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
               {/* ?from=dashboard tells Systems Management it was reached from
                   here, so it can offer a Back link. Arriving from the sidebar
                   carries no such marker and shows none. */}
-              {/* Said on the card, not left to hover: a number on its own
-                  gives no hint that it opens anything. */}
+              {/* The arrow says it opens something — a number on its own
+                  gives no hint that it is clickable. */}
               <Link href="/inventory?from=dashboard" className="group block">
                 <Card className="transition-all group-hover:shadow-md group-hover:border-primary-300">
                   <CardBody className="p-4">
@@ -497,7 +497,6 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                       <ArrowUpRight className="h-4 w-4 shrink-0 text-slate-400 transition-colors group-hover:text-primary-600" />
                     </div>
                     <div className="text-2xl font-semibold text-slate-900 mt-1">{inv.systems.length}</div>
-                    <div className="mt-1 text-xs font-medium text-primary-700 group-hover:underline">View systems →</div>
                   </CardBody>
                 </Card>
               </Link>
@@ -509,7 +508,6 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                       <ArrowUpRight className="h-4 w-4 shrink-0 text-slate-400 transition-colors group-hover:text-primary-600" />
                     </div>
                     <div className="text-2xl font-semibold text-slate-900 mt-1">{inv.profiles.length}</div>
-                    <div className="mt-1 text-xs font-medium text-primary-700 group-hover:underline">View topology →</div>
                   </CardBody>
                 </Card>
               </Link>
