@@ -321,10 +321,6 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
 
   const reachable = !!primary?.online;
 
-  /** Letters/digits only, lowercased — for comparing a system's name against
-   *  its role without spacing or case counting as a difference. */
-  const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-
   return (
     <>
       {/* No status pills in the header: every box already has a tile below with
@@ -465,13 +461,11 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                     {members.map((m) => (
                       <tr key={`${m.role}:${m.host}`}>
                         <td className="px-5 py-2.5">
+                          {/* Role only. Systems no longer carry a name of their own —
+                              System Management generates one from type + IP
+                              ("UESIM-34"), which would just repeat the role and
+                              the IP beside it. */}
                           <div className="font-medium text-slate-900">{m.role}</div>
-                          {/* The system's own name, only when it says something
-                              the role doesn't — a box named "UE" in the UE role
-                              would just read "UEUE". */}
-                          {squash(m.role) !== squash(m.name) ? (
-                            <div className="text-[11px] text-slate-400 truncate">{m.name}</div>
-                          ) : null}
                         </td>
                         <td className="px-5 py-2.5 font-mono text-xs text-slate-600">{m.host}</td>
                         <td className="px-5 py-2.5 text-right">
