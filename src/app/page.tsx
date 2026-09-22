@@ -568,10 +568,13 @@ function BoxUsersCard({ host, users, systemId }: { host: string; users: BoxUserS
                   title={`${u.running.testcaseName} — executing now. Open its validation page.`}
                 >
                   <Play className="h-3.5 w-3.5 shrink-0 fill-sky-600 text-sky-600 animate-pulse" />
-                  <span className="min-w-0">
+                  <span className="min-w-0 flex-1">
                     <span className="block text-[10px] uppercase tracking-wider text-sky-700 font-medium">Executing now</span>
                     <span className="block text-xs font-medium text-slate-900 truncate">{u.running.testcaseName}</span>
                   </span>
+                  {/* Same place as the verdict on a finished run, so the two
+                      tiles read the same way at a glance. */}
+                  <Badge tone="info">in progress</Badge>
                 </Link>
               ) : u.last ? (
                 <Link
