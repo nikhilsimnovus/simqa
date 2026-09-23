@@ -12,7 +12,7 @@
 
 import { getTestcase, ensureToken, type ApiOpts } from './uesimClient';
 import { listBoxUsers, type InventorySystem } from './inventory';
-import { createFromDefinition } from './automation/duplicateTestcase';
+import { createFromDefinition, sanitizeTestcaseName } from './automation/duplicateTestcase';
 
 export interface ResolvedForUser {
   /** The id to execute — the original when the login can already see it. */
@@ -78,33 +78,47 @@ export async function testcaseForUser(
     };
   }
   const name = found.name ?? testcaseId;
+  // Testcase names are unique across the WHOLE box, not per user — the copy
+  // is refused with `duplicate key value violates unique constraint
+  // "tests_test_name_key"` if it reuses the name. So the copy is named after
+  // the person it is for: sruthi's "sample" becomes "sample_mohan".
+  const copyName = sanitizeTestcaseName(`${name}_${opts.username}`);
 
-  // Already theirs by name? Run that rather than making another copy.
+  // Already theirs? Run that rather than making another copy.
   try {
-    const existing = await sameNamed(opts, name);
+    const existing = await sameNamed(opts, copyName);
     if (existing) {
-      return { testcaseId: existing, name, note: `"${name}" already exists under ${opts.username} — executed their copy (${existing}).` };
+      return { testcaseId: existing, name: copyName, note: `${opts.username} already has a copy of "${name}" as "${copyName}" — executed that (${existing}).` };
     }
   } catch { /* fall through to creating one */ }
 
   try {
     const token = await ensureToken(opts.host, opts.username, opts.password);
     const td = JSON.parse(JSON.stringify(found.td));
-    // GET never returns testCaseName, but creating a testcase requires it
-    // ("SettingsConfig: testCaseName is required and must be non-empty"), so
-    // the name has to be put back into settings — the same asymmetry
-    // duplicateTestcase() and the in-place editor both have to fix.
-    td.settings = { ...(td.settings ?? {}), test_name: name, testCaseName: name };
-    const created = await createFromDefinition(opts, token, td, name);
-    if (created.failedStep || !created.testCaseId) {
-      return { testcaseId, error: `could not create "${name}" under ${opts.username} (${created.failedStep}): ${created.error ?? 'unknown error'}` };
+
+    // A name is taken box-wide even when this user cannot see the testcase
+    // holding it, so a couple of suffixed attempts follow before giving up.
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      const tryName = attempt === 1 ? copyName : `${copyName}_${attempt}`;
+      // GET never returns testCaseName, but creating one requires it
+      // ("SettingsConfig: testCaseName is required and must be non-empty") —
+      // the same asymmetry duplicateTestcase() and the editor both fix.
+      td.settings = { ...(td.settings ?? {}), test_name: tryName, testCaseName: tryName };
+      const created = await createFromDefinition(opts, token, td, tryName);
+      if (!created.failedStep && created.testCaseId) {
+        return {
+          testcaseId: created.testCaseId,
+          name: tryName,
+          note: `"${name}" belongs to ${found.owner}; copied it to ${opts.username} as "${tryName}" and executed their copy.`
+            + (created.warning ? ` Note: ${created.warning}` : ''),
+        };
+      }
+      const taken = /duplicate key|already exists|tests_test_name_key/i.test(created.error ?? '');
+      if (!taken) {
+        return { testcaseId, error: `could not create "${tryName}" under ${opts.username} (${created.failedStep}): ${created.error ?? 'unknown error'}` };
+      }
     }
-    return {
-      testcaseId: created.testCaseId,
-      name,
-      note: `"${name}" belongs to ${found.owner}; copied it to ${opts.username} as ${created.testCaseId} and executed their copy.`
-        + (created.warning ? ` Note: ${created.warning}` : ''),
-    };
+    return { testcaseId, error: `could not copy "${name}" to ${opts.username}: every name from "${copyName}" onwards is already taken on the box.` };
   } catch (e: any) {
     return { testcaseId, error: `could not copy "${name}" to ${opts.username}: ${e?.message ?? e}` };
   }
