@@ -381,7 +381,7 @@ export default function TestcasesPage() {
                     onChange={(e) => chooseSystem(e.target.value)}
                     className={TOOLBAR_CONTROL}
                   >
-                    {systems.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.host})</option>)}
+                    {systems.map((s) => <option key={s.id} value={s.id}>{s.host}</option>)}
                   </select>
                 </label>
               )}

@@ -328,7 +328,7 @@ export default function EnvironmentsPage() {
             <div className="flex items-center gap-3 mt-4 pt-4 border-t border-slate-100">
               <label className="flex items-center gap-2 text-sm"><span className="text-[11px] uppercase text-slate-500">Target</span>
                 <select value={systemId} onChange={e => setSystemId(e.target.value)} className="border border-slate-300 rounded px-2 py-1.5 text-sm">
-                  {systems.map(s => <option key={s.id} value={s.id}>{s.id} — {s.name} ({s.host})</option>)}
+                  {systems.map(s => <option key={s.id} value={s.id}>{s.id} — {s.host}</option>)}
                 </select>
               </label>
               <button onClick={doPreview} disabled={!!busy} className="rounded-md border border-slate-300 hover:bg-slate-50 text-sm px-4 py-1.5">Preview</button>

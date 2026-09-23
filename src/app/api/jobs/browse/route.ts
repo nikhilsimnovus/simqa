@@ -67,7 +67,7 @@ export async function GET(req: Request) {
     // inventory edit, and the user should be told that, not shown a stack.
     return NextResponse.json({
       ok: false,
-      error: `${sys.name} (${sys.host}) has no SSH credentials in inventory.yaml, so its files cannot be listed. Add them in Systems Management, or type the filename directly.`,
+      error: `${sys.host} has no SSH credentials in inventory.yaml, so its files cannot be listed. Add them in Systems Management, or type the filename directly.`,
       host: sys.host, dir: spec.dir, files: [],
     }, { status: 200 });
   }

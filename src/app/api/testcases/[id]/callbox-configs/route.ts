@@ -32,12 +32,12 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   const callbox = callboxForSimnovator(inv, sim.id);
   if (!callbox) {
     return NextResponse.json({
-      error: `No callbox bound to ${sim.name || sim.host} in Systems Management → Topology Setup.`,
+      error: `No callbox bound to ${sim.host} in Systems Management → Topology Setup.`,
     }, { status: 404 });
   }
   if (!callbox.username) {
     return NextResponse.json({
-      error: `${callbox.name || callbox.host} has no SSH credentials set in Systems Management.`,
+      error: `${callbox.host} has no SSH credentials set in Systems Management.`,
     }, { status: 400 });
   }
 
@@ -99,12 +99,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const callbox = callboxForSimnovator(inv, sim.id);
   if (!callbox) {
     return NextResponse.json({
-      error: `No callbox bound to ${sim.name || sim.host} in Systems Management → Topology Setup.`,
+      error: `No callbox bound to ${sim.host} in Systems Management → Topology Setup.`,
     }, { status: 404 });
   }
   if (!callbox.username) {
     return NextResponse.json({
-      error: `${callbox.name || callbox.host} has no SSH credentials set in Systems Management.`,
+      error: `${callbox.host} has no SSH credentials set in Systems Management.`,
     }, { status: 400 });
   }
 

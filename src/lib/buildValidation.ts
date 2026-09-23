@@ -718,7 +718,7 @@ async function groupRunTests(
   if (!callbox) {
     steps.push({
       id: 'cfg-link', label: 'Callbox configuration', status: 'fail',
-      detail: `no callbox is bound to ${sim.name ?? sim.host} in its topology profile, so the configs cannot be linked`,
+      detail: `no callbox is bound to ${sim.host} in its topology profile, so the configs cannot be linked`,
       expected: 'the Simnovator’s topology profile names a callbox',
       startedAt: cfgStartedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - tCfg,
     });

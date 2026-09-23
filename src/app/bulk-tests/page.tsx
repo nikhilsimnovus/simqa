@@ -263,7 +263,7 @@ export default function BulkTestsPage() {
               <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Target system</span>
               <select className="border border-slate-300 rounded-md px-3 py-2 text-sm min-w-[200px]" value={systemId} onChange={e => setSystemId(e.target.value)}>
                 {systems.length === 0 ? <option value="sys-6">sys-6 (default)</option> : systems.map(s => (
-                  <option key={s.id} value={s.id}>{s.id} — {s.name} ({s.host})</option>
+                  <option key={s.id} value={s.id}>{s.id} — {s.host}</option>
                 ))}
               </select>
             </label>

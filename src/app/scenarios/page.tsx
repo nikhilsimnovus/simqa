@@ -151,7 +151,7 @@ export default function ScenariosPage() {
   const systemLabel = useCallback((id?: string) => {
     if (!id) return null;
     const s = systems.find((x) => x.id === id);
-    return s ? `${s.name} · ${s.host}` : id;
+    return s ? s.host : id;
   }, [systems]);
 
   const topologyLabel = useCallback((id?: string) => {

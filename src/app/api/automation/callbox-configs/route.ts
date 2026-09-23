@@ -58,7 +58,7 @@ export async function GET(req: Request) {
     if (/No such file or directory|Permission denied/i.test(raw)) {
       return NextResponse.json({
         ok: false, host: sys.host, dir, files: [],
-        error: `${sys.name || sys.host}: ${dir} is not present (or not readable). This callbox does not keep its configs there.`,
+        error: `${sys.host}: ${dir} is not present (or not readable). This callbox does not keep its configs there.`,
       });
     }
     // Only entries that are configs — the same rule as the Scenarios and

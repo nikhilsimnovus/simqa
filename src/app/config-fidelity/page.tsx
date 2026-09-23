@@ -134,8 +134,8 @@ export default function ConfigFidelityPage() {
           <Card>
             <CardHeader><CardTitle>Coverage</CardTitle></CardHeader>
             <CardBody className="space-y-3">
-              <Field label="Target system (API)"><select className="w-full border rounded-md px-2 py-1.5 text-sm" value={target} onChange={(e) => setTarget(e.target.value)}>{systems.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.host})</option>)}</select></Field>
-              <Field label="UE-sim host (SSH → ue.cfg)" hint="where /root/ue/config/ue.cfg is written"><select className="w-full border rounded-md px-2 py-1.5 text-sm" value={ueSim} onChange={(e) => setUeSim(e.target.value)}>{systems.map((s) => <option key={s.id} value={s.id} disabled={!s.hasSsh}>{s.name} ({s.host}){s.hasSsh ? '' : ' — no SSH'}</option>)}</select></Field>
+              <Field label="Target system (API)"><select className="w-full border rounded-md px-2 py-1.5 text-sm" value={target} onChange={(e) => setTarget(e.target.value)}>{systems.map((s) => <option key={s.id} value={s.id}>{s.host}</option>)}</select></Field>
+              <Field label="UE-sim host (SSH → ue.cfg)" hint="where /root/ue/config/ue.cfg is written"><select className="w-full border rounded-md px-2 py-1.5 text-sm" value={ueSim} onChange={(e) => setUeSim(e.target.value)}>{systems.map((s) => <option key={s.id} value={s.id} disabled={!s.hasSsh}>{s.host}{s.hasSsh ? '' : ' — no SSH'}</option>)}</select></Field>
               <div>
                 <div className="text-xs font-medium text-slate-600 mb-1">RATs</div>
                 {(['lte', 'nr-sa'] as Rat[]).map((r) => <label key={r} className="flex items-center gap-2 text-sm py-0.5"><input type="checkbox" checked={rats[r]} onChange={(e) => setRats((s) => ({ ...s, [r]: e.target.checked }))} />{r.toUpperCase()}</label>)}

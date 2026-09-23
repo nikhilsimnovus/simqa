@@ -272,7 +272,7 @@ export function LiveCaptures() {
                     onClick={() => setIp(s.host)}
                     className={'w-full text-left px-3 py-2.5 hover:bg-slate-50 ' + (s.host === ip ? 'bg-primary-50 border-l-2 border-primary-600' : 'border-l-2 border-transparent')}
                   >
-                    <div className="text-xs font-medium text-slate-800">{s.name}</div>
+                    <div className="text-xs font-medium text-slate-800 font-mono">{s.host}</div>
                     <div className="text-[11px] text-slate-500 font-mono">{s.host}</div>
                     <div className="mt-1 flex items-center gap-1.5 flex-wrap">
                       {s.captures > 0 ? (

@@ -1538,7 +1538,7 @@ export default function AutomationSuitePage() {
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Simnovator system</span>
                 <select value={uesimSystemId} onChange={e => setUesim(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm">
                   {uesimSystems.map(s => (
-                    <option key={s.id} value={s.id}>{s.name} ({s.host})</option>
+                    <option key={s.id} value={s.id}>{s.host}</option>
                   ))}
                 </select>
               </label>
@@ -1561,7 +1561,7 @@ export default function AutomationSuitePage() {
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Callbox system</span>
                   <select value={callboxSystemId} onChange={e => setCbx(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm">
                     {callboxSystems.map(s => (
-                      <option key={s.id} value={s.id}>{s.name} ({s.host})</option>
+                      <option key={s.id} value={s.id}>{s.host}</option>
                     ))}
                   </select>
                 </label>

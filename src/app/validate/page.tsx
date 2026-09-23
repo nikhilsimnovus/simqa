@@ -893,7 +893,7 @@ export default function BuildValidationPage() {
               <CardBody className="space-y-2">
                 <select value={systemId} onChange={(e) => setSystemId(e.target.value)} className={inputCls} disabled={busy}>
                   {simSystems.length === 0 ? <option value="">No Simnovator systems in inventory.yaml</option> : null}
-                  {simSystems.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.host})</option>)}
+                  {simSystems.map((s) => <option key={s.id} value={s.id}>{s.host}</option>)}
                 </select>
                 <p className="text-[11px] text-slate-500">Pick the target Simnovator before installing or validating.</p>
               </CardBody>

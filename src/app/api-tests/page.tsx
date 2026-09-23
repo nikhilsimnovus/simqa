@@ -329,7 +329,7 @@ export default function ApiTestsPage() {
                   className="w-full text-xs border border-slate-300 rounded px-2 py-1.5 bg-surface"
                 >
                   {systems.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name} ({s.host})</option>
+                    <option key={s.id} value={s.id}>{s.host}</option>
                   ))}
                 </select>
               )}

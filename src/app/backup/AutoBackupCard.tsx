@@ -326,7 +326,7 @@ export function AutoBackupCard() {
               >
                 {eligible.map((s) => (
                   <option key={s.ip} value={s.ip}>
-                    {s.name} ({s.ip}) — {s.files[type.category] ?? 0} file(s)
+                    {s.ip} — {s.files[type.category] ?? 0} file(s)
                   </option>
                 ))}
               </select>

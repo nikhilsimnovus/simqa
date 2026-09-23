@@ -149,7 +149,7 @@ export default function AutomationPage() {
                   className="h-9 w-full rounded-md border border-slate-300 bg-surface px-3 text-sm text-slate-900"
                 >
                   <option value="">— none —</option>
-                  {profiles.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.id})</option>)}
+                  {profiles.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </Field>
               <div className="flex flex-col gap-2 text-sm">

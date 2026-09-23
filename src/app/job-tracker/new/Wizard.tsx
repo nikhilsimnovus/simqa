@@ -427,7 +427,7 @@ export function Wizard({ setups, playlists }: { setups: Setup[]; playlists: Play
               <div className="flex items-center gap-2 flex-wrap">
                 <select value={setupHost} onChange={(e) => setSetupHost(e.target.value)} className={inputCls + ' sm:w-auto sm:min-w-[280px]'}>
                   {setups.map((s) => (
-                    <option key={s.systemId} value={s.host}>{s.host} — {s.name}{s.installable ? '' : ' (not installable)'}</option>
+                    <option key={s.systemId} value={s.host}>{s.host}{s.installable ? '' : ' (not installable)'}</option>
                   ))}
                 </select>
                 {setup?.ue || setup?.app ? (
@@ -703,7 +703,7 @@ export function Wizard({ setups, playlists }: { setups: Setup[]; playlists: Play
             <label className="block text-sm font-medium text-slate-800 mb-1.5">Simnovator station</label>
             <select value={setupHost} onChange={(e) => setSetupHost(e.target.value)} className={inputCls}>
               {setups.map((s) => (
-                <option key={s.systemId} value={s.host}>{s.host} — {s.name}{s.installable ? '' : ' (not installable)'}</option>
+                <option key={s.systemId} value={s.host}>{s.host}{s.installable ? '' : ' (not installable)'}</option>
               ))}
             </select>
             {setup ? (

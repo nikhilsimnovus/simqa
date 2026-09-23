@@ -155,7 +155,7 @@ export default function ToolsPage() {
                 >
                   {systems.map((s) => (
                     <option key={s.id} value={s.id} disabled={!s.ready}>
-                      {s.name} ({s.host}) — {s.type}{s.ready ? '' : ` · missing: ${s.missing.join(', ')}`}
+                      {s.host} — {s.type}{s.ready ? '' : ` · missing: ${s.missing.join(', ')}`}
                     </option>
                   ))}
                 </select>
