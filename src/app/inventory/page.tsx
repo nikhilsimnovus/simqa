@@ -1486,10 +1486,11 @@ function RoleChip({
         {role.label}
         {shared ? <span className="ml-1 text-[9px] uppercase tracking-wider opacity-75">↪ shared</span> : null}
       </div>
-      <div className="text-[15px] text-slate-900 font-semibold leading-tight mt-1.5 truncate max-w-[16rem]">
-        {system.name || system.id}
+      {/* The IP names the machine — systems carry no name of their own. */}
+      <div className="text-[15px] text-slate-900 font-semibold leading-tight mt-1.5 truncate max-w-[16rem] font-mono">
+        {system.host || system.id}
       </div>
-      <div className="text-xs text-slate-500 font-mono mt-0.5">{system.host}</div>
+      <div className="text-xs text-slate-500 mt-0.5">{system.id}</div>
     </div>
   );
 }
