@@ -173,3 +173,49 @@ export function reconcileCellArrays(cellConfig: any): string[] {
   }
   return notes;
 }
+
+// ── RF cards belong to a simulator, not to a testcase ────────────────────────
+//
+// Each simulator on a multi-user box owns its own radio cards — on .95:
+// UE-Simulator-1 has 0,1 (simuser), -2 has 2,3 (sruthi), -3 has 4,5 (mohan) —
+// and every cell names the card it runs on. So a testcase copied to another
+// user still asks for the original's cards, and the box refuses to start it:
+// "The test uses sdr2, which is not assigned to this simulator".
+//
+// The cards are remapped by position: the cells' first distinct card becomes
+// the target's first card, the second becomes its second, and so on. Position
+// rather than arithmetic because the sets are per simulator and need not be
+// contiguous or ordered the same way.
+
+/** Rewrite each cell's rfCard onto `targetCards`, in place. */
+export function remapRfCards(cellConfig: any, targetCards: number[]): string[] {
+  const cells: any[] = Array.isArray(cellConfig?.cells) ? cellConfig.cells : [];
+  const targets = (targetCards ?? []).map(Number).filter((n) => Number.isFinite(n));
+  if (!cells.length || !targets.length) return [];
+
+  const used = [...new Set(cells.map((c) => Number(c?.rfCard)).filter((n) => Number.isFinite(n)))].sort((a, b) => a - b);
+  if (!used.length) return [];
+  // Already on the target's cards — nothing to say, nothing to change.
+  if (used.every((c) => targets.includes(c))) return [];
+
+  const map = new Map<number, number>();
+  used.forEach((card, i) => {
+    // More distinct cards than the target simulator has: the last one is
+    // reused rather than leaving a card the simulator does not own.
+    map.set(card, targets[Math.min(i, targets.length - 1)]);
+  });
+
+  const notes: string[] = [];
+  for (const cell of cells) {
+    const from = Number(cell?.rfCard);
+    if (!Number.isFinite(from)) continue;
+    const to = map.get(from);
+    if (to === undefined || to === from) continue;
+    cell.rfCard = to;
+    notes.push(`rfCard ${from} → ${to}`);
+  }
+  if (used.length > targets.length) {
+    notes.push(`the testcase uses ${used.length} radio cards but this simulator has ${targets.length}`);
+  }
+  return [...new Set(notes)];
+}

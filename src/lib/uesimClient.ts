@@ -330,7 +330,11 @@ export interface SimulatorEntry {
   /** Who this simulator belongs to. Populated for an admin token only — an
    *  operator is simply not shown anyone else's, so the list itself is the
    *  answer. See simulatorScope.ts. */
-  nodes?: { assignedUsers?: { username?: string; userId?: string; isDefault?: boolean }[] };
+  nodes?: {
+    assignedUsers?: { username?: string; userId?: string; isDefault?: boolean }[];
+    /** Radio cards this simulator owns — a cell names the card it runs on. */
+    rfCards?: number[];
+  };
 }
 
 export async function listSimulators(opts: ApiOpts): Promise<{ items: SimulatorEntry[]; total?: number }> {

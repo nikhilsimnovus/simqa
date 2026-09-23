@@ -128,3 +128,38 @@ test('a SUL second cell mirrors cell 0', () => {
   assert.deepEqual(cfg.cells[1].rxGain, [10, 10]);
   assert.deepEqual(cfg.cells[1].txGain, [80]);
 });
+
+// ── radio cards follow the simulator ─────────────────────────────────────
+
+const { remapRfCards } = await import('./testcaseSections.ts');
+
+test("a copy to another user's simulator moves onto its cards", () => {
+  // sruthi's testcase (card 2) copied to mohan, whose simulator has 4,5.
+  const cfg = { cells: [{ rfCard: 2 }] };
+  assert.deepEqual(remapRfCards(cfg, [4, 5]), ['rfCard 2 → 4']);
+  assert.equal(cfg.cells[0].rfCard, 4);
+});
+
+test('two cells keep their separation on the new simulator', () => {
+  const cfg = { cells: [{ rfCard: 2 }, { rfCard: 3 }, { rfCard: 2 }] };
+  remapRfCards(cfg, [4, 5]);
+  assert.deepEqual(cfg.cells.map((c: any) => c.rfCard), [4, 5, 4]);
+});
+
+test('a testcase already on the simulator’s cards is untouched', () => {
+  const cfg = { cells: [{ rfCard: 4 }, { rfCard: 5 }] };
+  assert.deepEqual(remapRfCards(cfg, [4, 5]), []);
+  assert.deepEqual(cfg.cells.map((c: any) => c.rfCard), [4, 5]);
+});
+
+test('more cards than the simulator has is reported, not silently dropped', () => {
+  const cfg = { cells: [{ rfCard: 0 }, { rfCard: 1 }, { rfCard: 2 }] };
+  const notes = remapRfCards(cfg, [4]);
+  assert.deepEqual(cfg.cells.map((c: any) => c.rfCard), [4, 4, 4]);
+  assert.ok(notes.some((n: string) => /3 radio cards but this simulator has 1/.test(n)));
+});
+
+test('nothing to map without cells or without target cards', () => {
+  assert.deepEqual(remapRfCards({ cells: [] }, [4, 5]), []);
+  assert.deepEqual(remapRfCards({ cells: [{ rfCard: 2 }] }, []), []);
+});

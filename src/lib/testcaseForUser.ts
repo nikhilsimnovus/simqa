@@ -10,9 +10,11 @@
 // name, their account — and if they already have one by that name it is
 // reused rather than piling up copies on the box.
 
-import { getTestcase, ensureToken, type ApiOpts } from './uesimClient';
+import { getTestcase, ensureToken, listSimulators, type ApiOpts } from './uesimClient';
 import { listBoxUsers, type InventorySystem } from './inventory';
-import { createFromDefinition, sanitizeTestcaseName } from './automation/duplicateTestcase';
+import { createFromDefinition, sanitizeTestcaseName, updateTestcaseInPlace } from './automation/duplicateTestcase';
+import { remapRfCards } from './testcaseSections';
+import { pickUserSimulator } from './simulatorScope';
 
 export interface ResolvedForUser {
   /** The id to execute — the original when the login can already see it. */
@@ -38,6 +40,25 @@ async function findDefinition(
     } catch { /* not this one's */ }
   }
   return null;
+}
+
+/**
+ * The radio cards the login's simulator owns.
+ *
+ * Every simulator has its own — 0,1 / 2,3 / 4,5 on .95 — and a cell names the
+ * card it runs on, so a testcase carried over from another user asks for a
+ * card this simulator does not have: the box refuses to start it with "The
+ * test uses sdr2, which is not assigned to this simulator".
+ */
+async function rfCardsOf(opts: ApiOpts): Promise<number[]> {
+  try {
+    const sims = await listSimulators(opts);
+    const mine = pickUserSimulator((sims.items ?? []) as any, opts.username);
+    const entry = (sims.items ?? []).find((s: any) => String(s.id) === mine?.id) as any;
+    return (entry?.nodes?.rfCards ?? []).map(Number).filter((n: number) => Number.isFinite(n));
+  } catch {
+    return [];
+  }
 }
 
 /** Their own copy of `name`, if they have one. */
@@ -85,16 +106,36 @@ export async function testcaseForUser(
   const copyName = sanitizeTestcaseName(`${name}_${opts.username}`);
 
   // Already theirs? Run that rather than making another copy.
+  const cards = await rfCardsOf(opts);
+
   try {
     const existing = await sameNamed(opts, copyName);
     if (existing) {
-      return { testcaseId: existing, name: copyName, note: `${opts.username} already has a copy of "${name}" as "${copyName}" — executed that (${existing}).` };
+      // An older copy may still name the original's radio cards — repair it
+      // in place rather than handing the box a testcase it will refuse.
+      let repaired = '';
+      try {
+        const tc: any = await getTestcase(opts, existing);
+        const td = tc?.testDefinition;
+        if (td?.cellConfig && cards.length) {
+          const moved = remapRfCards(td.cellConfig, cards);
+          if (moved.length) {
+            const u = await updateTestcaseInPlace(opts, existing, td);
+            repaired = u.failedStep
+              ? ` Could not move it onto this simulator's radio cards (${moved.join(', ')}): ${u.error ?? 'refused'}.`
+              : ` Moved it onto this simulator's radio cards (${moved.join(', ')}).`;
+          }
+        }
+      } catch { /* leave the copy as it is; the box will say if it cannot run */ }
+      return { testcaseId: existing, name: copyName, note: `${opts.username} already has a copy of "${name}" as "${copyName}" — executed that (${existing}).${repaired}` };
     }
   } catch { /* fall through to creating one */ }
 
   try {
     const token = await ensureToken(opts.host, opts.username, opts.password);
     const td = JSON.parse(JSON.stringify(found.td));
+    // Onto this login's own radio cards before it is created — see rfCardsOf.
+    const moved = td.cellConfig && cards.length ? remapRfCards(td.cellConfig, cards) : [];
 
     // A name is taken box-wide even when this user cannot see the testcase
     // holding it, so a couple of suffixed attempts follow before giving up.
@@ -110,6 +151,7 @@ export async function testcaseForUser(
           testcaseId: created.testCaseId,
           name: tryName,
           note: `"${name}" belongs to ${found.owner}; copied it to ${opts.username} as "${tryName}" and executed their copy.`
+            + (moved.length ? ` Moved onto this simulator's radio cards (${moved.join(', ')}).` : '')
             + (created.warning ? ` Note: ${created.warning}` : ''),
         };
       }
