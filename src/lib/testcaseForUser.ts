@@ -89,7 +89,13 @@ export async function testcaseForUser(
 
   try {
     const token = await ensureToken(opts.host, opts.username, opts.password);
-    const created = await createFromDefinition(opts, token, JSON.parse(JSON.stringify(found.td)), name);
+    const td = JSON.parse(JSON.stringify(found.td));
+    // GET never returns testCaseName, but creating a testcase requires it
+    // ("SettingsConfig: testCaseName is required and must be non-empty"), so
+    // the name has to be put back into settings — the same asymmetry
+    // duplicateTestcase() and the in-place editor both have to fix.
+    td.settings = { ...(td.settings ?? {}), test_name: name, testCaseName: name };
+    const created = await createFromDefinition(opts, token, td, name);
     if (created.failedStep || !created.testCaseId) {
       return { testcaseId, error: `could not create "${name}" under ${opts.username} (${created.failedStep}): ${created.error ?? 'unknown error'}` };
     }
