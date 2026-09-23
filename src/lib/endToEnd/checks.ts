@@ -599,11 +599,30 @@ const triggerStart: CheckDef = {
     if (r.status !== 200 && r.status !== 201 && r.status !== 202) {
       return makeResult(base, 'fail', `start returned ${r.status}: ${r.raw.slice(0, 200)}`, { durationMs: r.durationMs });
     }
+    // The box answers with the execution it just started:
+    //   {"status":"success","message":"Test case started successfully",
+    //    "executionId":"01a0cdd3-…"}
+    // Take it. Everything downstream needs an executionId, and the next check
+    // used to go looking for one in the testcase's metadata — which the box
+    // can be slow to publish, so a run that HAD started was failed at 32s as
+    // "no new execution id" and every During/Completion check skipped.
+    const started = String((r.body as any)?.executionId ?? '').trim();
+    if (started) ctx.executionId = started;
+    // A 2xx that did not start anything is not a pass. The body says so —
+    // recording it verbatim is what turns a silent non-start into a reason.
+    const said = String((r.body as any)?.message ?? '').trim();
+    const ok = !!started || /success/i.test(String((r.body as any)?.status ?? '')) || /start/i.test(said);
     // We deliberately do NOT flag "slow > 5s" as fail anymore. A slow-but-
     // successful trigger is fine and was masking real 5xx failures behind
     // an "aborted" client-side timeout. Trigger duration still surfaces in
     // the result detail so anyone watching can see it.
-    return makeResult(base, 'pass', `${r.status} in ${r.durationMs}ms${r.durationMs > 5000 ? ' (slow but accepted)' : ''}`, { durationMs: r.durationMs });
+    const detail = `${r.status} in ${r.durationMs}ms`
+      + (started ? ` — execution ${started}` : '')
+      + (said ? ` — "${said}"` : '')
+      + (r.durationMs > 5000 ? ' (slow but accepted)' : '');
+    return makeResult(base, ok ? 'pass' : 'fail',
+      ok ? detail : `${detail} — the box accepted the request but did not report starting an execution: ${r.raw.slice(0, 200)}`,
+      { durationMs: r.durationMs });
   },
 };
 
