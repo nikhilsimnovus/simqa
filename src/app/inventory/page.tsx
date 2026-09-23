@@ -154,6 +154,34 @@ function wantsBoxLogin(sys: InventorySystem): boolean {
   return !!(sys.uesim?.username || sys.uesim?.password || (sys.uesimUsers ?? []).length);
 }
 
+/** The lab-wide SSH block every system may inherit from (inventory.yaml). */
+interface SshDefaults {
+  username?: string;
+  authMode?: 'password' | 'privateKey';
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+}
+
+/**
+ * Can SimQA actually SSH into this system?
+ *
+ * A username AND a secret for the mode in use. Both may come from the lab-wide
+ * SSH defaults rather than the system itself — the editor holds the raw
+ * document (so an inherited value is distinguishable from an overridden one),
+ * which is why the Access chip has to resolve the inheritance here instead of
+ * reading the system's own fields and calling a reachable box "no SSH".
+ */
+function hasSshAccess(sys: InventorySystem, d?: SshDefaults): boolean {
+  const user = sys.username || d?.username;
+  if (!user) return false;
+  const mode = sys.authMode ?? (sys.privateKey ? 'privateKey' : sys.password ? 'password' : undefined)
+    ?? d?.authMode ?? (d?.privateKey ? 'privateKey' : 'password');
+  return mode === 'privateKey'
+    ? !!(sys.privateKey || d?.privateKey)
+    : !!(sys.password || d?.password);
+}
+
 /** True once a box-login setup names at least one account it can execute as. */
 function hasCreds(sys: InventorySystem): boolean {
   return !!(sys.uesimUsers ?? []).some((u) => u.username.trim()) || !!sys.uesim?.username;
@@ -283,6 +311,8 @@ export default function InventoryPage() {
    * save keeps this page from destroying data it never showed the user.
    */
   const [otherDoc, setOtherDoc] = useState<Record<string, unknown>>({});
+  /** Lab-wide SSH defaults from the raw document — what a system inherits. */
+  const labSsh = (otherDoc as any)?.defaults?.ssh as SshDefaults | undefined;
   /** Serialized systems as last persisted, for the unsaved-changes indicator. */
   const [savedSystems, setSavedSystems] = useState<string>('[]');
 
@@ -646,11 +676,23 @@ export default function InventoryPage() {
                               <td className="px-3 py-1.5 font-mono text-[11px] text-slate-600">{sys.host || <span className="font-sans text-slate-400">no IP</span>}</td>
                               <td className="px-3 py-1.5 font-mono text-[11px] text-slate-400">{sys.id}</td>
                               <td className="px-3 py-1.5">
-                                {/* At-a-glance: is this box actually usable. A
-                                    system with neither is why a run fails later. */}
+                                {/* At-a-glance: is this box actually usable.
+                                    Dark = credentials are set, light = not.
+                                    REST only shows for a Simnovator — nothing
+                                    else serves the API, so a light REST chip on
+                                    a callbox read as missing when it was simply
+                                    not applicable. */}
                                 <span className="inline-flex gap-1">
-                                  <span className={'rounded px-1.5 py-0.5 text-[10px] ' + (sys.uesim?.username ? 'bg-success-50 text-success-700' : 'bg-slate-100 text-slate-400')}>REST</span>
-                                  <span className={'rounded px-1.5 py-0.5 text-[10px] ' + (sys.password || sys.privateKey ? 'bg-success-50 text-success-700' : 'bg-slate-100 text-slate-400')}>SSH</span>
+                                  {wantsBoxLogin(sys) ? (
+                                    <span
+                                      className={'rounded px-1.5 py-0.5 text-[10px] ' + (hasCreds(sys) ? 'bg-success-50 text-success-700' : 'bg-slate-100 text-slate-400')}
+                                      title={hasCreds(sys) ? 'Simnovator login set' : 'No Simnovator login — add one under Credentials'}
+                                    >REST</span>
+                                  ) : null}
+                                  <span
+                                    className={'rounded px-1.5 py-0.5 text-[10px] ' + (hasSshAccess(sys, labSsh) ? 'bg-success-50 text-success-700' : 'bg-slate-100 text-slate-400')}
+                                    title={hasSshAccess(sys, labSsh) ? 'SSH credentials set (its own, or the lab default)' : 'No SSH credentials — set them under SSH credentials'}
+                                  >SSH</span>
                                 </span>
                               </td>
                               <td className="px-3 py-1.5 text-right whitespace-nowrap">
