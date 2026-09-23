@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import type { Inventory } from '../inventory';
 import { loadInventory, uesimApiOptsForSystem, getSystem, callboxForProfile } from '../inventory';
 import { findBusy } from '../executions';
+import { testcaseForUser } from '../testcaseForUser';
 import { ensureToken } from '../uesimClient';
 import { getSettings } from '../settings';
 import { notifyRunFinished } from '../notify';
@@ -39,6 +40,8 @@ interface ActiveRun {
    *  carried through so the history entry written at the end can attribute it. */
   user?: string;
   boxUser?: string;
+  /** Set when the testcase was copied to the chosen login to run it. */
+  copyNote?: string;
   testcaseId: string;
   testcaseName?: string;
   startedAt: string;
@@ -81,7 +84,7 @@ function callboxForSimnovator(inv: Inventory, simnovatorId: string) {
   return callboxForProfile(inv, profile);
 }
 
-export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: string; error?: string }> {
+export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: string; error?: string; note?: string }> {
   const inv = loadInventory();
   // Resolve against the requested box login, so two people running on the same
   // Simnovator authenticate as themselves. ensureToken() keys its cache on
@@ -139,6 +142,23 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
     }
   }
   if (!testcaseId) return { ok: false, error: 'either testcaseId or useLastExecution must be set' };
+
+  // A testcase belongs to ONE login on a multi-user Simnovator: browse as
+  // sruthi, open her testcase, pick mohan under "Run as", and mohan's token
+  // cannot see the thing it was asked to run. So give the chosen login their
+  // own copy — same definition, same name, their account — and run that.
+  // Attach never does this: it validates an execution already in flight, which
+  // is by definition on a testcase its owner could see.
+  let copyNote: string | undefined;
+  if (!req.attach) {
+    const sys = getSystem(inv, target.systemId);
+    if (sys) {
+      const resolved = await testcaseForUser(sys, target, testcaseId);
+      if (resolved.error) return { ok: false, error: resolved.error };
+      testcaseId = resolved.testcaseId;
+      copyNote = resolved.note;
+    }
+  }
 
   const runId = newRunId();
   const evidenceDir = path.join(process.cwd(), 'data', 'end-to-end', runId);
@@ -198,6 +218,7 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
     systemName: target.name,
     user: req.user || undefined,
     boxUser: target.boxUser,
+    copyNote,
     testcaseId,
     startedAt,
     options,
@@ -228,7 +249,9 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
     });
   });
 
-  return { ok: true, runId };
+  // copyNote: said, not silent — the run may be executing a copy made for
+  // the chosen login rather than the testcase that was opened.
+  return { ok: true, runId, note: copyNote };
 }
 
 export function getRunStatus(runId?: string): RunStatusSnapshot {

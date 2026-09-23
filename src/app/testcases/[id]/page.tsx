@@ -461,6 +461,8 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
    *  run would change its config — drives the Wait / Run-with-current prompt. */
   const [shareDialog, setShareDialog] = useState<{ others: OtherExecution[]; current: CfgPick; changes: string[]; callboxHost?: string } | null>(null);
   const [checkingShare, setCheckingShare] = useState(false);
+  /** What the run had to do to execute as the chosen login (copy the testcase). */
+  const [runNote, setRunNote] = useState<string | null>(null);
 
   // Who else is running on the shared callbox, kept current while the page is
   // open — so the message is there BEFORE Run is clicked, not only after.
@@ -602,6 +604,9 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
       });
       const j = await r.json();
       if (!r.ok || !j.ok) { setStartErr(j.error || `HTTP ${r.status}`); return; }
+      // Said, not silent: the run may be executing a copy made for the login
+      // picked under Run as, because a testcase belongs to one user.
+      setRunNote(j.note ?? null);
       setRunId(j.runId);
       setRunning(true);
     } catch (e: any) {
@@ -1010,6 +1015,9 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
 
             {startErr ? (
               <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{startErr}</div>
+            ) : null}
+            {runNote ? (
+              <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">{runNote}</div>
             ) : null}
           </CardBody>
         </Card>
