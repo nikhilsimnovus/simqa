@@ -198,6 +198,9 @@ export default function AutomationSuitePage() {
   /** Saved-suites table: drag any column's right edge, as on Run History. */
   const { colWidths: suiteCols, tableWidth: suiteTableWidth, startResize: startSuiteResize } =
     useColumnWidths([260, 150, 150, 170, 330]);
+  /** The per-suite testcase table: tick · expand · # · name · gnb · mme · ims · duration · status · actions. */
+  const { colWidths: itemCols, tableWidth: itemsTableWidth, startResize: startItemResize } =
+    useColumnWidths([28, 24, 32, 240, 170, 170, 170, 120, 110, 190]);
   const [addCfg,   setAddCfg]           = useState<string>('');
   const [addMme,   setAddMme]           = useState<string>('');
   const [addIms,   setAddIms]           = useState<string>('');
@@ -609,6 +612,21 @@ export default function AutomationSuitePage() {
   useEffect(() => {
     if (!uesimSystemId && uesimSystems.length) setUesim(uesimSystems[0].id);
   }, [uesimSystemId, uesimSystems]);
+
+  // The UE system follows the Simnovator: the topology already says which UE
+  // belongs to which station, for either setup kind. Only fills a blank
+  // choice, so a UE picked by hand is never overwritten.
+  const uePairedFor = useRef<string>('');
+  useEffect(() => {
+    if (!uesimSystemId) return;
+    if (uePairedFor.current === uesimSystemId && ueSystemId) return;
+    uePairedFor.current = uesimSystemId;
+    const profile = profiles.find(p => p.simnovator === uesimSystemId);
+    // An integrated install has no separate UE box — the Simnovator IS the UE,
+    // and the topology says so by pointing uesim at the station itself.
+    const paired = profile?.uesim && ueSystems.some(u => u.id === profile.uesim) ? profile.uesim : '';
+    if (paired !== ueSystemId) setUeSystemId(paired ?? '');
+  }, [uesimSystemId, profiles, ueSystems, ueSystemId]);
 
   // Box logins follow the chosen Simnovator. Keeping the current selection when
   // it still exists means switching system and back does not silently re-point
@@ -1228,7 +1246,6 @@ export default function AutomationSuitePage() {
                         {s.name}
                         <div className="text-[11px] font-normal text-slate-500 truncate">
                           {(s.items ?? []).length || s.testcaseIds.length} test case{((s.items ?? []).length || s.testcaseIds.length) === 1 ? '' : 's'}
-                          {s.boxUserId ? <> · as {s.boxUserId}</> : null}
                         </div>
                       </td>
                       <td className="px-3 py-2 text-[11px] text-slate-600 border-r border-slate-100 truncate">
@@ -1292,10 +1309,13 @@ export default function AutomationSuitePage() {
                           <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
                             {(s.items ?? []).length} test case{(s.items ?? []).length === 1 ? '' : 's'}
                           </div>
-                          <table className="min-w-full text-xs border border-line rounded bg-surface">
+                          <div className="overflow-x-auto">
+                          <table className="text-xs border border-line rounded bg-surface table-fixed"
+                            style={{ width: itemsTableWidth, minWidth: '100%' }}>
+                            <ColGroup widths={itemCols} />
                             <thead className="bg-slate-50 text-slate-500">
                               <tr>
-                                <th className="px-2 py-1 text-left w-6">
+                                <th className="px-2 py-1 text-left">
                                   <input
                                     type="checkbox"
                                     title="Select all / none"
@@ -1303,15 +1323,17 @@ export default function AutomationSuitePage() {
                                     onChange={() => toggleAllPicks(s)}
                                   />
                                 </th>
-                                <th className="px-2 py-1 text-left w-6"></th>
-                                <th className="px-2 py-1 text-left w-8">#</th>
-                                <th className="px-2 py-1 text-left">Display name in Simnovator</th>
-                                <th className="px-2 py-1 text-left">gnb.cfg</th>
-                                <th className="px-2 py-1 text-left">mme.cfg</th>
-                                <th className="px-2 py-1 text-left">ims.cfg</th>
-                                <th className="px-2 py-1 text-right">Power-on duration (s)</th>
-                                <th className="px-2 py-1 text-left">Status</th>
-                                <th className="px-2 py-1 text-right">Actions</th>
+                                <th className="px-2 py-1 text-left"></th>
+                                <th className="px-2 py-1 text-left">#</th>
+                                {/* Drag any right edge — the cfg names are long
+                                    and which one a row runs is the point. */}
+                                {['Display name in Simnovator', 'gnb.cfg', 'mme.cfg', 'ims.cfg', 'Power-on duration (s)', 'Status', 'Actions'].map((label, i) => (
+                                  <th key={label}
+                                    className={'relative px-2 py-1 border-r border-slate-200 last:border-r-0 ' + (i >= 4 && i !== 5 ? 'text-right' : 'text-left')}>
+                                    <span className="truncate block">{label}</span>
+                                    {3 + i < itemCols.length - 1 ? <ResizeHandle onMouseDown={startItemResize(3 + i)} /> : null}
+                                  </th>
+                                ))}
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
@@ -1461,6 +1483,7 @@ export default function AutomationSuitePage() {
                               })}
                             </tbody>
                           </table>
+                          </div>
                         </td>
                       </tr>
                     )}
@@ -1712,16 +1735,6 @@ export default function AutomationSuitePage() {
                   ⚠ {tcNotice}
                 </div>
               )}
-              {/* Default duration knob (suite-wide) */}
-              <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
-                <label className="flex items-center gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Power-on duration (sec)</span>
-                  <input type="number" min={MIN_POWER_ON} value={defaultDur}
-                    onChange={e => setDefaultDur(Number(e.target.value) || 0)}
-                    onBlur={e => setDefaultDur(Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON))}
-                    className="border border-slate-300 rounded-md px-2 py-1 w-[80px] text-sm" />
-                </label>
-              </div>
 
               {/* One table PER suite name — rows added under "SA" group into the
                   SA table, rows added after renaming to "uu" get their own. Each
@@ -1767,8 +1780,15 @@ export default function AutomationSuitePage() {
                             <td className="px-2 py-1 text-slate-400">{n + 1}</td>
                             <td className="px-2 py-1">
                               <div className="flex items-center gap-1.5">
-                                <input value={it.name} onChange={e => updateItem({ name: e.target.value })}
-                                  className="border border-slate-300 rounded px-2 py-1 text-xs w-full" />
+                                {/* Read-only until edit is clicked: a row added
+                                    by mistake should not be renamed by a stray
+                                    click in a table you are only reading. */}
+                                {editRowId === it.id ? (
+                                  <input value={it.name} onChange={e => updateItem({ name: e.target.value })}
+                                    className="border border-slate-300 rounded px-2 py-1 text-xs w-full" />
+                                ) : (
+                                  <span className="truncate" title={it.name}>{it.name}</span>
+                                )}
                                 {/* The login this row will execute as. */}
                                 <span className="text-[11px] text-slate-400 whitespace-nowrap">— {wizardUser}</span>
                               </div>
@@ -1824,10 +1844,12 @@ export default function AutomationSuitePage() {
                             <td className="px-2 py-1 text-right">
                               {/* Raw while typing, clamp to the minimum on blur — see the
                                   edit-row input above for why per-keystroke clamping broke entry. */}
-                              <input type="number" min={MIN_POWER_ON} placeholder={String(defaultDur)} value={it.durationSec ?? ''}
-                                onChange={e => updateItem({ durationSec: e.target.value === '' ? undefined : Number(e.target.value) })}
-                                onBlur={e => updateItem({ durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
-                                className="border border-slate-300 rounded px-1 py-0.5 w-[64px] text-xs text-right" />
+                              {editRowId === it.id ? (
+                                <input type="number" min={MIN_POWER_ON} placeholder={String(MIN_POWER_ON)} value={it.durationSec ?? ''}
+                                  onChange={e => updateItem({ durationSec: e.target.value === '' ? undefined : Number(e.target.value) })}
+                                  onBlur={e => updateItem({ durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
+                                  className="border border-slate-300 rounded px-1 py-0.5 w-[64px] text-xs text-right" />
+                              ) : (it.durationSec ?? MIN_POWER_ON)}
                             </td>
                             <td className="px-2 py-1 text-right whitespace-nowrap">
                               <button
@@ -1860,7 +1882,7 @@ export default function AutomationSuitePage() {
                       value={addTcId}
                       onChange={setAddTcId}
                       options={uesimTestcases.map(t => ({ value: t.id, label: t.name }))}
-                      placeholder="— pick —"
+                      placeholder="Search test case…"
                       ariaLabel="Simnovator testcase"
                       noun="testcase"
                     />
@@ -1915,7 +1937,7 @@ export default function AutomationSuitePage() {
                           ...Object.keys(uploadedConfigs).map(fn => ({ value: fn, label: fn, hint: 'uploaded' })),
                           ...callboxFiles.map(f => ({ value: f.name, label: f.name, hint: f.mtime })),
                         ]}
-                        placeholder="— pick —"
+                        placeholder="Search config…"
                         ariaLabel="gnb.cfg"
                         noun="config"
                       />
@@ -1937,7 +1959,7 @@ export default function AutomationSuitePage() {
                           ...Object.keys(uploadedConfigs).map(fn => ({ value: fn, label: fn, hint: 'uploaded' })),
                           ...mmeFiles.map(f => ({ value: f.name, label: f.name, hint: f.mtime })),
                         ]}
-                        placeholder="— pick —"
+                        placeholder="Search config…"
                         ariaLabel="mme.cfg"
                         noun="config"
                       />
@@ -1957,7 +1979,7 @@ export default function AutomationSuitePage() {
                           ...Object.keys(uploadedConfigs).map(fn => ({ value: fn, label: fn, hint: 'uploaded' })),
                           ...mmeFiles.map(f => ({ value: f.name, label: f.name, hint: f.mtime })),
                         ]}
-                        placeholder="— pick —"
+                        placeholder="Search config…"
                         ariaLabel="ims.cfg"
                         noun="config"
                       />
@@ -2033,9 +2055,12 @@ export default function AutomationSuitePage() {
             {tab === 'testcases' && (
               <div className="flex items-center justify-between mt-5 pt-4 border-t border-slate-100">
                 <button onClick={() => setTab('setup')} className="rounded-md border border-slate-300 text-sm px-4 py-2">← Back: Setup</button>
-                <button onClick={saveSuite} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
-                  {busy ? 'Saving…' : (editingId ? 'Update suite' : 'Save suite')}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button onClick={resetWizard} className="rounded-md border border-slate-300 text-sm px-4 py-2">Cancel</button>
+                  <button onClick={saveSuite} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
+                    {busy ? 'Saving…' : (editingId ? 'Update suite' : 'Save suite')}
+                  </button>
+                </div>
               </div>
             )}
           </section>
