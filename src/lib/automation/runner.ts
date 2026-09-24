@@ -23,6 +23,7 @@ import { loadInventory, getSystem, uesimApiOptsForSystem, type AutomationSuite, 
 import { withSsh, readCommand } from '../configFidelity/ssh';
 import { sudoLink } from '../labCfgLink';
 import { bringUpDecision, callboxUsage } from '../callboxUsage';
+import { findDefinition } from '../testcaseForUser';
 import { describeOthers, describeCfg } from '../callboxShare';
 import { saveRun, newRunId, type RunRecord } from './runStore';
 import { triggerPerfQaCollection, DEFAULT_PERFQA_URL } from './diagnostics';
@@ -133,6 +134,10 @@ export interface SuiteRunResult {
 }
 
 interface RunOpts {
+  /** Box logins to run this suite for, in order. Omitted = just the one the
+   *  suite is saved with. Each pass creates or reuses that user's own copies
+   *  and executes on their own simulator, so the passes cannot collide. */
+  asUsers?: string[];
   signal?: AbortSignal;
   onProgress?: (done: number, total: number, currentId?: string) => void;
   /** Fired as each row settles, so a caller can surface per-testcase status
@@ -772,7 +777,24 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       continue;
     }
     try {
-      const dup = await duplicateTestcase(ueOpts, item.simnovatorTcId, item.name, durSec);
+      // A testcase belongs to ONE login. If this row's source is another
+      // user's, read the definition through whoever owns it and create the
+      // row's copy from that — the same "fetch it from the available user"
+      // step the testcase page does. Only pays a lookup when it is needed:
+      // an existing copy of this row's name is reused before any of this.
+      let sourceTd: any;
+      try {
+        const { getTestcase } = await import('../uesimClient');
+        await getTestcase(ueOpts, item.simnovatorTcId);
+      } catch {
+        const sys = getSystem(inv, suite.uesimSystemId ?? '');
+        const found = sys ? await findDefinition(sys, item.simnovatorTcId, ueOpts.username) : null;
+        if (found) {
+          sourceTd = found.td;
+          stepDetails.push(`source testcase belongs to ${found.owner} — created it for ${ueOpts.username}`);
+        }
+      }
+      const dup = await duplicateTestcase(ueOpts, item.simnovatorTcId, item.name, durSec, sourceTd);
       if (dup.error || !dup.testCaseId) {
         steps.push({
           testcaseId: item.name, status: 0, ok: false,
@@ -1133,11 +1155,37 @@ export async function runSuite(suite: AutomationSuite, opts: RunOpts = {}): Prom
   // self-contained (tc + cfg) pair with its own bring-up cycle. Fall
   // back to the legacy flat-list flow (one shared callbox cfg, N tcs)
   // for older suites saved before the items[] schema landed.
-  const summary = (suite.items && suite.items.length > 0)
-    ? await runItems(suite, suite.items, opts)
-    : (suite.kind === 'uesim+callbox'
-        ? await runCallbox(suite, opts)
-        : await runUesimOnly(suite, opts));
+  const runFor = async (s: AutomationSuite) => (s.items && s.items.length > 0)
+    ? await runItems(s, s.items, opts)
+    : (s.kind === 'uesim+callbox'
+        ? await runCallbox(s, opts)
+        : await runUesimOnly(s, opts));
+
+  // One pass per login, in order. Sequential on purpose: each pass drives the
+  // shared callbox (link + lte restart), so two at once would restart the
+  // radio under each other. Every step is labelled with the user it ran as.
+  const users = (opts.asUsers ?? []).filter(Boolean);
+  let summary;
+  if (users.length > 1) {
+    const passes = [];
+    for (const u of users) {
+      if (opts.signal?.aborted) break;
+      const r = await runFor({ ...suite, boxUserId: u });
+      passes.push({ user: u, r });
+    }
+    const first = passes[0]?.r;
+    summary = {
+      ...(first ?? await runFor(suite)),
+      startedAt: passes[0]?.r.startedAt ?? new Date().toISOString(),
+      finishedAt: passes[passes.length - 1]?.r.finishedAt ?? new Date().toISOString(),
+      total: passes.reduce((a, p) => a + p.r.total, 0),
+      passed: passes.reduce((a, p) => a + p.r.passed, 0),
+      failed: passes.reduce((a, p) => a + p.r.failed, 0),
+      steps: passes.flatMap((p) => p.r.steps.map((st: any) => ({ ...st, testcaseId: `${st.testcaseId} · ${p.user}` }))),
+    } as typeof first;
+  } else {
+    summary = await runFor(users.length === 1 ? { ...suite, boxUserId: users[0] } : suite);
+  }
 
   // Persist the run + return the full record (with runId).
   const rec: RunRecord = {

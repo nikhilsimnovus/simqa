@@ -149,6 +149,10 @@ export default function AutomationSuitePage() {
   /** Box logins the chosen Simnovator offers, and which one this suite runs as.
    *  Fetched from /api/box-users, which never returns passwords. */
   const [suiteBoxUsers, setSuiteBoxUsers] = useState<Array<{ id: string; username: string; label?: string }>>([]);
+  /** Logins of the suite waiting in the run dialog, and the choice made. */
+  const [runUsers, setRunUsers] = useState<Array<{ id: string; username: string }>>([]);
+  const [runAsAll, setRunAsAll] = useState(false);
+  const [runOneUser, setRunOneUser] = useState('');
   const [boxUserId, setBoxUserId]     = useState<string>('');
   const [callboxSystemId, setCbx]     = useState<string>('');
   /** The UE system the suite runs against — see AutomationSuite.ueSystemId. */
@@ -452,6 +456,26 @@ export default function AutomationSuitePage() {
   /** Suite + rows awaiting confirmation in the Run dialog. `rows` undefined
    *  means the whole suite. */
   const [confirmRun, setConfirmRun] = useState<{ suite: SuiteRow; rows?: SuiteItem[] } | null>(null);
+  // The logins registered for the suite waiting in the run dialog. Fetched
+  // when it opens rather than held for every suite in the list.
+  useEffect(() => {
+    const sysId = confirmRun?.suite.uesimSystemId;
+    if (!sysId) { setRunUsers([]); return; }
+    let cancelled = false;
+    fetch(`/api/box-users?systemId=${encodeURIComponent(sysId)}`)
+      .then(r => r.json())
+      .then(j => {
+        if (cancelled || !j?.ok) return;
+        const us = (j.users ?? []) as Array<{ id: string; username: string }>;
+        setRunUsers(us);
+        // Default to the login the suite is saved with.
+        const saved = us.find(u => u.id === confirmRun?.suite.boxUserId || u.username === confirmRun?.suite.boxUserId);
+        setRunOneUser((saved ?? us[0])?.username ?? '');
+        setRunAsAll(false);
+      })
+      .catch(() => { /* one login, or the box is unreachable — run as saved */ });
+    return () => { cancelled = true; };
+  }, [confirmRun?.suite.id, confirmRun?.suite.uesimSystemId, confirmRun?.suite.boxUserId]);
 
   /** Stop the suite: ends the execution on the box AND cancels the rows that
    *  have not started. Stopping only the box execution would just let the next
@@ -544,6 +568,15 @@ export default function AutomationSuitePage() {
 
   /** Systems are stored by id on a suite, but an id means nothing to an
    *  operator — show the IP the row actually talks to. */
+  /** The login the suite being edited will execute as. */
+  const wizardUser = suiteBoxUsers.find(u => u.id === boxUserId)?.username ?? boxUserId ?? 'default login';
+
+  /** The login a saved suite executes as — its own, else the setup default. */
+  const userOf = (s: SuiteRow) => {
+    const byId = suiteBoxUsers.find(u => u.id === s.boxUserId || u.username === s.boxUserId);
+    return byId?.username ?? s.boxUserId ?? 'default login';
+  };
+
   const hostOf = useCallback((id?: string) => {
     if (!id) return '–';
     return systems.find(s => s.id === id)?.host ?? id;
@@ -856,7 +889,7 @@ export default function AutomationSuitePage() {
 
   /** Run a whole suite, or — when `rows` is given — only those testcases.
    *  Confirmation happens in the dialog that calls this, not here. */
-  const runSuite = async (s: SuiteRow, rows?: SuiteItem[]) => {
+  const runSuite = async (s: SuiteRow, rows?: SuiteItem[], users?: string[]) => {
     setConfirmRun(null);
     setRunning(s.id); setRunResult(null); setError('');
     try {
@@ -864,7 +897,10 @@ export default function AutomationSuitePage() {
       // perf-qa deployed; the UI no longer offers it.
       const r = await fetch(`/api/automation/suites/${s.id}/run`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(rows?.length ? { itemIds: rows.map(r => r.id) } : {}),
+        body: JSON.stringify({
+          ...(rows?.length ? { itemIds: rows.map(r => r.id) } : {}),
+          ...(users?.length ? { users } : {}),
+        }),
       });
       const d = await r.json();
       if (!r.ok || !d.ok) throw new Error(d?.error ?? `HTTP ${r.status}`);
@@ -1028,7 +1064,33 @@ export default function AutomationSuitePage() {
                 )}
                 <p className="mt-1 text-sm text-slate-600">
                   Estimated duration: <span className="font-medium text-slate-900">~{pretty}</span>
+                  {runAsAll && runUsers.length > 1 ? <> × {runUsers.length} users</> : null}
                 </p>
+
+                {/* Who executes it. One user, or every login registered for
+                    this Simnovator — each pass creates or reuses that user's
+                    own copies and runs on their own simulator, one after the
+                    other so they cannot restart the radio under each other. */}
+                {runUsers.length > 1 && (
+                  <div className="mt-3 rounded-md border border-line bg-slate-50 px-3 py-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Execute as</div>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input type="radio" checked={!runAsAll} onChange={() => setRunAsAll(false)} />
+                      <span>One user</span>
+                      <select
+                        value={runOneUser}
+                        onChange={e => { setRunOneUser(e.target.value); setRunAsAll(false); }}
+                        className="border border-slate-300 rounded-md px-2 py-1 text-sm"
+                      >
+                        {runUsers.map(u => <option key={u.id} value={u.username}>{u.username}</option>)}
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2 text-sm mt-1.5">
+                      <input type="radio" checked={runAsAll} onChange={() => setRunAsAll(true)} />
+                      <span>All users — {runUsers.map(u => u.username).join(', ')}</span>
+                    </label>
+                  </div>
+                )}
                 <p className="mt-2 text-[11px] text-slate-500">
                   Each test case creates or reuses its testcase on {hostOf(s.uesimSystemId)}
                   {s.kind === 'uesim+callbox' && <>, symlinks its gnb/mme/ims cfgs on {hostOf(s.callboxSystemId)} and restarts lte</>}
@@ -1037,7 +1099,9 @@ export default function AutomationSuitePage() {
                 <div className="mt-4 flex justify-end gap-2">
                   <button onClick={() => setConfirmRun(null)}
                     className="rounded-md border border-slate-300 hover:bg-slate-50 text-sm px-4 py-2">Cancel</button>
-                  <button onClick={() => runSuite(s, subset)}
+                  <button onClick={() => runSuite(s, subset, runUsers.length > 1
+                    ? (runAsAll ? runUsers.map(u => u.username) : [runOneUser])
+                    : undefined)}
                     className="rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2">
                     ▶ {!subset ? 'Run Suite' : rows.length === 1 ? 'Run Test Case' : 'Run Selected'}
                   </button>
@@ -1260,7 +1324,12 @@ export default function AutomationSuitePage() {
                                       <td className="px-1 py-1" />
                                       <td className="px-2 py-1 text-slate-400 align-top">{i + 1}</td>
                                       <td className="px-2 py-1 align-top">
-                                        <div className="font-medium text-slate-800">{it.name}</div>
+                                        <div className="font-medium text-slate-800">
+                                          {it.name}
+                                          {/* Who it executes as — a testcase belongs to one
+                                              login, so the name alone does not say whose. */}
+                                          <span className="text-slate-400 font-normal"> — {userOf(s)}</span>
+                                        </div>
                                         {/* Setup Kind is a property of the SUITE, not of one row —
                                             every row shares the same systems. Editing it here
                                             changes the suite, so it is labelled as such. */}
@@ -1359,7 +1428,10 @@ export default function AutomationSuitePage() {
                                       onDragEnd={() => setDragRow(null)}
                                       title="Drag to reorder — rows execute top to bottom">⋮⋮</td>
                                     <td className="px-2 py-1 text-slate-400">{i + 1}</td>
-                                    <td className="px-2 py-1 font-medium text-slate-800">{it.name}</td>
+                                    <td className="px-2 py-1 font-medium text-slate-800">
+                                      {it.name}
+                                      <span className="text-slate-400 font-normal"> — {userOf(s)}</span>
+                                    </td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.callboxCfg ?? '–'}</td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.mmeCfg ?? '–'}</td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.imsCfg ?? '–'}</td>
@@ -1694,8 +1766,12 @@ export default function AutomationSuitePage() {
                           <tr key={it.id} className="hover:bg-slate-50">
                             <td className="px-2 py-1 text-slate-400">{n + 1}</td>
                             <td className="px-2 py-1">
-                              <input value={it.name} onChange={e => updateItem({ name: e.target.value })}
-                                className="border border-slate-300 rounded px-2 py-1 text-xs w-full" />
+                              <div className="flex items-center gap-1.5">
+                                <input value={it.name} onChange={e => updateItem({ name: e.target.value })}
+                                  className="border border-slate-300 rounded px-2 py-1 text-xs w-full" />
+                                {/* The login this row will execute as. */}
+                                <span className="text-[11px] text-slate-400 whitespace-nowrap">— {wizardUser}</span>
+                              </div>
                             </td>
                             <td className="px-2 py-1 text-[11px] text-slate-600 whitespace-nowrap">
                               {kind === 'uesim+callbox' ? 'UESIM + CALLBOX' : 'UESIM only'}

@@ -45,6 +45,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     target = { ...suite, items: picked, testcaseIds: picked.map(it => it.simnovatorTcId) };
   }
 
+  // Which logins to run for. One pass each, in order — see RunOpts.asUsers.
+  // Absent or empty means the login the suite is saved with.
+  const asUsers: string[] = Array.isArray(body.users)
+    ? body.users.map(String).map((u: string) => u.trim()).filter(Boolean)
+    : [];
+
   const rows = target.items ?? [];
   // The controller is registered with the progress store so a Stop request can
   // reach this run: the runner checks the signal between rows, so stopping the
@@ -73,6 +79,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   try {
     const result = await runSuite(target, {
+      asUsers,
       signal: abort.signal,
       submittedBy,
       collectDiagnostics: !!body.collectDiagnostics,

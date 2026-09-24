@@ -25,8 +25,10 @@ export interface ResolvedForUser {
   error?: string;
 }
 
-/** The testcase as some login of this system can see it. */
-async function findDefinition(
+/** The testcase as some login of this system can see it. Exported: the
+ *  Automation Suite needs the same "fetch it from whoever has it" step when a
+ *  row's source testcase belongs to a different user. */
+export async function findDefinition(
   sys: InventorySystem,
   testcaseId: string,
   except: string,

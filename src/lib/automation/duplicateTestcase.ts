@@ -200,6 +200,9 @@ export async function duplicateTestcase(
   sourceId: string,
   name: string,
   durationSec?: number,
+  /** The source definition, when the caller already has it — used when the
+   *  source belongs to ANOTHER login, which cannot be read through this one. */
+  sourceTd?: any,
 ): Promise<DuplicateResult> {
   const token = await ensureToken(opts.host, opts.username, opts.password);
   const finalName = sanitizeTestcaseName(name);
@@ -244,16 +247,39 @@ export async function duplicateTestcase(
       + `the box cannot re-cut a finished testcase, so the old one was replaced`;
   }
 
-  const src = await getTestcase(opts, sourceId);
-  if (!src?.testDefinition) {
-    return { testCaseId: '', name: finalName, failedStep: 'fetch', error: `testcase ${sourceId} has no testDefinition` };
+  let definition = sourceTd;
+  if (!definition) {
+    const src = await getTestcase(opts, sourceId);
+    if (!src?.testDefinition) {
+      return { testCaseId: '', name: finalName, failedStep: 'fetch', error: `testcase ${sourceId} has no testDefinition` };
+    }
+    definition = src.testDefinition;
   }
 
   // Deep clone: we mutate duration/name, and the source object is also used by
   // the caller for reporting.
-  const td: any = JSON.parse(JSON.stringify(src.testDefinition));
+  const td: any = JSON.parse(JSON.stringify(definition));
   applyName(td, finalName);
   const notes = typeof durationSec === 'number' ? applyDuration(td, durationSec) : [];
+
+  // Radio cards belong to the simulator, not the testcase: every simulator on
+  // a multi-user box owns its own (.95: 0,1 / 2,3 / 4,5) and a cell names the
+  // one it runs on. A copy made for another login has to move onto theirs, or
+  // the box refuses to start it — "The test uses sdr2, which is not assigned
+  // to this simulator". A no-op when the source is already theirs.
+  try {
+    const { listSimulators } = await import('../uesimClient');
+    const { pickUserSimulator } = await import('../simulatorScope');
+    const { remapRfCards } = await import('../testcaseSections');
+    const sims = await listSimulators(opts);
+    const mine = pickUserSimulator((sims.items ?? []) as any, opts.username);
+    const entry = (sims.items ?? []).find((s: any) => String(s.id) === mine?.id) as any;
+    const cards = (entry?.nodes?.rfCards ?? []).map(Number).filter((n: number) => Number.isFinite(n));
+    if (td.cellConfig && cards.length) {
+      const moved = remapRfCards(td.cellConfig, cards);
+      if (moved.length) notes.push(`moved onto ${opts.username}'s radio cards (${moved.join(', ')})`);
+    }
+  } catch { /* leave the cards alone; the box reports what it cannot run */ }
   if (rebuiltNote) notes.unshift(rebuiltNote);
 
   const result = await createFromDefinition(opts, token, td, finalName, notes);
