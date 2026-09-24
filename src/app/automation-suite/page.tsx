@@ -181,9 +181,9 @@ export default function AutomationSuitePage() {
   // cfg + enb.cfg symlink so the callbox stays tidy.
   const [removeCfgAfterRun, setRemoveCfgAfterRun] = useState<boolean>(true);
   // Duration controls
-  const [defaultDur, setDefaultDur]     = useState<number>(10);
+  const [defaultDur, setDefaultDur]     = useState<number>(MIN_POWER_ON);
   const [perTcDur,   setPerTcDur]       = useState<Record<string, number>>({});
-  const [massDurInput, setMassDurInput] = useState<string>('10');
+  const [massDurInput, setMassDurInput] = useState<string>(String(MIN_POWER_ON));
   // ── Items list (new): each row pairs (Simnovator tc + callbox cfg).
   const [items, setItems]               = useState<SuiteItem[]>([]);
   // "Add row" picker state
@@ -446,7 +446,7 @@ export default function AutomationSuitePage() {
    *  something that takes 20 minutes. */
   const estimateSeconds = useCallback((s: SuiteRow, rows: SuiteItem[]) => {
     const PER_ROW_OVERHEAD = 250;
-    return rows.reduce((acc, it) => acc + (it.durationSec ?? s.defaultDurationSec ?? 10) + PER_ROW_OVERHEAD, 0);
+    return rows.reduce((acc, it) => acc + (it.durationSec ?? s.defaultDurationSec ?? MIN_POWER_ON) + PER_ROW_OVERHEAD, 0);
   }, []);
 
   /** Suite + rows awaiting confirmation in the Run dialog. `rows` undefined
@@ -679,7 +679,7 @@ export default function AutomationSuitePage() {
     setUesim(''); setCbx(''); setUeSystemId(''); setCbxFiles([]); setUploads({}); setCbxLoadError('');
     setUeTcs([]); setSelectedCfg(''); setSelectedTcs(new Set());
     setStopOnFail(false); setRemoveCfgAfterRun(true); setCbxFilter(''); setTcFilter('');
-    setDefaultDur(10); setPerTcDur({}); setMassDurInput('10');
+    setDefaultDur(MIN_POWER_ON); setPerTcDur({}); setMassDurInput(String(MIN_POWER_ON));
     setItems([]); setAddTcId(''); setAddCfg(''); setEditRowId(null);
     setTab('setup');
     setError(''); setShowWizard(false);
@@ -704,9 +704,9 @@ export default function AutomationSuitePage() {
     setSelectedCfg(s.callboxConfig ?? '');
     setSelectedTcs(new Set(s.testcaseIds));
     setStopOnFail(!!s.stopOnFail);
-    setDefaultDur(s.defaultDurationSec ?? 10);
+    setDefaultDur(Math.max(MIN_POWER_ON, s.defaultDurationSec ?? MIN_POWER_ON));
     setPerTcDur(s.testcaseDurations ?? {});
-    setMassDurInput(String(s.defaultDurationSec ?? 10));
+    setMassDurInput(String(Math.max(MIN_POWER_ON, s.defaultDurationSec ?? MIN_POWER_ON)));
     setRemoveCfgAfterRun(s.removeConfigAfterRun !== false);
     // Items: prefer the new items[]; if absent (legacy suite), synthesize
     // from the flat testcaseIds list + shared callboxConfig.
@@ -824,7 +824,8 @@ export default function AutomationSuitePage() {
       // Legacy fields stay populated for old consumers, but the runner
       // prefers items[] when present.
       callboxConfig: kind === 'uesim+callbox' ? (cfg || undefined) : undefined,
-      defaultDurationSec: defaultDur > 0 ? defaultDur : 10,
+      // Never below the floor the box itself needs — see MIN_POWER_ON.
+      defaultDurationSec: Math.max(MIN_POWER_ON, defaultDur || MIN_POWER_ON),
       testcaseDurations: Object.keys(trimmedDurs).length ? trimmedDurs : undefined,
       stopOnFail,
       removeConfigAfterRun: removeCfgAfterRun,
@@ -1362,7 +1363,7 @@ export default function AutomationSuitePage() {
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.callboxCfg ?? '–'}</td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.mmeCfg ?? '–'}</td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.imsCfg ?? '–'}</td>
-                                    <td className="px-2 py-1 text-right">{it.durationSec ?? s.defaultDurationSec ?? 10}</td>
+                                    <td className="px-2 py-1 text-right">{it.durationSec ?? s.defaultDurationSec ?? MIN_POWER_ON}</td>
                                     <td className={`px-2 py-1 whitespace-nowrap ${st.cls} ${st.title ? 'cursor-help' : ''}`} title={st.title}>{st.dot} {st.label}</td>
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
                                       <button
