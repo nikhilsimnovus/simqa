@@ -280,13 +280,21 @@ export default function AutomationSuitePage() {
   /** What each suite's Simnovator is currently executing, keyed by system id.
    *  The box allows one testcase at a time, so a busy system means Run would
    *  409 — polled so the block clears on its own once the run finishes. */
+  /** Busy is per (Simnovator, login) — see the poll below. */
+  const busyKey = (systemId: string, boxUserId?: string) => `${systemId}|${boxUserId ?? ''}`;
   const [busyBySystem, setBusyBySystem] = useState<Record<string, { host: string; testCaseName: string } | null>>({});
   /** Last polled busy map, for spotting the busy -> idle transition without
    *  making the poll depend on its own state. */
   const busyRef = useRef<Record<string, { host: string; testCaseName: string } | null>>({});
 
   useEffect(() => {
-    const ids = Array.from(new Set(suites.map(s => s.uesimSystemId).filter(Boolean))) as string[];
+    // Per (system, login), not per system. A Simnovator's users each own a
+    // simulator and run at the same time, so "is it busy?" is only meaningful
+    // for the login a suite executes as — asking through the setup default
+    // blocked mohan's suite because sruthi was running.
+    const ids = Array.from(new Set(
+      suites.filter(s => s.uesimSystemId).map(s => busyKey(s.uesimSystemId!, s.boxUserId)),
+    ));
     if (ids.length === 0) { setBusyBySystem({}); return; }
     let cancelled = false;
     // Never let ticks overlap. Each request talks to the box over the network,
@@ -302,8 +310,11 @@ export default function AutomationSuitePage() {
       try {
         const entries = await Promise.all(ids.map(async id => {
           try {
+            const [sysId, user] = id.split('|');
+            const qs = new URLSearchParams({ systemId: sysId });
+            if (user) qs.set('boxUserId', user);
             // Client-side cap too, so a hung response can't pin the tick open.
-            const r = await fetch(`/api/executions?systemId=${encodeURIComponent(id)}`, {
+            const r = await fetch(`/api/executions?${qs}`, {
               signal: AbortSignal.timeout(20_000),
             }).then(r => r.json());
             if (!r?.ok || !r.busy || !r.execution) return [id, null] as const;
@@ -428,7 +439,7 @@ export default function AutomationSuitePage() {
     // The box itself is the most reliable signal that a row is executing right
     // now: it survives a page refresh and is true even when the run was started
     // from the Simnovator's own GUI rather than here.
-    const busy = s.uesimSystemId ? busyBySystem[s.uesimSystemId] : null;
+    const busy = s.uesimSystemId ? busyBySystem[busyKey(s.uesimSystemId, s.boxUserId)] : null;
     if (busy && busy.testCaseName === it.name) {
       return { label: 'In Progress', dot: '🟡', cls: 'text-amber-700' };
     }
@@ -1203,7 +1214,7 @@ export default function AutomationSuitePage() {
               them is just noise. */}
           {busyHosts.map(b => (
             <div key={b.host} className="mb-3 rounded-md border border-amber-300 bg-amber-50 text-amber-800 text-xs px-3 py-2">
-              Already a test case is in progress on {b.host} — “{b.testCaseName}”. Suites on this Simnovator cannot run until it finishes.
+              “{b.testCaseName}” is running on {b.host} as this suite's login — it cannot run until that finishes. Other users on this Simnovator are unaffected.
             </div>
           ))}
           {suites.length === 0 ? (
@@ -1238,7 +1249,7 @@ export default function AutomationSuitePage() {
                     // testcase ran on the box, even a different one, though
                     // saving a row is only a local inventory edit. Run controls
                     // want box-awareness; Save must not.
-                    const boxBusy = s.uesimSystemId ? busyBySystem[s.uesimSystemId] : null;
+                    const boxBusy = s.uesimSystemId ? busyBySystem[busyKey(s.uesimSystemId, s.boxUserId)] : null;
                     return (
                     <React.Fragment key={s.id}>
                     <tr>
