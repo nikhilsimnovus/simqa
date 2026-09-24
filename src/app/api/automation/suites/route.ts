@@ -39,6 +39,8 @@ export async function POST(req: Request) {
       // default if it no longer exists.
       boxUserId: typeof body.boxUserId === 'string' && body.boxUserId.trim() ? body.boxUserId.trim() : undefined,
       callboxSystemId: body.callboxSystemId,
+      // The UE system chosen on Setup; unset means "whatever the topology binds".
+      ueSystemId: typeof body.ueSystemId === 'string' && body.ueSystemId.trim() ? body.ueSystemId.trim() : undefined,
       uploadedConfigs: body.uploadedConfigs && typeof body.uploadedConfigs === 'object' ? body.uploadedConfigs : undefined,
       callboxConfig: typeof body.callboxConfig === 'string' && body.callboxConfig.trim() ? body.callboxConfig.trim() : undefined,
       defaultDurationSec: typeof body.defaultDurationSec === 'number' && body.defaultDurationSec > 0 ? body.defaultDurationSec : undefined,

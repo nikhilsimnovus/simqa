@@ -83,7 +83,11 @@ async function gatherAttachEvidence(ueSys: any, tcName: string): Promise<AttachE
 
 /** The UE simulator bound to a Simnovator by a topology profile — that's the box
  *  whose log carries the attach evidence. */
-function ueSystemForSimnovator(inv: ReturnType<typeof loadInventory>, simnovatorId?: string) {
+function ueSystemForSimnovator(inv: ReturnType<typeof loadInventory>, simnovatorId?: string, chosenId?: string) {
+  // What the suite says, when it says anything — the topology is the fallback
+  // for suites saved before the Setup step offered the choice.
+  const chosen = chosenId ? getSystem(inv, chosenId) : undefined;
+  if (chosen) return chosen;
   if (!simnovatorId) return undefined;
   const profile = (inv.profiles ?? []).find(p => p.simnovator === simnovatorId);
   return profile?.uesim ? getSystem(inv, profile.uesim) : undefined;
@@ -699,7 +703,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
   // The UE box holds the only real evidence of whether UEs attached. Absent a
   // topology profile binding it to this Simnovator we simply skip the check
   // rather than failing the run.
-  const ueSys = ueSystemForSimnovator(inv, suite.uesimSystemId);
+  const ueSys = ueSystemForSimnovator(inv, suite.uesimSystemId, suite.ueSystemId);
 
   const safe = (s: string) => s.replace(/[^\w.\-]/g, '_');
   const rawSteps: SuiteRunStep[] = [];

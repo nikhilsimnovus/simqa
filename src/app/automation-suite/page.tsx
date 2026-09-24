@@ -19,6 +19,8 @@
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { cn } from '@/lib/cn';
+import { SearchableSelect } from '@/components/SearchableSelect';
+import { useColumnWidths, ResizeHandle, ColGroup } from '@/components/resizableColumns';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
 
 interface SystemRow {
@@ -27,6 +29,14 @@ interface SystemRow {
 /** Shortest power-on duration a row may ask for — below this the UEs cannot come
  *  up and still pass traffic. Mirrors MIN_POWER_ON_SEC in duplicateTestcase. */
 const MIN_POWER_ON = 20;
+
+/** Options for a cfg picker: uploads first, then what is on the callbox. */
+function cfgOptions(files: Array<{ name: string; mtime?: string }>, uploaded: Record<string, string> = {}) {
+  return [
+    ...Object.keys(uploaded).map((fn) => ({ value: fn, label: fn, hint: 'uploaded' })),
+    ...files.map((f) => ({ value: f.name, label: f.name, hint: f.mtime })),
+  ];
+}
 
 /** Remembers which testcases are ticked, across refreshes. */
 const LS_PICKED = 'simqa-suite-picked';
@@ -57,6 +67,8 @@ interface SuiteRow {
   id: string; name: string;
   kind?: 'uesim-only' | 'uesim+callbox';
   uesimSystemId?: string; callboxSystemId?: string;
+  /** UE system chosen on Setup; absent = the one the topology binds. */
+  ueSystemId?: string;
   /** BoxUser id this suite executes as; absent = the setup's default login. */
   boxUserId?: string;
   uploadedConfigs?: Record<string, string>;
@@ -139,6 +151,8 @@ export default function AutomationSuitePage() {
   const [suiteBoxUsers, setSuiteBoxUsers] = useState<Array<{ id: string; username: string; label?: string }>>([]);
   const [boxUserId, setBoxUserId]     = useState<string>('');
   const [callboxSystemId, setCbx]     = useState<string>('');
+  /** The UE system the suite runs against — see AutomationSuite.ueSystemId. */
+  const [ueSystemId, setUeSystemId]   = useState<string>('');
 
   // UESIM-only data: testcases pulled from Simnovator REST
   const [uesimTestcases, setUeTcs]    = useState<UesimTestcase[]>([]);
@@ -174,6 +188,12 @@ export default function AutomationSuitePage() {
   const [items, setItems]               = useState<SuiteItem[]>([]);
   // "Add row" picker state
   const [addTcId,  setAddTcId]          = useState<string>('');
+  /** Row open for editing in the wizard table — its testcase and cfgs become
+   *  pickers in place. Name and duration are always editable. */
+  const [editRowId, setEditRowId]       = useState<string | null>(null);
+  /** Saved-suites table: drag any column's right edge, as on Run History. */
+  const { colWidths: suiteCols, tableWidth: suiteTableWidth, startResize: startSuiteResize } =
+    useColumnWidths([260, 150, 150, 170, 330]);
   const [addCfg,   setAddCfg]           = useState<string>('');
   const [addMme,   setAddMme]           = useState<string>('');
   const [addIms,   setAddIms]           = useState<string>('');
@@ -531,6 +551,7 @@ export default function AutomationSuitePage() {
 
   const uesimSystems = systems.filter(s => s.type === 'SIMNOVATOR' || s.type === 'SIMNOVATOR_GUI');
   const callboxSystems = systems.filter(s => /CALLBOX/i.test(s.type));
+  const ueSystems = systems.filter(s => s.type === 'UESIM' || s.type === 'UE');
 
   // ── Wizard step gating ───────────────────────────────────────────────
   // Each step unlocks the next: you can't pick testcases before the systems
@@ -655,11 +676,11 @@ export default function AutomationSuitePage() {
 
   const resetWizard = useCallback(() => {
     setEditingId(''); setName(''); setEditingName(''); setKind('uesim-only');
-    setUesim(''); setCbx(''); setCbxFiles([]); setUploads({}); setCbxLoadError('');
+    setUesim(''); setCbx(''); setUeSystemId(''); setCbxFiles([]); setUploads({}); setCbxLoadError('');
     setUeTcs([]); setSelectedCfg(''); setSelectedTcs(new Set());
     setStopOnFail(false); setRemoveCfgAfterRun(true); setCbxFilter(''); setTcFilter('');
     setDefaultDur(10); setPerTcDur({}); setMassDurInput('10');
-    setItems([]); setAddTcId(''); setAddCfg('');
+    setItems([]); setAddTcId(''); setAddCfg(''); setEditRowId(null);
     setTab('setup');
     setError(''); setShowWizard(false);
   }, []);
@@ -678,6 +699,7 @@ export default function AutomationSuitePage() {
     // system still offers it, and falls back to the first otherwise.
     setBoxUserId(s.boxUserId ?? '');
     setCbx(s.callboxSystemId ?? '');
+    setUeSystemId(s.ueSystemId ?? '');
     setUploads(s.uploadedConfigs ?? {});
     setSelectedCfg(s.callboxConfig ?? '');
     setSelectedTcs(new Set(s.testcaseIds));
@@ -797,6 +819,7 @@ export default function AutomationSuitePage() {
       uesimSystemId,
       boxUserId: boxUserId || undefined,
       callboxSystemId: kind === 'uesim+callbox' ? callboxSystemId : undefined,
+      ueSystemId: ueSystemId || undefined,
       uploadedConfigs: trimmedItemUploads ?? trimmedUploads,
       // Legacy fields stay populated for old consumers, but the runner
       // prefers items[] when present.
@@ -958,7 +981,7 @@ export default function AutomationSuitePage() {
           <div className="mb-1"><BackToRunHistory /></div>
           <h1 className="text-2xl font-bold text-slate-900">Automation Suite</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Create a collection of test cases for a selected simnovator and run them together with a single click.
+            Create a collection of test cases for a selected Simnovator and execute them sequentially.
           </p>
         </header>
 
@@ -1059,11 +1082,6 @@ export default function AutomationSuitePage() {
         <section className="bg-surface border border-line rounded-xl p-5 mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-slate-900">Saved suites ({suites.length})</h2>
-            <div className="flex items-center gap-3">
-              <button onClick={openNew} className="rounded-md bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium px-4 py-2">
-                Create New Suite
-              </button>
-            </div>
           </div>
           {/* Live progress of the running suite. The run is one long request, so
               this is polled separately — without it the page looks frozen for
@@ -1106,14 +1124,22 @@ export default function AutomationSuitePage() {
             </div>
           ))}
           {suites.length === 0 ? (
-            <div className="text-sm text-slate-500 py-4 text-center">No suites yet, Click on Create New Suite to build one.</div>
+            <div className="text-sm text-slate-500 py-4 text-center">No suites yet — open the New suite tab above to build one.</div>
           ) : (
             <div className="overflow-x-auto border border-line rounded-md">
-              <table className="min-w-full text-sm">
+              <table className="text-sm table-fixed" style={{ width: suiteTableWidth, minWidth: '100%' }}>
+                <ColGroup widths={suiteCols} />
                 <thead className="bg-slate-50 text-slate-600">
                   <tr>
-                    <th className="text-left px-3 py-2 font-medium">Suite Name</th>
-                    <th className="text-right px-3 py-2 font-medium">Actions</th>
+                    {['Suite Name', 'Setup', 'Simnovator', 'Created by', 'Actions'].map((label, i) => (
+                      <th
+                        key={label}
+                        className={'relative px-3 py-2 font-medium border-r border-slate-200 last:border-r-0 ' + (i === 4 ? 'text-right' : 'text-left')}
+                      >
+                        <span className="truncate block">{label}</span>
+                        {i < suiteCols.length - 1 ? <ResizeHandle onMouseDown={startSuiteResize(i)} /> : null}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1133,22 +1159,29 @@ export default function AutomationSuitePage() {
                     return (
                     <React.Fragment key={s.id}>
                     <tr>
-                      <td className="px-3 py-2 font-medium">
+                      <td className="px-3 py-2 font-medium border-r border-slate-100 truncate" title={s.name}>
                         {s.name}
-                        {/* Setup kind + the systems it targets used to be their
-                            own columns; kept here as a subtitle so the table
-                            stays two columns without losing the context. */}
-                        <div className="text-[11px] font-normal text-slate-500">
-                          {s.kind === 'uesim+callbox' ? 'UESIM + CALLBOX' : 'UESIM only'}
-                          {' · '}{hostOf(s.uesimSystemId)}
-                          {s.kind === 'uesim+callbox' && <> · {hostOf(s.callboxSystemId)}</>}
-                          {/* Who made it. Suites saved before sign-in existed
-                              have no author, so say nothing rather than guess. */}
-                          {s.createdBy ? <> · created by <span className="text-slate-600">{s.createdBy}</span></> : null}
-                          {s.updatedBy && s.updatedBy !== s.createdBy
-                            ? <> · last edited by <span className="text-slate-600">{s.updatedBy}</span></>
-                            : null}
+                        <div className="text-[11px] font-normal text-slate-500 truncate">
+                          {(s.items ?? []).length || s.testcaseIds.length} test case{((s.items ?? []).length || s.testcaseIds.length) === 1 ? '' : 's'}
+                          {s.boxUserId ? <> · as {s.boxUserId}</> : null}
                         </div>
+                      </td>
+                      <td className="px-3 py-2 text-[11px] text-slate-600 border-r border-slate-100 truncate">
+                        {s.kind === 'uesim+callbox' ? 'UESIM + CALLBOX' : 'UESIM only'}
+                        {s.kind === 'uesim+callbox' && <div className="text-slate-500 truncate">{hostOf(s.callboxSystemId)}</div>}
+                      </td>
+                      <td className="px-3 py-2 text-[11px] font-mono text-slate-600 border-r border-slate-100 truncate">
+                        {hostOf(s.uesimSystemId)}
+                      </td>
+                      {/* Always named. A suite saved before sign-in existed has
+                          no author on record — say so rather than leave a blank
+                          that reads as if nobody made it. */}
+                      <td className="px-3 py-2 text-[11px] text-slate-600 border-r border-slate-100 truncate"
+                        title={s.updatedBy && s.updatedBy !== s.createdBy ? `last edited by ${s.updatedBy}` : undefined}>
+                        created by {s.createdBy ?? <span className="text-slate-400">unknown</span>}
+                        {s.updatedBy && s.updatedBy !== s.createdBy
+                          ? <div className="text-slate-500 truncate">edited by {s.updatedBy}</div>
+                          : null}
                       </td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">
                         {/* Stop replaces Run while this suite is going — the two
@@ -1190,7 +1223,7 @@ export default function AutomationSuitePage() {
                         bare count, so a 2-row suite shows both names. */}
                     {(s.items ?? []).length > 0 && (
                       <tr className="bg-slate-50/60">
-                        <td colSpan={2} className="px-3 pb-2 pt-0">
+                        <td colSpan={5} className="px-3 pb-2 pt-0">
                           <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
                             {(s.items ?? []).length} test case{(s.items ?? []).length === 1 ? '' : 's'}
                           </div>
@@ -1490,9 +1523,8 @@ export default function AutomationSuitePage() {
         {/* Wizard */}
         {showWizard && (
           <section className="bg-surface border border-line rounded-xl p-5 mb-6">
-            <div className="flex items-center justify-between mb-2">
+            <div className="mb-2">
               <h2 className="text-base font-semibold text-slate-900">{editingId ? 'Edit suite' : 'New suite'}</h2>
-              <button onClick={resetWizard} className="text-sm text-slate-500 hover:text-slate-900">Cancel</button>
             </div>
 
             {/* Tab strip — explicit step counter so the user sees the flow */}
@@ -1548,7 +1580,7 @@ export default function AutomationSuitePage() {
                   when the setup offers no choice. */}
               {suiteBoxUsers.length > 1 && (
                 <label className="flex flex-col">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Run as (box user)</span>
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Run as user</span>
                   <select value={boxUserId} onChange={e => setBoxUserId(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm">
                     {suiteBoxUsers.map(u => (
                       <option key={u.id} value={u.id}>{u.label ? `${u.username} — ${u.label}` : u.username}</option>
@@ -1556,6 +1588,17 @@ export default function AutomationSuitePage() {
                   </select>
                 </label>
               )}
+              <label className="flex flex-col">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">UE system</span>
+                <select value={ueSystemId} onChange={e => setUeSystemId(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm">
+                  {/* Optional: an integrated install has no separate UE box, and
+                      the topology already binds one for every setup. */}
+                  <option value="">— from topology —</option>
+                  {ueSystems.map(s => (
+                    <option key={s.id} value={s.id}>{s.host}</option>
+                  ))}
+                </select>
+              </label>
               {kind === 'uesim+callbox' && (
                 <label className="flex flex-col">
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Callbox system</span>
@@ -1605,18 +1648,6 @@ export default function AutomationSuitePage() {
                     onBlur={e => setDefaultDur(Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON))}
                     className="border border-slate-300 rounded-md px-2 py-1 w-[80px] text-sm" />
                 </label>
-                <span className="text-[11px] text-slate-500">
-                  How long the UEs stay powered on. The user-plane session is derived from it — minimum {MIN_POWER_ON}s.
-                </span>
-                <span className="text-xs text-slate-400">|</span>
-                <label className="flex items-center gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Apply to all rows</span>
-                  <input type="number" min={MIN_POWER_ON} value={massDurInput} onChange={e => setMassDurInput(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 w-[80px] text-sm" />
-                  <button type="button" onClick={() => {
-                    const n = Math.max(MIN_POWER_ON, Number(massDurInput) || MIN_POWER_ON);
-                    setItems(items.map(it => ({ ...it, durationSec: n })));
-                  }} disabled={items.length === 0} className="rounded-md bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white text-xs px-2 py-1">Apply</button>
-                </label>
               </div>
 
               {/* One table PER suite name — rows added under "SA" group into the
@@ -1634,7 +1665,7 @@ export default function AutomationSuitePage() {
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Suite Name</span>
                     <span className="text-sm font-semibold text-slate-900">{groupName}</span>
                     <span className="text-[11px] text-slate-500">
-                      · {groupItems.length} test case{groupItems.length === 1 ? '' : 's'}, run in this order
+                      · {groupItems.length} test case{groupItems.length === 1 ? '' : 's'}
                     </span>
                   </div>
                   <table className="min-w-full text-xs">
@@ -1669,18 +1700,48 @@ export default function AutomationSuitePage() {
                               {kind === 'uesim+callbox' ? 'UESIM + CALLBOX' : 'UESIM only'}
                             </td>
                             <td className="px-2 py-1 font-mono text-[11px] text-slate-600 truncate max-w-[260px]" title={it.simnovatorTcId}>
-                              {tc?.name ?? it.simnovatorTcId}
+                              {editRowId === it.id ? (
+                                <SearchableSelect
+                                  value={it.simnovatorTcId}
+                                  onChange={(v) => updateItem({ simnovatorTcId: v })}
+                                  options={uesimTestcases.map(t => ({ value: t.id, label: t.name }))}
+                                  ariaLabel="Simnovator testcase" noun="testcase"
+                                />
+                              ) : (tc?.name ?? it.simnovatorTcId)}
                             </td>
                             {kind === 'uesim+callbox' && (<>
                               <td className="px-2 py-1 font-mono text-[11px] text-slate-600">
-                                {it.callboxCfg ?? <span className="text-slate-400 italic">(none)</span>}
-                                {it.callboxCfg && uploadedConfigs[it.callboxCfg] && <span className="text-[9px] text-emerald-700 ml-1">[upload]</span>}
+                                {editRowId === it.id ? (
+                                  <SearchableSelect
+                                    value={it.callboxCfg ?? ''}
+                                    onChange={(v) => updateItem({ callboxCfg: v || undefined })}
+                                    options={cfgOptions(callboxFiles, uploadedConfigs)}
+                                    ariaLabel="gnb.cfg" noun="config"
+                                  />
+                                ) : (<>
+                                  {it.callboxCfg ?? <span className="text-slate-400 italic">(none)</span>}
+                                  {it.callboxCfg && uploadedConfigs[it.callboxCfg] && <span className="text-[9px] text-emerald-700 ml-1">[upload]</span>}
+                                </>)}
                               </td>
                               <td className="px-2 py-1 font-mono text-[11px] text-slate-600">
-                                {it.mmeCfg ?? <span className="text-slate-400 italic">(none)</span>}
+                                {editRowId === it.id ? (
+                                  <SearchableSelect
+                                    value={it.mmeCfg ?? ''}
+                                    onChange={(v) => updateItem({ mmeCfg: v || undefined })}
+                                    options={cfgOptions(mmeFiles, uploadedConfigs)}
+                                    ariaLabel="mme.cfg" noun="config"
+                                  />
+                                ) : (it.mmeCfg ?? <span className="text-slate-400 italic">(none)</span>)}
                               </td>
                               <td className="px-2 py-1 font-mono text-[11px] text-slate-600">
-                                {it.imsCfg ?? <span className="text-slate-400 italic">(none)</span>}
+                                {editRowId === it.id ? (
+                                  <SearchableSelect
+                                    value={it.imsCfg ?? ''}
+                                    onChange={(v) => updateItem({ imsCfg: v || undefined })}
+                                    options={cfgOptions(mmeFiles, uploadedConfigs)}
+                                    ariaLabel="ims.cfg" noun="config"
+                                  />
+                                ) : (it.imsCfg ?? <span className="text-slate-400 italic">(none)</span>)}
                               </td>
                             </>)}
                             <td className="px-2 py-1 text-right">
@@ -1691,8 +1752,15 @@ export default function AutomationSuitePage() {
                                 onBlur={e => updateItem({ durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
                                 className="border border-slate-300 rounded px-1 py-0.5 w-[64px] text-xs text-right" />
                             </td>
-                            <td className="px-2 py-1 text-right">
-                              <button type="button" onClick={() => setItems(items.filter(x => x.id !== it.id))} className="text-xs text-red-600 hover:underline">remove</button>
+                            <td className="px-2 py-1 text-right whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => setEditRowId(editRowId === it.id ? null : it.id)}
+                                className="text-xs text-primary-700 hover:underline mr-3"
+                              >
+                                {editRowId === it.id ? 'done' : 'edit'}
+                              </button>
+                              <button type="button" onClick={() => { setEditRowId(null); setItems(items.filter(x => x.id !== it.id)); }} className="text-xs text-red-600 hover:underline">remove</button>
                             </td>
                           </tr>
                         );
@@ -1708,12 +1776,17 @@ export default function AutomationSuitePage() {
                 <div className="grid grid-cols-3 gap-2 items-end">
                   <label className="flex flex-col text-xs">
                     <span className="text-slate-500 mb-1">Simnovator testcase</span>
-                    <select value={addTcId} onChange={e => setAddTcId(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs">
-                      <option value="">— pick —</option>
-                      {uesimTestcases.map(t => (
-                        <option key={t.id} value={t.id}>{t.name}</option>
-                      ))}
-                    </select>
+                    {/* Searchable: a Simnovator holds hundreds of testcases,
+                        and scrolling a plain dropdown to find one is the whole
+                        reason rows were added by hand. */}
+                    <SearchableSelect
+                      value={addTcId}
+                      onChange={setAddTcId}
+                      options={uesimTestcases.map(t => ({ value: t.id, label: t.name }))}
+                      placeholder="— pick —"
+                      ariaLabel="Simnovator testcase"
+                      noun="testcase"
+                    />
                   </label>
                   <label className="flex flex-col text-xs">
                     <span className="text-slate-500 mb-1">Display name in Simnovator</span>
@@ -1758,15 +1831,17 @@ export default function AutomationSuitePage() {
                           <input type="file" onChange={e => onPickUpload(e, 'gnb')} className="hidden" />
                         </label>
                       </span>
-                      <select value={addCfg} onChange={e => setAddCfg(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs">
-                        <option value="">— pick —</option>
-                        {Object.keys(uploadedConfigs).map(fn => (
-                          <option key={fn} value={fn}>{fn} (uploaded)</option>
-                        ))}
-                        {callboxFiles.map(f => (
-                          <option key={f.name} value={f.name}>{f.name} · {f.mtime}</option>
-                        ))}
-                      </select>
+                      <SearchableSelect
+                        value={addCfg}
+                        onChange={setAddCfg}
+                        options={[
+                          ...Object.keys(uploadedConfigs).map(fn => ({ value: fn, label: fn, hint: 'uploaded' })),
+                          ...callboxFiles.map(f => ({ value: f.name, label: f.name, hint: f.mtime })),
+                        ]}
+                        placeholder="— pick —"
+                        ariaLabel="gnb.cfg"
+                        noun="config"
+                      />
                     </label>
                     {/* mme + ims live in /root/mme/config — a test needs the core
                         brought up as well as the radio. */}
@@ -1778,15 +1853,17 @@ export default function AutomationSuitePage() {
                           <input type="file" onChange={e => onPickUpload(e, 'mme')} className="hidden" />
                         </label>
                       </span>
-                      <select value={addMme} onChange={e => setAddMme(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs">
-                        <option value="">— pick —</option>
-                        {Object.keys(uploadedConfigs).map(fn => (
-                          <option key={fn} value={fn}>{fn} (uploaded)</option>
-                        ))}
-                        {mmeFiles.map(f => (
-                          <option key={f.name} value={f.name}>{f.name} · {f.mtime}</option>
-                        ))}
-                      </select>
+                      <SearchableSelect
+                        value={addMme}
+                        onChange={setAddMme}
+                        options={[
+                          ...Object.keys(uploadedConfigs).map(fn => ({ value: fn, label: fn, hint: 'uploaded' })),
+                          ...mmeFiles.map(f => ({ value: f.name, label: f.name, hint: f.mtime })),
+                        ]}
+                        placeholder="— pick —"
+                        ariaLabel="mme.cfg"
+                        noun="config"
+                      />
                     </label>
                     <label className="flex flex-col text-xs">
                       <span className="text-slate-500 mb-1 flex items-center justify-between">
@@ -1796,15 +1873,17 @@ export default function AutomationSuitePage() {
                           <input type="file" onChange={e => onPickUpload(e, 'ims')} className="hidden" />
                         </label>
                       </span>
-                      <select value={addIms} onChange={e => setAddIms(e.target.value)} className="border border-slate-300 rounded-md px-2 py-1 text-xs">
-                        <option value="">— pick —</option>
-                        {Object.keys(uploadedConfigs).map(fn => (
-                          <option key={fn} value={fn}>{fn} (uploaded)</option>
-                        ))}
-                        {mmeFiles.map(f => (
-                          <option key={f.name} value={f.name}>{f.name} · {f.mtime}</option>
-                        ))}
-                      </select>
+                      <SearchableSelect
+                        value={addIms}
+                        onChange={setAddIms}
+                        options={[
+                          ...Object.keys(uploadedConfigs).map(fn => ({ value: fn, label: fn, hint: 'uploaded' })),
+                          ...mmeFiles.map(f => ({ value: f.name, label: f.name, hint: f.mtime })),
+                        ]}
+                        placeholder="— pick —"
+                        ariaLabel="ims.cfg"
+                        noun="config"
+                      />
                     </label>
                   </>)}
                   <div className="col-span-3 flex gap-2 justify-end">
@@ -1869,26 +1948,14 @@ export default function AutomationSuitePage() {
               </div>
             </>)}
 
-            <label className="flex items-center gap-2 text-sm mb-2" title="After the UEs have had time to come up, the runner checks the UE simulator's log for registrations. If none attached, the testcase is stopped instead of being left to run out its duration, and the remaining rows are skipped.">
-              <input type="checkbox" checked={stopOnFail} onChange={e => setStopOnFail(e.target.checked)} />
-              <span>Stop if UE does not Attach (recommended)</span>
-            </label>
-            <label className="flex items-center gap-2 text-sm mb-4" title="Once the execution has completed, put the callbox symlinks back to whatever they pointed at before the run.">
-              <input type="checkbox" checked={removeCfgAfterRun} onChange={e => setRemoveCfgAfterRun(e.target.checked)} />
-              <span>Remove deployed cfg from callbox after each item</span>
-            </label>
-
-            <div className="flex justify-between mt-4">
-              <button onClick={() => setTab('setup')} className="rounded-md border border-slate-300 text-sm px-4 py-2">← Back: Setup</button>
-            </div>
             </>)}
 
-            {/* Save / Cancel — only on the Testcases step. Setup has its own
-                "Next: Testcases" and there's nothing worth saving until at
-                least the systems and a row are chosen. */}
+            {/* 11. One line: back on the left, save on the right. Cancel is
+                gone — the Saved suites tab leaves without saving, and a second
+                way out beside Save was only ever a way to lose the work. */}
             {tab === 'testcases' && (
-              <div className="flex gap-2 justify-end mt-5 pt-4 border-t border-slate-100">
-                <button onClick={resetWizard} className="rounded-md border border-slate-300 text-sm px-4 py-2">Cancel</button>
+              <div className="flex items-center justify-between mt-5 pt-4 border-t border-slate-100">
+                <button onClick={() => setTab('setup')} className="rounded-md border border-slate-300 text-sm px-4 py-2">← Back: Setup</button>
                 <button onClick={saveSuite} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
                   {busy ? 'Saving…' : (editingId ? 'Update suite' : 'Save suite')}
                 </button>

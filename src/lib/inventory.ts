@@ -286,6 +286,10 @@ export interface AutomationSuite {
   uesimSystemId?: string;
   /** Inventory id of the callbox (only when kind == 'uesim+callbox'). */
   callboxSystemId?: string;
+  /** Inventory id of the UE system this suite runs against. Chosen on the
+   *  Setup step; unset falls back to the one the Simnovator's topology binds,
+   *  which is what every suite saved before this did. */
+  ueSystemId?: string;
   /** Filename → base64 content for any /root/enb/config files the user
    *  uploaded as part of this suite (kind == 'uesim+callbox' only).
    *  These files don't exist on the callbox yet — on run, the runner
