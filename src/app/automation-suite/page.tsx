@@ -30,6 +30,19 @@ interface SystemRow {
  *  up and still pass traffic. Mirrors MIN_POWER_ON_SEC in duplicateTestcase. */
 const MIN_POWER_ON = 20;
 
+/**
+ * What a row is called on the Simnovator by default: the source testcase's
+ * name with "_automation" after it.
+ *
+ * A suite row creates its OWN testcase on the box (names are unique there), so
+ * it needs a name of its own — and one that says where it came from and that a
+ * suite made it, rather than a bare copy of the original sitting beside it.
+ */
+function defaultRowName(testcaseName?: string): string {
+  const base = (testcaseName ?? '').trim();
+  return base ? `${base}_automation` : '';
+}
+
 /** Options for a cfg picker: uploads first, then what is on the callbox. */
 function cfgOptions(files: Array<{ name: string; mtime?: string }>, uploaded: Record<string, string> = {}) {
   return [
@@ -206,6 +219,8 @@ export default function AutomationSuitePage() {
   const [addIms,   setAddIms]           = useState<string>('');
   /** Optional name for the copy created on the box — blank reuses the source. */
   const [addDisplayName, setAddDisplayName] = useState<string>('');
+  /** The last name this filled in, so a hand-typed one is never overwritten. */
+  const autoNameRef = useRef<string>('');
   // Wizard tab state
   const [tab, setTab]                   = useState<'setup' | 'testcases'>('setup');
   /** SSH error surfaced from /api/automation/callbox-configs so the user
@@ -1899,7 +1914,15 @@ export default function AutomationSuitePage() {
                         reason rows were added by hand. */}
                     <SearchableSelect
                       value={addTcId}
-                      onChange={setAddTcId}
+                      onChange={(id) => {
+                        setAddTcId(id);
+                        // Default the display name to "<testcase>_automation".
+                        // Only when the field is untouched or still holds the
+                        // previous default — a name you typed stands.
+                        const next = defaultRowName(uesimTestcases.find(t => t.id === id)?.name);
+                        setAddDisplayName(cur => (!cur.trim() || cur === autoNameRef.current ? next : cur));
+                        autoNameRef.current = next;
+                      }}
                       options={uesimTestcases.map(t => ({ value: t.id, label: t.name }))}
                       placeholder="Search test case…"
                       ariaLabel="Simnovator testcase"
@@ -1911,7 +1934,7 @@ export default function AutomationSuitePage() {
                     <input
                       value={addDisplayName}
                       onChange={e => setAddDisplayName(e.target.value)}
-                      placeholder={uesimTestcases.find(t => t.id === addTcId)?.name ?? 'same as testcase'}
+                      placeholder={defaultRowName(uesimTestcases.find(t => t.id === addTcId)?.name) || 'pick a testcase first'}
                       className="border border-slate-300 rounded-md px-2 py-1 text-xs"
                     />
                     {/* The box only accepts letters, numbers, _ and - in a
@@ -2037,7 +2060,7 @@ export default function AutomationSuitePage() {
                       }
                       const newItem: SuiteItem = {
                         id: `item-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-                        name: addDisplayName.trim() || tc?.name || addTcId,
+                        name: addDisplayName.trim() || defaultRowName(tc?.name) || addTcId,
                         // Bind the row to the suite name as it stands now. Change
                         // the name afterwards and the next rows form a new suite.
                         suiteName: name.trim() || '(unnamed)',
