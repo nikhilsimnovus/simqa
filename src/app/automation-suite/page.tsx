@@ -30,6 +30,13 @@ interface SystemRow {
  *  up and still pass traffic. Mirrors MIN_POWER_ON_SEC in duplicateTestcase. */
 const MIN_POWER_ON = 20;
 
+/** A cfg field that is reported rather than chosen — the same box as the
+ *  pickers beside it, greyed so it reads as "this follows from another
+ *  choice" rather than looking like an input somebody forgot to fill. */
+const READONLY_CFG_BOX =
+  'h-9 w-full rounded-lg border border-line-strong bg-slate-100 px-3 text-sm text-slate-600 '
+  + 'cursor-default truncate focus:outline-none';
+
 /**
  * What a row is called on the Simnovator by default: the source testcase's
  * name with "_automation" after it.
@@ -2079,13 +2086,19 @@ export default function AutomationSuitePage() {
                         ariaLabel="mme.cfg"
                         noun="config"
                       />
-                      {/* The DB travels inside the MME config as an include —
-                          shown so the pick says which subscribers come with it. */}
-                      {addMme && (
-                        <span className="text-[10px] text-slate-500 mt-1 truncate">
-                          DB: {(ueDbByMme[addMme] ?? []).join(', ') || 'none included'}
-                        </span>
-                      )}
+                    </label>
+                    {/* The DB travels INSIDE the mme cfg as an include line, so
+                        it gets a box of its own and cannot be picked: choosing
+                        the mme cfg is what chooses the subscribers. */}
+                    <label className="flex flex-col text-xs">
+                      <span className="text-slate-500 mb-1">DB</span>
+                      <input
+                        readOnly
+                        value={addMme ? ((ueDbByMme[addMme] ?? []).join(', ') || 'none included') : ''}
+                        placeholder="— from mme.cfg —"
+                        title="Read-only — the DB is included by the mme.cfg beside it"
+                        className={READONLY_CFG_BOX}
+                      />
                     </label>
                     <label className="flex flex-col text-xs">
                       <span className="text-slate-500 mb-1 flex items-center justify-between">
@@ -2106,11 +2119,19 @@ export default function AutomationSuitePage() {
                         ariaLabel="ims.cfg"
                         noun="config"
                       />
-                      {/* /root/ots/config on the callbox — what the stack is
-                          wired to. Shown, never picked. */}
-                      <span className="text-[10px] text-slate-500 mt-1 truncate">
-                        ots.cfg → {otsLink || '—'}
-                      </span>
+                    </label>
+                    {/* /root/ots/config/ots.cfg on the callbox — the config the
+                        stack actually loads. The box's own wiring: shown, never
+                        picked, so it is read-only like the DB. */}
+                    <label className="flex flex-col text-xs">
+                      <span className="text-slate-500 mb-1">ots.cfg</span>
+                      <input
+                        readOnly
+                        value={otsLink}
+                        placeholder="—"
+                        title="Read-only — what /root/ots/config/ots.cfg points at on the callbox"
+                        className={READONLY_CFG_BOX}
+                      />
                     </label>
                   </>)}
                   <div className="col-span-3 flex gap-2 justify-end">
