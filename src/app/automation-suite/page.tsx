@@ -194,6 +194,20 @@ export default function AutomationSuitePage() {
   /** Per callbox, for the SAVED suites list: which DB each mme cfg includes,
    *  and what that box's ots.cfg points at. The wizard state below covers only
    *  the callbox being edited, so the list needs its own. */
+  /** Logins per Simnovator, for the saved list — each suite shows the one it
+   *  was saved with, which the wizard's own list cannot answer. */
+  const [usersBySystem, setUsersBySystem] = useState<Record<string, Array<{ id: string; username: string }>>>({});
+  useEffect(() => {
+    const ids = Array.from(new Set(suites.map(x => x.uesimSystemId).filter(Boolean))) as string[];
+    let cancelled = false;
+    for (const id of ids) {
+      fetch(`/api/box-users?systemId=${encodeURIComponent(id)}`)
+        .then(r => r.json())
+        .then(j => { if (!cancelled && j?.ok) setUsersBySystem(prev => ({ ...prev, [id]: j.users ?? [] })); })
+        .catch(() => { /* the row falls back to the saved id */ });
+    }
+    return () => { cancelled = true; };
+  }, [suites]);
   const [dbByCallbox, setDbByCallbox] = useState<Record<string, Record<string, string[]>>>({});
   const [otsByCallbox, setOtsByCallbox] = useState<Record<string, string>>({});
   useEffect(() => {
@@ -247,7 +261,7 @@ export default function AutomationSuitePage() {
   const [editRowId, setEditRowId]       = useState<string | null>(null);
   /** Saved-suites table: drag any column's right edge, as on Run History. */
   const { colWidths: suiteCols, tableWidth: suiteTableWidth, startResize: startSuiteResize } =
-    useColumnWidths([260, 150, 150, 170, 330]);
+    useColumnWidths([260, 210, 160, 360]);
   /** The per-suite testcase table: tick · expand · # · name · gnb · mme · ims · duration · status · actions. */
   const { colWidths: itemCols, tableWidth: itemsTableWidth, startResize: startItemResize } =
     useColumnWidths([28, 24, 32, 230, 150, 150, 150, 150, 150, 110, 100, 180]);
@@ -639,8 +653,11 @@ export default function AutomationSuitePage() {
 
   /** The login a saved suite executes as — its own, else the setup default. */
   const userOf = (s: SuiteRow) => {
-    const byId = suiteBoxUsers.find(u => u.id === s.boxUserId || u.username === s.boxUserId);
-    return byId?.username ?? s.boxUserId ?? 'default login';
+    // From THIS suite's Simnovator, not the wizard's current one: the list
+    // shows many suites, each carrying the login chosen on its own Setup.
+    const users = usersBySystem[s.uesimSystemId ?? ''] ?? suiteBoxUsers;
+    const byId = users.find(u => u.id === s.boxUserId || u.username === s.boxUserId);
+    return byId?.username ?? s.boxUserId ?? users[0]?.username ?? 'default login';
   };
 
   const hostOf = useCallback((id?: string) => {
@@ -1286,10 +1303,10 @@ export default function AutomationSuitePage() {
                 <ColGroup widths={suiteCols} />
                 <thead className="bg-slate-50 text-slate-600">
                   <tr>
-                    {['Suite Name', 'Setup', 'Simnovator', 'Created by', 'Actions'].map((label, i) => (
+                    {['Suite Name', 'Setup', 'Simnovator', 'Actions'].map((label, i) => (
                       <th
                         key={label}
-                        className={'relative px-3 py-2 font-medium border-r border-slate-200 last:border-r-0 ' + (i === 4 ? 'text-right' : 'text-left')}
+                        className={'relative px-3 py-2 font-medium border-r border-slate-200 last:border-r-0 ' + (i === 3 ? 'text-center' : 'text-left')}
                       >
                         <span className="truncate block">{label}</span>
                         {i < suiteCols.length - 1 ? <ResizeHandle onMouseDown={startSuiteResize(i)} /> : null}
@@ -1316,28 +1333,20 @@ export default function AutomationSuitePage() {
                     <tr>
                       <td className="px-3 py-2 font-medium border-r border-slate-100 truncate" title={s.name}>
                         {s.name}
-                        <div className="text-[11px] font-normal text-slate-500 truncate">
-                          {(s.items ?? []).length || s.testcaseIds.length} test case{((s.items ?? []).length || s.testcaseIds.length) === 1 ? '' : 's'}
-                        </div>
                       </td>
+                      {/* The machines this suite runs on, not just the kind —
+                          the UE is chosen on Setup, so it belongs here too. */}
                       <td className="px-3 py-2 text-[11px] text-slate-600 border-r border-slate-100 truncate">
                         {s.kind === 'uesim+callbox' ? 'UESIM + CALLBOX' : 'UESIM only'}
-                        {s.kind === 'uesim+callbox' && <div className="text-slate-500 truncate">{hostOf(s.callboxSystemId)}</div>}
+                        <div className="text-slate-500 truncate">
+                          UE {hostOf(s.ueSystemId) || <span className="text-slate-400">from topology</span>}
+                          {s.kind === 'uesim+callbox' && <> · Callbox {hostOf(s.callboxSystemId)}</>}
+                        </div>
                       </td>
                       <td className="px-3 py-2 text-[11px] font-mono text-slate-600 border-r border-slate-100 truncate">
                         {hostOf(s.uesimSystemId)}
                       </td>
-                      {/* Always named. A suite saved before sign-in existed has
-                          no author on record — say so rather than leave a blank
-                          that reads as if nobody made it. */}
-                      <td className="px-3 py-2 text-[11px] text-slate-600 border-r border-slate-100 truncate"
-                        title={s.updatedBy && s.updatedBy !== s.createdBy ? `last edited by ${s.updatedBy}` : undefined}>
-                        created by {s.createdBy ?? <span className="text-slate-400">unknown</span>}
-                        {s.updatedBy && s.updatedBy !== s.createdBy
-                          ? <div className="text-slate-500 truncate">edited by {s.updatedBy}</div>
-                          : null}
-                      </td>
-                      <td className="px-3 py-2 text-right whitespace-nowrap">
+                      <td className="px-3 py-2 text-center whitespace-nowrap">
                         {/* Stop replaces Run while this suite is going — the two
                             are never both useful, and a Run that does nothing is
                             worse than no button. */}
@@ -1377,7 +1386,7 @@ export default function AutomationSuitePage() {
                         bare count, so a 2-row suite shows both names. */}
                     {(s.items ?? []).length > 0 && (
                       <tr className="bg-slate-50/60">
-                        <td colSpan={5} className="px-3 pb-2 pt-0">
+                        <td colSpan={4} className="px-3 pb-2 pt-0">
                           <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
                             {(s.items ?? []).length} test case{(s.items ?? []).length === 1 ? '' : 's'}
                           </div>
