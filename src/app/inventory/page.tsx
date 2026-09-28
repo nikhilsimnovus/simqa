@@ -1116,7 +1116,15 @@ function deriveProfiles(systems: InventorySystem[], existing: TopologyProfile[])
         // longer carry a name, so one saved as "Simnovator-95" becomes its IP
         // — a hand-typed name (autoLinked cleared) is left alone.
         name: prior.autoLinked && sim.host ? sim.host : prior.name,
-        uesim: prior.uesim ?? ueForThisBench,
+        // A setup whose UE role points at its own Simnovator is the
+        // integrated-install fallback: the one taken when no dedicated UE was
+        // registered at the time. It is never a deliberate pairing — nothing
+        // offers "bind this station to itself" — so once a real UE exists for
+        // this bench, take it. Any OTHER prior binding is somebody's choice
+        // and is left exactly as it is.
+        uesim: prior.uesim && !(prior.uesim === sim.id && dedicatedUes[i])
+          ? prior.uesim
+          : ueForThisBench,
         callbox: prior.callbox ?? callboxes[i]?.id,
         appserver: prior.appserver ?? appservers[i]?.id,
       };
