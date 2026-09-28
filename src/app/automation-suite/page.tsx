@@ -31,6 +31,10 @@ interface SystemRow {
  *  up and still pass traffic. Mirrors MIN_POWER_ON_SEC in duplicateTestcase. */
 const MIN_POWER_ON = 20;
 
+/** What an empty optional configuration says. A dash reads as "unknown"; this
+ *  says which it is — there is no such file for this row. */
+const NOT_CONFIGURED = <span className="font-sans text-slate-400">Not configured</span>;
+
 /** A cfg field that is reported rather than chosen — the same box as the
  *  pickers beside it, greyed so it reads as "this follows from another
  *  choice" rather than looking like an input somebody forgot to fill. */
@@ -266,12 +270,10 @@ export default function AutomationSuitePage() {
   /** Row open for editing in the wizard table — its testcase and cfgs become
    *  pickers in place. Name and duration are always editable. */
   const [editRowId, setEditRowId]       = useState<string | null>(null);
-  /** Saved-suites table: drag any column's right edge, as on Run History. */
-  const { colWidths: suiteCols, tableWidth: suiteTableWidth, startResize: startSuiteResize } =
-    useColumnWidths([260, 210, 160, 360]);
-  /** The per-suite testcase table: tick · expand · # · name · gnb · mme · ims · duration · status · actions. */
+  /** The per-suite test case table — the only resizable grid left here: the
+   *  suites themselves are cards now, so there is nothing to drag around them. */
   const { colWidths: itemCols, tableWidth: itemsTableWidth, startResize: startItemResize } =
-    useColumnWidths([28, 24, 32, 230, 150, 150, 150, 150, 150, 110, 130, 90, 180]);
+    useColumnWidths([28, 24, 32, 240, 150, 150, 170, 150, 140, 120, 130, 130, 90, 170]);
   const [addCfg,   setAddCfg]           = useState<string>('');
   const [addMme,   setAddMme]           = useState<string>('');
   const [addIms,   setAddIms]           = useState<string>('');
@@ -1251,9 +1253,9 @@ export default function AutomationSuitePage() {
       <div className="max-w-7xl mx-auto px-6 py-8">
         <header className="mb-6">
           <div className="mb-1"><BackToRunHistory /></div>
-          <h1 className="text-2xl font-bold text-slate-900">Automation Suite</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Automation Suites</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Create a collection of test cases for a selected Simnovator and execute them sequentially.
+            Create, manage, and execute test cases sequentially on a selected Simnovator.
           </p>
         </header>
 
@@ -1416,9 +1418,9 @@ export default function AutomationSuitePage() {
               (!showWizard ? 'border-primary-600 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800')
             }
           >
-            Saved suites
-            <span className={'ml-1.5 text-[11px] tabular-nums ' + (!showWizard ? 'text-slate-500' : 'text-slate-400')}>
-              {suites.length}
+            Saved Suites
+            <span className={'ml-1 text-[13px] tabular-nums ' + (!showWizard ? 'text-slate-500' : 'text-slate-400')}>
+              ({suites.length})
             </span>
           </button>
           <button
@@ -1429,7 +1431,7 @@ export default function AutomationSuitePage() {
               (showWizard ? 'border-primary-600 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800')
             }
           >
-            {editingId ? 'Edit suite' : 'New suite'}
+            {editingId ? 'Edit Suite' : 'Create Suite'}
           </button>
         </div>
 
@@ -1437,7 +1439,7 @@ export default function AutomationSuitePage() {
         {!showWizard && (
         <section className="bg-surface border border-line rounded-xl p-5 mb-6">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base font-semibold text-slate-900">Saved suites ({suites.length})</h2>
+            <h2 className="text-base font-semibold text-slate-900">Saved Suites ({suites.length})</h2>
           </div>
           {/* Live progress of the running suite. The run is one long request, so
               this is polled separately — without it the page looks frozen for
@@ -1446,7 +1448,7 @@ export default function AutomationSuitePage() {
             <div className="mb-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
               <div className="flex items-baseline justify-between text-xs text-blue-900 gap-3">
                 <span className="font-semibold">
-                  Running {Math.min(progress.done + 1, progress.total)} of {progress.total} · {progress.suiteName}
+                  Running Suite · {progress.suiteName}
                 </span>
                 <span className="flex items-center gap-2">
                   <span>{Math.round((progress.done / Math.max(1, progress.total)) * 100)}%</span>
@@ -1465,8 +1467,14 @@ export default function AutomationSuitePage() {
                 <div className="h-full bg-blue-600 transition-all duration-500"
                   style={{ width: `${Math.round((progress.done / Math.max(1, progress.total)) * 100)}%` }} />
               </div>
-              <div className="mt-1 text-[11px] text-blue-800">
-                {progress.current ? `${progress.current} — running…` : 'starting…'}
+              {/* Which test case, by number and by name — the two things an
+                  operator watching a 20-minute run actually wants. */}
+              <div className="mt-1 text-[11px] text-blue-900">
+                Test Case {Math.min(progress.done + 1, progress.total)} of {progress.total}
+                {progress.current && <span className="font-mono"> · {progress.current}</span>}
+              </div>
+              <div className="text-[11px] text-blue-800">
+                Status: {progress.current ? 'Running' : 'Starting…'}
               </div>
             </div>
           )}
@@ -1480,25 +1488,23 @@ export default function AutomationSuitePage() {
             </div>
           ))}
           {suites.length === 0 ? (
-            <div className="text-sm text-slate-500 py-4 text-center">No suites yet — open the New suite tab above to build one.</div>
+            <div className="border border-dashed border-line rounded-lg py-10 text-center">
+              <p className="text-sm font-medium text-slate-700">No Automation Suites</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Create an automation suite by selecting a Simnovator and adding one or more test cases.
+              </p>
+              <button type="button" onClick={openNew}
+                className="mt-3 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5">
+                + Create Suite
+              </button>
+            </div>
           ) : (
-            <div className="overflow-x-auto border border-line rounded-md">
-              <table className="text-sm table-fixed" style={{ width: suiteTableWidth, minWidth: '100%' }}>
-                <ColGroup widths={suiteCols} />
-                <thead className="bg-slate-50 text-slate-600">
-                  <tr>
-                    {['Suite Name', 'Setup', 'Simnovator', 'Actions'].map((label, i) => (
-                      <th
-                        key={label}
-                        className={'relative px-3 py-2 font-medium border-r border-slate-200 last:border-r-0 ' + (i === 3 ? 'text-center' : 'text-left')}
-                      >
-                        <span className="truncate block">{label}</span>
-                        {i < suiteCols.length - 1 ? <ResizeHandle onMouseDown={startSuiteResize(i)} /> : null}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
+            /* A suite is a thing that CONTAINS test cases, so it is drawn as
+               one — a card with its own details and its rows inside. It used to
+               be a row in a table whose next row happened to hold another
+               table, which put the suite and its test cases at the same visual
+               level and read as one flat grid. */
+            <div className="space-y-4">
                   {suites.map(s => {
                     // The box runs one testcase at a time. If something is
                     // already executing on this suite's Simnovator, Run would
@@ -1513,37 +1519,53 @@ export default function AutomationSuitePage() {
                     // want box-awareness; Save must not.
                     const boxBusy = s.uesimSystemId ? busyBySystem[busyKey(s.uesimSystemId, s.boxUserId)] : null;
                     return (
-                    <React.Fragment key={s.id}>
-                    <tr>
-                      <td className="px-3 py-2 font-medium border-r border-slate-100 truncate" title={s.name}>
-                        {s.name}
-                      </td>
-                      {/* The machines this suite runs on, not just the kind —
-                          the UE is chosen on Setup, so it belongs here too. */}
-                      <td className="px-3 py-2 text-[11px] text-slate-600 border-r border-slate-100 truncate">
-                        {s.kind === 'uesim+callbox' ? 'UESIM + CALLBOX' : 'UESIM only'}
-                        <div className="text-slate-500 truncate">
-                          UE {hostOf(s.ueSystemId) || <span className="text-slate-400">from topology</span>}
-                          {s.kind === 'uesim+callbox' && <> · Callbox {hostOf(s.callboxSystemId)}</>}
+                    <article key={s.id} className="border border-line rounded-lg bg-surface">
+                      <div className="px-4 py-3 border-b border-line">
+                        <h3 className="text-sm font-semibold text-slate-900 truncate" title={s.name}>{s.name}</h3>
+                        <p className="text-[11px] text-slate-500">Automation Suite</p>
+                      </div>
+
+                      {/* Suite Details — one label per value. It used to be one
+                          run-on line ("UESIM + CALLBOX UE 192.168.1.101 ·
+                          Callbox 192.168.1.106") that had to be parsed rather
+                          than read. */}
+                      <dl className="px-4 py-3 grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-3 text-xs border-b border-line">
+                        <div>
+                          <dt className="text-slate-500">Simnovator</dt>
+                          <dd className="font-mono text-slate-800 truncate">{hostOf(s.uesimSystemId) || '–'}</dd>
                         </div>
-                      </td>
-                      <td className="px-3 py-2 text-[11px] font-mono text-slate-600 border-r border-slate-100 truncate">
-                        {hostOf(s.uesimSystemId)}
-                      </td>
-                      <td className="px-3 py-2 text-center whitespace-nowrap">
+                        <div>
+                          <dt className="text-slate-500">Setup</dt>
+                          <dd className="text-slate-800">{s.kind === 'uesim+callbox' ? 'UESIM + CALLBOX' : 'UESIM only'}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">UE</dt>
+                          <dd className="font-mono text-slate-800 truncate">
+                            {hostOf(s.ueSystemId) || <span className="font-sans text-slate-400">from topology</span>}
+                          </dd>
+                        </div>
+                        {s.kind === 'uesim+callbox' && (
+                          <div>
+                            <dt className="text-slate-500">Callbox</dt>
+                            <dd className="font-mono text-slate-800 truncate">{hostOf(s.callboxSystemId) || '–'}</dd>
+                          </div>
+                        )}
+                      </dl>
+
+                      <div className="px-4 py-3 flex flex-wrap items-center gap-2 border-b border-line">
                         {/* Stop replaces Run while this suite is going — the two
                             are never both useful, and a Run that does nothing is
                             worse than no button. */}
                         {running === s.id || (boxBusy && progress?.suiteId === s.id) ? (
                           <button onClick={() => stopRun(s)}
                             title="Stop the running test case and skip the rest"
-                            className="rounded-md bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-3 py-1.5 mr-1">
+                            className="rounded-md bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-3 py-1.5">
                             ⏹ Stop
                           </button>
                         ) : (
                           <button onClick={() => setConfirmRun({ suite: s })} disabled={!!boxBusy}
-                            title={boxBusy ? `${boxBusy.testCaseName} is already running on ${boxBusy.host}` : 'Run every testcase in this suite'}
-                            className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xs font-semibold px-3 py-1.5 mr-1">
+                            title={boxBusy ? `${boxBusy.testCaseName} is already running on ${boxBusy.host}` : 'Run every test case in this suite, in order'}
+                            className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xs font-semibold px-3 py-1.5">
                             ▶ Run Suite
                           </button>
                         )}
@@ -1555,29 +1577,39 @@ export default function AutomationSuitePage() {
                             rows: (s.items ?? []).filter(i => pickedIn(s.id).has(i.id)),
                           })}
                           disabled={running === s.id || !!boxBusy || pickedIn(s.id).size === 0}
-                          title={pickedIn(s.id).size === 0 ? 'Tick one or more testcases first' : `Run the ${pickedIn(s.id).size} ticked testcase(s)`}
-                          className="rounded-md border border-blue-600 text-blue-700 hover:bg-blue-50 disabled:border-slate-300 disabled:text-slate-400 text-xs font-semibold px-3 py-1.5 mr-1">
+                          title={pickedIn(s.id).size === 0 ? 'Tick one or more test cases first' : `Run the ${pickedIn(s.id).size} ticked test case(s)`}
+                          className="rounded-md border border-blue-600 text-blue-700 hover:bg-blue-50 disabled:border-slate-300 disabled:text-slate-400 text-xs font-semibold px-3 py-1.5">
                           ▶ Run Selected{pickedIn(s.id).size > 0 ? ` (${pickedIn(s.id).size})` : ''}
                         </button>
                         {/* Opens the wizard straight on the Testcases step — from
                             the suite list the thing you want is another row, not
                             the systems you already picked. */}
-                        <button onClick={() => openEdit(s, 'testcases')} className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-2 py-1 mr-1">Add</button>
+                        <button onClick={() => openEdit(s, 'testcases')}
+                          className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-3 py-1.5">+ Add Test Case</button>
                         {/* What each row ran against, kept per run. */}
                         <button onClick={() => openConfigs(s)}
                           title="The enb/mme/ims/DB/ots/ue configs saved from each run of this suite"
-                          className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-2 py-1 mr-1">Configs</button>
-                        <button onClick={() => deleteSuite(s)} className="rounded-md border border-red-300 text-red-600 hover:bg-red-50 text-xs px-2 py-1">Delete</button>
-                      </td>
-                    </tr>
-                    {/* The suite's testcases listed underneath rather than as a
-                        bare count, so a 2-row suite shows both names. */}
-                    {(s.items ?? []).length > 0 && (
-                      <tr className="bg-slate-50/60">
-                        <td colSpan={4} className="px-3 pb-2 pt-0">
-                          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
-                            {(s.items ?? []).length} test case{(s.items ?? []).length === 1 ? '' : 's'}
+                          className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-3 py-1.5">Configurations</button>
+                        <button onClick={() => deleteSuite(s)}
+                          className="ml-auto rounded-md border border-red-300 text-red-600 hover:bg-red-50 text-xs px-3 py-1.5">Delete Suite</button>
+                      </div>
+
+                      <div className="px-4 py-3">
+                        <h4 className="text-xs font-semibold text-slate-700 mb-2">
+                          Test Cases ({(s.items ?? []).length})
+                        </h4>
+                        {(s.items ?? []).length === 0 ? (
+                          <div className="border border-dashed border-line rounded-md py-6 text-center">
+                            <p className="text-xs font-medium text-slate-600">No Test Cases</p>
+                            <p className="mt-0.5 text-[11px] text-slate-500">
+                              Add test cases to this suite to enable sequential execution.
+                            </p>
+                            <button type="button" onClick={() => openEdit(s, 'testcases')}
+                              className="mt-2 rounded-md border border-slate-300 hover:bg-slate-50 text-[11px] px-2.5 py-1">
+                              + Add Test Case
+                            </button>
                           </div>
+                        ) : (
                           <div className="overflow-x-auto">
                           <table className="text-xs border border-line rounded bg-surface table-fixed"
                             style={{ width: itemsTableWidth, minWidth: '100%' }}>
@@ -1596,7 +1628,7 @@ export default function AutomationSuitePage() {
                                 <th className="px-2 py-1 text-left">#</th>
                                 {/* Drag any right edge — the cfg names are long
                                     and which one a row runs is the point. */}
-                                {['Display name in Simnovator', 'gnb.cfg', 'mme.cfg', 'DB', 'ims.cfg', 'ots.cfg', 'Power-on duration (s)', 'Status', 'Verdict', 'Actions'].map((label, i) => (
+                                {['Test Case', 'gNB Configuration', 'MME Configuration', 'Database Configuration', 'IMS Configuration', 'OTS Configuration', 'UE Configuration', 'Power-On Duration', 'Status', 'Verdict', 'Actions'].map((label, i) => (
                                   <th key={label}
                                     className={'relative px-2 py-1 border-r border-slate-200 last:border-r-0 ' + (i >= 4 && i !== 5 ? 'text-right' : 'text-left')}>
                                     <span className="truncate block">{label}</span>
@@ -1679,8 +1711,12 @@ export default function AutomationSuitePage() {
                                           </select>
                                         </td>
                                       ))}
-                                      <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-500">
-                                        {otsByCallbox[s.callboxSystemId ?? ''] || '—'}
+                                      <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-500 truncate">
+                                        {otsByCallbox[s.callboxSystemId ?? ''] || NOT_CONFIGURED}
+                                      </td>
+                                      {/* UE Configuration — the UE box's own, not editable here. */}
+                                      <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-500 truncate">
+                                        {hostOf(s.ueSystemId) ? 'ue.cfg' : NOT_CONFIGURED}
                                       </td>
                                       <td className="px-2 py-1 text-right align-top">
                                         {/* Store the raw typed number and only raise it to the
@@ -1743,24 +1779,46 @@ export default function AutomationSuitePage() {
                                       onDragEnd={() => setDragRow(null)}
                                       title="Drag to reorder — rows execute top to bottom">⋮⋮</td>
                                     <td className="px-2 py-1 text-slate-400">{i + 1}</td>
-                                    <td className="px-2 py-1 font-medium text-slate-800">
-                                      {it.name}
-                                      <span className="text-slate-400 font-normal"> — {userOf(s)}</span>
+                                    {/* The name is the row's subject; who it runs
+                                        as is context under it. Long names are cut
+                                        with the full one on hover rather than
+                                        widening the table for everybody. */}
+                                    <td className="px-2 py-1">
+                                      <div className="font-medium text-slate-800 truncate" title={it.name}>{it.name}</div>
+                                      <div className="text-[10px] text-slate-400 truncate">Run as {userOf(s)}</div>
                                     </td>
-                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.callboxCfg ?? '–'}</td>
-                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.mmeCfg ?? '–'}</td>
+                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-600 truncate" title={it.callboxCfg ?? undefined}>
+                                      {it.callboxCfg ?? NOT_CONFIGURED}
+                                    </td>
+                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-600 truncate" title={it.mmeCfg ?? undefined}>
+                                      {it.mmeCfg ?? NOT_CONFIGURED}
+                                    </td>
                                     {/* The DB this mme cfg includes, and the box's own ots config. */}
-                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-500">{((dbByCallbox[s.callboxSystemId ?? ''] ?? {})[it.mmeCfg ?? ''] ?? []).join(', ') || '–'}</td>
-                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.imsCfg ?? '–'}</td>
-                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-500"
+                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-500 truncate"
+                                      title={((dbByCallbox[s.callboxSystemId ?? ''] ?? {})[it.mmeCfg ?? ''] ?? []).join(', ') || undefined}>
+                                      {((dbByCallbox[s.callboxSystemId ?? ''] ?? {})[it.mmeCfg ?? ''] ?? []).join(', ') || NOT_CONFIGURED}
+                                    </td>
+                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-600 truncate" title={it.imsCfg ?? undefined}>
+                                      {it.imsCfg ?? NOT_CONFIGURED}
+                                    </td>
+                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-500 truncate"
                                       title={otsByCallbox[s.callboxSystemId ?? '']
                                         ? (otsIsLinkByCallbox[s.callboxSystemId ?? '']
                                             ? `/root/ots/config/ots.cfg → ${otsByCallbox[s.callboxSystemId ?? '']}`
                                             : '/root/ots/config/ots.cfg — a file on this callbox, not a symlink')
                                         : undefined}>
-                                      {otsByCallbox[s.callboxSystemId ?? ''] || '–'}
+                                      {otsByCallbox[s.callboxSystemId ?? ''] || NOT_CONFIGURED}
                                     </td>
-                                    <td className="px-2 py-1 text-right">{it.durationSec ?? s.defaultDurationSec ?? MIN_POWER_ON}</td>
+                                    {/* The UE's config is the UE box's own — it is not
+                                        picked per row, but it IS part of what the row
+                                        runs against, and it is captured with the rest. */}
+                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-500 truncate"
+                                      title={hostOf(s.ueSystemId) ? `/root/ue/config/ue.cfg on ${hostOf(s.ueSystemId)}` : undefined}>
+                                      {hostOf(s.ueSystemId) ? 'ue.cfg' : NOT_CONFIGURED}
+                                    </td>
+                                    <td className="px-2 py-1 text-right whitespace-nowrap">
+                                      {it.durationSec ?? s.defaultDurationSec ?? MIN_POWER_ON} s
+                                    </td>
                                     <td className={`px-2 py-1 whitespace-nowrap ${st.cls} ${st.title ? 'cursor-help' : ''}`} title={st.title}>{st.dot} {st.label}</td>
                                     {/* The box's own PASS/FAIL, beside its own status — the
                                         pair the Simnovator GUI shows for an execution. */}
@@ -1790,14 +1848,11 @@ export default function AutomationSuitePage() {
                             </tbody>
                           </table>
                           </div>
-                        </td>
-                      </tr>
-                    )}
-                    </React.Fragment>
+                        )}
+                      </div>
+                    </article>
                     );
                   })}
-                </tbody>
-              </table>
             </div>
           )}
         </section>
@@ -2000,7 +2055,7 @@ export default function AutomationSuitePage() {
                   <table className="min-w-full text-xs">
                     <thead className="bg-slate-50 text-slate-600">
                       <tr>
-                        <th className="text-left px-3 py-2">Testcase</th>
+                        <th className="text-left px-3 py-2">Test Case</th>
                         <th className="text-center px-3 py-2">Verdict</th>
                         <th className="text-center px-3 py-2">A status</th>
                         <th className="text-center px-3 py-2">A ok</th>
@@ -2517,15 +2572,35 @@ export default function AutomationSuitePage() {
         {/* Run result */}
         {runResult && (
           <section className="bg-surface border border-line rounded-xl p-5">
-            <h2 className="text-base font-semibold text-slate-900 mb-3">
-              Run: <code>{runResult.suiteName}</code>{' '}
-              <span className="text-sm font-normal">— {runResult.passed}/{runResult.total} pass · {runResult.failed} fail</span>
-            </h2>
-            <div className="text-sm text-slate-700 mb-3">
-              <span className="text-slate-500">Kind:</span> {runResult.kind}
-              {runResult.uesimHost   && <> · <span className="text-slate-500">UESIM:</span> {runResult.uesimHost}</>}
-              {runResult.callboxHost && <> · <span className="text-slate-500">Callbox:</span> {runResult.callboxHost}</>}
+            <h2 className="text-base font-semibold text-slate-900">Suite Execution Complete</h2>
+            <p className="text-sm text-slate-600 mb-3">{runResult.suiteName}</p>
+            {/* The three numbers first, because that is the question being
+                asked; the machines and the per-row detail follow. */}
+            <div className="flex flex-wrap gap-6 mb-3 text-sm">
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Test Cases</div>
+                <div className="text-lg font-semibold text-slate-900 tabular-nums">{runResult.total}</div>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Passed</div>
+                <div className="text-lg font-semibold text-emerald-700 tabular-nums">{runResult.passed}</div>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Failed</div>
+                <div className={'text-lg font-semibold tabular-nums ' + (runResult.failed > 0 ? 'text-red-700' : 'text-slate-400')}>
+                  {runResult.failed}
+                </div>
+              </div>
             </div>
+            <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs mb-3">
+              <div className="flex gap-2"><dt className="text-slate-500">Setup</dt><dd className="text-slate-800">{runResult.kind}</dd></div>
+              {runResult.uesimHost && (
+                <div className="flex gap-2"><dt className="text-slate-500">Simnovator</dt><dd className="font-mono text-slate-800">{runResult.uesimHost}</dd></div>
+              )}
+              {runResult.callboxHost && (
+                <div className="flex gap-2"><dt className="text-slate-500">Callbox</dt><dd className="font-mono text-slate-800">{runResult.callboxHost}</dd></div>
+              )}
+            </dl>
             <div className="overflow-x-auto border border-line rounded-md">
               <table className="min-w-full text-xs">
                 <thead className="bg-slate-50 text-slate-600">
