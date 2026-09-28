@@ -31,7 +31,12 @@ function write(s: StoreShape): void {
 }
 
 export function listSuites(): AutomationSuite[] {
-  return read().suites;
+  // Newest first. The file keeps suites in the order they were appended, so
+  // the list used to open on whatever was created first — and the suite
+  // somebody had just saved sat at the bottom, past everything older.
+  // Suites saved before createdAt existed have no timestamp; they keep their
+  // file order at the end rather than jumping to the top.
+  return [...read().suites].sort((x, y) => (y.createdAt ?? '').localeCompare(x.createdAt ?? ''));
 }
 
 export function getSuite(id: string): AutomationSuite | undefined {
