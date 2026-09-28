@@ -283,6 +283,28 @@ export default function AutomationSuitePage() {
   const [runResult, setRunResult] = useState<SuiteRunResult | null>(null);
   const [running, setRunning]     = useState<string>('');
   // Run history (per suite, lazy)
+  /** The suite whose saved configs are open, and what was saved for it. Each
+   *  run keeps the six files the row actually executed against; a version is
+   *  added only when they differ from the last one, so v2 means somebody
+   *  changed something. */
+  const [configsFor, setConfigsFor] = useState<SuiteRow | null>(null);
+  const [savedConfigs, setSavedConfigs] = useState<Array<{
+    row: string;
+    versions: Array<{
+      version: string; capturedAt?: string; capturedBy?: string;
+      callboxHost?: string; ueHost?: string;
+      files: Array<{ name: string; bytes: number; source?: string }>;
+    }>;
+  }> | null>(null);
+
+  const openConfigs = useCallback(async (suite: SuiteRow) => {
+    setConfigsFor(suite); setSavedConfigs(null);
+    try {
+      const r = await fetch(`/api/automation/suites/${suite.id}/configs`).then(r => r.json());
+      setSavedConfigs(r?.ok ? (r.rows ?? []) : []);
+    } catch { setSavedConfigs([]); }
+  }, []);
+
   const [historyFor, setHistoryFor] = useState<string>('');           // suite id whose history we're viewing
   const [history, setHistory]       = useState<RunHistoryRow[]>([]);
   // Compare selection — array of (runId) toggled, max 2
@@ -1498,6 +1520,10 @@ export default function AutomationSuitePage() {
                             the suite list the thing you want is another row, not
                             the systems you already picked. */}
                         <button onClick={() => openEdit(s, 'testcases')} className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-2 py-1 mr-1">Add</button>
+                        {/* What each row ran against, kept per run. */}
+                        <button onClick={() => openConfigs(s)}
+                          title="The enb/mme/ims/DB/ots/ue configs saved from each run of this suite"
+                          className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-2 py-1 mr-1">Configs</button>
                         <button onClick={() => deleteSuite(s)} className="rounded-md border border-red-300 text-red-600 hover:bg-red-50 text-xs px-2 py-1">Delete</button>
                       </td>
                     </tr>
@@ -1725,6 +1751,70 @@ export default function AutomationSuitePage() {
             </div>
           )}
         </section>
+        )}
+
+        {/* Saved configs: the folder tree the runs write, read through the app
+            so nobody has to go on to the server to see what a row ran with. */}
+        {configsFor && (
+          <section className="bg-surface border border-line rounded-xl p-5 mb-6">
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-base font-semibold text-slate-900">
+                Saved configs — {configsFor.name}
+              </h2>
+              <button onClick={() => { setConfigsFor(null); setSavedConfigs(null); }}
+                className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-2 py-1">Close</button>
+            </div>
+            <p className="text-[11px] text-slate-500 mb-3">
+              Every run keeps the six files its row actually executed against. A new version
+              appears only when they differ from the last run, so v2 means somebody changed
+              something — and the next run says so before it starts.
+            </p>
+
+            {savedConfigs === null ? (
+              <p className="text-xs text-slate-500">Reading…</p>
+            ) : savedConfigs.every(r => r.versions.length === 0) ? (
+              <p className="text-xs text-slate-500">
+                Nothing saved yet — the first run of each test case writes v1.
+              </p>
+            ) : (
+              <div className="space-y-4">
+                {savedConfigs.map(r => (
+                  <div key={r.row}>
+                    <div className="text-sm font-medium text-slate-800">{r.row}</div>
+                    {r.versions.length === 0 ? (
+                      <p className="text-[11px] text-slate-400 mt-0.5">not run yet</p>
+                    ) : (
+                      <div className="mt-1.5 space-y-2">
+                        {r.versions.map(v => (
+                          <div key={v.version} className="rounded-md border border-line px-3 py-2">
+                            <div className="flex items-center gap-2 text-xs">
+                              <span className="font-semibold text-slate-800">{v.version}</span>
+                              {v.capturedAt && <span className="text-slate-500">{new Date(v.capturedAt).toLocaleString()}</span>}
+                              {v.capturedBy && <span className="text-slate-400">as {v.capturedBy}</span>}
+                              {v.callboxHost && <span className="text-slate-400 font-mono">callbox {v.callboxHost}</span>}
+                              {v.ueHost && <span className="text-slate-400 font-mono">UE {v.ueHost}</span>}
+                            </div>
+                            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                              {v.files.map(f => (
+                                <a key={f.name}
+                                  href={`/api/automation/suites/${configsFor.id}/configs?row=${encodeURIComponent(r.row)}&version=${v.version}&file=${f.name}`}
+                                  target="_blank" rel="noreferrer"
+                                  className="text-[11px] text-blue-700 hover:underline font-mono"
+                                  title={f.source ? `on the box: ${f.source}` : undefined}>
+                                  {f.name}
+                                  <span className="text-slate-400"> {(f.bytes / 1024).toFixed(1)}k</span>
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         )}
 
         {/* Run history + compare (visible when "Runs" was clicked) */}
