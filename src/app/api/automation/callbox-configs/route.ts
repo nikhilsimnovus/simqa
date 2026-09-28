@@ -1,4 +1,4 @@
-// GET /api/automation/callbox-configs?systemId=sys-2&dir=enb|mme
+// GET /api/automation/callbox-configs?systemId=sys-2&dir=enb|mme|ots
 //
 // Lists config files on the chosen callbox via SSH. `dir` selects which
 // directory: 'enb' -> /root/enb/config (gnb/enb cfgs), 'mme' -> /root/mme/config
@@ -12,7 +12,7 @@
 import { NextResponse } from 'next/server';
 import { loadInventory, getSystem } from '@/lib/inventory';
 import { readCommand } from '@/lib/configFidelity/ssh';
-import { isPickableCfg } from '@/lib/labCfgLink';
+import { isPickableCfg, ueDbForAll } from '@/lib/labCfgLink';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,7 +26,10 @@ export async function GET(req: Request) {
   if (sys.type !== 'CALLBOX') {
     return NextResponse.json({ ok: false, error: `system "${systemId}" is not a CALLBOX (type=${sys.type})` }, { status: 400 });
   }
-  const DIRS: Record<string, string> = { enb: '/root/enb/config', mme: '/root/mme/config' };
+  // 'ots' is the box's own /root/ots/config — what the stack is actually
+  // wired to (ots.cfg names the ENB/MME/IMS config files it loads). Listed,
+  // never picked: nothing in a suite chooses it.
+  const DIRS: Record<string, string> = { enb: '/root/enb/config', mme: '/root/mme/config', ots: '/root/ots/config' };
   const dirKey = url.searchParams.get('dir') ?? 'enb';
   const dir = DIRS[dirKey];
   if (!dir) {
@@ -81,7 +84,24 @@ export async function GET(req: Request) {
     }).filter(f => f.name && f.pickable).map(({ pickable: _p, ...f }) => f);
     // Sort newest first.
     files.sort((a, b) => b.mtimeEpoch - a.mtimeEpoch);
-    return NextResponse.json({ ok: true, host: sys.host, dir, files });
+
+    // Which subscriber DB each mme cfg pulls in. The DB is not separately
+    // selectable — it travels inside the MME config as an `include` line — so
+    // it is reported rather than offered, and the picker can show which DB a
+    // given mme.cfg brings with it.
+    const ueDb = dirKey === 'mme' ? await ueDbForAll(sys).catch(() => ({})) : undefined;
+
+    // ots.cfg is a symlink, like enb.cfg and mme.cfg — the file it points at is
+    // the one the stack loads, so the name alone says nothing.
+    let otsLink: string | undefined;
+    if (dirKey === 'ots') {
+      const out = await readCommand(
+        sys,
+        `sudo -n readlink '${dir}/ots.cfg' 2>/dev/null || readlink '${dir}/ots.cfg' 2>/dev/null || true`,
+      ).catch(() => '');
+      otsLink = out.trim().split('/').filter(Boolean).pop() || undefined;
+    }
+    return NextResponse.json({ ok: true, host: sys.host, dir, files, ...(ueDb ? { ueDb } : {}), ...(otsLink ? { otsLink } : {}) });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
   }

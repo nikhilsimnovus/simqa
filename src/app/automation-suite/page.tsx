@@ -182,6 +182,36 @@ export default function AutomationSuitePage() {
   // is layering on top via Upload
   const [callboxFiles, setCbxFiles]   = useState<CallboxFile[]>([]);
   /** /root/mme/config — the mme + ims cfgs live here, not with the radio one. */
+  /** mme cfg name → the DB file(s) it includes, read off the callbox. */
+  const [ueDbByMme, setUeDbByMme] = useState<Record<string, string[]>>({});
+  /** Per callbox, for the SAVED suites list: which DB each mme cfg includes,
+   *  and what that box's ots.cfg points at. The wizard state below covers only
+   *  the callbox being edited, so the list needs its own. */
+  const [dbByCallbox, setDbByCallbox] = useState<Record<string, Record<string, string[]>>>({});
+  const [otsByCallbox, setOtsByCallbox] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const ids = Array.from(new Set(suites.map(x => x.callboxSystemId).filter(Boolean))) as string[];
+    if (ids.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const id of ids) {
+        try {
+          const [mmeR, otsR] = await Promise.all([
+            fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(id)}&dir=mme`).then(r => r.json()),
+            fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(id)}&dir=ots`).then(r => r.json()),
+          ]);
+          if (cancelled) return;
+          if (mmeR?.ok) setDbByCallbox(prev => ({ ...prev, [id]: mmeR.ueDb ?? {} }));
+          if (otsR?.ok) setOtsByCallbox(prev => ({ ...prev, [id]: otsR.otsLink ?? '' }));
+        } catch { /* the row shows "–" until the box answers */ }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [suites]);
+
+  /** What /root/ots/config/ots.cfg points at on the callbox — the file the
+   *  stack actually loads. Shown, never picked; it is the box's own wiring. */
+  const [otsLink, setOtsLink] = useState<string>('');
   const [mmeFiles, setMmeFiles]       = useState<CallboxFile[]>([]);
   const [loadingCbx, setLoadingCbx]   = useState(false);
   const [uploadedConfigs, setUploads] = useState<Record<string, string>>({});
@@ -213,7 +243,7 @@ export default function AutomationSuitePage() {
     useColumnWidths([260, 150, 150, 170, 330]);
   /** The per-suite testcase table: tick · expand · # · name · gnb · mme · ims · duration · status · actions. */
   const { colWidths: itemCols, tableWidth: itemsTableWidth, startResize: startItemResize } =
-    useColumnWidths([28, 24, 32, 240, 170, 170, 170, 120, 110, 190]);
+    useColumnWidths([28, 24, 32, 230, 150, 150, 150, 150, 150, 110, 100, 180]);
   const [addCfg,   setAddCfg]           = useState<string>('');
   const [addMme,   setAddMme]           = useState<string>('');
   const [addIms,   setAddIms]           = useState<string>('');
@@ -701,13 +731,19 @@ export default function AutomationSuitePage() {
     if (!sysId) { setCbxFiles([]); setMmeFiles([]); setCbxLoadError(''); return; }
     setLoadingCbx(true); setCbxLoadError('');
     try {
-      // Two directories: the radio cfgs and the core (mme + ims) cfgs.
-      const [enbR, mmeR] = await Promise.all([
+      // Three directories: the radio cfgs, the core (mme + ims) cfgs, and the
+      // box's own /root/ots/config — the last is shown, never picked.
+      const [enbR, mmeR, otsR] = await Promise.all([
         fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(sysId)}&dir=enb`).then(r => r.json()),
         fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(sysId)}&dir=mme`).then(r => r.json()),
+        fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(sysId)}&dir=ots`).then(r => r.json()).catch(() => null),
       ]);
       setCbxFiles(enbR?.ok ? (enbR.files ?? []) : []);
       setMmeFiles(mmeR?.ok ? (mmeR.files ?? []) : []);
+      // Which DB each mme cfg includes — derived, not chosen: the DB travels
+      // inside the MME config as an `include` line.
+      setUeDbByMme(mmeR?.ok ? (mmeR.ueDb ?? {}) : {});
+      setOtsLink(otsR?.ok ? (otsR.otsLink ?? '') : '');
       if (!enbR?.ok) setCbxLoadError(enbR?.error ?? 'failed to list callbox configs');
     } finally { setLoadingCbx(false); }
   }, []);
@@ -1356,7 +1392,7 @@ export default function AutomationSuitePage() {
                                 <th className="px-2 py-1 text-left">#</th>
                                 {/* Drag any right edge — the cfg names are long
                                     and which one a row runs is the point. */}
-                                {['Display name in Simnovator', 'gnb.cfg', 'mme.cfg', 'ims.cfg', 'Power-on duration (s)', 'Status', 'Actions'].map((label, i) => (
+                                {['Display name in Simnovator', 'gnb.cfg', 'mme.cfg', 'DB', 'ims.cfg', 'ots.cfg', 'Power-on duration (s)', 'Status', 'Actions'].map((label, i) => (
                                   <th key={label}
                                     className={'relative px-2 py-1 border-r border-slate-200 last:border-r-0 ' + (i >= 4 && i !== 5 ? 'text-right' : 'text-left')}>
                                     <span className="truncate block">{label}</span>
@@ -1410,7 +1446,11 @@ export default function AutomationSuitePage() {
                                           </select>
                                         </label>
                                       </td>
-                                      {([['callboxCfg', callboxFiles], ['mmeCfg', mmeFiles], ['imsCfg', mmeFiles]] as const).map(([field, list]) => (
+                                      {/* gnb · mme · DB · ims · ots — the DB and
+                                          ots cells are read-only: the DB is an
+                                          include inside the mme cfg, and ots is
+                                          the box's own wiring. */}
+                                      {([['callboxCfg', callboxFiles], ['mmeCfg', mmeFiles]] as const).map(([field, list]) => (
                                         <td key={field} className="px-2 py-1 align-top">
                                           <select
                                             value={(rowDraft[field] ?? it[field] ?? '') as string}
@@ -1421,6 +1461,23 @@ export default function AutomationSuitePage() {
                                           </select>
                                         </td>
                                       ))}
+                                      <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-500">
+                                        {((dbByCallbox[s.callboxSystemId ?? ''] ?? {})[(rowDraft.mmeCfg ?? it.mmeCfg ?? '') as string] ?? []).join(', ') || '—'}
+                                      </td>
+                                      {([['imsCfg', mmeFiles]] as const).map(([field, list]) => (
+                                        <td key={field} className="px-2 py-1 align-top">
+                                          <select
+                                            value={(rowDraft[field] ?? it[field] ?? '') as string}
+                                            onChange={e => setRowDraft({ ...rowDraft, [field]: e.target.value || undefined })}
+                                            className="w-full border border-slate-300 rounded px-1 py-0.5 text-[11px]">
+                                            <option value="">— none —</option>
+                                            {list.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
+                                          </select>
+                                        </td>
+                                      ))}
+                                      <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-500">
+                                        {otsByCallbox[s.callboxSystemId ?? ''] || '—'}
+                                      </td>
                                       <td className="px-2 py-1 text-right align-top">
                                         {/* Store the raw typed number and only raise it to the
                                             minimum on blur. Clamping on every keystroke made this
@@ -1485,7 +1542,10 @@ export default function AutomationSuitePage() {
                                     </td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.callboxCfg ?? '–'}</td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.mmeCfg ?? '–'}</td>
+                                    {/* The DB this mme cfg includes, and the box's own ots config. */}
+                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-500">{((dbByCallbox[s.callboxSystemId ?? ''] ?? {})[it.mmeCfg ?? ''] ?? []).join(', ') || '–'}</td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.imsCfg ?? '–'}</td>
+                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-500">{otsByCallbox[s.callboxSystemId ?? ''] || '–'}</td>
                                     <td className="px-2 py-1 text-right">{it.durationSec ?? s.defaultDurationSec ?? MIN_POWER_ON}</td>
                                     <td className={`px-2 py-1 whitespace-nowrap ${st.cls} ${st.title ? 'cursor-help' : ''}`} title={st.title}>{st.dot} {st.label}</td>
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
@@ -1797,7 +1857,11 @@ export default function AutomationSuitePage() {
                         <th className="px-2 py-1.5 text-left">Simnovator testcase</th>
                         {kind === 'uesim+callbox' && <th className="px-2 py-1.5 text-left">gnb.cfg</th>}
                         {kind === 'uesim+callbox' && <th className="px-2 py-1.5 text-left">mme.cfg</th>}
+                        {/* Derived from the mme cfg, and the box's own ots
+                            config — neither is chosen here. */}
+                        {kind === 'uesim+callbox' && <th className="px-2 py-1.5 text-left">DB</th>}
                         {kind === 'uesim+callbox' && <th className="px-2 py-1.5 text-left">ims.cfg</th>}
+                        {kind === 'uesim+callbox' && <th className="px-2 py-1.5 text-left">ots.cfg</th>}
                         <th className="px-2 py-1.5 text-right">Power-on duration (s)</th>
                         <th className="px-2 py-1.5"></th>
                       </tr>
@@ -1864,6 +1928,12 @@ export default function AutomationSuitePage() {
                                   />
                                 ) : (it.mmeCfg ?? <span className="text-slate-400 italic">(none)</span>)}
                               </td>
+                              {/* The DB the chosen mme.cfg pulls in. Read-only:
+                                  it is an `include` inside that file, so it
+                                  follows the mme choice rather than being set. */}
+                              <td className="px-2 py-1 font-mono text-[11px] text-slate-500">
+                                {(ueDbByMme[it.mmeCfg ?? ''] ?? []).join(', ') || <span className="text-slate-400 italic">—</span>}
+                              </td>
                               <td className="px-2 py-1 font-mono text-[11px] text-slate-600">
                                 {editRowId === it.id ? (
                                   <SearchableSelect
@@ -1873,6 +1943,10 @@ export default function AutomationSuitePage() {
                                     ariaLabel="ims.cfg" noun="config"
                                   />
                                 ) : (it.imsCfg ?? <span className="text-slate-400 italic">(none)</span>)}
+                              </td>
+                              {/* What the callbox itself is wired to. */}
+                              <td className="px-2 py-1 font-mono text-[11px] text-slate-500">
+                                {otsLink || <span className="text-slate-400 italic">—</span>}
                               </td>
                             </>)}
                             <td className="px-2 py-1 text-right">
@@ -2005,6 +2079,13 @@ export default function AutomationSuitePage() {
                         ariaLabel="mme.cfg"
                         noun="config"
                       />
+                      {/* The DB travels inside the MME config as an include —
+                          shown so the pick says which subscribers come with it. */}
+                      {addMme && (
+                        <span className="text-[10px] text-slate-500 mt-1 truncate">
+                          DB: {(ueDbByMme[addMme] ?? []).join(', ') || 'none included'}
+                        </span>
+                      )}
                     </label>
                     <label className="flex flex-col text-xs">
                       <span className="text-slate-500 mb-1 flex items-center justify-between">
@@ -2025,6 +2106,11 @@ export default function AutomationSuitePage() {
                         ariaLabel="ims.cfg"
                         noun="config"
                       />
+                      {/* /root/ots/config on the callbox — what the stack is
+                          wired to. Shown, never picked. */}
+                      <span className="text-[10px] text-slate-500 mt-1 truncate">
+                        ots.cfg → {otsLink || '—'}
+                      </span>
                     </label>
                   </>)}
                   <div className="col-span-3 flex gap-2 justify-end">
