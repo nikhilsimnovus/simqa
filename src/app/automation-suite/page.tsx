@@ -264,7 +264,7 @@ export default function AutomationSuitePage() {
     useColumnWidths([260, 210, 160, 360]);
   /** The per-suite testcase table: tick · expand · # · name · gnb · mme · ims · duration · status · actions. */
   const { colWidths: itemCols, tableWidth: itemsTableWidth, startResize: startItemResize } =
-    useColumnWidths([28, 24, 32, 230, 150, 150, 150, 150, 150, 110, 100, 180]);
+    useColumnWidths([28, 24, 32, 230, 150, 150, 150, 150, 150, 110, 130, 90, 180]);
   const [addCfg,   setAddCfg]           = useState<string>('');
   const [addMme,   setAddMme]           = useState<string>('');
   const [addIms,   setAddIms]           = useState<string>('');
@@ -421,6 +421,10 @@ export default function AutomationSuitePage() {
   /** Per-row failure/verdict reason, keyed [suiteId][displayName] — shown on
    *  hover over the Status cell so "Failed" says WHY and from where. */
   const [lastDetail, setLastDetail] = useState<Record<string, Record<string, string>>>({});
+  /** What the BOX said about each row last time: its execution status and its
+   *  verdict. Shown as-is, so the Status column can be read against the
+   *  Simnovator's own screen rather than being SimQA's paraphrase of it. */
+  const [lastBox, setLastBox] = useState<Record<string, Record<string, { status?: string; verdict?: string; stopped?: boolean }>>>({});
   /** Row being dragged, so a drop knows what to move. */
   const [dragRow, setDragRow] = useState<{ suiteId: string; itemId: string } | null>(null);
 
@@ -499,6 +503,7 @@ export default function AutomationSuitePage() {
     (async () => {
       const out: Record<string, Record<string, boolean>> = {};
       const reasons: Record<string, Record<string, string>> = {};
+      const boxes: Record<string, Record<string, { status?: string; verdict?: string; stopped?: boolean }>> = {};
       for (const s of suites) {
         try {
           // Dedicated endpoint: /runs returns summaries WITHOUT steps, so the
@@ -506,17 +511,30 @@ export default function AutomationSuitePage() {
           const r = await fetch(`/api/automation/suites/${s.id}/status`).then(r => r.json());
           if (r?.ok && r.statuses) out[s.id] = r.statuses;
           if (r?.ok && r.details) reasons[s.id] = r.details;
+          if (r?.ok && r.box) boxes[s.id] = r.box;
         } catch { /* a suite with no history is fine */ }
       }
-      if (!cancelled) { setLastStatus(out); setLastDetail(reasons); }
+      if (!cancelled) { setLastStatus(out); setLastDetail(reasons); setLastBox(boxes); }
     })();
     return () => { cancelled = true; };
   }, [suites, statusNonce]);
 
-  /** What to show in the Status column for one row. */
-  const statusOf = useCallback((s: SuiteRow, it: SuiteItem): { label: string; dot: string; cls: string; title?: string } => {
+  /**
+   * What to show in the Status and Verdict columns for one row.
+   *
+   * `label` is the BOX's own execution status where there is one — COMPLETED,
+   * ABORTED, the same word its GUI shows — so the two screens can be read
+   * side by side. `verdict` is the box's PASS/FAIL. A row that never reached
+   * the box has neither, and says so rather than borrowing the box's words for
+   * something the box never saw.
+   */
+  const statusOf = useCallback((s: SuiteRow, it: SuiteItem): {
+    label: string; dot: string; cls: string; title?: string;
+    verdict?: string; verdictCls?: string;
+  } => {
     // The saved reason for this row's last outcome — the tooltip on the cell.
     const reason = lastDetail[s.id]?.[it.name];
+    const box = lastBox[s.id]?.[it.name];
     // The box itself is the most reliable signal that a row is executing right
     // now: it survives a page refresh and is true even when the run was started
     // from the Simnovator's own GUI rather than here.
@@ -532,10 +550,29 @@ export default function AutomationSuitePage() {
     if (livePr === 'failed')  return { label: 'Failed',  dot: '🔴', cls: 'text-red-700', title: 'Failed during this run — the full reason appears once the run finishes' };
     if (livePr === 'skipped') return { label: 'Skipped', dot: '⚫', cls: 'text-slate-500' };
     const prev = lastStatus[s.id]?.[it.name];
-    if (prev === true)  return { label: 'Passed', dot: '🟢', cls: 'text-emerald-700', title: reason };
-    if (prev === false) return { label: 'Failed', dot: '🔴', cls: 'text-red-700', title: reason };
-    return { label: 'Not Run', dot: '⚪', cls: 'text-slate-400' };
-  }, [progress, lastStatus, lastDetail, busyBySystem]);
+    if (prev === undefined) return { label: 'Not Run', dot: '⚪', cls: 'text-slate-400' };
+
+    const verdict = box?.verdict;
+    const verdictCls = verdict === 'PASS' ? 'text-emerald-700 font-semibold'
+      : verdict ? 'text-red-700 font-semibold' : 'text-slate-400';
+    // The box's word when it has one. When it does not, the row failed before
+    // the box ever judged it — a testcase the box refused to create, a trigger
+    // it rejected — and "Not started" is the honest thing to say.
+    if (box?.status) {
+      return {
+        label: box.status + (box.stopped ? ' (stopped)' : ''),
+        dot: prev ? '🟢' : '🔴',
+        cls: prev ? 'text-slate-700' : 'text-red-700',
+        title: reason, verdict: verdict ?? '–', verdictCls,
+      };
+    }
+    return {
+      label: prev ? 'Passed' : 'Not started',
+      dot: prev ? '🟢' : '🔴',
+      cls: prev ? 'text-emerald-700' : 'text-red-700',
+      title: reason, verdict: verdict ?? '–', verdictCls,
+    };
+  }, [progress, lastStatus, lastDetail, lastBox, busyBySystem]);
 
   /** Rough wall-clock estimate for a run.
    *
@@ -1060,8 +1097,16 @@ export default function AutomationSuitePage() {
       // — without this the row sat at "Not Run" after passing. Merged rather
       // than replaced so running one row doesn't blank the others.
       const fresh: Record<string, boolean> = {};
-      for (const st of d.result?.steps ?? []) if (st?.testcaseId) fresh[st.testcaseId] = !!st.ok;
+      const freshBox: Record<string, { status?: string; verdict?: string; stopped?: boolean }> = {};
+      for (const st of d.result?.steps ?? []) {
+        if (!st?.testcaseId) continue;
+        fresh[st.testcaseId] = !!st.ok;
+        // The box's own status and verdict land with the result, so the two
+        // columns fill in straight away instead of after the next status poll.
+        freshBox[st.testcaseId] = { status: st.boxStatus, verdict: st.verdict, stopped: st.stopped };
+      }
       setLastStatus(prev => ({ ...prev, [s.id]: { ...(prev[s.id] ?? {}), ...fresh } }));
+      setLastBox(prev => ({ ...prev, [s.id]: { ...(prev[s.id] ?? {}), ...freshBox } }));
       // Refresh history if we were viewing this suite's runs.
       if (historyFor === s.id) await loadHistory(s.id);
     } catch (e: any) { setError(e?.message ?? String(e)); }
@@ -1492,7 +1537,7 @@ export default function AutomationSuitePage() {
                                 <th className="px-2 py-1 text-left">#</th>
                                 {/* Drag any right edge — the cfg names are long
                                     and which one a row runs is the point. */}
-                                {['Display name in Simnovator', 'gnb.cfg', 'mme.cfg', 'DB', 'ims.cfg', 'ots.cfg', 'Power-on duration (s)', 'Status', 'Actions'].map((label, i) => (
+                                {['Display name in Simnovator', 'gnb.cfg', 'mme.cfg', 'DB', 'ims.cfg', 'ots.cfg', 'Power-on duration (s)', 'Status', 'Verdict', 'Actions'].map((label, i) => (
                                   <th key={label}
                                     className={'relative px-2 py-1 border-r border-slate-200 last:border-r-0 ' + (i >= 4 && i !== 5 ? 'text-right' : 'text-left')}>
                                     <span className="truncate block">{label}</span>
@@ -1597,6 +1642,9 @@ export default function AutomationSuitePage() {
                                           onBlur={e => setRowDraft({ ...rowDraft, durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
                                           className="border border-slate-300 rounded px-1 py-0.5 w-[60px] text-[11px] text-right" />
                                       </td>
+                                      {/* Status and Verdict: both belong to the last run, and a
+                                          row being edited has not run yet. */}
+                                      <td className="px-2 py-1" />
                                       <td className="px-2 py-1" />
                                       <td className="px-2 py-1 text-right whitespace-nowrap align-top">
                                         {/* Gated on the global op-flag (an in-flight save), NOT
@@ -1648,6 +1696,9 @@ export default function AutomationSuitePage() {
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-500">{otsByCallbox[s.callboxSystemId ?? ''] || '–'}</td>
                                     <td className="px-2 py-1 text-right">{it.durationSec ?? s.defaultDurationSec ?? MIN_POWER_ON}</td>
                                     <td className={`px-2 py-1 whitespace-nowrap ${st.cls} ${st.title ? 'cursor-help' : ''}`} title={st.title}>{st.dot} {st.label}</td>
+                                    {/* The box's own PASS/FAIL, beside its own status — the
+                                        pair the Simnovator GUI shows for an execution. */}
+                                    <td className={`px-2 py-1 whitespace-nowrap ${st.verdictCls ?? 'text-slate-400'}`} title={st.title}>{st.verdict ?? '–'}</td>
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
                                       <button
                                         onClick={() => setConfirmRun({ suite: s, rows: [it] })}

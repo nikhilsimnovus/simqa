@@ -1,6 +1,8 @@
 // GET /api/automation/suites/[id]/status
 //
-// Each testcase's MOST RECENT outcome, as { "<display name>": true|false }.
+// Each testcase's MOST RECENT outcome: SimQA's pass/fail, and — the part an
+// operator actually compares against the box — the Simnovator's own execution
+// status and verdict, the same two fields its GUI shows.
 //
 // The /runs listing deliberately returns summaries without steps, so the page
 // cannot derive this from it. Walking the run records here keeps the response
@@ -53,15 +55,19 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     const statuses: Record<string, boolean> = {};
     const details: Record<string, string> = {};
     const lastRunAt: Record<string, string> = {};
+    /** The box's own words for this row: status (COMPLETED, ABORTED, …) and
+     *  verdict (PASS/FAIL). Absent when the row never reached the box. */
+    const box: Record<string, { status?: string; verdict?: string; stopped?: boolean }> = {};
     for (const run of runs) {
       for (const st of run?.steps ?? []) {
         if (!st?.testcaseId || st.testcaseId in statuses) continue;
         statuses[st.testcaseId] = !!st.ok;
         details[st.testcaseId] = reasonFor(st);
+        box[st.testcaseId] = { status: st.boxStatus, verdict: st.verdict, stopped: st.stopped };
         if (run.finishedAt) lastRunAt[st.testcaseId] = run.finishedAt;
       }
     }
-    return NextResponse.json({ ok: true, statuses, details, lastRunAt });
+    return NextResponse.json({ ok: true, statuses, details, lastRunAt, box });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
   }
