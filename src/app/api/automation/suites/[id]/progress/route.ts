@@ -16,5 +16,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   const { id } = await ctx.params;
   const p = getProgress(id);
   if (!p) return NextResponse.json({ ok: true, running: false });
-  return NextResponse.json({ ok: true, running: !p.finished, progress: p });
+  // `interrupted` means the run's process is gone — a deploy or a crash — so it
+  // is not running and never finished either. The page says so instead of
+  // quietly going back to looking idle.
+  return NextResponse.json({ ok: true, running: !p.finished, interrupted: !!p.interrupted, progress: p });
 }

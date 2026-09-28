@@ -446,6 +446,14 @@ export default function AutomationSuitePage() {
         if (r?.ok && !r.running && sawProgress.current) {
           setRunning('');
           setStatusNonce(n => n + 1);
+          // Its process is gone: a deploy or a crash took the run with it, so
+          // no result was ever saved. Say that, rather than letting the page
+          // look as though nothing had happened.
+          if (r.interrupted) {
+            setError(`The run of "${r.progress?.suiteName ?? 'this suite'}" was interrupted — SimQA restarted while it was going. `
+              + 'Nothing was saved for it; run it again when the box is free.');
+            setProgress(null);
+          }
         }
       } catch { /* transient */ }
     };
@@ -469,6 +477,13 @@ export default function AutomationSuitePage() {
             sawProgress.current = true;
             setProgress(r.progress);
             setRunning(s.id);
+            return;
+          }
+          // Not running, but the record says its process died mid-run. The
+          // page was not here to see it, so report it on arrival.
+          if (r?.ok && r.interrupted && r.progress) {
+            setError(`The last run of "${r.progress.suiteName}" was interrupted — SimQA restarted while it was going. `
+              + 'Nothing was saved for it; run it again when the box is free.');
             return;
           }
         } catch { /* a suite we can't reach simply isn't adopted */ }
