@@ -1727,8 +1727,11 @@ export default function AutomationSuitePage() {
                 lives on the Testcases tab where each row pairs a
                 Simnovator testcase with its own callbox cfg. */}
 
-            <div className="flex items-center justify-end gap-3 mt-4">
-              {!setupComplete && <span className="text-xs text-slate-500">{stepBlockedReason('testcases')}</span>}
+            <div className="flex items-center justify-end gap-2 mt-4">
+              {!setupComplete && <span className="text-xs text-slate-500 mr-1">{stepBlockedReason('testcases')}</span>}
+              {/* A way out of the Setup step too — the Testcases step has the
+                  same pair, so leaving never depends on which step you are on. */}
+              <button onClick={resetWizard} className="rounded-md border border-slate-300 text-sm px-4 py-2">Cancel</button>
               <button
                 onClick={() => setTab('testcases')}
                 disabled={!setupComplete}
