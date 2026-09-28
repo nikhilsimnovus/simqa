@@ -91,17 +91,33 @@ export async function GET(req: Request) {
     // given mme.cfg brings with it.
     const ueDb = dirKey === 'mme' ? await ueDbForAll(sys).catch(() => ({})) : undefined;
 
-    // ots.cfg is a symlink, like enb.cfg and mme.cfg — the file it points at is
-    // the one the stack loads, so the name alone says nothing.
+    // ots.cfg is USUALLY a symlink, like enb.cfg and mme.cfg, and then the file
+    // it points at is the one the stack loads. Not everywhere: on .106 it is a
+    // plain file (-rw-rw-r--, sysadmin) while on .107 it is
+    // ots.cfg -> ots.default.cfg. Reading only the link left the column empty
+    // on half the lab, which reads as "no ots config" when there plainly is
+    // one — so a regular file answers with its own name.
     let otsLink: string | undefined;
+    let otsIsLink: boolean | undefined;
     if (dirKey === 'ots') {
       const out = await readCommand(
         sys,
         `sudo -n readlink '${dir}/ots.cfg' 2>/dev/null || readlink '${dir}/ots.cfg' 2>/dev/null || true`,
       ).catch(() => '');
-      otsLink = out.trim().split('/').filter(Boolean).pop() || undefined;
+      const target = out.trim().split('/').filter(Boolean).pop();
+      if (target) {
+        otsLink = target;
+        otsIsLink = true;
+      } else if (files.some((f) => f.name === 'ots.cfg')) {
+        otsLink = 'ots.cfg';
+        otsIsLink = false;
+      }
     }
-    return NextResponse.json({ ok: true, host: sys.host, dir, files, ...(ueDb ? { ueDb } : {}), ...(otsLink ? { otsLink } : {}) });
+    return NextResponse.json({
+      ok: true, host: sys.host, dir, files,
+      ...(ueDb ? { ueDb } : {}),
+      ...(otsLink ? { otsLink, otsIsLink } : {}),
+    });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
   }

@@ -211,6 +211,9 @@ export default function AutomationSuitePage() {
   }, [suites]);
   const [dbByCallbox, setDbByCallbox] = useState<Record<string, Record<string, string[]>>>({});
   const [otsByCallbox, setOtsByCallbox] = useState<Record<string, string>>({});
+  /** Whether that callbox's ots.cfg is a symlink or a file in its own right —
+   *  worth saying, because the same name means two different things. */
+  const [otsIsLinkByCallbox, setOtsIsLinkByCallbox] = useState<Record<string, boolean>>({});
   useEffect(() => {
     const ids = Array.from(new Set(suites.map(x => x.callboxSystemId).filter(Boolean))) as string[];
     if (ids.length === 0) return;
@@ -224,7 +227,10 @@ export default function AutomationSuitePage() {
           ]);
           if (cancelled) return;
           if (mmeR?.ok) setDbByCallbox(prev => ({ ...prev, [id]: mmeR.ueDb ?? {} }));
-          if (otsR?.ok) setOtsByCallbox(prev => ({ ...prev, [id]: otsR.otsLink ?? '' }));
+          if (otsR?.ok) {
+            setOtsByCallbox(prev => ({ ...prev, [id]: otsR.otsLink ?? '' }));
+            setOtsIsLinkByCallbox(prev => ({ ...prev, [id]: !!otsR.otsIsLink }));
+          }
         } catch { /* the row shows "–" until the box answers */ }
       }
     })();
@@ -1746,7 +1752,14 @@ export default function AutomationSuitePage() {
                                     {/* The DB this mme cfg includes, and the box's own ots config. */}
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-500">{((dbByCallbox[s.callboxSystemId ?? ''] ?? {})[it.mmeCfg ?? ''] ?? []).join(', ') || '–'}</td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600">{it.imsCfg ?? '–'}</td>
-                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-500">{otsByCallbox[s.callboxSystemId ?? ''] || '–'}</td>
+                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-500"
+                                      title={otsByCallbox[s.callboxSystemId ?? '']
+                                        ? (otsIsLinkByCallbox[s.callboxSystemId ?? '']
+                                            ? `/root/ots/config/ots.cfg → ${otsByCallbox[s.callboxSystemId ?? '']}`
+                                            : '/root/ots/config/ots.cfg — a file on this callbox, not a symlink')
+                                        : undefined}>
+                                      {otsByCallbox[s.callboxSystemId ?? ''] || '–'}
+                                    </td>
                                     <td className="px-2 py-1 text-right">{it.durationSec ?? s.defaultDurationSec ?? MIN_POWER_ON}</td>
                                     <td className={`px-2 py-1 whitespace-nowrap ${st.cls} ${st.title ? 'cursor-help' : ''}`} title={st.title}>{st.dot} {st.label}</td>
                                     {/* The box's own PASS/FAIL, beside its own status — the
