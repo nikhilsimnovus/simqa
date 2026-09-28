@@ -6,31 +6,60 @@
 // call was refused by the box outright and never ran, which is the kind of
 // mistake a test catches and a live run finds only after someone's suite is
 // half finished.
-/** Voice user-plane profiles the box refuses to create with a short session:
- *  "sessionDuration N should be greater than Ms for VOLTE". A call needs
- *  setup + ring + media inside the session, so a 10s row is not creatable. */
+/** Voice profiles — the ones whose traffic is a call. */
 const VOICE_DATA_TYPES = new Set(['volte', 'vonr', 'voice', 'vt', 'video']);
 /** Floor for a voice profile that does not say how long its call is. */
 const VOICE_MIN_SESSION_SEC = 75;
-/** Room the box wants around the call itself — registration, setup, teardown.
- *  A VoNR profile with callDuration 500 and callSetupDelay 5 was refused below
- *  a 520s session, which this clears by five seconds. */
-const VOICE_SESSION_MARGIN_SEC = 20;
+/** Room the box wants around the traffic itself — registration, setup,
+ *  teardown. A VoNR profile with callDuration 500 and callSetupDelay 5 was
+ *  refused below a 520s session, which this clears by five seconds. */
+const SESSION_MARGIN_SEC = 20;
 
-/** The session a voice profile needs: its whole call, plus the box's margin. */
-function voiceSessionFloor(p: any): number {
-  const call = Number(p?.callDuration ?? 0) || 0;
-  const setup = Number(p?.callSetupDelay ?? 0) || 0;
-  return Math.max(VOICE_MIN_SESSION_SEC, call > 0 ? call + setup + VOICE_SESSION_MARGIN_SEC : 0);
+/**
+ * How long the traffic this profile defines actually takes.
+ *
+ * The box refuses any session too short to hold it, and says so in the
+ * profile's own terms — "should be greater than 520s for VOLTE" for a 500s
+ * call, "greater than NoOfPackets * Interval + StartDelay i.e, 600 for PING"
+ * for 595 pings a second apart. Both answer the same question: how long is the
+ * work? 0 when the profile does not say, which leaves the duration as asked.
+ */
+function profileWorkSeconds(p: any): number {
+  const num = (v: any) => Number(v ?? 0) || 0;
+  const type = String(p?.dataType ?? '').toLowerCase();
+  if (VOICE_DATA_TYPES.has(type)) {
+    const call = num(p?.callDuration);
+    return call > 0 ? call + num(p?.callSetupDelay) : 0;
+  }
+  if (type === 'ping') {
+    const packets = num(p?.numberOfPackets);
+    // interval may be fractional (0.2s); the box counts it the same way.
+    const interval = num(p?.interval) || 1;
+    return packets > 0 ? packets * interval + num(p?.startDelay) : 0;
+  }
+  return 0;
 }
 
-/** The floor the box names when it refuses a session, e.g.
- *  "UserPlaneConfig: userPlane[0]: sessionDuration 200 should be greater than
- *  520s for VOLTE" — 520. The box's own arithmetic, so it is followed rather
- *  than guessed at: a profile may carry delays this code knows nothing about. */
+/** The shortest session a profile can run in: its traffic plus the box's
+ *  margin. Voice keeps a floor of its own for profiles that name no call. */
+function sessionFloorFor(p: any): number {
+  const work = profileWorkSeconds(p);
+  const voiceFloor = VOICE_DATA_TYPES.has(String(p?.dataType ?? '').toLowerCase())
+    ? VOICE_MIN_SESSION_SEC : 0;
+  return Math.max(voiceFloor, work > 0 ? Math.ceil(work) + SESSION_MARGIN_SEC : 0);
+}
+
+/** The floor the box names when it refuses a session. It states it either as a
+ *  bare number — "sessionDuration 200 should be greater than 520s for VOLTE" —
+ *  or as the formula it used: "should be greater than NoOfPackets * Interval +
+ *  StartDelay i.e, 600 for PING". Either way the figure wanted is the first
+ *  number after the phrase, and it is the box's own arithmetic, so it is
+ *  followed rather than guessed at. */
 export function sessionFloorFromError(text: string): number | null {
-  const m = /sessionDuration\s+\d+\s+should be greater than\s+(\d+)/i.exec(text ?? '');
-  return m ? Number(m[1]) : null;
+  const m = /sessionDuration\s+[\d.]+\s+should be greater than[^\d]*([\d.]+)/i.exec(text ?? '');
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? Math.ceil(n) : null;
 }
 
 /** Shortest power-on duration a row may ask for. Below this there is no room
@@ -62,20 +91,22 @@ export function applyDuration(td: any, seconds: number): string[] {
 
   const profiles = (td?.userPlaneConfig?.profiles ?? []).filter((p: any) => p && typeof p === 'object');
 
-  // A voice profile's session has to hold its whole CALL, and the session is
-  // what is left of the power-on window after the delays — so a voice row can
-  // force the whole window up. A 210s row carrying a 500s call is not a 210s
-  // test: the box refuses it outright, and the row never ran at all. Raised to
-  // fit and said out loud, rather than cutting the call the testcase defines.
+  // The session has to hold the traffic the profile defines — a 500s call, 595
+  // pings a second apart — and the session is what is left of the power-on
+  // window after the delays, so such a row can force the whole window up. A
+  // 210s row carrying a 500s call is not a 210s test: the box refuses it
+  // outright and the row never runs. Raised to fit and said out loud, rather
+  // than cutting the traffic the testcase defines.
   for (const p of profiles) {
     const type = String(p.dataType ?? '').toLowerCase();
-    if (!VOICE_DATA_TYPES.has(type)) continue;
+    const floor = sessionFloorFor(p);
+    if (floor <= 0) continue;
     const lead = (Number(p.startDelay ?? 0) || 0) + (Number(p.callSetupDelay ?? 0) || 0);
-    const needed = voiceSessionFloor(p) + lead;
+    const needed = floor + lead;
     if (powerOn < needed) {
-      const call = Number(p.callDuration ?? 0) || 0;
-      notes.push(call > 0
-        ? `${type} profile places a ${call}s call — power-on duration raised from ${powerOn}s to ${needed}s to fit it`
+      const work = Math.ceil(profileWorkSeconds(p));
+      notes.push(work > 0
+        ? `${type} profile carries ${work}s of traffic — power-on duration raised from ${powerOn}s to ${needed}s to fit it`
         : `${type} profile needs a session over ${VOICE_MIN_SESSION_SEC}s — power-on duration raised from ${powerOn}s to ${needed}s`);
       powerOn = needed;
     }

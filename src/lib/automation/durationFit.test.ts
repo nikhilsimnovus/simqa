@@ -39,7 +39,30 @@ test('a voice row too short for its own call is grown to fit it, not refused', (
   const session = td.userPlaneConfig.profiles[0].sessionDuration;
   assert.ok(session > 520, `session ${session} must clear the box's 520s floor`);
   assert.equal(td.powerCycleConfig.profiles[0].powerOnTime, 535);
-  assert.match(notes.join(' '), /500s call/);
+  assert.match(notes.join(' '), /505s of traffic/);
+});
+
+test('a ping row is measured the way the box measures it', () => {
+  // 595 packets one second apart plus a 5s start — the box refuses anything
+  // under 600 and says so as a formula, not a number.
+  const td: any = {
+    userPlaneConfig: { profiles: [{ dataType: 'ping', numberOfPackets: 595, interval: 1, startDelay: 5, sessionDuration: 600 }] },
+    powerCycleConfig: { profiles: [{ powerOnTime: 605, durationP: 605, attachDelay: 0 }] },
+  };
+  applyDuration(td, 210);
+  assert.ok(td.userPlaneConfig.profiles[0].sessionDuration > 600,
+    `session ${td.userPlaneConfig.profiles[0].sessionDuration} must clear the box's 600s floor`);
+  assert.equal(td.userPlaneConfig.profiles[0].numberOfPackets, 595, 'packets are never dropped to fit');
+});
+
+test('a sub-second ping interval is not rounded away', () => {
+  const td: any = {
+    userPlaneConfig: { profiles: [{ dataType: 'ping', numberOfPackets: 100, interval: 0.2, startDelay: 5 }] },
+    powerCycleConfig: { profiles: [{ powerOnTime: 20, durationP: 20, attachDelay: 0 }] },
+  };
+  applyDuration(td, 20);
+  // 100 × 0.2 + 5 = 25s of traffic, so the window has to exceed that.
+  assert.ok(td.powerCycleConfig.profiles[0].powerOnTime > 25);
 });
 
 test('the call itself is never cut to fit the requested window', () => {
@@ -78,6 +101,12 @@ test('the floor the box names is read back out of its refusal', () => {
   );
   // A different profile, a different number — the message is followed, not a constant.
   assert.equal(sessionFloorFromError('sessionDuration 10 should be greater than 70s for VOLTE'), 70);
+  // PING states the formula it used rather than a bare figure; the number it
+  // arrived at is still what has to be cleared.
+  assert.equal(
+    sessionFloorFromError('UserPlaneConfig: userPlane[0]: sessionDuration 205 should be greater than NoOfPackets * Interval + StartDelay i.e, 600 for PING'),
+    600,
+  );
   assert.equal(sessionFloorFromError('some other rejection entirely'), null);
   assert.equal(sessionFloorFromError(''), null);
 });
