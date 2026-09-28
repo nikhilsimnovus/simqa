@@ -1914,7 +1914,6 @@ export default function AutomationSuitePage() {
                                   />
                                 ) : (<>
                                   {it.callboxCfg ?? <span className="text-slate-400 italic">(none)</span>}
-                                  {it.callboxCfg && uploadedConfigs[it.callboxCfg] && <span className="text-[9px] text-emerald-700 ml-1">[upload]</span>}
                                 </>)}
                               </td>
                               <td className="px-2 py-1 font-mono text-[11px] text-slate-600">
@@ -2030,7 +2029,13 @@ export default function AutomationSuitePage() {
                   </label>
                   {kind === 'uesim+callbox' && (<>
                     <label className="flex flex-col text-xs">
-                      <span className="text-slate-500 mb-1">gnb.cfg</span>
+                      <span className="text-slate-500 mb-1 flex items-center justify-between">
+                        gnb.cfg
+                        <label className="cursor-pointer text-[10px] text-blue-700 hover:underline">
+                          upload…
+                          <input type="file" onChange={e => onPickUpload(e, 'gnb')} className="hidden" />
+                        </label>
+                      </span>
                       <SearchableSelect
                         value={addCfg}
                         onChange={setAddCfg}
@@ -2046,7 +2051,13 @@ export default function AutomationSuitePage() {
                     {/* mme + ims live in /root/mme/config — a test needs the core
                         brought up as well as the radio. */}
                     <label className="flex flex-col text-xs">
-                      <span className="text-slate-500 mb-1">mme.cfg</span>
+                      <span className="text-slate-500 mb-1 flex items-center justify-between">
+                        mme.cfg
+                        <label className="cursor-pointer text-[10px] text-blue-700 hover:underline">
+                          upload…
+                          <input type="file" onChange={e => onPickUpload(e, 'mme')} className="hidden" />
+                        </label>
+                      </span>
                       <SearchableSelect
                         value={addMme}
                         onChange={setAddMme}
@@ -2073,7 +2084,13 @@ export default function AutomationSuitePage() {
                       />
                     </label>
                     <label className="flex flex-col text-xs">
-                      <span className="text-slate-500 mb-1">ims.cfg</span>
+                      <span className="text-slate-500 mb-1 flex items-center justify-between">
+                        ims.cfg
+                        <label className="cursor-pointer text-[10px] text-blue-700 hover:underline">
+                          upload…
+                          <input type="file" onChange={e => onPickUpload(e, 'ims')} className="hidden" />
+                        </label>
+                      </span>
                       <SearchableSelect
                         value={addIms}
                         onChange={setAddIms}
