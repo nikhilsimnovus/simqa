@@ -1860,15 +1860,13 @@ export default function AutomationSuitePage() {
                       <tr>
                         <th className="px-2 py-1.5 text-left w-8">#</th>
                         <th className="px-2 py-1.5 text-left">Display name in Simnovator</th>
-                        <th className="px-2 py-1.5 text-left">Setup Kind</th>
-                        <th className="px-2 py-1.5 text-left">Simnovator testcase</th>
+                        {/* Setup kind belongs to the suite, and the source
+                            testcase is what the display name is made from —
+                            neither varies per row. DB and ots.cfg are shown
+                            where they are decided, in Add a TestCase. */}
                         {kind === 'uesim+callbox' && <th className="px-2 py-1.5 text-left">gnb.cfg</th>}
                         {kind === 'uesim+callbox' && <th className="px-2 py-1.5 text-left">mme.cfg</th>}
-                        {/* Derived from the mme cfg, and the box's own ots
-                            config — neither is chosen here. */}
-                        {kind === 'uesim+callbox' && <th className="px-2 py-1.5 text-left">DB</th>}
                         {kind === 'uesim+callbox' && <th className="px-2 py-1.5 text-left">ims.cfg</th>}
-                        {kind === 'uesim+callbox' && <th className="px-2 py-1.5 text-left">ots.cfg</th>}
                         <th className="px-2 py-1.5 text-right">Power-on duration (s)</th>
                         <th className="px-2 py-1.5"></th>
                       </tr>
@@ -1894,22 +1892,7 @@ export default function AutomationSuitePage() {
                                 ) : (
                                   <span className="truncate" title={it.name}>{it.name}</span>
                                 )}
-                                {/* The login this row will execute as. */}
-                                <span className="text-[11px] text-slate-400 whitespace-nowrap">— {wizardUser}</span>
                               </div>
-                            </td>
-                            <td className="px-2 py-1 text-[11px] text-slate-600 whitespace-nowrap">
-                              {kind === 'uesim+callbox' ? 'UESIM + CALLBOX' : 'UESIM only'}
-                            </td>
-                            <td className="px-2 py-1 font-mono text-[11px] text-slate-600 truncate max-w-[260px]" title={it.simnovatorTcId}>
-                              {editRowId === it.id ? (
-                                <SearchableSelect
-                                  value={it.simnovatorTcId}
-                                  onChange={(v) => updateItem({ simnovatorTcId: v })}
-                                  options={uesimTestcases.map(t => ({ value: t.id, label: t.name }))}
-                                  ariaLabel="Simnovator testcase" noun="testcase"
-                                />
-                              ) : (tc?.name ?? it.simnovatorTcId)}
                             </td>
                             {kind === 'uesim+callbox' && (<>
                               <td className="px-2 py-1 font-mono text-[11px] text-slate-600">
@@ -1935,12 +1918,6 @@ export default function AutomationSuitePage() {
                                   />
                                 ) : (it.mmeCfg ?? <span className="text-slate-400 italic">(none)</span>)}
                               </td>
-                              {/* The DB the chosen mme.cfg pulls in. Read-only:
-                                  it is an `include` inside that file, so it
-                                  follows the mme choice rather than being set. */}
-                              <td className="px-2 py-1 font-mono text-[11px] text-slate-500">
-                                {(ueDbByMme[it.mmeCfg ?? ''] ?? []).join(', ') || <span className="text-slate-400 italic">—</span>}
-                              </td>
                               <td className="px-2 py-1 font-mono text-[11px] text-slate-600">
                                 {editRowId === it.id ? (
                                   <SearchableSelect
@@ -1951,20 +1928,18 @@ export default function AutomationSuitePage() {
                                   />
                                 ) : (it.imsCfg ?? <span className="text-slate-400 italic">(none)</span>)}
                               </td>
-                              {/* What the callbox itself is wired to. */}
-                              <td className="px-2 py-1 font-mono text-[11px] text-slate-500">
-                                {otsLink || <span className="text-slate-400 italic">—</span>}
-                              </td>
                             </>)}
                             <td className="px-2 py-1 text-right">
                               {/* Raw while typing, clamp to the minimum on blur — see the
                                   edit-row input above for why per-keystroke clamping broke entry. */}
-                              {editRowId === it.id ? (
-                                <input type="number" min={MIN_POWER_ON} placeholder={String(MIN_POWER_ON)} value={it.durationSec ?? ''}
-                                  onChange={e => updateItem({ durationSec: e.target.value === '' ? undefined : Number(e.target.value) })}
-                                  onBlur={e => updateItem({ durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
-                                  className="border border-slate-300 rounded px-1 py-0.5 w-[64px] text-xs text-right" />
-                              ) : (it.durationSec ?? MIN_POWER_ON)}
+                              {/* Always editable — a duration is the one thing
+                                  changed row by row, and the raw value is kept
+                                  while typing so "35" is not clamped to 20 at
+                                  the first keystroke. */}
+                              <input type="number" min={MIN_POWER_ON} placeholder={String(MIN_POWER_ON)} value={it.durationSec ?? ''}
+                                onChange={e => updateItem({ durationSec: e.target.value === '' ? undefined : Number(e.target.value) })}
+                                onBlur={e => updateItem({ durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
+                                className="border border-slate-300 rounded px-1 py-0.5 w-[64px] text-xs text-right" />
                             </td>
                             <td className="px-2 py-1 text-right whitespace-nowrap">
                               <button
@@ -2046,13 +2021,7 @@ export default function AutomationSuitePage() {
                   </label>
                   {kind === 'uesim+callbox' && (<>
                     <label className="flex flex-col text-xs">
-                      <span className="text-slate-500 mb-1 flex items-center justify-between">
-                        gnb.cfg
-                        <label className="cursor-pointer text-[10px] text-blue-700 hover:underline">
-                          upload…
-                          <input type="file" onChange={e => onPickUpload(e, 'gnb')} className="hidden" />
-                        </label>
-                      </span>
+                      <span className="text-slate-500 mb-1">gnb.cfg</span>
                       <SearchableSelect
                         value={addCfg}
                         onChange={setAddCfg}
@@ -2068,13 +2037,7 @@ export default function AutomationSuitePage() {
                     {/* mme + ims live in /root/mme/config — a test needs the core
                         brought up as well as the radio. */}
                     <label className="flex flex-col text-xs">
-                      <span className="text-slate-500 mb-1 flex items-center justify-between">
-                        mme.cfg
-                        <label className="cursor-pointer text-[10px] text-blue-700 hover:underline">
-                          upload…
-                          <input type="file" onChange={e => onPickUpload(e, 'mme')} className="hidden" />
-                        </label>
-                      </span>
+                      <span className="text-slate-500 mb-1">mme.cfg</span>
                       <SearchableSelect
                         value={addMme}
                         onChange={setAddMme}
@@ -2101,13 +2064,7 @@ export default function AutomationSuitePage() {
                       />
                     </label>
                     <label className="flex flex-col text-xs">
-                      <span className="text-slate-500 mb-1 flex items-center justify-between">
-                        ims.cfg
-                        <label className="cursor-pointer text-[10px] text-blue-700 hover:underline">
-                          upload…
-                          <input type="file" onChange={e => onPickUpload(e, 'ims')} className="hidden" />
-                        </label>
-                      </span>
+                      <span className="text-slate-500 mb-1">ims.cfg</span>
                       <SearchableSelect
                         value={addIms}
                         onChange={setAddIms}
