@@ -94,6 +94,13 @@ function ueSystemForSimnovator(inv: ReturnType<typeof loadInventory>, simnovator
   return profile?.uesim ? getSystem(inv, profile.uesim) : undefined;
 }
 
+/** Two cfg names that mean the same file: a link may hold an absolute target
+ *  (/root/enb/config/x.cfg) or a bare one (x.cfg). */
+function sameCfg(a?: string, b?: string): boolean {
+  const base = (p?: string) => (p ?? '').split('/').filter(Boolean).pop() ?? '';
+  return !!base(a) && base(a) === base(b);
+}
+
 /** Slack added to the poll window on top of the requested duration, to cover the
  *  box's power-on/attach/teardown phases (powerOnTime is roughly session + 50s,
  *  and a looped power-cycle profile runs it twice). */
@@ -890,18 +897,30 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           throw new Error(`cfg "${cfg}" not in suite uploadedConfigs and missing on callbox /root/enb/config`);
         }
 
-        // Linked from inside the directory with a bare basename, so the link is
-        // relative — `enb.cfg -> SA-1Cell.cfg_June2026`, which is how the
-        // operators write it by hand and how it reads in the callbox terminal.
-        // An absolute target works identically but shows the full path.
+        // Only re-link what is not already linked. Consecutive rows often
+        // share a radio cfg and differ only in the core one; re-pointing a
+        // link at the file it already names changes nothing, and it is what
+        // forces the lte restart below — which costs every row a bring-up.
+        //
+        // An UPLOAD always relinks: the file's CONTENT changed under the same
+        // name, so the link being equal says nothing.
+        let relinked = pushedCfg === cfg;
         await withSsh(callboxSys, async (ssh) => {
           const prev = await ssh.execCommand(`readlink ${q(linkPath)} || true`);
           prevEnbLink = (prev.stdout ?? '').trim();
+          if (!relinked && sameCfg(prevEnbLink, cfg)) {
+            stepDetails.push(`cfg-link: enb.cfg already → ${cfg}`);
+            return;
+          }
+          // Linked from inside the directory with a bare basename, so the link
+          // is relative — `enb.cfg -> SA-1Cell.cfg_June2026`, which is how the
+          // operators write it by hand and how it reads in the callbox terminal.
           const r = await ssh.execCommand(
             sudoLink('/root/enb/config', q(cfg), 'enb.cfg'));
           if (r.code !== 0) throw new Error(`ln: ${r.stderr || r.stdout || `exit ${r.code}`}`);
+          relinked = true;
+          stepDetails.push(`cfg-link: ln -sfn ${cfg} enb.cfg`);
         });
-        stepDetails.push(`cfg-link: ln -sfn ${cfg} enb.cfg`);
 
         // Core cfgs live in /root/mme/config and are picked from files already
         // on the box (no upload path), so we only ever re-point the symlink the
@@ -913,6 +932,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         // Relative, same as enb.cfg above: `mme.cfg -> demo-mme.cfg`.
         for (const [linkName, pick] of coreLinks) {
           if (!pick) continue;
+          let justUploaded = false;
           // An uploaded core cfg isn't on the box yet — push it under its own
           // name first, so the link reads the same as the operator's pick.
           if (!existingCore.has(pick) && suite.uploadedConfigs?.[pick]) {
@@ -927,19 +947,31 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               });
             });
             existingCore.add(pick);
+            justUploaded = true;
             stepDetails.push(`cfg-push: scp ${buf.length}B → /root/mme/config/${pick}`);
           }
           await withSsh(callboxSys, async (ssh) => {
             const prev = await ssh.execCommand(`readlink /root/mme/config/${linkName} || true`);
             const prevTarget = (prev.stdout ?? '').trim();
             if (linkName === 'mme.cfg') prevMmeLink = prevTarget; else prevImsLink = prevTarget;
+            if (!justUploaded && sameCfg(prevTarget, pick)) {
+              stepDetails.push(`cfg-link: ${linkName} already → ${pick}`);
+              return;
+            }
             const r = await ssh.execCommand(
               sudoLink('/root/mme/config', q(pick), linkName));
             if (r.code !== 0) throw new Error(`ln ${linkName}: ${r.stderr || r.stdout || `exit ${r.code}`}`);
+            relinked = true;
+            stepDetails.push(`cfg-link: ln -sfn ${pick} ${linkName}`);
           });
-          stepDetails.push(`cfg-link: ln -sfn ${pick} ${linkName}`);
         }
 
+        // Nothing moved — the stack is already running the configs this row
+        // asks for, so restarting would drop the radio for no reason and cost
+        // the row its bring-up time.
+        if (!relinked) {
+          stepDetails.push('cfg-restart: skipped — the callbox already runs these configs');
+        } else {
         // One unit — lte.service runs /root/ots/ltestart.sh, which launches enb,
         // mme AND ims together (see ots.cfg's ENB/MME/IMS_CONFIG_FILE). There is
         // no separate ltemme unit, so this single restart picks up all three
@@ -950,6 +982,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         });
         await new Promise(r => setTimeout(r, 15_000));
         stepDetails.push(`cfg-restart: lte restarted (enb+mme+ims) + 15s settle`);
+        }
       } catch (e: any) {
         steps.push({
           testcaseId: item.name, status: 0, ok: false,
