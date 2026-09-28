@@ -12,6 +12,11 @@
 
 import { ensureToken, getTestcase, listTestcases, type ApiOpts } from '../uesimClient';
 import { diffSections, reconcileCellArrays, type SectionName } from '../testcaseSections';
+// The duration arithmetic lives in durationFit.ts so it can be unit-tested;
+// re-exported here because this module is where callers already look for it.
+import { applyDuration, sessionFloorFromError, MIN_POWER_ON_SEC } from './durationFit';
+export { applyDuration, sessionFloorFromError, MIN_POWER_ON_SEC } from './durationFit';
+
 
 /**
  * The box rejects any testcase name outside [A-Za-z0-9_-] ("only letters,
@@ -65,75 +70,6 @@ async function testcasesByName(opts: ApiOpts): Promise<Map<string, string>> {
  *  order until one is accepted. */
 const LOG_PROFILE_FALLBACKS = ['debug', 'default', 'enable_all'];
 
-/** Voice user-plane profiles the box refuses to create with a short session:
- *  "sessionDuration N should be greater than 70s for VOLTE". A call needs
- *  setup + ring + media inside the session, so a 10s row is not creatable. */
-const VOICE_DATA_TYPES = new Set(['volte', 'vonr', 'voice', 'vt', 'video']);
-const VOICE_MIN_SESSION_SEC = 75;
-
-/** Shortest power-on duration a row may ask for. Below this there is no room
- *  for the UEs to come up and still pass traffic. */
-export const MIN_POWER_ON_SEC = 20;
-
-/**
- * Rewrite a testDefinition's duration in place.
- *
- * The figure the suite asks for is the POWER-ON DURATION — how long the UEs are
- * powered on, i.e. powerCycleConfig.powerOnTime. The user-plane session is
- * derived from it: traffic has to start after the profile's startDelay (and,
- * for voice, its call-setup delay) and finish before the UEs power off, so
- *
- *     sessionDuration = powerOnTime - startDelay - callSetupDelay
- *
- * That is the opposite of the earlier mapping, which took the session as given
- * and grew the power-on window around it.
- *
- * Returns notes describing anything that had to be adjusted upward.
- */
-export function applyDuration(td: any, seconds: number): string[] {
-  const notes: string[] = [];
-  let powerOn = Math.max(1, Math.floor(seconds));
-  if (powerOn < MIN_POWER_ON_SEC) {
-    notes.push(`power-on duration raised from ${powerOn}s to the ${MIN_POWER_ON_SEC}s minimum`);
-    powerOn = MIN_POWER_ON_SEC;
-  }
-
-  const profiles = (td?.userPlaneConfig?.profiles ?? []).filter((p: any) => p && typeof p === 'object');
-
-  // Voice needs a session longer than 70s, and the session is what is left of
-  // the power-on window after the delays — so a voice row can force the whole
-  // window up. Work out the floor first, then apply one consistent figure.
-  for (const p of profiles) {
-    const type = String(p.dataType ?? '').toLowerCase();
-    if (!VOICE_DATA_TYPES.has(type)) continue;
-    const lead = (Number(p.startDelay ?? 0) || 0) + (Number(p.callSetupDelay ?? 0) || 0);
-    const needed = VOICE_MIN_SESSION_SEC + lead;
-    if (powerOn < needed) {
-      notes.push(`${type} profile needs a session over 70s — power-on duration raised from ${powerOn}s to ${needed}s`);
-      powerOn = needed;
-    }
-  }
-
-  for (const p of profiles) {
-    const lead = (Number(p.startDelay ?? 0) || 0) + (Number(p.callSetupDelay ?? 0) || 0);
-    p.sessionDuration = Math.max(1, powerOn - lead);
-  }
-
-  for (const p of td?.powerCycleConfig?.profiles ?? []) {
-    if (!p || typeof p !== 'object') continue;
-    p.powerOnTime = powerOn;
-    // durationP is the traffic window inside the power-on window: it ends when
-    // the last profile's session ends, never after the UEs power off.
-    const attachDelay = Number(p.attachDelay ?? 0) || 0;
-    p.durationP = Math.max(1, powerOn - attachDelay);
-    // A time-based loop profile also caps the whole test; keep it consistent
-    // or the box rejects totalTestDuration < powerOnTime * cycles.
-    if (p.loopProfile === 'time' && typeof p.totalTestDuration === 'number') {
-      p.totalTestDuration = (p.powerOnTime + (Number(p.powerOffTime) || 0)) * 2 + 80;
-    }
-  }
-  return notes;
-}
 
 /** Name the copy in every place the box reads a name from. */
 function applyName(td: any, name: string): void {
@@ -343,7 +279,33 @@ export async function createFromDefinition(
       }
     }
 
-    if (!r.ok) return { testCaseId: id, name: finalName, failedStep: step, error: r.text.slice(0, 300) };
+    // The box does its own arithmetic on a voice session and names the floor
+    // it wants. Rather than guess at which delays it counted, take the number
+    // it gave, refit the whole definition around it and send the section again
+    // — power-cycle has not gone up yet, so it carries the new window too.
+    if (!r.ok && step === 'user-plane') {
+      const floor = sessionFloorFromError(r.text);
+      if (floor != null) {
+        const lead = Math.max(0, ...(td.userPlaneConfig?.profiles ?? []).map((p: any) =>
+          (Number(p?.startDelay ?? 0) || 0) + (Number(p?.callSetupDelay ?? 0) || 0)));
+        const grown = floor + lead + 5;
+        applyDuration(td, grown);
+        warnings.push(`the box requires a session over ${floor}s for this profile — power-on duration raised to ${grown}s`);
+        r = await post(opts, token, path, { userPlaneConfig: td.userPlaneConfig });
+      }
+    }
+
+    if (!r.ok) {
+      // The case was born at the cells step, so a failure here leaves a
+      // half-built one on the box wearing this row's name. Left there it is
+      // worse than nothing: the next run finds the name taken, reuses it, and
+      // executes a testcase that was never finished. Take it away again.
+      const gone = await del(opts, token, `/testcases/${encodeURIComponent(id)}`);
+      return {
+        testCaseId: gone.ok ? '' : id, name: finalName, failedStep: step,
+        error: r.text.slice(0, 300) + (gone.ok ? '' : ' (the half-built copy could not be removed from the box)'),
+      };
+    }
   }
 
   return {
