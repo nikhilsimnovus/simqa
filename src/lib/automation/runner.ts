@@ -28,6 +28,7 @@ import { describeOthers, describeCfg } from '../callboxShare';
 import { saveRun, newRunId, type RunRecord } from './runStore';
 import { triggerPerfQaCollection, DEFAULT_PERFQA_URL } from './diagnostics';
 import { duplicateTestcase } from './duplicateTestcase';
+import { saveRowConfigs } from '../suiteConfigStore';
 
 /** How long to give the box before asking whether any UE attached. The UEs are
  *  powered on over the first ~30-40s (attachRate-dependent), so checking sooner
@@ -84,7 +85,7 @@ async function gatherAttachEvidence(ueSys: any, tcName: string): Promise<AttachE
 
 /** The UE simulator bound to a Simnovator by a topology profile — that's the box
  *  whose log carries the attach evidence. */
-function ueSystemForSimnovator(inv: ReturnType<typeof loadInventory>, simnovatorId?: string, chosenId?: string) {
+export function ueSystemForSimnovator(inv: ReturnType<typeof loadInventory>, simnovatorId?: string, chosenId?: string) {
   // What the suite says, when it says anything — the topology is the fallback
   // for suites saved before the Setup step offered the choice.
   const chosen = chosenId ? getSystem(inv, chosenId) : undefined;
@@ -995,6 +996,27 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         continue;
       }
     }
+
+    // ── Phase 3b: keep the configuration this row is about to run with.
+    //
+    // Taken AFTER bring-up and BEFORE the trigger, so it is the configuration
+    // the execution actually sees — and before the optional restore below
+    // puts the links back. A new version folder appears only when something
+    // differs from the last run, which is what makes a version mean "someone
+    // changed the configs". Best-effort: a box we cannot read must not cost
+    // the row its execution.
+    try {
+      const snap = await saveRowConfigs({
+        suiteId: suite.id, suiteName: suite.name,
+        rowId: item.id ?? item.name, rowName: item.name,
+        callbox: callboxSys, ueSystem: ueSys, capturedBy: ueOpts.username,
+      });
+      if (snap) {
+        stepDetails.push(snap.changed
+          ? `configs: saved as ${snap.version} — they changed since the last run`
+          : `configs: unchanged since ${snap.version}`);
+      }
+    } catch { /* keeping a copy never decides a run */ }
 
     // ── Phase 4-5: trigger + poll the testcase created in phase 0
     //

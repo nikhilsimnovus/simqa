@@ -557,6 +557,34 @@ export default function AutomationSuitePage() {
     return () => { cancelled = true; };
   }, [confirmRun?.suite.id, confirmRun?.suite.uesimSystemId, confirmRun?.suite.boxUserId]);
 
+  /** Whether the lab configs still match what this suite last ran with.
+   *  'checking' while the boxes are being read; a list means somebody changed
+   *  a file since the last run and the operator should know before starting. */
+  const [cfgCheck, setCfgCheck] = useState<{
+    state: 'checking' | 'done';
+    changed: Array<{ row: string; version?: number; capturedAt?: string; files: Array<{ file: string; state: string; was?: string; now?: string }> }>;
+  } | null>(null);
+
+  // Read the real files off the callbox and UE while the operator is reading
+  // the dialog, so the answer is there by the time they reach the Run button.
+  // A row that has never run has nothing saved to disagree with and is silent.
+  useEffect(() => {
+    if (!confirmRun) { setCfgCheck(null); return; }
+    const { suite, rows } = confirmRun;
+    let cancelled = false;
+    setCfgCheck({ state: 'checking', changed: [] });
+    fetch(`/api/automation/suites/${suite.id}/config-check`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rows?.length ? { itemIds: rows.map(r => r.id) } : {}),
+    })
+      .then(r => r.json())
+      .then(j => { if (!cancelled) setCfgCheck({ state: 'done', changed: j?.ok ? (j.changed ?? []) : [] }); })
+      // Unreachable boxes are not evidence that anything changed — the run is
+      // never blocked on this check.
+      .catch(() => { if (!cancelled) setCfgCheck({ state: 'done', changed: [] }); });
+    return () => { cancelled = true; };
+  }, [confirmRun?.suite.id, confirmRun?.rows]);
+
   /** Stop the suite: ends the execution on the box AND cancels the rows that
    *  have not started. Stopping only the box execution would just let the next
    *  row begin. */
@@ -1203,6 +1231,45 @@ export default function AutomationSuitePage() {
                   {s.kind === 'uesim+callbox' && <>, symlinks its gnb/mme/ims cfgs on {hostOf(s.callboxSystemId)} and restarts lte</>}
                   , then executes. Most of the time is bring-up, not the configured duration.
                 </p>
+                {/* What changed on the boxes since this suite last ran. Named
+                    file by file — "something changed" would only send the
+                    operator looking through six configs by hand. */}
+                {cfgCheck?.state === 'checking' && (
+                  <p className="mt-3 text-[11px] text-slate-500">Checking the configs against the last run…</p>
+                )}
+                {cfgCheck?.state === 'done' && cfgCheck.changed.length > 0 && (
+                  <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2">
+                    <div className="text-sm font-semibold text-amber-900">
+                      The configs are not the ones this suite last ran with
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-amber-800">
+                      Somebody changed them on the boxes. Running now measures a different
+                      configuration than the saved results — the new files are kept as a new
+                      version if you go ahead.
+                    </p>
+                    <ul className="mt-1.5 space-y-1">
+                      {cfgCheck.changed.map(c => (
+                        <li key={c.row} className="text-[11px] text-amber-900">
+                          <span className="font-medium">{c.row}</span>
+                          {c.capturedAt && <span className="text-amber-700"> · saved v{c.version} on {new Date(c.capturedAt).toLocaleString()}</span>}
+                          <ul className="pl-4 list-disc text-amber-800">
+                            {c.files.map(f => (
+                              <li key={f.file}>
+                                {f.file}
+                                {f.state === 'changed' && f.was && f.now && f.was !== f.now
+                                  ? <> — now {f.now} (was {f.was})</>
+                                  : f.state === 'changed' ? <> — edited</>
+                                  : f.state === 'added' ? <> — new{f.now ? ` (${f.now})` : ''}</>
+                                  : <> — no longer there</>}
+                              </li>
+                            ))}
+                          </ul>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 <div className="mt-4 flex justify-end gap-2">
                   <button onClick={() => setConfirmRun(null)}
                     className="rounded-md border border-slate-300 hover:bg-slate-50 text-sm px-4 py-2">Cancel</button>
@@ -1210,7 +1277,9 @@ export default function AutomationSuitePage() {
                     ? (runAsAll ? runUsers.map(u => u.username) : [runOneUser])
                     : undefined)}
                     className="rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2">
-                    ▶ {!subset ? 'Run Suite' : rows.length === 1 ? 'Run Test Case' : 'Run Selected'}
+                    ▶ {cfgCheck?.state === 'done' && cfgCheck.changed.length > 0
+                      ? 'Run anyway'
+                      : !subset ? 'Run Suite' : rows.length === 1 ? 'Run Test Case' : 'Run Selected'}
                   </button>
                 </div>
               </div>
