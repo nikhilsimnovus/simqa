@@ -1688,7 +1688,10 @@ export default function AutomationSuitePage() {
                   chosen per run, so the same suite always lands in history under
                   the same account rather than under whoever pressed Run. Hidden
                   when the setup offers no choice. */}
-              {suiteBoxUsers.length > 1 && (
+              {/* Always shown, even for a Simnovator with a single login: the
+                  list is that Simnovator's own users, so hiding it made the
+                  suite look as though it ran as nobody in particular. */}
+              {suiteBoxUsers.length > 0 && (
                 <label className="flex flex-col">
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Run as user</span>
                   <select value={boxUserId} onChange={e => setBoxUserId(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm">
