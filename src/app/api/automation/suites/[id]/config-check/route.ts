@@ -50,13 +50,17 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     row: string;
     version?: number;
     capturedAt?: string;
+    /** Only the files that moved — what the warning leads with. */
     files: Array<{ file: string; state: string; was?: string; now?: string }>;
+    /** All six, so the warning can also say what did NOT move: an operator
+     *  deciding whether to go ahead wants both halves of that picture. */
+    all: Array<{ file: string; state: string; was?: string; now?: string }>;
   }> = [];
   for (const row of rows) {
     try {
       const { diff, capturedAt, version } = await checkRowConfigs(suite.name, row.name, callbox, ueSystem);
       if (diff && !diff.same) {
-        changed.push({ row: row.name, version, capturedAt, files: diff.changed });
+        changed.push({ row: row.name, version, capturedAt, files: diff.changed, all: diff.files });
       }
     } catch { /* a box we cannot read is not evidence of a change */ }
   }

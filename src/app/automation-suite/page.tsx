@@ -293,17 +293,35 @@ export default function AutomationSuitePage() {
     versions: Array<{
       version: string; capturedAt?: string; capturedBy?: string;
       callboxHost?: string; ueHost?: string;
+      reason?: 'original' | 'changed'; changedFiles?: string[];
       files: Array<{ name: string; bytes: number; source?: string }>;
     }>;
   }> | null>(null);
+  /** Which test cases and versions are expanded. A suite with six rows and
+   *  several versions each is a lot of table; only what was asked for opens. */
+  const [openRows, setOpenRows] = useState<Set<string>>(new Set());
+  const [openVersions, setOpenVersions] = useState<Set<string>>(new Set());
 
   const openConfigs = useCallback(async (suite: SuiteRow) => {
     setConfigsFor(suite); setSavedConfigs(null);
     try {
       const r = await fetch(`/api/automation/suites/${suite.id}/configs`).then(r => r.json());
-      setSavedConfigs(r?.ok ? (r.rows ?? []) : []);
+      const rows = r?.ok ? (r.rows ?? []) : [];
+      setSavedConfigs(rows);
+      // Open the first test case that has anything saved, at its newest
+      // version: the panel opens on something to read rather than on a list of
+      // closed headings.
+      const first = rows.find((x: any) => x.versions.length > 0);
+      setOpenRows(new Set(first ? [first.row] : []));
+      setOpenVersions(new Set(first ? [`${first.row}|${first.versions[0].version}`] : []));
     } catch { setSavedConfigs([]); }
   }, []);
+
+  const toggle = (set: Set<string>, key: string) => {
+    const next = new Set(set);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  };
 
   const [historyFor, setHistoryFor] = useState<string>('');           // suite id whose history we're viewing
   const [history, setHistory]       = useState<RunHistoryRow[]>([]);
@@ -626,7 +644,11 @@ export default function AutomationSuitePage() {
    *  a file since the last run and the operator should know before starting. */
   const [cfgCheck, setCfgCheck] = useState<{
     state: 'checking' | 'done';
-    changed: Array<{ row: string; version?: number; capturedAt?: string; files: Array<{ file: string; state: string; was?: string; now?: string }> }>;
+    changed: Array<{
+      row: string; version?: number; capturedAt?: string;
+      files: Array<{ file: string; state: string; was?: string; now?: string }>;
+      all?: Array<{ file: string; state: string; was?: string; now?: string }>;
+    }>;
   } | null>(null);
 
   // Read the real files off the callbox and UE while the operator is reading
@@ -1310,35 +1332,50 @@ export default function AutomationSuitePage() {
                   <p className="mt-3 text-[11px] text-slate-500">Checking the configs against the last run…</p>
                 )}
                 {cfgCheck?.state === 'done' && cfgCheck.changed.length > 0 && (
-                  <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2">
+                  <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 max-h-64 overflow-y-auto">
                     <div className="text-sm font-semibold text-amber-900">
-                      The configs are not the ones this suite last ran with
+                      ⚠ Configuration changes detected
                     </div>
                     <p className="mt-0.5 text-[11px] text-amber-800">
-                      Somebody changed them on the boxes. Running now measures a different
-                      configuration than the saved results — the new files are kept as a new
-                      version if you go ahead.
+                      The configuration has changed since the last execution. The test will run
+                      with the updated configuration, and it will be kept as a new version.
                     </p>
-                    <ul className="mt-1.5 space-y-1">
-                      {cfgCheck.changed.map(c => (
-                        <li key={c.row} className="text-[11px] text-amber-900">
-                          <span className="font-medium">{c.row}</span>
-                          {c.capturedAt && <span className="text-amber-700"> · saved v{c.version} on {new Date(c.capturedAt).toLocaleString()}</span>}
-                          <ul className="pl-4 list-disc text-amber-800">
-                            {c.files.map(f => (
-                              <li key={f.file}>
-                                {f.file}
-                                {f.state === 'changed' && f.was && f.now && f.was !== f.now
-                                  ? <> — now {f.now} (was {f.was})</>
-                                  : f.state === 'changed' ? <> — edited</>
-                                  : f.state === 'added' ? <> — new{f.now ? ` (${f.now})` : ''}</>
-                                  : <> — no longer there</>}
-                              </li>
-                            ))}
-                          </ul>
-                        </li>
-                      ))}
-                    </ul>
+                    {cfgCheck.changed.map(c => {
+                      const unchanged = (c.all ?? []).filter(f => f.state === 'same');
+                      return (
+                        <div key={c.row} className="mt-2 border-t border-amber-200 pt-2 first:border-t-0 first:pt-0">
+                          <div className="text-[11px] font-medium text-amber-900">
+                            {c.row}
+                            {c.capturedAt && (
+                              <span className="font-normal text-amber-700">
+                                {' '}· last saved as v{c.version} on {new Date(c.capturedAt).toLocaleString()}
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1 text-[11px] text-amber-900">
+                            <div className="font-medium">Changed files</div>
+                            <ul className="pl-4 list-disc">
+                              {c.files.map(f => (
+                                <li key={f.file}>
+                                  <span className="font-mono">{f.file}</span>
+                                  {f.state === 'changed' && f.was && f.now && f.was !== f.now
+                                    ? <> — now {f.now} (was {f.was})</>
+                                    : f.state === 'changed' ? <> — modified</>
+                                    : f.state === 'added' ? <> — new{f.now ? ` (${f.now})` : ''}</>
+                                    : <> — no longer there</>}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                          {unchanged.length > 0 && (
+                            <div className="mt-1 text-[11px] text-amber-800">
+                              <div className="font-medium">Unchanged</div>
+                              <div className="pl-4 font-mono">{unchanged.map(f => f.file).join(', ')}</div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -1350,7 +1387,7 @@ export default function AutomationSuitePage() {
                     : undefined)}
                     className="rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2">
                     ▶ {cfgCheck?.state === 'done' && cfgCheck.changed.length > 0
-                      ? 'Run anyway'
+                      ? 'Run with updated configs'
                       : !subset ? 'Run Suite' : rows.length === 1 ? 'Run Test Case' : 'Run Selected'}
                   </button>
                 </div>
@@ -1777,41 +1814,92 @@ export default function AutomationSuitePage() {
                 Nothing saved yet — the first run of each test case writes v1.
               </p>
             ) : (
-              <div className="space-y-4">
-                {savedConfigs.map(r => (
-                  <div key={r.row}>
-                    <div className="text-sm font-medium text-slate-800">{r.row}</div>
-                    {r.versions.length === 0 ? (
-                      <p className="text-[11px] text-slate-400 mt-0.5">not run yet</p>
-                    ) : (
-                      <div className="mt-1.5 space-y-2">
-                        {r.versions.map(v => (
-                          <div key={v.version} className="rounded-md border border-line px-3 py-2">
-                            <div className="flex items-center gap-2 text-xs">
-                              <span className="font-semibold text-slate-800">{v.version}</span>
-                              {v.capturedAt && <span className="text-slate-500">{new Date(v.capturedAt).toLocaleString()}</span>}
-                              {v.capturedBy && <span className="text-slate-400">as {v.capturedBy}</span>}
-                              {v.callboxHost && <span className="text-slate-400 font-mono">callbox {v.callboxHost}</span>}
-                              {v.ueHost && <span className="text-slate-400 font-mono">UE {v.ueHost}</span>}
+              <div className="space-y-2">
+                {savedConfigs.map(r => {
+                  const rowOpen = openRows.has(r.row);
+                  return (
+                  <div key={r.row} className="rounded-md border border-line">
+                    <button type="button"
+                      onClick={() => setOpenRows(o => toggle(o, r.row))}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-slate-50">
+                      <span className="text-slate-400 text-[10px] w-3">{rowOpen ? '▼' : '▶'}</span>
+                      <span className="text-sm font-medium text-slate-800">{r.row}</span>
+                      <span className="text-[11px] text-slate-500">
+                        {r.versions.length === 0
+                          ? 'not run yet'
+                          : `${r.versions.length} version${r.versions.length === 1 ? '' : 's'}`}
+                      </span>
+                    </button>
+
+                    {rowOpen && r.versions.length > 0 && (
+                      <div className="px-3 pb-3 space-y-2">
+                        {r.versions.map(v => {
+                          const key = `${r.row}|${v.version}`;
+                          const open = openVersions.has(key);
+                          return (
+                            <div key={v.version} className="rounded border border-line">
+                              <button type="button"
+                                onClick={() => setOpenVersions(o => toggle(o, key))}
+                                className="w-full flex flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-2 text-left hover:bg-slate-50">
+                                <span className="text-slate-400 text-[10px] w-3">{open ? '▼' : '▶'}</span>
+                                <span className="text-xs font-semibold text-slate-800">{v.version}</span>
+                                {/* Why this version exists — the question a list of
+                                    v1/v2/v3 otherwise leaves the reader to guess. */}
+                                <span className={'text-[11px] ' + (v.reason === 'changed' ? 'text-amber-700' : 'text-slate-500')}>
+                                  {v.reason === 'changed' ? 'Configuration changed' : 'Original configuration'}
+                                </span>
+                                {v.capturedAt && <span className="text-[11px] text-slate-500">{new Date(v.capturedAt).toLocaleString()}</span>}
+                              </button>
+
+                              {open && (
+                                <div className="px-3 pb-3">
+                                  <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-[11px] mb-2">
+                                    {v.capturedBy && (<><dt className="text-slate-500">Run as</dt><dd className="text-slate-800">{v.capturedBy}</dd></>)}
+                                    {v.callboxHost && (<><dt className="text-slate-500">Callbox</dt><dd className="font-mono text-slate-800">{v.callboxHost}</dd></>)}
+                                    {v.ueHost && (<><dt className="text-slate-500">UE</dt><dd className="font-mono text-slate-800">{v.ueHost}</dd></>)}
+                                    {v.changedFiles && v.changedFiles.length > 0 && (
+                                      <><dt className="text-slate-500">Changed</dt>
+                                        <dd className="font-mono text-amber-700">{v.changedFiles.join(', ')}</dd></>
+                                    )}
+                                  </dl>
+
+                                  <table className="text-[11px] border border-line rounded w-full max-w-md">
+                                    <thead className="bg-slate-50 text-slate-500">
+                                      <tr>
+                                        <th className="px-2 py-1 text-left font-medium">File</th>
+                                        <th className="px-2 py-1 text-left font-medium">On the box</th>
+                                        <th className="px-2 py-1 text-right font-medium">Size</th>
+                                        <th className="px-2 py-1 text-right font-medium">Action</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                      {v.files.map(f => (
+                                        <tr key={f.name}>
+                                          <td className="px-2 py-1 font-mono text-slate-700">{f.name}</td>
+                                          <td className="px-2 py-1 font-mono text-slate-500 truncate max-w-[220px]" title={f.source}>{f.source ?? '–'}</td>
+                                          <td className="px-2 py-1 text-right text-slate-600 whitespace-nowrap">
+                                            {f.bytes >= 1024 ? `${(f.bytes / 1024).toFixed(1)} KB` : `${f.bytes} B`}
+                                          </td>
+                                          <td className="px-2 py-1 text-right">
+                                            {/* The SAVED file, not what is on the box now. */}
+                                            <a href={`/api/automation/suites/${configsFor.id}/configs?row=${encodeURIComponent(r.row)}&version=${v.version}&file=${f.name}`}
+                                              target="_blank" rel="noreferrer"
+                                              className="text-blue-700 hover:underline">View</a>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
                             </div>
-                            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                              {v.files.map(f => (
-                                <a key={f.name}
-                                  href={`/api/automation/suites/${configsFor.id}/configs?row=${encodeURIComponent(r.row)}&version=${v.version}&file=${f.name}`}
-                                  target="_blank" rel="noreferrer"
-                                  className="text-[11px] text-blue-700 hover:underline font-mono"
-                                  title={f.source ? `on the box: ${f.source}` : undefined}>
-                                  {f.name}
-                                  <span className="text-slate-400"> {(f.bytes / 1024).toFixed(1)}k</span>
-                                </a>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>

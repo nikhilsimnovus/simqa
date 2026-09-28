@@ -141,6 +141,8 @@ export function listRowVersions(suiteName: string, rowName: string): Array<{
   capturedBy?: string;
   callboxHost?: string;
   ueHost?: string;
+  reason?: 'original' | 'changed';
+  changedFiles?: string[];
   files: Array<{ name: string; bytes: number; source?: string }>;
 }> {
   const dir = rowDir(suiteName, rowName);
@@ -160,6 +162,10 @@ export function listRowVersions(suiteName: string, rowName: string): Array<{
         version,
         capturedAt: m?.capturedAt, capturedBy: m?.capturedBy,
         callboxHost: m?.callboxHost, ueHost: m?.ueHost,
+        // Versions written before this was recorded: v1 is the original by
+        // definition, and anything after it exists because something changed.
+        reason: m?.reason ?? (version === 'v1' ? 'original' : 'changed'),
+        changedFiles: m?.changedFiles,
         files,
       };
     });
@@ -222,7 +228,7 @@ export async function saveRowConfigs(opts: {
   callbox?: InventorySystem;
   ueSystem?: InventorySystem;
   capturedBy?: string;
-}): Promise<{ version: string; changed: boolean; files: SnapshotFile[] } | null> {
+}): Promise<{ version: string; changed: boolean; changedFiles?: SnapshotFile[]; files: SnapshotFile[] } | null> {
   const { files, contents } = await captureRowConfigs(opts.callbox, opts.ueSystem);
   if (Object.keys(files).length === 0) return null;   // nothing readable — nothing to claim
 
@@ -231,6 +237,15 @@ export async function saveRowConfigs(opts: {
   if (saved && diffSnapshot(saved.files, files).same) {
     return { version: `v${saved.version}`, changed: false, files: Object.keys(files) as SnapshotFile[] };
   }
+
+  // What moved since the previous version, kept with the version itself so
+  // the panel can say "Configuration changed · enb.cfg, db.cfg" without
+  // re-reading and re-comparing every earlier one.
+  const changedFiles = saved
+    ? diffSnapshot(saved.files, files).changed
+        .filter((c) => c.state === 'changed' || c.state === 'added')
+        .map((c) => c.file)
+    : [];
 
   const version = nextVersion(versionsOf(dir));
   const out = path.join(dir, version);
@@ -250,7 +265,9 @@ export async function saveRowConfigs(opts: {
     callboxHost: opts.callbox?.host,
     ueHost: opts.ueSystem?.host,
     files,
+    reason: saved ? 'changed' : 'original',
+    changedFiles: saved ? changedFiles : undefined,
   };
   fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
-  return { version, changed: !!saved, files: Object.keys(files) as SnapshotFile[] };
+  return { version, changed: !!saved, changedFiles, files: Object.keys(files) as SnapshotFile[] };
 }

@@ -43,6 +43,12 @@ export interface SnapshotManifest {
   callboxHost?: string;
   ueHost?: string;
   files: Partial<Record<SnapshotFile, SnapshotEntry>>;
+  /** Why this version exists: the row's first run, or a change since the one
+   *  before it. Recorded when it is written, because it cannot be worked out
+   *  afterwards without re-reading every earlier version. */
+  reason?: 'original' | 'changed';
+  /** The files that differed from the previous version, for 'changed'. */
+  changedFiles?: SnapshotFile[];
 }
 
 export function hashText(text: string): string {
