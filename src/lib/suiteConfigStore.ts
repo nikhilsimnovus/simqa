@@ -21,8 +21,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { readCommand } from './configFidelity/ssh';
-import { ueDbFor } from './labCfgLink';
+import { withSsh } from './configFidelity/ssh';
 import type { InventorySystem } from './inventory';
 import {
   SNAPSHOT_FILES, diffSnapshot, hashText, latestVersion, nextVersion, safeFolder,
@@ -39,19 +38,47 @@ const rowDir = (suiteName: string, rowName: string) =>
 /** Single-quoted shell arg. */
 const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
 
-/** One file off a box: its content, and the name behind the symlink. */
-async function readCfg(box: InventorySystem, dir: string, link: string): Promise<{ source?: string; text: string } | null> {
+/** One file, read over an ALREADY OPEN session.
+ *
+ *  A row's six files used to be a dozen `readCommand` calls, and each of those
+ *  opens an SSH connection of its own — a dozen handshakes per row, on the
+ *  same box, for reads that take milliseconds. They all share one session now.
+ *
+ *  /root is 0700 on some callboxes and readable on others, so sudo first with
+ *  the unprivileged read as the fallback — the rule every reader here follows. */
+async function readCfgOn(ssh: any, dir: string, link: string): Promise<{ source?: string; text: string } | null> {
   try {
-    // /root is 0700 on some callboxes and readable on others, so sudo first
-    // with the unprivileged read as the fallback — same rule as every other
-    // reader here.
-    const target = (await readCommand(box, `sudo -n readlink ${q(`${dir}/${link}`)} 2>/dev/null || readlink ${q(`${dir}/${link}`)} 2>/dev/null || true`)).trim();
+    const p = q(`${dir}/${link}`);
+    const t = await ssh.execCommand(`sudo -n readlink ${p} 2>/dev/null || readlink ${p} 2>/dev/null || true`);
+    const target = String(t.stdout ?? '').trim();
     const source = target.split('/').filter(Boolean).pop() || link;
-    const text = await readCommand(box, `sudo -n cat ${q(`${dir}/${link}`)} 2>/dev/null || cat ${q(`${dir}/${link}`)}`);
+    const c = await ssh.execCommand(`sudo -n cat ${p} 2>/dev/null || cat ${p}`);
+    const text = String(c.stdout ?? '');
     if (!text || /No such file|Permission denied/i.test(text)) return null;
     return { source, text };
   } catch {
     return null;
+  }
+}
+
+/** Which subscriber DB an MME config pulls in, from its `include` lines — the
+ *  same reading labCfgLink does, on the session already open. */
+async function dbIncludedBy(ssh: any, mmeCfgName: string): Promise<string | undefined> {
+  try {
+    const p = q(`/root/mme/config/${mmeCfgName}`);
+    const r = await ssh.execCommand(
+      `sudo -n grep -E '^[[:space:]]*include' ${p} 2>/dev/null || grep -E '^[[:space:]]*include' ${p} 2>/dev/null || true`);
+    return String(r.stdout ?? '')
+      .split('\n')
+      .map((l: string) => l.trim())
+      .filter((l: string) => l.startsWith('include'))
+      .map((l: string) => /include\s+"([^"]+)"/.exec(l)?.[1])
+      .filter((n: unknown): n is string => !!n)
+      // Only the subscriber/PLMN databases, not every include (configs also
+      // pull in 1000UE.mme.cfg-style fragments).
+      .find((n: string) => /db|subscriber|ue/i.test(n));
+  } catch {
+    return undefined;
   }
 }
 
@@ -75,18 +102,25 @@ export async function captureRowConfigs(
   };
 
   if (callbox) {
-    put('enb.cfg', await readCfg(callbox, '/root/enb/config', 'enb.cfg'));
-    const mme = await readCfg(callbox, '/root/mme/config', 'mme.cfg');
-    put('mme.cfg', mme);
-    put('ims.cfg', await readCfg(callbox, '/root/mme/config', 'ims.cfg'));
-    put('ots.cfg', await readCfg(callbox, '/root/ots/config', 'ots.cfg'));
-    // The DB travels inside the MME config as an `include` line.
-    if (mme?.source) {
-      const dbs = await ueDbFor(callbox, mme.source).catch(() => [] as string[]);
-      if (dbs[0]) put('db.cfg', await readCfg(callbox, '/root/mme/config', dbs[0]));
-    }
+    // One connection for all five — see readCfgOn.
+    await withSsh(callbox, async (ssh) => {
+      put('enb.cfg', await readCfgOn(ssh, '/root/enb/config', 'enb.cfg'));
+      const mme = await readCfgOn(ssh, '/root/mme/config', 'mme.cfg');
+      put('mme.cfg', mme);
+      put('ims.cfg', await readCfgOn(ssh, '/root/mme/config', 'ims.cfg'));
+      put('ots.cfg', await readCfgOn(ssh, '/root/ots/config', 'ots.cfg'));
+      // The DB travels inside the MME config as an `include` line.
+      if (mme?.source) {
+        const db = await dbIncludedBy(ssh, mme.source);
+        if (db) put('db.cfg', await readCfgOn(ssh, '/root/mme/config', db));
+      }
+    }).catch(() => { /* a box we cannot reach records nothing, and fails nothing */ });
   }
-  if (ueSystem) put('ue.cfg', await readCfg(ueSystem, '/root/ue/config', 'ue.cfg'));
+  if (ueSystem) {
+    await withSsh(ueSystem, async (ssh) => {
+      put('ue.cfg', await readCfgOn(ssh, '/root/ue/config', 'ue.cfg'));
+    }).catch(() => { /* same */ });
+  }
 
   return { files, contents };
 }
