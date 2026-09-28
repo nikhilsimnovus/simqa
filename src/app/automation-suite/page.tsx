@@ -636,7 +636,10 @@ export default function AutomationSuitePage() {
     // An integrated install has no separate UE box — the Simnovator IS the UE,
     // and the topology says so by pointing uesim at the station itself.
     const paired = profile?.uesim && ueSystems.some(u => u.id === profile.uesim) ? profile.uesim : '';
-    if (paired !== ueSystemId) setUeSystemId(paired ?? '');
+    // The select has no empty row, so a blank state would show the first
+    // option while Save submitted nothing — fall back to it explicitly.
+    const next = paired || ueSystems[0]?.id || '';
+    if (next !== ueSystemId) setUeSystemId(next);
   }, [uesimSystemId, profiles, ueSystems, ueSystemId]);
 
   // Box logins follow the chosen Simnovator. Keeping the current selection when
@@ -1697,10 +1700,9 @@ export default function AutomationSuitePage() {
               )}
               <label className="flex flex-col">
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">UE system</span>
+                {/* Just the UE systems. The one the Simnovator's topology binds
+                    is selected for you; pick another to override it. */}
                 <select value={ueSystemId} onChange={e => setUeSystemId(e.target.value)} className="border border-slate-300 rounded-md px-3 py-2 text-sm">
-                  {/* Optional: an integrated install has no separate UE box, and
-                      the topology already binds one for every setup. */}
-                  <option value="">— from topology —</option>
                   {ueSystems.map(s => (
                     <option key={s.id} value={s.id}>{s.host}</option>
                   ))}
