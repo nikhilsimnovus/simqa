@@ -21,6 +21,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { cn } from '@/lib/cn';
 import { SearchableSelect } from '@/components/SearchableSelect';
 import { useColumnWidths, ResizeHandle, ColGroup } from '@/components/resizableColumns';
+import { statusLabel, verdictLabel, verdictClass, statusStyle } from '@/lib/automation/outcome';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
 
 interface SystemRow {
@@ -522,11 +523,11 @@ export default function AutomationSuitePage() {
   /**
    * What to show in the Status and Verdict columns for one row.
    *
-   * `label` is the BOX's own execution status where there is one — COMPLETED,
-   * ABORTED, the same word its GUI shows — so the two screens can be read
-   * side by side. `verdict` is the box's PASS/FAIL. A row that never reached
-   * the box has neither, and says so rather than borrowing the box's words for
-   * something the box never saw.
+   * Both come from outcome.ts, which holds the only two vocabularies a row may
+   * use: Completed / In Progress / Not Executed / Aborted / Stopped, and
+   * Passed / Uncompleted / Failed / Error. Everything here is about working
+   * out WHICH row state we are looking at — live, just-finished, or the last
+   * saved run — not what to call it.
    */
   const statusOf = useCallback((s: SuiteRow, it: SuiteItem): {
     label: string; dot: string; cls: string; title?: string;
@@ -535,43 +536,32 @@ export default function AutomationSuitePage() {
     // The saved reason for this row's last outcome — the tooltip on the cell.
     const reason = lastDetail[s.id]?.[it.name];
     const box = lastBox[s.id]?.[it.name];
+    const show = (o: Parameters<typeof statusLabel>[0], title?: string) => {
+      const st = statusLabel(o);
+      const vd = verdictLabel(o);
+      const { dot, cls } = statusStyle(st);
+      return { label: st, dot, cls, title, verdict: vd || '–', verdictCls: verdictClass(vd) };
+    };
+
     // The box itself is the most reliable signal that a row is executing right
     // now: it survives a page refresh and is true even when the run was started
     // from the Simnovator's own GUI rather than here.
     const busy = s.uesimSystemId ? busyBySystem[busyKey(s.uesimSystemId, s.boxUserId)] : null;
-    if (busy && busy.testCaseName === it.name) {
-      return { label: 'In Progress', dot: '🟡', cls: 'text-amber-700' };
-    }
-    const livePr = progress && progress.suiteId === s.id ? progress.statuses?.[it.name] : undefined;
-    if (livePr === 'running') return { label: 'In Progress', dot: '🟡', cls: 'text-amber-700' };
-    if (livePr === 'passed')  return { label: 'Passed',  dot: '🟢', cls: 'text-emerald-700' };
-    // Live: the finished run's saved reason isn't written yet, so say so rather
-    // than showing a stale one from a previous run.
-    if (livePr === 'failed')  return { label: 'Failed',  dot: '🔴', cls: 'text-red-700', title: 'Failed during this run — the full reason appears once the run finishes' };
-    if (livePr === 'skipped') return { label: 'Skipped', dot: '⚫', cls: 'text-slate-500' };
-    const prev = lastStatus[s.id]?.[it.name];
-    if (prev === undefined) return { label: 'Not Run', dot: '⚪', cls: 'text-slate-400' };
+    if (busy && busy.testCaseName === it.name) return show({ running: true });
 
-    const verdict = box?.verdict;
-    const verdictCls = verdict === 'PASS' ? 'text-emerald-700 font-semibold'
-      : verdict ? 'text-red-700 font-semibold' : 'text-slate-400';
-    // The box's word when it has one. When it does not, the row failed before
-    // the box ever judged it — a testcase the box refused to create, a trigger
-    // it rejected — and "Not started" is the honest thing to say.
-    if (box?.status) {
-      return {
-        label: box.status + (box.stopped ? ' (stopped)' : ''),
-        dot: prev ? '🟢' : '🔴',
-        cls: prev ? 'text-slate-700' : 'text-red-700',
-        title: reason, verdict: verdict ?? '–', verdictCls,
-      };
-    }
-    return {
-      label: prev ? 'Passed' : 'Not started',
-      dot: prev ? '🟢' : '🔴',
-      cls: prev ? 'text-emerald-700' : 'text-red-700',
-      title: reason, verdict: verdict ?? '–', verdictCls,
-    };
+    const livePr = progress && progress.suiteId === s.id ? progress.statuses?.[it.name] : undefined;
+    if (livePr === 'running') return show({ running: true });
+    // Live rows, before the run is saved: the box's own status has not been
+    // written yet, so only SimQA's pass/fail is known.
+    if (livePr === 'passed')  return show({ ok: true, boxStatus: 'Completed', verdict: 'PASS' });
+    if (livePr === 'failed')  return show({ ok: false },
+      'Failed during this run — the full reason appears once the run finishes');
+    // A row the run never reached: with stopOnFail, or after a Stop.
+    if (livePr === 'skipped') return show({ neverRun: true });
+
+    const prev = lastStatus[s.id]?.[it.name];
+    if (prev === undefined) return show({ neverRun: true });
+    return show({ ok: prev, boxStatus: box?.status, verdict: box?.verdict, stopped: box?.stopped }, reason);
   }, [progress, lastStatus, lastDetail, lastBox, busyBySystem]);
 
   /** Rough wall-clock estimate for a run.
