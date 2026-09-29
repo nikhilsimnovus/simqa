@@ -1249,30 +1249,58 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       failed += 1;
       if (suite.stopOnFail) { done += 1; break; }
     } finally {
-      // Phase 6: per-item cleanup — runs only once the execution has finished,
-      // and only when the suite opted in.
+      // Phase 6: per-item cleanup — once the execution has finished.
       //
-      // "Back to normal" means the symlinks point at whatever they pointed at
-      // BEFORE this row ran, so the callbox is handed back as it was found. A
-      // cfg we uploaded is removed too, but never while a link still points at
-      // it (that would leave a dangling symlink). With the box left unchanged
-      // by default, an operator can see which cfg a run used.
-      if (suite.removeConfigAfterRun === true && callboxSys) {
+      // /root/automation_configs holds this row's configs, and a run puts them
+      // on the callbox because that is where the radio reads them from. They
+      // are not wanted there afterwards: the callbox is shared, and copies
+      // left behind are how it fills up with files nobody can date. So the
+      // files this row NAMED are removed again — including ones that were
+      // already there, which is the trade for the folder being the only
+      // lasting copy. The next run puts back whatever it needs.
+      //
+      // Two things it will not do. It touches only the names this row used, so
+      // a directory full of other configs is left alone. And it does nothing
+      // at all while somebody else is executing on that callbox: removing
+      // configs under a running test is how you break a colleague's run.
+      if (callboxSys) {
         const sq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
         try {
-          await withSsh(callboxSys, async (ssh) => {
-            if (prevEnbLink) {
-              await ssh.execCommand(`cd /root/enb/config && ln -sfn ${sq(prevEnbLink)} 'enb.cfg' && ls -la 'enb.cfg'`);
+          let othersRunning = false;
+          try {
+            const u = await callboxUsage(inv, callboxSys, { me: ueOpts.boxUser });
+            othersRunning = u.others.length > 0;
+          } catch { /* cannot tell — assume the box is ours, as the run did */ }
+
+          if (othersRunning) {
+            stepDetails.push('cfg-cleanup: skipped — another user is executing on this callbox');
+          } else {
+            const removed: string[] = [];
+            await withSsh(callboxSys, async (ssh) => {
+              // Links first, so nothing points at a file that is about to go.
+              if (prevEnbLink) {
+                await ssh.execCommand(`cd /root/enb/config && sudo -n ln -sfn ${sq(prevEnbLink)} 'enb.cfg' 2>/dev/null || ln -sfn ${sq(prevEnbLink)} 'enb.cfg'`);
+              }
+              for (const [linkName, prev] of [['mme.cfg', prevMmeLink], ['ims.cfg', prevImsLink]] as const) {
+                if (prev) await ssh.execCommand(`cd /root/mme/config && sudo -n ln -sfn ${sq(prev)} ${sq(linkName)} 2>/dev/null || ln -sfn ${sq(prev)} ${sq(linkName)}`);
+              }
+              for (const [name, dir] of [
+                [item.callboxCfg, '/root/enb/config'],
+                [item.mmeCfg, '/root/mme/config'],
+                [item.imsCfg, '/root/mme/config'],
+              ] as const) {
+                if (!name) continue;
+                // Never the live links themselves — only what they point at.
+                if (['enb.cfg', 'mme.cfg', 'ims.cfg'].includes(name)) continue;
+                const p = `${dir}/${name}`;
+                const r = await ssh.execCommand(`sudo -n rm -f ${sq(p)} 2>/dev/null || rm -f ${sq(p)}`);
+                if (r.code === 0) removed.push(name);
+              }
+            });
+            if (removed.length) {
+              stepDetails.push(`cfg-cleanup: removed ${removed.join(', ')} from the callbox — kept in ${testCaseDir(suite.name, item.name)}`);
             }
-            for (const [linkName, prev] of [['mme.cfg', prevMmeLink], ['ims.cfg', prevImsLink]] as const) {
-              if (prev) await ssh.execCommand(`cd /root/mme/config && ln -sfn ${sq(prev)} ${sq(linkName)}`);
-            }
-            if (pushedCfg) {
-              await ssh.execCommand(
-                `cd /root/enb/config && [ "$(readlink enb.cfg)" != ${sq(pushedCfg)} ] && rm -f ${sq(pushedCfg)} || true`);
-            }
-          });
-          stepDetails.push('cfg-restore: callbox symlinks put back');
+          }
         } catch { /* cleanup is best-effort — never changes the verdict */ }
       }
     }
