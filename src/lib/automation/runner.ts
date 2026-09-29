@@ -778,6 +778,9 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
      *  the callbox is unchanged, so the symlink can look right while the
      *  contents underneath have moved — which means relink and restart. */
     let servedFromFolder = false;
+    /** Files this run actually created on the callbox — the only ones cleanup
+     *  may take away again. */
+    const addedThisRun = new Set<string>();
 
     // ── Phase 0: create the row's testcase on the Simnovator first, under the
     // display name and with the row's duration baked in — so the case exists in
@@ -943,6 +946,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             target = `/root/enb/config/${cfg}`;
             const isNew = !existing.has(cfg);
             await push(cfg, serverEnb, '/root/enb/config');
+            if (isNew) addedThisRun.add(cfg);
             existing.add(cfg);
             // Only a file the callbox did not have is ours to clean up later.
             if (isNew) pushedCfg = cfg;
@@ -1003,6 +1007,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             // The server's copy wins for the core cfgs too.
             const fromFolder = fromServer[pick];
             if (fromFolder) {
+              if (!existingCore.has(pick)) addedThisRun.add(pick);
               await push(pick, fromFolder, '/root/mme/config');
               existingCore.add(pick);
               justUploaded = true;
@@ -1310,6 +1315,13 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
                 // Never the live links themselves — only what they point at.
                 if (['enb.cfg', 'mme.cfg', 'ims.cfg'].includes(name)) continue;
                 if (needed.has(name)) { kept.push(name); continue; }
+                // Only what THIS run put on the box. Removing configs that were
+                // already there took them out of the pickers and emptied the
+                // Database column, because both read the callbox: a file the
+                // box no longer has cannot be offered, and an mme cfg that is
+                // gone has no include line to name a DB. The folder keeps its
+                // own copy either way.
+                if (!addedThisRun.has(name)) { kept.push(name); continue; }
                 const p = `${dir}/${name}`;
                 const r = await ssh.execCommand(`sudo -n rm -f ${sq(p)} 2>/dev/null || rm -f ${sq(p)}`);
                 if (r.code === 0) removed.push(name);
