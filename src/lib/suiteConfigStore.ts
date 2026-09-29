@@ -52,9 +52,16 @@ async function readCfgOn(ssh: any, dir: string, link: string): Promise<{ source?
     const t = await ssh.execCommand(`sudo -n readlink ${p} 2>/dev/null || readlink ${p} 2>/dev/null || true`);
     const target = String(t.stdout ?? '').trim();
     const source = target.split('/').filter(Boolean).pop() || link;
-    const c = await ssh.execCommand(`sudo -n cat ${p} 2>/dev/null || cat ${p}`);
-    const text = String(c.stdout ?? '');
-    if (!text || /No such file|Permission denied/i.test(text)) return null;
+    // base64, not cat: execCommand trims trailing whitespace off stdout, so a
+    // config ending in "}\n\n" came back as "}" — two bytes short of the file
+    // on the box. That was invisible while these copies were only a record,
+    // and is not once they are pushed back to a callbox as the source of a
+    // run. One base64 token survives the trimming intact.
+    const c = await ssh.execCommand(`sudo -n base64 -w0 ${p} 2>/dev/null || base64 -w0 ${p} 2>/dev/null`);
+    const b64 = String(c.stdout ?? '').trim();
+    if (!b64) return null;
+    const text = Buffer.from(b64, 'base64').toString('utf8');
+    if (!text) return null;
     return { source, text };
   } catch {
     return null;
