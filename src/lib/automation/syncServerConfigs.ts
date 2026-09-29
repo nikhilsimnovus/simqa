@@ -61,14 +61,18 @@ const AS_SERVER_NAME: Record<string, ServerFile> = {
 export async function syncRowToServer(
   inv: Inventory,
   suite: AutomationSuite,
-  row: { name: string; simnovatorTcId: string },
+  row: { name: string; simnovatorTcId: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string },
   callbox?: InventorySystem,
   ueSystem?: InventorySystem,
   boxUserId?: string,
 ): Promise<{ row: string; dir: string; written: ServerFile[]; error?: string }> {
   const files: Partial<Record<ServerFile, string>> = {};
 
-  const { contents } = await captureRowConfigs(callbox, ueSystem).catch(() => ({ contents: {} as any }));
+  // By the row's own names: the callbox's enb.cfg/mme.cfg/ims.cfg links point
+  // at whatever ran last, which outside a run is usually another row's.
+  const { contents } = await captureRowConfigs(callbox, ueSystem, {
+    enb: row.callboxCfg, mme: row.mmeCfg, ims: row.imsCfg,
+  }).catch(() => ({ contents: {} as any }));
   for (const [from, to] of Object.entries(AS_SERVER_NAME)) {
     const text = (contents as any)[from];
     if (typeof text === 'string') files[to] = text;

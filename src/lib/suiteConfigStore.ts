@@ -99,6 +99,17 @@ async function dbIncludedBy(ssh: any, mmeCfgName: string): Promise<string | unde
 export async function captureRowConfigs(
   callbox?: InventorySystem,
   ueSystem?: InventorySystem,
+  /**
+   * The files this row CHOSE, read by name instead of through the live
+   * symlinks.
+   *
+   * enb.cfg / mme.cfg / ims.cfg on a callbox point at whatever ran last, which
+   * on a shared box is usually somebody else's row. Reading the links is right
+   * during a run — they point at this row by then — and wrong at any other
+   * time: a suite saved while a colleague's test was linked captured their
+   * config as this row's. Given the names, the files are read directly.
+   */
+  chosen?: { enb?: string; mme?: string; ims?: string },
 ): Promise<{ files: Partial<Record<SnapshotFile, SnapshotEntry>>; contents: Partial<Record<SnapshotFile, string>> }> {
   const files: Partial<Record<SnapshotFile, SnapshotEntry>> = {};
   const contents: Partial<Record<SnapshotFile, string>> = {};
@@ -111,10 +122,10 @@ export async function captureRowConfigs(
   if (callbox) {
     // One connection for all five — see readCfgOn.
     await withSsh(callbox, async (ssh) => {
-      put('enb.cfg', await readCfgOn(ssh, '/root/enb/config', 'enb.cfg'));
-      const mme = await readCfgOn(ssh, '/root/mme/config', 'mme.cfg');
+      put('enb.cfg', await readCfgOn(ssh, '/root/enb/config', chosen?.enb ?? 'enb.cfg'));
+      const mme = await readCfgOn(ssh, '/root/mme/config', chosen?.mme ?? 'mme.cfg');
       put('mme.cfg', mme);
-      put('ims.cfg', await readCfgOn(ssh, '/root/mme/config', 'ims.cfg'));
+      put('ims.cfg', await readCfgOn(ssh, '/root/mme/config', chosen?.ims ?? 'ims.cfg'));
       put('ots.cfg', await readCfgOn(ssh, '/root/ots/config', 'ots.cfg'));
       // The DB travels inside the MME config as an `include` line.
       if (mme?.source) {
