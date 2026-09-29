@@ -1687,9 +1687,24 @@ export default function AutomationSuitePage() {
                                           <select
                                             value={s.kind ?? 'uesim-only'}
                                             onChange={async e => {
+                                              const kind = e.target.value;
+                                              // Dropping the callbox means dropping what only it
+                                              // used: the box itself, the uploaded cfgs and every
+                                              // row's gnb/mme/ims picks. Left behind they would
+                                              // still show in the table and still be written to
+                                              // the server folder, for a suite that no longer has
+                                              // a callbox to run them on. null clears a field;
+                                              // undefined would silently keep the old value.
+                                              const body: any = { kind };
+                                              if (kind === 'uesim-only') {
+                                                body.callboxSystemId = null;
+                                                body.callboxConfig = null;
+                                                body.uploadedConfigs = null;
+                                                body.items = (s.items ?? []).map(({ callboxCfg, mmeCfg, imsCfg, ...rest }) => rest);
+                                              }
                                               await fetch(`/api/automation/suites/${s.id}`, {
                                                 method: 'PUT', headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify({ kind: e.target.value }),
+                                                body: JSON.stringify(body),
                                               });
                                               await refresh();
                                             }}
@@ -1702,7 +1717,19 @@ export default function AutomationSuitePage() {
                                           Simnovator testcase
                                           <select
                                             value={rowDraft.simnovatorTcId ?? it.simnovatorTcId}
-                                            onChange={e => setRowDraft({ ...rowDraft, simnovatorTcId: e.target.value })}
+                                            onChange={e => {
+                                              // The row's name is derived from its testcase, and
+                                              // it is not editable here — so a row pointed at a
+                                              // different testcase while still carrying the old
+                                              // one's name would be lying about what it runs.
+                                              const id = e.target.value;
+                                              const picked = uesimTestcases.find(t => t.id === id)?.name;
+                                              setRowDraft({
+                                                ...rowDraft,
+                                                simnovatorTcId: id,
+                                                name: defaultRowName(picked) || rowDraft.name || it.name,
+                                              });
+                                            }}
                                             className="mt-0.5 w-full border border-slate-300 rounded px-1 py-0.5 text-[11px]">
                                             {uesimTestcases.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                                           </select>

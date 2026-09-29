@@ -130,6 +130,12 @@ export function updateSuite(id: string, patch: Partial<AutomationSuite>): Automa
   if (i < 0) throw new Error(`no suite with id "${id}"`);
   const before = s.suites[i].name;
   const merged: AutomationSuite = { ...s.suites[i], ...patch, id, updatedAt: new Date().toISOString() };
+  // A spread cannot remove anything: sending callboxSystemId: undefined just
+  // leaves the old one in place, which is how a suite switched to UESIM-only
+  // kept pointing at a callbox. An explicit null means "clear this".
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null) delete (merged as any)[k];
+  }
   s.suites[i] = merged;
   write(s);
   // A renamed suite or an added row changes the tree; an edited duration does
