@@ -111,6 +111,11 @@ function sameCfg(a?: string, b?: string): boolean {
 const POLL_MARGIN_SEC = 180;
 
 export interface SuiteRunStep {
+  /** The testcase on the box this row actually executed — the COPY the runner
+   *  creates, not the source it was copied from. Without it a report opened
+   *  from a suite row would show the source's executions, which are somebody
+   *  else's runs. */
+  boxTestcaseId?: string;
   testcaseId: string;
   status: number;
   ok: boolean;
@@ -1135,6 +1140,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       const passLike = verdict === 'PASS';
       steps.push({
         testcaseId: item.name, status: r.status, ok: passLike,
+        boxTestcaseId: runTcId,
         executionId: finalState?.executionId ?? execId,
         verdict, boxStatus: finalState?.status, stopped: stoppedByUs,
         detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}${finalState

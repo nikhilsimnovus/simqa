@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Header } from '@/components/Header';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
+import { BackToAutomationSuite } from '@/components/BackToAutomationSuite';
 import { BackToDashboard } from '@/components/BackToDashboard';
 import { SearchableSelect } from '@/components/SearchableSelect';
 import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
@@ -877,6 +878,7 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
             {/* Only when opened from the dashboard (?from=dashboard) — the
                 same contract as Run History. */}
             <BackToDashboard />
+            <BackToAutomationSuite />
             <Link href={`/testcases${boxQs}`}>
               <Button size="sm" variant="ghost"><ChevronLeft className="h-4 w-4" />Back</Button>
             </Link>

@@ -484,7 +484,28 @@ export default function AutomationSuitePage() {
   /** What the BOX said about each row last time: its execution status and its
    *  verdict. Shown as-is, so the Status column can be read against the
    *  Simnovator's own screen rather than being SimQA's paraphrase of it. */
-  const [lastBox, setLastBox] = useState<Record<string, Record<string, { status?: string; verdict?: string; stopped?: boolean }>>>({});
+  const [lastBox, setLastBox] = useState<Record<string, Record<string, { status?: string; verdict?: string; stopped?: boolean; boxTestcaseId?: string }>>>({});
+
+  /**
+   * Where a row's report lives — the same validation page the dashboard opens,
+   * for the testcase that ACTUALLY ran.
+   *
+   * A suite row executes a copy the runner creates under the row's display
+   * name, so linking at the source testcase would show somebody else's
+   * executions. The copy's id comes back with the run; before a row has ever
+   * run there is none, and the link falls back to the source with the name as
+   * a hint, which is the best that can be said at that point.
+   */
+  const reportHref = useCallback((s: SuiteRow, it: SuiteItem): string => {
+    const ran = lastBox[s.id]?.[it.name]?.boxTestcaseId;
+    const p = new URLSearchParams({ from: 'automation-suite', name: it.name });
+    if (s.uesimSystemId) p.set('systemId', s.uesimSystemId);
+    // Read it as the login that ran it: a testcase belongs to one operator and
+    // is invisible to the others.
+    const asUser = userOf(s);
+    if (asUser) p.set('boxUserId', asUser);
+    return `/testcases/${encodeURIComponent(ran ?? it.simnovatorTcId)}?${p}`;
+  }, [lastBox]);
   /** Row being dragged, so a drop knows what to move. */
   const [dragRow, setDragRow] = useState<{ suiteId: string; itemId: string } | null>(null);
 
@@ -1807,7 +1828,12 @@ export default function AutomationSuitePage() {
                                         with the full one on hover rather than
                                         widening the table for everybody. */}
                                     <td className="px-2 py-1">
-                                      <div className="font-medium text-slate-800 truncate" title={it.name}>{it.name}</div>
+                                      {/* Opens this row's report — the same
+                                          validation page the Simnovator shows
+                                          when you click a finished testcase. */}
+                                      <a href={reportHref(s, it)}
+                                        className="font-medium text-blue-700 hover:underline truncate block"
+                                        title={`${it.name} — open its report`}>{it.name}</a>
                                       <div className="text-[10px] text-slate-400 truncate">Run as {userOf(s)}</div>
                                     </td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600 truncate" title={it.callboxCfg ?? undefined}>
@@ -1845,7 +1871,14 @@ export default function AutomationSuitePage() {
                                     <td className={`px-2 py-1 whitespace-nowrap ${st.cls} ${st.title ? 'cursor-help' : ''}`} title={st.title}>{st.dot} {st.label}</td>
                                     {/* The box's own PASS/FAIL, beside its own status — the
                                         pair the Simnovator GUI shows for an execution. */}
-                                    <td className={`px-2 py-1 whitespace-nowrap ${st.verdictCls ?? 'text-slate-400'}`} title={st.title}>{st.verdict ?? '–'}</td>
+                                    {/* The verdict opens the report too — clicking
+                                        "Passed" to see why is the Simnovator's own
+                                        habit, and the one people arrive with. */}
+                                    <td className={`px-2 py-1 whitespace-nowrap ${st.verdictCls ?? 'text-slate-400'}`} title={st.title}>
+                                      {st.verdict && st.verdict !== '–'
+                                        ? <a href={reportHref(s, it)} className="hover:underline">{st.verdict}</a>
+                                        : (st.verdict ?? '–')}
+                                    </td>
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
                                       <button
                                         onClick={() => setConfirmRun({ suite: s, rows: [it] })}

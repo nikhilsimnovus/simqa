@@ -57,13 +57,17 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     const lastRunAt: Record<string, string> = {};
     /** The box's own words for this row: status (COMPLETED, ABORTED, …) and
      *  verdict (PASS/FAIL). Absent when the row never reached the box. */
-    const box: Record<string, { status?: string; verdict?: string; stopped?: boolean }> = {};
+    const box: Record<string, { status?: string; verdict?: string; stopped?: boolean; boxTestcaseId?: string }> = {};
     for (const run of runs) {
       for (const st of run?.steps ?? []) {
         if (!st?.testcaseId || st.testcaseId in statuses) continue;
         statuses[st.testcaseId] = !!st.ok;
         details[st.testcaseId] = reasonFor(st);
-        box[st.testcaseId] = { status: st.boxStatus, verdict: st.verdict, stopped: st.stopped };
+        box[st.testcaseId] = {
+          status: st.boxStatus, verdict: st.verdict, stopped: st.stopped,
+          // Which testcase on the box to open a report for.
+          boxTestcaseId: st.boxTestcaseId,
+        };
         if (run.finishedAt) lastRunAt[st.testcaseId] = run.finishedAt;
       }
     }
