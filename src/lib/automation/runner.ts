@@ -32,6 +32,8 @@ import { duplicateTestcase } from './duplicateTestcase';
 // box replies in capitals — see isTerminalStatus.
 import { isTerminalStatus } from './outcome';
 import { saveRowConfigs } from '../suiteConfigStore';
+import { readTestCaseFile, testCaseDir } from './serverConfigs';
+import { syncRowToServer } from './syncServerConfigs';
 
 /** How long to give the box before asking whether any UE attached. The UEs are
  *  powered on over the first ~30-40s (attachRate-dependent), so checking sooner
@@ -772,6 +774,10 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     /** Set only when this row UPLOADED a cfg that wasn't already on the callbox;
      *  that file is the sole thing opt-in cleanup may remove. */
     let pushedCfg = '';
+    /** Set when a file came from the Automation Server's folder. The name on
+     *  the callbox is unchanged, so the symlink can look right while the
+     *  contents underneath have moved — which means relink and restart. */
+    let servedFromFolder = false;
 
     // ── Phase 0: create the row's testcase on the Simnovator first, under the
     // display name and with the row's duration baked in — so the case exists in
@@ -878,13 +884,44 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
       let target = '';
 
+      // What this row runs with lives on the Automation Server, in
+      // /root/automation_configs/<suite>/<test case>/. Push those files to the
+      // callbox under the names the row picked, so the execution uses the
+      // folder rather than whatever the callbox happens to hold under that
+      // name. A file the folder does not have falls through to the old
+      // behaviour — an empty folder must not silently blank a working config.
+      const fromServer: Record<string, string | undefined> = {
+        [cfg]: readTestCaseFile(suite.name, item.name, 'enb.cfg'),
+        ...(item.mmeCfg ? { [item.mmeCfg]: readTestCaseFile(suite.name, item.name, 'mme.cfg') } : {}),
+        ...(item.imsCfg ? { [item.imsCfg]: readTestCaseFile(suite.name, item.name, 'ims.cfg') } : {}),
+      };
+
       try {
         // One connection for the whole phase. Every step here used to open an
         // SSH session of its own — four or five handshakes per row against the
         // same callbox, paid again on every row, most of them only to read a
         // symlink that had not moved.
         await withSsh(callboxSys, async (ssh) => {
-          if (existing.has(cfg)) {
+          const push = async (name: string, text: string, where: string) => {
+            const sftp = await ssh.requestSFTP();
+            await new Promise<void>((resolve, reject) => {
+              const ws = sftp.createWriteStream(`${where}/${name}`);
+              ws.on('close', () => resolve());
+              ws.on('error', reject);
+              ws.end(Buffer.from(text, 'utf8'));
+            });
+          };
+          const serverEnb = fromServer[cfg];
+          if (serverEnb) {
+            target = `/root/enb/config/${cfg}`;
+            const isNew = !existing.has(cfg);
+            await push(cfg, serverEnb, '/root/enb/config');
+            existing.add(cfg);
+            // Only a file the callbox did not have is ours to clean up later.
+            if (isNew) pushedCfg = cfg;
+            servedFromFolder = true;
+            stepDetails.push(`cfg-source: ${testCaseDir(suite.name, item.name)}/enb.cfg → ${cfg}`);
+          } else if (existing.has(cfg)) {
             // Already on the callbox — link at it directly, nothing to copy.
             target = `/root/enb/config/${cfg}`;
             stepDetails.push(`cfg-source: existing "${cfg}"`);
@@ -912,7 +949,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           //
           // An UPLOAD always relinks: the file's CONTENT changed under the same
           // name, so the link being equal says nothing.
-          let relinked = pushedCfg === cfg;
+          let relinked = pushedCfg === cfg || servedFromFolder;
           {
             const prev = await ssh.execCommand(`readlink ${q(linkPath)} || true`);
             prevEnbLink = (prev.stdout ?? '').trim();
@@ -942,6 +979,14 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           for (const [linkName, pick] of coreLinks) {
             if (!pick) continue;
             let justUploaded = false;
+            // The server's copy wins for the core cfgs too.
+            const fromFolder = fromServer[pick];
+            if (fromFolder) {
+              await push(pick, fromFolder, '/root/mme/config');
+              existingCore.add(pick);
+              justUploaded = true;
+              stepDetails.push(`cfg-source: ${linkName} from ${testCaseDir(suite.name, item.name)}`);
+            }
             // An uploaded core cfg isn't on the box yet — push it under its own
             // name first, so the link reads the same as the operator's pick.
             if (!existingCore.has(pick) && suite.uploadedConfigs?.[pick]) {
@@ -1003,6 +1048,18 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         continue;
       }
     }
+
+    // ── Phase 3a: refresh this row's folder on the Automation Server, so the
+    // files an execution reads are the current ones. Runs AFTER bring-up, when
+    // the callbox is serving what this row asked for, and before the trigger.
+    try {
+      const sync = await syncRowToServer(inv, suite, item, callboxSys, ueSys, suite.boxUserId);
+      if (sync.written.length) {
+        stepDetails.push(`server-configs: ${sync.written.join(', ')} → ${sync.dir}`);
+      } else if (sync.error) {
+        stepDetails.push(`server-configs: not updated — ${sync.error}`);
+      }
+    } catch { /* the folder is a mirror; a run never fails over it */ }
 
     // ── Phase 3b: keep the configuration this row is about to run with.
     //

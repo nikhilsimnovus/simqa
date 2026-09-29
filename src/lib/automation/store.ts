@@ -30,6 +30,28 @@ function write(s: StoreShape): void {
   fs.writeFileSync(STORE_FILE(), JSON.stringify(s, null, 2));
 }
 
+/**
+ * Mirror a suite onto the Automation Server — /root/automation_configs/
+ * <suite>/<test case>/ — with its configs and testcase definition inside.
+ *
+ * The folders appear at once: that part is local and instant. The files
+ * follow in the background, because gathering them means several SSH sessions
+ * per row against the callbox and the UE, and nobody should wait for a lab
+ * box to answer before a save returns. A run re-syncs the row it is about to
+ * execute, so a background pass that fails costs nothing but a delay.
+ */
+function mirrorToServer(suite: AutomationSuite): void {
+  void (async () => {
+    try {
+      const { syncSuiteToServer } = await import('./syncServerConfigs');
+      const { loadInventory } = await import('../inventory');
+      const inv = loadInventory();
+      await syncSuiteToServer(inv, suite, { structureOnly: true });
+      await syncSuiteToServer(inv, suite);
+    } catch { /* rebuilt before every run; a save must never fail over it */ }
+  })();
+}
+
 export function listSuites(): AutomationSuite[] {
   // Newest first. The file keeps suites in the order they were appended, so
   // the list used to open on whatever was created first — and the suite
@@ -52,6 +74,7 @@ export function createSuite(input: Omit<AutomationSuite, 'id' | 'createdAt' | 'u
   const suite: AutomationSuite = { ...input, id, createdAt: now, updatedAt: now };
   s.suites.push(suite);
   write(s);
+  mirrorToServer(suite);
   return suite;
 }
 
@@ -63,6 +86,9 @@ export function updateSuite(id: string, patch: Partial<AutomationSuite>): Automa
   const merged: AutomationSuite = { ...s.suites[i], ...patch, id, updatedAt: new Date().toISOString() };
   s.suites[i] = merged;
   write(s);
+  // A renamed suite or an added row changes the tree; an edited duration does
+  // not, but working that out is more code than simply re-laying it.
+  mirrorToServer(merged);
   return merged;
 }
 

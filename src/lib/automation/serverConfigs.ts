@@ -1,0 +1,149 @@
+// The Automation Server's own copy of what every suite row runs with.
+//
+//   /root/automation_configs/
+//   └── <Suite Name>/
+//       └── <Test Case Name>/
+//           ├── test.json      the testcase definition, as the Simnovator holds it
+//           ├── enb.cfg        the radio config the row links on the callbox
+//           ├── mme.cfg        the core config
+//           ├── ims.cfg        the IMS config
+//           ├── db             the subscriber DB the MME config includes
+//           ├── ots.cfg        the box's own ots config
+//           └── ue.cfg         the UE simulator's config
+//
+// Why a real directory and not just a record in the app's data folder: the
+// files a run uses were scattered — the cfgs on the callbox, the DB inside an
+// include line, the testcase only ever in the Simnovator's database — so
+// "what does this row actually run" could not be answered from one place, let
+// alone opened in vi. This is that place, on the machine QA KA BAAP runs on,
+// readable by anyone with root.
+//
+// Writing is best-effort by design: a callbox that is down must not stop a
+// suite from being saved. Every function here reports what it managed rather
+// than throwing.
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { safeFolder } from '../suiteSnapshotCore';
+
+/** The files a test case folder holds, in the order they are listed. */
+export const SERVER_FILES = ['test.json', 'enb.cfg', 'mme.cfg', 'ims.cfg', 'db', 'ots.cfg', 'ue.cfg'] as const;
+export type ServerFile = typeof SERVER_FILES[number];
+
+/** Where the tree lives. SIMQA_AUTOMATION_CONFIGS overrides it — the default
+ *  path is a Linux one, and a developer machine has no /root. */
+export const DEFAULT_ROOT = '/root/automation_configs';
+
+let cachedRoot: string | undefined;
+
+/**
+ * The root to write into.
+ *
+ * /root/automation_configs when it exists and this process can write there —
+ * the installer creates it owned by the service user — and a folder under the
+ * app's own data directory otherwise, so a developer box and a server that has
+ * not been updated both keep working. Resolved once: the answer cannot change
+ * without a restart, and every suite save would otherwise stat the same path.
+ */
+export function automationRoot(): string {
+  if (cachedRoot) return cachedRoot;
+  const wanted = process.env.SIMQA_AUTOMATION_CONFIGS?.trim() || DEFAULT_ROOT;
+  cachedRoot = usable(wanted) ? wanted : path.join(process.cwd(), 'data', 'automation_configs');
+  return cachedRoot;
+}
+
+/** Can we create directories here? Tries to make the root if it is missing,
+ *  which is the normal case the first time on a fresh machine. */
+function usable(dir: string): boolean {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK | fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True when the tree is where the spec wants it rather than the fallback. */
+export function rootIsCanonical(): boolean {
+  return automationRoot() === (process.env.SIMQA_AUTOMATION_CONFIGS?.trim() || DEFAULT_ROOT);
+}
+
+export const suiteDir = (suiteName: string) => path.join(automationRoot(), safeFolder(suiteName));
+export const testCaseDir = (suiteName: string, rowName: string) =>
+  path.join(suiteDir(suiteName), safeFolder(rowName));
+
+/**
+ * Make sure a suite has a folder, and one inside it per test case.
+ *
+ * Called when a suite is saved, so the tree matches the app before anything
+ * has run. Folders for rows that no longer exist are left alone: a row removed
+ * by accident should not take its history with it, and nothing reads them.
+ */
+export function ensureSuiteTree(suiteName: string, rowNames: string[]): { root: string; created: string[] } {
+  const created: string[] = [];
+  try {
+    fs.mkdirSync(suiteDir(suiteName), { recursive: true });
+    for (const row of rowNames) {
+      const dir = testCaseDir(suiteName, row);
+      if (!fs.existsSync(dir)) created.push(dir);
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  } catch { /* unwritable root: the fallback already handled it, nothing else to do */ }
+  return { root: automationRoot(), created };
+}
+
+/**
+ * Write a test case's files.
+ *
+ * Only the entries actually supplied are written — a callbox that could not be
+ * read leaves its files as they were rather than blanking them, which matters
+ * because these are what the next execution uses.
+ */
+export function writeTestCaseFiles(
+  suiteName: string,
+  rowName: string,
+  files: Partial<Record<ServerFile, string>>,
+): { dir: string; written: ServerFile[]; error?: string } {
+  const dir = testCaseDir(suiteName, rowName);
+  const written: ServerFile[] = [];
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    for (const name of SERVER_FILES) {
+      const text = files[name];
+      if (text == null) continue;
+      // Written through a temp file in the same directory: a half-written
+      // config that an execution then picks up is worse than an old one.
+      const tmp = path.join(dir, `.${name}.tmp`);
+      fs.writeFileSync(tmp, text, 'utf8');
+      fs.renameSync(tmp, path.join(dir, name));
+      written.push(name);
+    }
+  } catch (e: any) {
+    return { dir, written, error: e?.message ?? String(e) };
+  }
+  return { dir, written };
+}
+
+/** One file's contents, or undefined when it is not there. This is what an
+ *  execution reads: the folder is the source, not a record of one. */
+export function readTestCaseFile(suiteName: string, rowName: string, file: ServerFile): string | undefined {
+  try {
+    return fs.readFileSync(path.join(testCaseDir(suiteName, rowName), file), 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/** What a test case folder holds right now, for the UI and for verification. */
+export function listTestCaseFiles(suiteName: string, rowName: string): Array<{ name: ServerFile; bytes: number; modified: string }> {
+  const dir = testCaseDir(suiteName, rowName);
+  const out: Array<{ name: ServerFile; bytes: number; modified: string }> = [];
+  for (const name of SERVER_FILES) {
+    try {
+      const st = fs.statSync(path.join(dir, name));
+      out.push({ name, bytes: st.size, modified: new Date(st.mtimeMs).toISOString() });
+    } catch { /* not captured for this row */ }
+  }
+  return out;
+}
