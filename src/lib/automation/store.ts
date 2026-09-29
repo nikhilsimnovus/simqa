@@ -70,15 +70,30 @@ function write(s: StoreShape): void {
  * box to answer before a save returns. A run re-syncs the row it is about to
  * execute, so a background pass that fails costs nothing but a delay.
  */
-function mirrorToServer(suite: AutomationSuite): void {
+function mirrorToServer(suite: AutomationSuite, renamedFrom?: string): void {
   void (async () => {
     try {
       const { syncSuiteToServer } = await import('./syncServerConfigs');
+      const { pruneTestCases, renameSuiteTree } = await import('./serverConfigs');
       const { loadInventory } = await import('../inventory');
+      if (renamedFrom) renameSuiteTree(renamedFrom, suite.name);
       const inv = loadInventory();
       await syncSuiteToServer(inv, suite, { structureOnly: true });
+      // Rows the suite no longer has leave their folders behind otherwise, and
+      // the tree stops matching the app it is supposed to mirror.
+      pruneTestCases(suite.name, (suite.items ?? []).map(i => i.name));
       await syncSuiteToServer(inv, suite);
     } catch { /* rebuilt before every run; a save must never fail over it */ }
+  })();
+}
+
+/** Delete a suite's folder on the Automation Server along with the suite. */
+function unmirrorFromServer(suiteName: string): void {
+  void (async () => {
+    try {
+      const { removeSuiteTree } = await import('./serverConfigs');
+      removeSuiteTree(suiteName);
+    } catch { /* the folder outliving the suite is untidy, not fatal */ }
   })();
 }
 
@@ -113,20 +128,22 @@ export function updateSuite(id: string, patch: Partial<AutomationSuite>): Automa
   const s = read();
   const i = s.suites.findIndex(x => x.id === id);
   if (i < 0) throw new Error(`no suite with id "${id}"`);
+  const before = s.suites[i].name;
   const merged: AutomationSuite = { ...s.suites[i], ...patch, id, updatedAt: new Date().toISOString() };
   s.suites[i] = merged;
   write(s);
   // A renamed suite or an added row changes the tree; an edited duration does
   // not, but working that out is more code than simply re-laying it.
-  mirrorToServer(merged);
+  mirrorToServer(merged, before !== merged.name ? before : undefined);
   return merged;
 }
 
 export function deleteSuite(id: string): boolean {
   const s = read();
-  const before = s.suites.length;
+  const gone = s.suites.find(x => x.id === id);
   s.suites = s.suites.filter(x => x.id !== id);
-  if (s.suites.length === before) return false;
+  if (!gone) return false;
   write(s);
+  unmirrorFromServer(gone.name);
   return true;
 }

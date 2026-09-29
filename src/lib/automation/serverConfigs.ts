@@ -135,6 +135,69 @@ export function readTestCaseFile(suiteName: string, rowName: string, file: Serve
   }
 }
 
+/**
+ * Inside the tree and not the tree itself.
+ *
+ * Everything below deletes directories on the Automation Server, so each path
+ * is checked against the root first: a suite named "../.." must not reach
+ * outside it, and the root itself is never a candidate.
+ */
+function insideRoot(dir: string): boolean {
+  const root = path.resolve(automationRoot());
+  const target = path.resolve(dir);
+  return target !== root && target.startsWith(root + path.sep);
+}
+
+/** Take a suite's folder away, with everything in it. Called when the suite is
+ *  deleted in the app: the tree mirrors what exists, so a folder for a suite
+ *  nobody has any more is just something to trip over later. */
+export function removeSuiteTree(suiteName: string): { removed: boolean; dir: string } {
+  const dir = suiteDir(suiteName);
+  if (!insideRoot(dir)) return { removed: false, dir };
+  try {
+    if (!fs.existsSync(dir)) return { removed: false, dir };
+    fs.rmSync(dir, { recursive: true, force: true });
+    return { removed: true, dir };
+  } catch {
+    return { removed: false, dir };
+  }
+}
+
+/** Drop the folders of test cases the suite no longer has — a row deleted or
+ *  renamed in the app. Only ever inside this suite's own folder. */
+export function pruneTestCases(suiteName: string, keep: string[]): string[] {
+  const dir = suiteDir(suiteName);
+  if (!insideRoot(dir)) return [];
+  const wanted = new Set(keep.map(safeFolder));
+  const removed: string[] = [];
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || wanted.has(entry.name)) continue;
+      const victim = path.join(dir, entry.name);
+      if (!insideRoot(victim)) continue;
+      fs.rmSync(victim, { recursive: true, force: true });
+      removed.push(entry.name);
+    }
+  } catch { /* nothing there yet */ }
+  return removed;
+}
+
+/** Follow a rename: move the folder rather than leaving the old one behind and
+ *  building a second tree beside it. */
+export function renameSuiteTree(from: string, to: string): boolean {
+  if (safeFolder(from) === safeFolder(to)) return false;
+  const src = suiteDir(from);
+  const dst = suiteDir(to);
+  if (!insideRoot(src) || !insideRoot(dst)) return false;
+  try {
+    if (!fs.existsSync(src) || fs.existsSync(dst)) return false;
+    fs.renameSync(src, dst);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** What a test case folder holds right now, for the UI and for verification. */
 export function listTestCaseFiles(suiteName: string, rowName: string): Array<{ name: ServerFile; bytes: number; modified: string }> {
   const dir = testCaseDir(suiteName, rowName);
