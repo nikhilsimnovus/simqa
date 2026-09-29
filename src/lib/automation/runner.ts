@@ -32,7 +32,7 @@ import { duplicateTestcase } from './duplicateTestcase';
 // box replies in capitals — see isTerminalStatus.
 import { isTerminalStatus } from './outcome';
 import { saveRowConfigs } from '../suiteConfigStore';
-import { readTestCaseFile, testCaseDir } from './serverConfigs';
+import { readTestCaseFile, readAllTestCaseFiles, testCaseDir } from './serverConfigs';
 import { syncRowToServer } from './syncServerConfigs';
 
 /** How long to give the box before asking whether any UE attached. The UEs are
@@ -1031,26 +1031,26 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             stepDetails.push(`cfg-link: ln -sfn ${pick} ${linkName}`);
           }
 
-          // The subscriber DB and the box's ots config are not chosen per row
-          // — the DB comes in through the MME config's include line, ots.cfg is
-          // the box's own — so they are RESTORED rather than pushed: put back
+          // Everything else the row's configs depend on: the files the MME
+          // config includes — subscriber DBs and fragments, by their own names
+          // — and the box's ots.cfg. These are RESTORED, not pushed: put back
           // when the callbox has lost them, left alone when it still has them.
-          // Overwriting a working ots.cfg on every run would hand one row's
-          // copy to everybody else sharing the callbox.
-          for (const [role, dir] of [['db', '/root/mme/config'], ['ots.cfg', '/root/ots/config']] as const) {
-            const text = readTestCaseFile(suite.name, item.name, role);
-            if (!text) continue;
-            // The DB is written into the folder under the neutral name "db";
-            // on the box it carries whatever name the MME config includes.
-            const onBox = role === 'db'
-              ? (await ssh.execCommand(`sudo -n grep -oP '(?<=include ")[^"]*(?=")' /root/mme/config/mme.cfg 2>/dev/null | grep -iE 'db|subscriber|ue' | head -1`)).stdout.trim()
-              : 'ots.cfg';
-            if (!onBox) continue;
-            const there = await ssh.execCommand(`test -s '${dir}/${onBox}' && echo yes || echo no`);
+          // The MME will not start with one of them missing, and there is
+          // rarely just one: a working config here includes five.
+          const folder = readAllTestCaseFiles(suite.name, item.name);
+          const restored: string[] = [];
+          for (const [name, text] of Object.entries(folder)) {
+            // The role files are pushed above; test.json is not a callbox file.
+            if (['enb.cfg', 'mme.cfg', 'ims.cfg', 'ue.cfg', 'test.json'].includes(name)) continue;
+            const dir = name === 'ots.cfg' ? '/root/ots/config' : '/root/mme/config';
+            const there = await ssh.execCommand(`test -s '${dir}/${name}' && echo yes || echo no`);
             if ((there.stdout ?? '').trim() === 'yes') continue;
-            await push(onBox, text, dir);
+            await push(name, text, dir);
             relinked = true;
-            stepDetails.push(`cfg-restore: ${onBox} was missing on the callbox — put back from ${testCaseDir(suite.name, item.name)}`);
+            restored.push(name);
+          }
+          if (restored.length) {
+            stepDetails.push(`cfg-restore: ${restored.join(', ')} — missing on the callbox, put back from ${testCaseDir(suite.name, item.name)}`);
           }
 
           // Nothing moved — the stack is already running the configs this row
@@ -1252,17 +1252,21 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       // Phase 6: per-item cleanup — once the execution has finished.
       //
       // /root/automation_configs holds this row's configs, and a run puts them
-      // on the callbox because that is where the radio reads them from. They
-      // are not wanted there afterwards: the callbox is shared, and copies
-      // left behind are how it fills up with files nobody can date. So the
-      // files this row NAMED are removed again — including ones that were
-      // already there, which is the trade for the folder being the only
-      // lasting copy. The next run puts back whatever it needs.
+      // on the callbox because that is where the radio reads them from. The
+      // copies are taken off again afterwards, so a shared callbox does not
+      // fill up with files nobody can date and the folder stays the lasting
+      // copy.
       //
-      // Two things it will not do. It touches only the names this row used, so
-      // a directory full of other configs is left alone. And it does nothing
-      // at all while somebody else is executing on that callbox: removing
-      // configs under a running test is how you break a colleague's run.
+      // What it will NOT remove, learned by breaking a live callbox with it:
+      //
+      //   * a file a live symlink points at. enb.cfg/mme.cfg/ims.cfg are what
+      //     the stack reads at startup, and deleting their target leaves a
+      //     dangling link — the running stack survives on the open file and
+      //     the next restart fails, which is the worst possible time to find
+      //     out.
+      //   * a file the MME config includes. Same reason, one level down.
+      //   * anything, while somebody else is executing on that callbox.
+      //   * anything this row did not name.
       if (callboxSys) {
         const sq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
         try {
@@ -1276,6 +1280,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             stepDetails.push('cfg-cleanup: skipped — another user is executing on this callbox');
           } else {
             const removed: string[] = [];
+            const kept: string[] = [];
             await withSsh(callboxSys, async (ssh) => {
               // Links first, so nothing points at a file that is about to go.
               if (prevEnbLink) {
@@ -1284,6 +1289,18 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               for (const [linkName, prev] of [['mme.cfg', prevMmeLink], ['ims.cfg', prevImsLink]] as const) {
                 if (prev) await ssh.execCommand(`cd /root/mme/config && sudo -n ln -sfn ${sq(prev)} ${sq(linkName)} 2>/dev/null || ln -sfn ${sq(prev)} ${sq(linkName)}`);
               }
+              // What the box still depends on: the targets of the live links,
+              // and every file the live MME config includes.
+              const needed = new Set<string>();
+              for (const [dir, link] of [['/root/enb/config', 'enb.cfg'], ['/root/mme/config', 'mme.cfg'], ['/root/mme/config', 'ims.cfg']] as const) {
+                const t = await ssh.execCommand(`cd ${dir} && readlink ${link} 2>/dev/null || true`);
+                const target = (t.stdout ?? '').trim().split('/').filter(Boolean).pop();
+                if (target) needed.add(target);
+              }
+              const inc = await ssh.execCommand(
+                `sudo -n grep -oP '(?<=include ")[^"]*(?=")' /root/mme/config/mme.cfg 2>/dev/null || true`);
+              for (const n of String(inc.stdout ?? '').split('\n').map(x => x.trim()).filter(Boolean)) needed.add(n);
+
               for (const [name, dir] of [
                 [item.callboxCfg, '/root/enb/config'],
                 [item.mmeCfg, '/root/mme/config'],
@@ -1292,6 +1309,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
                 if (!name) continue;
                 // Never the live links themselves — only what they point at.
                 if (['enb.cfg', 'mme.cfg', 'ims.cfg'].includes(name)) continue;
+                if (needed.has(name)) { kept.push(name); continue; }
                 const p = `${dir}/${name}`;
                 const r = await ssh.execCommand(`sudo -n rm -f ${sq(p)} 2>/dev/null || rm -f ${sq(p)}`);
                 if (r.code === 0) removed.push(name);
@@ -1299,6 +1317,9 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             });
             if (removed.length) {
               stepDetails.push(`cfg-cleanup: removed ${removed.join(', ')} from the callbox — kept in ${testCaseDir(suite.name, item.name)}`);
+            }
+            if (kept.length) {
+              stepDetails.push(`cfg-cleanup: left ${kept.join(', ')} in place — the callbox still points at it`);
             }
           }
         } catch { /* cleanup is best-effort — never changes the verdict */ }

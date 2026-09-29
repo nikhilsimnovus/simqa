@@ -103,15 +103,27 @@ export function ensureSuiteTree(suiteName: string, rowNames: string[]): { root: 
 export function writeTestCaseFiles(
   suiteName: string,
   rowName: string,
-  files: Partial<Record<ServerFile, string>>,
-): { dir: string; written: ServerFile[]; error?: string } {
+  /**
+   * The row's files. The six known roles, plus whatever the MME config
+   * includes — those arrive under their own names (ue_db_1000_xor.json,
+   * 1-db.cfg …), because that is what the config asks for and what has to be
+   * put back. Calling one of them "db" hid which file it was and, when the
+   * guess was wrong, hid that it was the wrong file.
+   */
+  files: Record<string, string | undefined>,
+): { dir: string; written: string[]; error?: string } {
   const dir = testCaseDir(suiteName, rowName);
-  const written: ServerFile[] = [];
+  const written: string[] = [];
+  // Known roles first so a listing reads in a sensible order, then the rest.
+  const order = [...SERVER_FILES.filter(n => files[n] != null),
+    ...Object.keys(files).filter(n => !(SERVER_FILES as readonly string[]).includes(n))];
   try {
     fs.mkdirSync(dir, { recursive: true });
-    for (const name of SERVER_FILES) {
+    for (const name of order) {
       const text = files[name];
       if (text == null) continue;
+      // A name from a config file is not a path: keep it to one component.
+      if (name !== path.basename(name) || name.startsWith('.')) continue;
       // Written through a temp file in the same directory: a half-written
       // config that an execution then picks up is worse than an old one.
       const tmp = path.join(dir, `.${name}.tmp`);
@@ -125,9 +137,22 @@ export function writeTestCaseFiles(
   return { dir, written };
 }
 
+/** Every file in a test case folder, by name — what a run puts back. */
+export function readAllTestCaseFiles(suiteName: string, rowName: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const dir = testCaseDir(suiteName, rowName);
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || entry.name.startsWith('.')) continue;
+      try { out[entry.name] = fs.readFileSync(path.join(dir, entry.name), 'utf8'); } catch { /* skip */ }
+    }
+  } catch { /* nothing captured yet */ }
+  return out;
+}
+
 /** One file's contents, or undefined when it is not there. This is what an
  *  execution reads: the folder is the source, not a record of one. */
-export function readTestCaseFile(suiteName: string, rowName: string, file: ServerFile): string | undefined {
+export function readTestCaseFile(suiteName: string, rowName: string, file: string): string | undefined {
   try {
     return fs.readFileSync(path.join(testCaseDir(suiteName, rowName), file), 'utf8');
   } catch {
@@ -199,14 +224,15 @@ export function renameSuiteTree(from: string, to: string): boolean {
 }
 
 /** What a test case folder holds right now, for the UI and for verification. */
-export function listTestCaseFiles(suiteName: string, rowName: string): Array<{ name: ServerFile; bytes: number; modified: string }> {
+export function listTestCaseFiles(suiteName: string, rowName: string): Array<{ name: string; bytes: number; modified: string }> {
   const dir = testCaseDir(suiteName, rowName);
-  const out: Array<{ name: ServerFile; bytes: number; modified: string }> = [];
-  for (const name of SERVER_FILES) {
-    try {
-      const st = fs.statSync(path.join(dir, name));
-      out.push({ name, bytes: st.size, modified: new Date(st.mtimeMs).toISOString() });
-    } catch { /* not captured for this row */ }
-  }
+  const out: Array<{ name: string; bytes: number; modified: string }> = [];
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || entry.name.startsWith('.')) continue;
+      const st = fs.statSync(path.join(dir, entry.name));
+      out.push({ name: entry.name, bytes: st.size, modified: new Date(st.mtimeMs).toISOString() });
+    }
+  } catch { /* nothing captured yet */ }
   return out;
 }

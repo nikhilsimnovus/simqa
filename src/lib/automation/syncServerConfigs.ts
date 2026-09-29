@@ -17,7 +17,7 @@ import { getSystem, uesimApiOptsForSystem, type AutomationSuite, type Inventory,
 
 export interface SyncResult {
   root: string;
-  rows: Array<{ row: string; dir: string; written: ServerFile[]; error?: string }>;
+  rows: Array<{ row: string; dir: string; written: string[]; error?: string }>;
 }
 
 /** The testcase definition as the box holds it, read through whoever owns it. */
@@ -46,13 +46,15 @@ async function testDefinitionJson(
   return undefined;
 }
 
-/** What captureRowConfigs calls a file, against what the folder calls it. */
+/** What captureRowConfigs calls a file, against what the folder calls it.
+ *
+ *  The MME's included files are NOT in here: they keep the names their config
+ *  uses, because those names are what has to exist on the callbox for the MME
+ *  to start, and because "db" said nothing about which file it was. */
 const AS_SERVER_NAME: Record<string, ServerFile> = {
   'enb.cfg': 'enb.cfg',
   'mme.cfg': 'mme.cfg',
   'ims.cfg': 'ims.cfg',
-  // The subscriber DB is `db` in the folder, as the layout asks.
-  'db.cfg': 'db',
   'ots.cfg': 'ots.cfg',
   'ue.cfg': 'ue.cfg',
 };
@@ -65,18 +67,20 @@ export async function syncRowToServer(
   callbox?: InventorySystem,
   ueSystem?: InventorySystem,
   boxUserId?: string,
-): Promise<{ row: string; dir: string; written: ServerFile[]; error?: string }> {
-  const files: Partial<Record<ServerFile, string>> = {};
+): Promise<{ row: string; dir: string; written: string[]; error?: string }> {
+  const files: Record<string, string | undefined> = {};
 
   // By the row's own names: the callbox's enb.cfg/mme.cfg/ims.cfg links point
   // at whatever ran last, which outside a run is usually another row's.
-  const { contents } = await captureRowConfigs(callbox, ueSystem, {
+  const { contents, includes } = await captureRowConfigs(callbox, ueSystem, {
     enb: row.callboxCfg, mme: row.mmeCfg, ims: row.imsCfg,
-  }).catch(() => ({ contents: {} as any }));
+  }).catch(() => ({ contents: {} as any, includes: {} as Record<string, string> }));
   for (const [from, to] of Object.entries(AS_SERVER_NAME)) {
     const text = (contents as any)[from];
     if (typeof text === 'string') files[to] = text;
   }
+  // …and everything the MME config includes, under its own name.
+  for (const [name, text] of Object.entries(includes ?? {})) files[name] = text;
 
   const td = await testDefinitionJson(inv, suite, row.simnovatorTcId, boxUserId);
   if (td) files['test.json'] = td;

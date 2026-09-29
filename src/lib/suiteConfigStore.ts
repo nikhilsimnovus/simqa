@@ -68,8 +68,37 @@ async function readCfgOn(ssh: any, dir: string, link: string): Promise<{ source?
   }
 }
 
-/** Which subscriber DB an MME config pulls in, from its `include` lines — the
- *  same reading labCfgLink does, on the session already open. */
+/**
+ * Every file an MME config pulls in through an `include` line.
+ *
+ * There is rarely just one. A working demo-mme.cfg here names five —
+ * 1000UE.mme.cfg, demo-1000ue_db-ims-volte.cfg, ue_db_1000_xor.json, 1-db.cfg
+ * and xcap-ue-db.cfg — and the MME will not start with any of them absent.
+ * Picking "the DB" out of that list was a guess, and it guessed wrong: the
+ * first name matching db|subscriber|ue is 1000UE.mme.cfg, because it contains
+ * "ue", so the real subscriber DB was never captured at all. They are all
+ * taken now, under the names the config uses.
+ */
+async function includesOf(ssh: any, mmeCfgName: string): Promise<string[]> {
+  try {
+    const p = q(`/root/mme/config/${mmeCfgName}`);
+    const r = await ssh.execCommand(
+      `sudo -n grep -E '^[[:space:]]*include' ${p} 2>/dev/null || grep -E '^[[:space:]]*include' ${p} 2>/dev/null || true`);
+    return String(r.stdout ?? '')
+      .split('\n')
+      .map((l: string) => l.trim())
+      .filter((l: string) => l.startsWith('include'))
+      .map((l: string) => /include\s+"([^"]+)"/.exec(l)?.[1])
+      .filter((n: unknown): n is string => !!n)
+      // Only plain names — an include with a path is not ours to copy around.
+      .filter((n: string) => !n.includes('/'));
+  } catch {
+    return [];
+  }
+}
+
+/** Which subscriber DB an MME config pulls in — the first include that looks
+ *  like one, kept for the versioned snapshots, whose layout names a "db.cfg". */
 async function dbIncludedBy(ssh: any, mmeCfgName: string): Promise<string | undefined> {
   try {
     const p = q(`/root/mme/config/${mmeCfgName}`);
@@ -110,9 +139,15 @@ export async function captureRowConfigs(
    * config as this row's. Given the names, the files are read directly.
    */
   chosen?: { enb?: string; mme?: string; ims?: string },
-): Promise<{ files: Partial<Record<SnapshotFile, SnapshotEntry>>; contents: Partial<Record<SnapshotFile, string>> }> {
+): Promise<{
+  files: Partial<Record<SnapshotFile, SnapshotEntry>>;
+  contents: Partial<Record<SnapshotFile, string>>;
+  /** Everything the MME config includes, keyed by its real filename. */
+  includes: Record<string, string>;
+}> {
   const files: Partial<Record<SnapshotFile, SnapshotEntry>> = {};
   const contents: Partial<Record<SnapshotFile, string>> = {};
+  const includes: Record<string, string> = {};
   const put = (name: SnapshotFile, got: { source?: string; text: string } | null) => {
     if (!got) return;
     files[name] = { source: got.source, sha256: hashText(got.text), bytes: Buffer.byteLength(got.text) };
@@ -127,8 +162,15 @@ export async function captureRowConfigs(
       put('mme.cfg', mme);
       put('ims.cfg', await readCfgOn(ssh, '/root/mme/config', chosen?.ims ?? 'ims.cfg'));
       put('ots.cfg', await readCfgOn(ssh, '/root/ots/config', 'ots.cfg'));
-      // The DB travels inside the MME config as an `include` line.
+      // Everything the MME config pulls in, under its own name. The MME will
+      // not start with any of them missing, so a copy that holds only some is
+      // not a copy this row could run from.
       if (mme?.source) {
+        for (const name of await includesOf(ssh, mme.source)) {
+          const got = await readCfgOn(ssh, '/root/mme/config', name);
+          if (got) includes[name] = got.text;
+        }
+        // The versioned snapshots keep naming one of them db.cfg.
         const db = await dbIncludedBy(ssh, mme.source);
         if (db) put('db.cfg', await readCfgOn(ssh, '/root/mme/config', db));
       }
@@ -140,7 +182,7 @@ export async function captureRowConfigs(
     }).catch(() => { /* same */ });
   }
 
-  return { files, contents };
+  return { files, contents, includes };
 }
 
 function versionsOf(dir: string): string[] {
