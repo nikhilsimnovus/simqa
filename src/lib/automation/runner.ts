@@ -810,6 +810,16 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         if (found) {
           sourceTd = found.td;
           stepDetails.push(`source testcase belongs to ${found.owner} — created it for ${ueOpts.username}`);
+        } else {
+          // Nobody on the box has it any more — deleted, or the box was
+          // rebuilt. The folder kept the definition, so the row still runs.
+          const saved = readTestCaseFile(suite.name, item.name, 'test.json');
+          if (saved) {
+            try {
+              sourceTd = JSON.parse(saved);
+              stepDetails.push(`testcase: not on ${ueOpts.host} any more — rebuilt from ${testCaseDir(suite.name, item.name)}/test.json`);
+            } catch { /* a corrupt file is no better than none */ }
+          }
         }
       }
       const dup = await duplicateTestcase(ueOpts, item.simnovatorTcId, item.name, durSec, sourceTd);
@@ -1014,6 +1024,28 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             if (r.code !== 0) throw new Error(`ln ${linkName}: ${r.stderr || r.stdout || `exit ${r.code}`}`);
             relinked = true;
             stepDetails.push(`cfg-link: ln -sfn ${pick} ${linkName}`);
+          }
+
+          // The subscriber DB and the box's ots config are not chosen per row
+          // — the DB comes in through the MME config's include line, ots.cfg is
+          // the box's own — so they are RESTORED rather than pushed: put back
+          // when the callbox has lost them, left alone when it still has them.
+          // Overwriting a working ots.cfg on every run would hand one row's
+          // copy to everybody else sharing the callbox.
+          for (const [role, dir] of [['db', '/root/mme/config'], ['ots.cfg', '/root/ots/config']] as const) {
+            const text = readTestCaseFile(suite.name, item.name, role);
+            if (!text) continue;
+            // The DB is written into the folder under the neutral name "db";
+            // on the box it carries whatever name the MME config includes.
+            const onBox = role === 'db'
+              ? (await ssh.execCommand(`sudo -n grep -oP '(?<=include ")[^"]*(?=")' /root/mme/config/mme.cfg 2>/dev/null | grep -iE 'db|subscriber|ue' | head -1`)).stdout.trim()
+              : 'ots.cfg';
+            if (!onBox) continue;
+            const there = await ssh.execCommand(`test -s '${dir}/${onBox}' && echo yes || echo no`);
+            if ((there.stdout ?? '').trim() === 'yes') continue;
+            await push(onBox, text, dir);
+            relinked = true;
+            stepDetails.push(`cfg-restore: ${onBox} was missing on the callbox — put back from ${testCaseDir(suite.name, item.name)}`);
           }
 
           // Nothing moved — the stack is already running the configs this row
