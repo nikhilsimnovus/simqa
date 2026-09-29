@@ -1017,6 +1017,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         suiteId: suite.id, suiteName: suite.name,
         rowId: item.id ?? item.name, rowName: item.name,
         callbox: callboxSys, ueSystem: ueSys, capturedBy: ueOpts.username,
+        uesimHost: ueOpts.host,
       });
       if (snap) {
         stepDetails.push(snap.changed

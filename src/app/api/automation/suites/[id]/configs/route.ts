@@ -25,16 +25,21 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   const row = u.searchParams.get('row');
   const version = u.searchParams.get('version');
   const file = u.searchParams.get('file');
+  // ?download=1 saves it instead of showing it — a 300 KB subscriber DB is
+  // not something anyone reads in a browser tab.
+  const download = u.searchParams.get('download') === '1';
 
   // One file's contents.
   if (row && version && file) {
     const text = readSavedFile(suite.name, row, version, file);
     if (text == null) return NextResponse.json({ ok: false, error: 'no such saved file' }, { status: 404 });
+    // Named for where it came from, so a folder of downloads still says which
+    // row and which version each file belongs to.
+    const asName = `${row}_${version}_${file}`.replace(/[^A-Za-z0-9._-]+/g, '_');
     return new NextResponse(text, {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
-        // Viewed in a tab by default; the page offers its own download.
-        'Content-Disposition': `inline; filename="${file}"`,
+        'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename="${download ? asName : file}"`,
       },
     });
   }

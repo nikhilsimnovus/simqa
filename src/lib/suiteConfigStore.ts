@@ -141,6 +141,7 @@ export function listRowVersions(suiteName: string, rowName: string): Array<{
   capturedBy?: string;
   callboxHost?: string;
   ueHost?: string;
+  uesimHost?: string;
   reason?: 'original' | 'changed';
   changedFiles?: string[];
   files: Array<{ name: string; bytes: number; source?: string }>;
@@ -161,7 +162,7 @@ export function listRowVersions(suiteName: string, rowName: string): Array<{
       return {
         version,
         capturedAt: m?.capturedAt, capturedBy: m?.capturedBy,
-        callboxHost: m?.callboxHost, ueHost: m?.ueHost,
+        callboxHost: m?.callboxHost, ueHost: m?.ueHost, uesimHost: m?.uesimHost,
         // Versions written before this was recorded: v1 is the original by
         // definition, and anything after it exists because something changed.
         reason: m?.reason ?? (version === 'v1' ? 'original' : 'changed'),
@@ -228,6 +229,8 @@ export async function saveRowConfigs(opts: {
   callbox?: InventorySystem;
   ueSystem?: InventorySystem;
   capturedBy?: string;
+  /** The Simnovator this row executed on. */
+  uesimHost?: string;
 }): Promise<{ version: string; changed: boolean; changedFiles?: SnapshotFile[]; files: SnapshotFile[] } | null> {
   const { files, contents } = await captureRowConfigs(opts.callbox, opts.ueSystem);
   if (Object.keys(files).length === 0) return null;   // nothing readable — nothing to claim
@@ -264,6 +267,7 @@ export async function saveRowConfigs(opts: {
     capturedBy: opts.capturedBy,
     callboxHost: opts.callbox?.host,
     ueHost: opts.ueSystem?.host,
+    uesimHost: opts.uesimHost,
     files,
     reason: saved ? 'changed' : 'original',
     changedFiles: saved ? changedFiles : undefined,

@@ -42,6 +42,9 @@ export interface SnapshotManifest {
   capturedBy?: string;
   callboxHost?: string;
   ueHost?: string;
+  /** The Simnovator the row executed on. The configs come off the callbox and
+   *  the UE, but it is the box that ran the test, and a lab has several. */
+  uesimHost?: string;
   files: Partial<Record<SnapshotFile, SnapshotEntry>>;
   /** Why this version exists: the row's first run, or a change since the one
    *  before it. Recorded when it is written, because it cannot be worked out

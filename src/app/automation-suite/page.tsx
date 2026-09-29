@@ -300,7 +300,7 @@ export default function AutomationSuitePage() {
     row: string;
     versions: Array<{
       version: string; capturedAt?: string; capturedBy?: string;
-      callboxHost?: string; ueHost?: string;
+      callboxHost?: string; ueHost?: string; uesimHost?: string;
       reason?: 'original' | 'changed'; changedFiles?: string[];
       files: Array<{ name: string; bytes: number; source?: string }>;
     }>;
@@ -1987,6 +1987,14 @@ export default function AutomationSuitePage() {
                                 <div className="px-3 pb-3">
                                   <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-[11px] mb-2">
                                     {v.capturedBy && (<><dt className="text-slate-500">Run as</dt><dd className="text-slate-800">{v.capturedBy}</dd></>)}
+                                    {/* The box that ran it. Versions captured before this was
+                                        recorded fall back to the suite's current Simnovator,
+                                        which the tooltip says. */}
+                                    <dt className="text-slate-500">Simnovator</dt>
+                                    <dd className="font-mono text-slate-800"
+                                      title={v.uesimHost ? undefined : "the suite's Simnovator — this version predates recording it"}>
+                                      {v.uesimHost ?? hostOf(configsFor.uesimSystemId) ?? '–'}
+                                    </dd>
                                     {v.callboxHost && (<><dt className="text-slate-500">Callbox</dt><dd className="font-mono text-slate-800">{v.callboxHost}</dd></>)}
                                     {v.ueHost && (<><dt className="text-slate-500">UE</dt><dd className="font-mono text-slate-800">{v.ueHost}</dd></>)}
                                     {v.changedFiles && v.changedFiles.length > 0 && (
@@ -2012,11 +2020,13 @@ export default function AutomationSuitePage() {
                                           <td className="px-2 py-1 text-right text-slate-600 whitespace-nowrap">
                                             {f.bytes >= 1024 ? `${(f.bytes / 1024).toFixed(1)} KB` : `${f.bytes} B`}
                                           </td>
-                                          <td className="px-2 py-1 text-right">
+                                          <td className="px-2 py-1 text-right whitespace-nowrap">
                                             {/* The SAVED file, not what is on the box now. */}
                                             <a href={`/api/automation/suites/${configsFor.id}/configs?row=${encodeURIComponent(r.row)}&version=${v.version}&file=${f.name}`}
                                               target="_blank" rel="noreferrer"
                                               className="text-blue-700 hover:underline">View</a>
+                                            <a href={`/api/automation/suites/${configsFor.id}/configs?row=${encodeURIComponent(r.row)}&version=${v.version}&file=${f.name}&download=1`}
+                                              className="text-blue-700 hover:underline ml-3">Download</a>
                                           </td>
                                         </tr>
                                       ))}
