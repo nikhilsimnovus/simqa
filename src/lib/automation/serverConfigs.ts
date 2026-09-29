@@ -137,6 +137,20 @@ export function writeTestCaseFiles(
   return { dir, written };
 }
 
+/** Remove one file from a test case folder — a name an older version wrote
+ *  that nothing uses any more. Guarded like every other delete here. */
+export function dropStaleFile(suiteName: string, rowName: string, file: string): boolean {
+  if (file !== path.basename(file)) return false;
+  const dir = testCaseDir(suiteName, rowName);
+  if (!insideRoot(dir)) return false;
+  try {
+    fs.rmSync(path.join(dir, file), { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Every file in a test case folder, by name — what a run puts back. */
 export function readAllTestCaseFiles(suiteName: string, rowName: string): Record<string, string> {
   const out: Record<string, string> = {};

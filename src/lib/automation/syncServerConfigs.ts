@@ -12,7 +12,7 @@
 // saved.
 
 import { captureRowConfigs } from '../suiteConfigStore';
-import { ensureSuiteTree, writeTestCaseFiles, automationRoot, type ServerFile } from './serverConfigs';
+import { ensureSuiteTree, writeTestCaseFiles, automationRoot, dropStaleFile, type ServerFile } from './serverConfigs';
 import { getSystem, uesimApiOptsForSystem, type AutomationSuite, type Inventory, type InventorySystem } from '../inventory';
 
 export interface SyncResult {
@@ -81,6 +81,13 @@ export async function syncRowToServer(
   }
   // …and everything the MME config includes, under its own name.
   for (const [name, text] of Object.entries(includes ?? {})) files[name] = text;
+
+  // Earlier versions saved the subscriber DB under the flat name "db", which
+  // said nothing about which file it was — and, when the guess behind it was
+  // wrong, hid that it was the wrong file. Now that the same content is
+  // written under the name its config uses, the old one is stale: drop it
+  // rather than leaving two copies and no way to tell which is current.
+  if (Object.keys(includes ?? {}).length > 0) dropStaleFile(suite.name, row.name, 'db');
 
   const td = await testDefinitionJson(inv, suite, row.simnovatorTcId, boxUserId);
   if (td) files['test.json'] = td;
