@@ -912,14 +912,31 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         // same callbox, paid again on every row, most of them only to read a
         // symlink that had not moved.
         await withSsh(callboxSys, async (ssh) => {
+          /**
+           * Put a file into a callbox config directory.
+           *
+           * Those live under /root and belong to root, while the SSH login
+           * does not — a straight SFTP write answers "Permission denied", which
+           * is what the first run from the server folder did. So: SFTP into
+           * /tmp, which anyone may write, then install it across with the same
+           * passwordless sudo every other step here uses. Staged through a
+           * temp file rather than echoed through the shell because a
+           * subscriber DB is a third of a megabyte.
+           */
           const push = async (name: string, text: string, where: string) => {
+            const tmp = `/tmp/.simqa-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
             const sftp = await ssh.requestSFTP();
             await new Promise<void>((resolve, reject) => {
-              const ws = sftp.createWriteStream(`${where}/${name}`);
+              const ws = sftp.createWriteStream(tmp);
               ws.on('close', () => resolve());
               ws.on('error', reject);
               ws.end(Buffer.from(text, 'utf8'));
             });
+            const dest = `${where}/${name}`;
+            const r = await ssh.execCommand(
+              `sudo -n install -m 0644 ${q(tmp)} ${q(dest)} 2>&1 || install -m 0644 ${q(tmp)} ${q(dest)} 2>&1`);
+            await ssh.execCommand(`rm -f ${q(tmp)}`);
+            if (r.code !== 0) throw new Error(`could not write ${dest}: ${(r.stdout || r.stderr || '').trim().slice(0, 120)}`);
           };
           const serverEnb = fromServer[cfg];
           if (serverEnb) {
@@ -938,13 +955,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           } else if (blob) {
             const buf = Buffer.from(blob, 'base64');
             target = `/root/enb/config/${cfg}`;
-            const sftp = await ssh.requestSFTP();
-            await new Promise<void>((resolve, reject) => {
-              const ws = sftp.createWriteStream(target);
-              ws.on('close', () => resolve());
-              ws.on('error', reject);
-              ws.end(buf);
-            });
+            await push(cfg, buf.toString('utf8'), '/root/enb/config');
             existing.add(cfg);
             pushedCfg = cfg;
             stepDetails.push(`cfg-push: scp ${buf.length}B → ${cfg}`);
@@ -1001,13 +1012,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             // name first, so the link reads the same as the operator's pick.
             if (!existingCore.has(pick) && suite.uploadedConfigs?.[pick]) {
               const buf = Buffer.from(suite.uploadedConfigs[pick], 'base64');
-              const sftp = await ssh.requestSFTP();
-              await new Promise<void>((resolve, reject) => {
-                const ws = sftp.createWriteStream(`/root/mme/config/${pick}`);
-                ws.on('close', () => resolve());
-                ws.on('error', reject);
-                ws.end(buf);
-              });
+              await push(pick, buf.toString('utf8'), '/root/mme/config');
               existingCore.add(pick);
               justUploaded = true;
               stepDetails.push(`cfg-push: scp ${buf.length}B → /root/mme/config/${pick}`);
