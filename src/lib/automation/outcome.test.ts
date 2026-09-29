@@ -16,10 +16,17 @@ test('a test the box ran and failed', () => {
   assert.deepEqual(both({ boxStatus: 'Completed', verdict: 'FAIL', ok: false }), ['Completed', 'Failed']);
 });
 
-test('SimQA stopping it at the end of the window is a stop, whatever the box settled to', () => {
-  // The real shape of most suite rows: the window expires, SimQA stops the
-  // execution, and the box still reports Completed/PASS afterwards.
-  assert.deepEqual(both({ boxStatus: 'Completed', verdict: 'PASS', stopped: true, ok: true }), ['Stopped', 'Passed']);
+test('the box has the last word: it completed, so it reads Completed', () => {
+  // The window expires, SimQA sends a stop, and the box still carries the test
+  // to the end. Its own screen says COMPLETED, and so must this — the two
+  // disagreeing about one execution is worse than either answer.
+  assert.deepEqual(both({ boxStatus: 'COMPLETED', verdict: 'PASS', stopped: true, ok: true }), ['Completed', 'Passed']);
+});
+
+test('Stopped is for the box saying so itself', () => {
+  assert.deepEqual(both({ boxStatus: 'STOPPED', verdict: 'ERROR', ok: false }), ['Stopped', 'Error']);
+  // Cut off before the box could report anything at all.
+  assert.deepEqual(both({ stopped: true, ok: false }), ['Stopped', 'Error']);
 });
 
 test('a row the box never created never executed, and that is an error', () => {

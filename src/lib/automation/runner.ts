@@ -28,6 +28,9 @@ import { describeOthers, describeCfg } from '../callboxShare';
 import { saveRun, newRunId, type RunRecord } from './runStore';
 import { triggerPerfQaCollection, DEFAULT_PERFQA_URL } from './diagnostics';
 import { duplicateTestcase } from './duplicateTestcase';
+// Which statuses mean "the box is done with it". Case-insensitive, because the
+// box replies in capitals — see isTerminalStatus.
+import { isTerminalStatus } from './outcome';
 import { saveRowConfigs } from '../suiteConfigStore';
 
 /** How long to give the box before asking whether any UE attached. The UEs are
@@ -177,10 +180,6 @@ async function fetchBuildVersion(host: string, token: string): Promise<string | 
   } catch { return undefined; }
 }
 
-/** Terminal states the box reports on a finished execution. We poll
- *  until we hit one of these or run out the per-testcase duration. */
-const TERMINAL_STATUSES = new Set(['Completed', 'Failed', 'Aborted', 'Stopped', 'Passed', 'INCOMPLETE']);
-
 interface ExecutionState {
   status?: string;
   result?: string;
@@ -219,7 +218,7 @@ async function pollExecutionToTerminal(host: string, token: string, tcId: string
       // matches the one our POST returned). If our POST didn't return
       // an id, we fall back to "any terminal status will do".
       const ours = !triggerExecId || s.executionId === triggerExecId;
-      if (ours && s.status && TERMINAL_STATUSES.has(s.status)) return s;
+      if (ours && isTerminalStatus(s.status)) return s;
     }
     await new Promise(r => setTimeout(r, 2000));
   }
@@ -255,7 +254,7 @@ async function stopAndFinalize(host: string, token: string, tcId: string, execId
     const s = await fetchLastExecution(host, token, tcId);
     if (s) {
       last = s;
-      if (s.status && TERMINAL_STATUSES.has(s.status)) return s;
+      if (isTerminalStatus(s.status)) return s;
     }
     await new Promise(r => setTimeout(r, 1500));
   }
@@ -398,7 +397,7 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
       let finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, undefined, durSec, opts.signal);
       const execId = finalState?.executionId;
       let stoppedByUs = false;
-      const naturallyDone = finalState?.status && TERMINAL_STATUSES.has(finalState.status);
+      const naturallyDone = isTerminalStatus(finalState?.status);
       if (!naturallyDone && execId && !opts.signal?.aborted) {
         const settled = await stopAndFinalize(ueOpts.host, token, tcId, execId, opts.signal, simulatorId);
         if (settled) finalState = settled;
@@ -650,7 +649,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
         // Trigger worked — now poll until terminal state or duration hits.
         let finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, execId, durSec, opts.signal);
         let stoppedByUs = false;
-        const naturallyDone = finalState?.status && TERMINAL_STATUSES.has(finalState.status);
+        const naturallyDone = isTerminalStatus(finalState?.status);
         if (!naturallyDone && execId && !opts.signal?.aborted) {
           const settled = await stopAndFinalize(ueOpts.host, token, tcId, execId, opts.signal, simulatorId);
           if (settled) finalState = settled;
@@ -1124,7 +1123,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       let finalState = await pollExecutionToTerminal(ueOpts.host, token, runTcId, undefined, durSec + POLL_MARGIN_SEC, opts.signal);
       const execId = finalState?.executionId;
       let stoppedByUs = false;
-      const naturallyDone = finalState?.status && TERMINAL_STATUSES.has(finalState.status);
+      const naturallyDone = isTerminalStatus(finalState?.status);
       // 2. If the window expired before the test stopped on its own,
       //    POST stop and re-read the verdict from lastExecution.
       if (!naturallyDone && execId && !opts.signal?.aborted) {

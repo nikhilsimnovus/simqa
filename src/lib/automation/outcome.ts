@@ -54,10 +54,15 @@ export function statusLabel(o: RowOutcome): StatusLabel {
   const s = up(o.boxStatus);
   const v = up(o.verdict);
   if (s === 'ABORTED' || v === 'ABORTED') return 'Aborted';
-  // SimQA ending the execution at the window's end is a stop, whatever the box
-  // settled to afterwards — the operator asked for N seconds and got N seconds.
-  if (o.stopped || s === 'STOPPED' || v === 'STOPPED') return 'Stopped';
+  // The BOX decides. SimQA sending a stop when the duration window runs out
+  // used to make the row read "Stopped" while the Simnovator's own screen said
+  // COMPLETED — two tools disagreeing about the same execution. A test the box
+  // carried to the end is Completed, whoever asked it to wrap up; Stopped is
+  // for the box saying so itself.
+  if (s === 'STOPPED' || v === 'STOPPED') return 'Stopped';
   if (s) return 'Completed';
+  // Nothing from the box, but SimQA stopped something: it ran and was cut off.
+  if (o.stopped) return 'Stopped';
   // No status from the box: it never ran this one.
   return 'Not Executed';
 }
@@ -85,6 +90,21 @@ export function verdictLabel(o: RowOutcome): VerdictLabel | '' {
   // passed without a verdict.
   if (o.boxStatus) return 'Uncompleted';
   return o.ok ? 'Passed' : 'Error';
+}
+
+/**
+ * Statuses that mean the box has stopped working on an execution.
+ *
+ * Compared case-insensitively on purpose. The box answers in CAPITALS —
+ * "COMPLETED", "STOPPED" — while this list was written in title case, so a
+ * finished test never matched: the runner kept polling until its whole window
+ * expired and only then stopped and read the verdict. The Simnovator showed
+ * Completed while SimQA sat there for minutes.
+ */
+const TERMINAL = new Set(['completed', 'failed', 'aborted', 'stopped', 'passed', 'incomplete']);
+
+export function isTerminalStatus(status?: string): boolean {
+  return TERMINAL.has((status ?? '').trim().toLowerCase());
 }
 
 /** Tailwind colour for a verdict — green for the good one, red for the bad
