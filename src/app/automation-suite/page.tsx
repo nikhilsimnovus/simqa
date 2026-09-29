@@ -490,22 +490,51 @@ export default function AutomationSuitePage() {
    * Where a row's report lives — the same validation page the dashboard opens,
    * for the testcase that ACTUALLY ran.
    *
-   * A suite row executes a copy the runner creates under the row's display
-   * name, so linking at the source testcase would show somebody else's
-   * executions. The copy's id comes back with the run; before a row has ever
-   * run there is none, and the link falls back to the source with the name as
-   * a hint, which is the best that can be said at that point.
+   * A suite row executes a COPY the runner creates under the row's display
+   * name. The source it was copied from is a different testcase with different
+   * executions, so linking there opens somebody else's results — which is
+   * exactly what this used to do for any row that ran before the copy's id was
+   * recorded. The name is what identifies the copy on the box (names are
+   * unique box-wide), so that is the fallback, resolved on the way.
    */
-  const reportHref = useCallback((s: SuiteRow, it: SuiteItem): string => {
-    const ran = lastBox[s.id]?.[it.name]?.boxTestcaseId;
+  const reportQuery = useCallback((s: SuiteRow, it: SuiteItem): string => {
     const p = new URLSearchParams({ from: 'automation-suite', name: it.name });
     if (s.uesimSystemId) p.set('systemId', s.uesimSystemId);
     // Read it as the login that ran it: a testcase belongs to one operator and
     // is invisible to the others.
     const asUser = userOf(s);
     if (asUser) p.set('boxUserId', asUser);
-    return `/testcases/${encodeURIComponent(ran ?? it.simnovatorTcId)}?${p}`;
-  }, [lastBox]);
+    return p.toString();
+  }, []);
+
+  /** The href a middle-click or a copied link gets: the recorded copy when the
+   *  run knew it, the source otherwise. openReport() does better on a plain
+   *  click by asking the box. */
+  const reportHref = useCallback((s: SuiteRow, it: SuiteItem): string => {
+    const ran = lastBox[s.id]?.[it.name]?.boxTestcaseId;
+    return `/testcases/${encodeURIComponent(ran ?? it.simnovatorTcId)}?${reportQuery(s, it)}`;
+  }, [lastBox, reportQuery]);
+
+  /** Open the report for what actually ran: the recorded id, else the copy the
+   *  box holds under this row's name, else — having no better answer — the
+   *  source it was copied from. */
+  const openReport = useCallback(async (e: React.MouseEvent, s: SuiteRow, it: SuiteItem) => {
+    // Leave modified clicks to the browser: they mean "open it over there".
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    let id = lastBox[s.id]?.[it.name]?.boxTestcaseId;
+    if (!id) {
+      try {
+        const q = new URLSearchParams({ name: it.name });
+        if (s.uesimSystemId) q.set('systemId', s.uesimSystemId);
+        const asUser = userOf(s);
+        if (asUser) q.set('boxUserId', asUser);
+        const r = await fetch(`/api/testcases/resolve?${q}`).then(r => r.json());
+        if (r?.ok && r.id) id = r.id;
+      } catch { /* the box is unreachable — fall through to the source */ }
+    }
+    window.location.href = `/testcases/${encodeURIComponent(id ?? it.simnovatorTcId)}?${reportQuery(s, it)}`;
+  }, [lastBox, reportQuery]);
   /** Row being dragged, so a drop knows what to move. */
   const [dragRow, setDragRow] = useState<{ suiteId: string; itemId: string } | null>(null);
 
@@ -1831,7 +1860,7 @@ export default function AutomationSuitePage() {
                                       {/* Opens this row's report — the same
                                           validation page the Simnovator shows
                                           when you click a finished testcase. */}
-                                      <a href={reportHref(s, it)}
+                                      <a href={reportHref(s, it)} onClick={e => openReport(e, s, it)}
                                         className="font-medium text-blue-700 hover:underline truncate block"
                                         title={`${it.name} — open its report`}>{it.name}</a>
                                       <div className="text-[10px] text-slate-400 truncate">Run as {userOf(s)}</div>
@@ -1876,7 +1905,7 @@ export default function AutomationSuitePage() {
                                         habit, and the one people arrive with. */}
                                     <td className={`px-2 py-1 whitespace-nowrap ${st.verdictCls ?? 'text-slate-400'}`} title={st.title}>
                                       {st.verdict && st.verdict !== '–'
-                                        ? <a href={reportHref(s, it)} className="hover:underline">{st.verdict}</a>
+                                        ? <a href={reportHref(s, it)} onClick={e => openReport(e, s, it)} className="hover:underline">{st.verdict}</a>
                                         : (st.verdict ?? '–')}
                                     </td>
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
