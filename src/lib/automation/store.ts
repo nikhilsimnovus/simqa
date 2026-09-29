@@ -25,8 +25,38 @@ function read(): StoreShape {
   return { suites: [] };
 }
 
+const BACKUP_DIR = () => path.join(STORE_DIR(), 'automation-suite-backups');
+/** How many previous versions to keep. Suites are small; a week of edits
+ *  costs a few hundred kilobytes and has already been worth having once. */
+const KEEP_BACKUPS = 20;
+
+/**
+ * Copy the current file aside before overwriting it.
+ *
+ * Every suite in this file was lost once, with no way to tell afterwards
+ * whether an operator had deleted them or something in the app had. Inventory
+ * has kept dated backups for exactly this reason; suites now do too, so the
+ * next time the question comes up there is a file to compare against and,
+ * failing that, something to restore from.
+ */
+function backupCurrent(): void {
+  try {
+    const current = fs.readFileSync(STORE_FILE(), 'utf8');
+    // Nothing worth keeping, and no point burning a slot on it.
+    if (!current.trim() || !JSON.parse(current)?.suites?.length) return;
+    fs.mkdirSync(BACKUP_DIR(), { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.writeFileSync(path.join(BACKUP_DIR(), `automation-suites-${stamp}.json`), current);
+    const old = fs.readdirSync(BACKUP_DIR()).filter(n => n.endsWith('.json')).sort();
+    for (const name of old.slice(0, Math.max(0, old.length - KEEP_BACKUPS))) {
+      try { fs.unlinkSync(path.join(BACKUP_DIR(), name)); } catch { /* already gone */ }
+    }
+  } catch { /* a missing or unreadable file is nothing to back up */ }
+}
+
 function write(s: StoreShape): void {
   fs.mkdirSync(STORE_DIR(), { recursive: true });
+  backupCurrent();
   fs.writeFileSync(STORE_FILE(), JSON.stringify(s, null, 2));
 }
 
