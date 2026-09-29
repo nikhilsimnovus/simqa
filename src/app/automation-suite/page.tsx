@@ -1593,9 +1593,10 @@ export default function AutomationSuitePage() {
                     const boxBusy = s.uesimSystemId ? busyBySystem[busyKey(s.uesimSystemId, s.boxUserId)] : null;
                     return (
                     <article key={s.id} className="border border-line rounded-lg bg-surface">
+                      {/* The name alone. "Automation Suite" under it said what
+                          the page is already called. */}
                       <div className="px-4 py-3 border-b border-line">
                         <h3 className="text-sm font-semibold text-slate-900 truncate" title={s.name}>{s.name}</h3>
-                        <p className="text-[11px] text-slate-500">Automation Suite</p>
                       </div>
 
                       {/* Suite Details — one label per value. It used to be one
