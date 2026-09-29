@@ -273,7 +273,7 @@ export default function AutomationSuitePage() {
   /** The per-suite test case table — the only resizable grid left here: the
    *  suites themselves are cards now, so there is nothing to drag around them. */
   const { colWidths: itemCols, tableWidth: itemsTableWidth, startResize: startItemResize } =
-    useColumnWidths([28, 24, 32, 240, 150, 150, 170, 150, 140, 120, 130, 130, 90, 170]);
+    useColumnWidths([28, 24, 32, 240, 150, 150, 170, 150, 140, 130, 130, 90, 170]);
   const [addCfg,   setAddCfg]           = useState<string>('');
   const [addMme,   setAddMme]           = useState<string>('');
   const [addIms,   setAddIms]           = useState<string>('');
@@ -291,50 +291,6 @@ export default function AutomationSuitePage() {
 
   const [running, setRunning]     = useState<string>('');
   // Run history (per suite, lazy)
-  /** The suite whose saved configs are open, and what was saved for it. Each
-   *  run keeps the six files the row actually executed against; a version is
-   *  added only when they differ from the last one, so v2 means somebody
-   *  changed something. */
-  const [configsFor, setConfigsFor] = useState<SuiteRow | null>(null);
-  const [savedConfigs, setSavedConfigs] = useState<Array<{
-    row: string;
-    versions: Array<{
-      version: string; capturedAt?: string; capturedBy?: string;
-      callboxHost?: string; ueHost?: string; uesimHost?: string;
-      reason?: 'original' | 'changed'; changedFiles?: string[];
-      files: Array<{ name: string; bytes: number; source?: string }>;
-    }>;
-  }> | null>(null);
-  /** Which test cases and versions are expanded. A suite with six rows and
-   *  several versions each is a lot of table; only what was asked for opens. */
-  const [openRows, setOpenRows] = useState<Set<string>>(new Set());
-  const [openVersions, setOpenVersions] = useState<Set<string>>(new Set());
-
-  const openConfigs = useCallback(async (suite: SuiteRow) => {
-    setConfigsFor(suite); setSavedConfigs(null);
-    try {
-      const r = await fetch(`/api/automation/suites/${suite.id}/configs`).then(r => r.json());
-      const rows = r?.ok ? (r.rows ?? []) : [];
-      setSavedConfigs(rows);
-      // Open the first test case that has anything saved, at its newest
-      // version: the panel opens on something to read rather than on a list of
-      // closed headings.
-      const first = rows.find((x: any) => x.versions.length > 0);
-      setOpenRows(new Set(first ? [first.row] : []));
-      setOpenVersions(new Set(first ? [`${first.row}|${first.versions[0].version}`] : []));
-    } catch { setSavedConfigs([]); }
-  }, []);
-
-  // Escape closes the configurations dialog. Bound only while it is open, so
-  // it cannot swallow the key from anything else.
-  useEffect(() => {
-    if (!configsFor) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setConfigsFor(null); setSavedConfigs(null); }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [configsFor]);
 
   const toggle = (set: Set<string>, key: string) => {
     const next = new Set(set);
@@ -1660,10 +1616,6 @@ export default function AutomationSuitePage() {
                             the systems you already picked. */}
                         <button onClick={() => openEdit(s, 'testcases')}
                           className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-3 py-1.5">+ Add Test Case</button>
-                        {/* What each row ran against, kept per run. */}
-                        <button onClick={() => openConfigs(s)}
-                          title="The enb/mme/ims/DB/ots/ue configs saved from each run of this suite"
-                          className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-3 py-1.5">Configurations</button>
                         <button onClick={() => deleteSuite(s)}
                           className="ml-auto rounded-md border border-red-300 text-red-600 hover:bg-red-50 text-xs px-3 py-1.5">Delete Suite</button>
                       </div>
@@ -1702,7 +1654,7 @@ export default function AutomationSuitePage() {
                                 <th className="px-2 py-1 text-left">#</th>
                                 {/* Drag any right edge — the cfg names are long
                                     and which one a row runs is the point. */}
-                                {['Test Case', 'gNB Configuration', 'MME Configuration', 'Database Configuration', 'IMS Configuration', 'OTS Configuration', 'UE Configuration', 'Power-On Duration', 'Status', 'Verdict', 'Actions'].map((label, i) => (
+                                {['Test Case', 'gNB Configuration', 'MME Configuration', 'Database Configuration', 'IMS Configuration', 'OTS Configuration', 'Power-On Duration', 'Status', 'Verdict', 'Actions'].map((label, i) => (
                                   <th key={label}
                                     className={'relative px-2 py-1 border-r border-slate-200 last:border-r-0 ' + (i >= 4 && i !== 5 ? 'text-right' : 'text-left')}>
                                     <span className="truncate block">{label}</span>
@@ -1787,10 +1739,6 @@ export default function AutomationSuitePage() {
                                       ))}
                                       <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-500 truncate">
                                         {otsByCallbox[s.callboxSystemId ?? ''] || NOT_CONFIGURED}
-                                      </td>
-                                      {/* UE Configuration — the UE box's own, not editable here. */}
-                                      <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-500 truncate">
-                                        {hostOf(s.ueSystemId) ? 'ue.cfg' : NOT_CONFIGURED}
                                       </td>
                                       <td className="px-2 py-1 text-right align-top">
                                         {/* Store the raw typed number and only raise it to the
@@ -1888,13 +1836,6 @@ export default function AutomationSuitePage() {
                                         : undefined}>
                                       {otsByCallbox[s.callboxSystemId ?? ''] || NOT_CONFIGURED}
                                     </td>
-                                    {/* The UE's config is the UE box's own — it is not
-                                        picked per row, but it IS part of what the row
-                                        runs against, and it is captured with the rest. */}
-                                    <td className="px-2 py-1 font-mono text-[11px] text-slate-500 truncate"
-                                      title={hostOf(s.ueSystemId) ? `/root/ue/config/ue.cfg on ${hostOf(s.ueSystemId)}` : undefined}>
-                                      {hostOf(s.ueSystemId) ? 'ue.cfg' : NOT_CONFIGURED}
-                                    </td>
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
                                       {it.durationSec ?? s.defaultDurationSec ?? MIN_POWER_ON} s
                                     </td>
@@ -1944,139 +1885,6 @@ export default function AutomationSuitePage() {
         </section>
         )}
 
-        {/* Saved configs: the folder tree the runs write, read through the app
-            so nobody has to go on to the server to see what a row ran with. */}
-        {configsFor && (
-          /* Opened over the page rather than appended under the suite list —
-             the button is at the top of a card and the panel used to render
-             below everything, so clicking it looked like nothing happened
-             until you scrolled. Click the backdrop or press Escape to close. */
-          <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-slate-900/40 p-4 overflow-y-auto"
-            role="dialog" aria-modal="true" aria-label={`Configurations for ${configsFor.name}`}
-            onClick={() => { setConfigsFor(null); setSavedConfigs(null); }}>
-          <section className="bg-surface border border-line rounded-xl p-5 shadow-xl w-full max-w-3xl my-auto max-h-[85vh] overflow-y-auto"
-            onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-1">
-              <h2 className="text-base font-semibold text-slate-900">
-                Configurations — {configsFor.name}
-              </h2>
-              <button onClick={() => { setConfigsFor(null); setSavedConfigs(null); }}
-                className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-2 py-1">Close</button>
-            </div>
-            <p className="text-[11px] text-slate-500 mb-3">
-              Every run keeps the six files its row actually executed against. A new version
-              appears only when they differ from the last run, so v2 means somebody changed
-              something — and the next run says so before it starts.
-            </p>
-
-            {savedConfigs === null ? (
-              <p className="text-xs text-slate-500">Reading…</p>
-            ) : savedConfigs.every(r => r.versions.length === 0) ? (
-              <p className="text-xs text-slate-500">
-                Nothing saved yet — the first run of each test case writes v1.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {savedConfigs.map(r => {
-                  const rowOpen = openRows.has(r.row);
-                  return (
-                  <div key={r.row} className="rounded-md border border-line">
-                    <button type="button"
-                      onClick={() => setOpenRows(o => toggle(o, r.row))}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-slate-50">
-                      <span className="text-slate-400 text-[10px] w-3">{rowOpen ? '▼' : '▶'}</span>
-                      <span className="text-sm font-medium text-slate-800">{r.row}</span>
-                      <span className="text-[11px] text-slate-500">
-                        {r.versions.length === 0
-                          ? 'not run yet'
-                          : `${r.versions.length} version${r.versions.length === 1 ? '' : 's'}`}
-                      </span>
-                    </button>
-
-                    {rowOpen && r.versions.length > 0 && (
-                      <div className="px-3 pb-3 space-y-2">
-                        {r.versions.map(v => {
-                          const key = `${r.row}|${v.version}`;
-                          const open = openVersions.has(key);
-                          return (
-                            <div key={v.version} className="rounded border border-line">
-                              <button type="button"
-                                onClick={() => setOpenVersions(o => toggle(o, key))}
-                                className="w-full flex flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-2 text-left hover:bg-slate-50">
-                                <span className="text-slate-400 text-[10px] w-3">{open ? '▼' : '▶'}</span>
-                                <span className="text-xs font-semibold text-slate-800">{v.version}</span>
-                                {/* Why this version exists — the question a list of
-                                    v1/v2/v3 otherwise leaves the reader to guess. */}
-                                <span className={'text-[11px] ' + (v.reason === 'changed' ? 'text-amber-700' : 'text-slate-500')}>
-                                  {v.reason === 'changed' ? 'Configuration changed' : 'Original configuration'}
-                                </span>
-                                {v.capturedAt && <span className="text-[11px] text-slate-500">{new Date(v.capturedAt).toLocaleString()}</span>}
-                              </button>
-
-                              {open && (
-                                <div className="px-3 pb-3">
-                                  <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-[11px] mb-2">
-                                    {v.capturedBy && (<><dt className="text-slate-500">Run as</dt><dd className="text-slate-800">{v.capturedBy}</dd></>)}
-                                    {/* The box that ran it. Versions captured before this was
-                                        recorded fall back to the suite's current Simnovator,
-                                        which the tooltip says. */}
-                                    <dt className="text-slate-500">Simnovator</dt>
-                                    <dd className="font-mono text-slate-800"
-                                      title={v.uesimHost ? undefined : "the suite's Simnovator — this version predates recording it"}>
-                                      {v.uesimHost ?? hostOf(configsFor.uesimSystemId) ?? '–'}
-                                    </dd>
-                                    {v.callboxHost && (<><dt className="text-slate-500">Callbox</dt><dd className="font-mono text-slate-800">{v.callboxHost}</dd></>)}
-                                    {v.ueHost && (<><dt className="text-slate-500">UE</dt><dd className="font-mono text-slate-800">{v.ueHost}</dd></>)}
-                                    {v.changedFiles && v.changedFiles.length > 0 && (
-                                      <><dt className="text-slate-500">Changed</dt>
-                                        <dd className="font-mono text-amber-700">{v.changedFiles.join(', ')}</dd></>
-                                    )}
-                                  </dl>
-
-                                  <table className="text-[11px] border border-line rounded w-full max-w-md">
-                                    <thead className="bg-slate-50 text-slate-500">
-                                      <tr>
-                                        <th className="px-2 py-1 text-left font-medium">File</th>
-                                        <th className="px-2 py-1 text-left font-medium">On the box</th>
-                                        <th className="px-2 py-1 text-right font-medium">Size</th>
-                                        <th className="px-2 py-1 text-right font-medium">Action</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-100">
-                                      {v.files.map(f => (
-                                        <tr key={f.name}>
-                                          <td className="px-2 py-1 font-mono text-slate-700">{f.name}</td>
-                                          <td className="px-2 py-1 font-mono text-slate-500 truncate max-w-[220px]" title={f.source}>{f.source ?? '–'}</td>
-                                          <td className="px-2 py-1 text-right text-slate-600 whitespace-nowrap">
-                                            {f.bytes >= 1024 ? `${(f.bytes / 1024).toFixed(1)} KB` : `${f.bytes} B`}
-                                          </td>
-                                          <td className="px-2 py-1 text-right whitespace-nowrap">
-                                            {/* The SAVED file, not what is on the box now. */}
-                                            <a href={`/api/automation/suites/${configsFor.id}/configs?row=${encodeURIComponent(r.row)}&version=${v.version}&file=${f.name}`}
-                                              target="_blank" rel="noreferrer"
-                                              className="text-blue-700 hover:underline">View</a>
-                                            <a href={`/api/automation/suites/${configsFor.id}/configs?row=${encodeURIComponent(r.row)}&version=${v.version}&file=${f.name}&download=1`}
-                                              className="text-blue-700 hover:underline ml-3">Download</a>
-                                          </td>
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-          </div>
-        )}
 
         {/* Run history + compare (visible when "Runs" was clicked) */}
         {historyFor && (

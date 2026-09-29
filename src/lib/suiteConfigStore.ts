@@ -193,57 +193,6 @@ function versionsOf(dir: string): string[] {
   }
 }
 
-/** Every saved version of one row, newest first, each with its manifest and
- *  the files actually written. What the Saved configs panel lists. */
-export function listRowVersions(suiteName: string, rowName: string): Array<{
-  version: string;
-  capturedAt?: string;
-  capturedBy?: string;
-  callboxHost?: string;
-  ueHost?: string;
-  uesimHost?: string;
-  reason?: 'original' | 'changed';
-  changedFiles?: string[];
-  files: Array<{ name: string; bytes: number; source?: string }>;
-}> {
-  const dir = rowDir(suiteName, rowName);
-  return versionsOf(dir)
-    .filter((v) => /^v\d+$/.test(v))
-    .sort((x, y) => Number(y.slice(1)) - Number(x.slice(1)))
-    .map((version) => {
-      let m: SnapshotManifest | undefined;
-      try { m = JSON.parse(fs.readFileSync(path.join(dir, version, 'manifest.json'), 'utf8')); } catch { /* no manifest */ }
-      const files: Array<{ name: string; bytes: number; source?: string }> = [];
-      for (const name of SNAPSHOT_FILES) {
-        try {
-          files.push({ name, bytes: fs.statSync(path.join(dir, version, name)).size, source: m?.files?.[name]?.source });
-        } catch { /* a file this capture could not read is simply absent */ }
-      }
-      return {
-        version,
-        capturedAt: m?.capturedAt, capturedBy: m?.capturedBy,
-        callboxHost: m?.callboxHost, ueHost: m?.ueHost, uesimHost: m?.uesimHost,
-        // Versions written before this was recorded: v1 is the original by
-        // definition, and anything after it exists because something changed.
-        reason: m?.reason ?? (version === 'v1' ? 'original' : 'changed'),
-        changedFiles: m?.changedFiles,
-        files,
-      };
-    });
-}
-
-/** One saved file's text. Names are checked against the fixed set rather than
- *  sanitised, so nothing outside a version folder can be reached. */
-export function readSavedFile(suiteName: string, rowName: string, version: string, file: string): string | null {
-  if (!/^v\d+$/.test(version)) return null;
-  if (!(SNAPSHOT_FILES as readonly string[]).includes(file) && file !== 'manifest.json') return null;
-  try {
-    return fs.readFileSync(path.join(rowDir(suiteName, rowName), version, file), 'utf8');
-  } catch {
-    return null;
-  }
-}
-
 /** The manifest of the newest saved version for a row, if it has ever run. */
 export function latestManifest(suiteName: string, rowName: string): SnapshotManifest | null {
   const dir = rowDir(suiteName, rowName);
