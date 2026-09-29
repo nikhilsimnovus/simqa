@@ -325,6 +325,17 @@ export default function AutomationSuitePage() {
     } catch { setSavedConfigs([]); }
   }, []);
 
+  // Escape closes the configurations dialog. Bound only while it is open, so
+  // it cannot swallow the key from anything else.
+  useEffect(() => {
+    if (!configsFor) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setConfigsFor(null); setSavedConfigs(null); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [configsFor]);
+
   const toggle = (set: Set<string>, key: string) => {
     const next = new Set(set);
     if (next.has(key)) next.delete(key); else next.add(key);
@@ -873,7 +884,16 @@ export default function AutomationSuitePage() {
     }
   }, [kind, uesimSystemId, profiles, callboxSystems, callboxSystemId]);
 
+  /** Which callbox load is the current one. A box that is DOWN does not fail
+   *  fast — the connection sits there until the OS gives up, tens of seconds
+   *  later — so switching from a dead callbox to a live one used to end with
+   *  the dead one's reply landing last and overwriting the good result: an
+   *  empty file list and "EHOSTUNREACH" shown against a box that had just
+   *  answered perfectly well. Anything but the newest request is dropped. */
+  const cbxReq = useRef(0);
+
   const loadCallboxConfigs = useCallback(async (sysId: string) => {
+    const req = ++cbxReq.current;
     if (!sysId) { setCbxFiles([]); setMmeFiles([]); setCbxLoadError(''); return; }
     setLoadingCbx(true); setCbxLoadError('');
     try {
@@ -884,6 +904,9 @@ export default function AutomationSuitePage() {
         fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(sysId)}&dir=mme`).then(r => r.json()),
         fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(sysId)}&dir=ots`).then(r => r.json()).catch(() => null),
       ]);
+      // A reply for a callbox the user has already moved on from says nothing
+      // about the one they are looking at.
+      if (req !== cbxReq.current) return;
       setCbxFiles(enbR?.ok ? (enbR.files ?? []) : []);
       setMmeFiles(mmeR?.ok ? (mmeR.files ?? []) : []);
       // Which DB each mme cfg includes — derived, not chosen: the DB travels
@@ -891,7 +914,7 @@ export default function AutomationSuitePage() {
       setUeDbByMme(mmeR?.ok ? (mmeR.ueDb ?? {}) : {});
       setOtsLink(otsR?.ok ? (otsR.otsLink ?? '') : '');
       if (!enbR?.ok) setCbxLoadError(enbR?.error ?? 'failed to list callbox configs');
-    } finally { setLoadingCbx(false); }
+    } finally { if (req === cbxReq.current) setLoadingCbx(false); }
   }, []);
 
   const loadUesimTestcases = useCallback(async (sysId: string) => {
@@ -1861,10 +1884,18 @@ export default function AutomationSuitePage() {
         {/* Saved configs: the folder tree the runs write, read through the app
             so nobody has to go on to the server to see what a row ran with. */}
         {configsFor && (
-          <section className="bg-surface border border-line rounded-xl p-5 mb-6">
+          /* Opened over the page rather than appended under the suite list —
+             the button is at the top of a card and the panel used to render
+             below everything, so clicking it looked like nothing happened
+             until you scrolled. Click the backdrop or press Escape to close. */
+          <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-slate-900/40 p-4 overflow-y-auto"
+            role="dialog" aria-modal="true" aria-label={`Configurations for ${configsFor.name}`}
+            onClick={() => { setConfigsFor(null); setSavedConfigs(null); }}>
+          <section className="bg-surface border border-line rounded-xl p-5 shadow-xl w-full max-w-3xl my-auto max-h-[85vh] overflow-y-auto"
+            onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-1">
               <h2 className="text-base font-semibold text-slate-900">
-                Saved configs — {configsFor.name}
+                Configurations — {configsFor.name}
               </h2>
               <button onClick={() => { setConfigsFor(null); setSavedConfigs(null); }}
                 className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-2 py-1">Close</button>
@@ -1971,6 +2002,7 @@ export default function AutomationSuitePage() {
               </div>
             )}
           </section>
+          </div>
         )}
 
         {/* Run history + compare (visible when "Runs" was clicked) */}
