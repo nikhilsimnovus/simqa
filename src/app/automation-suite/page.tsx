@@ -2542,11 +2542,29 @@ export default function AutomationSuitePage() {
                     </button>
                   </div>
                 </div>
-                {kind === 'uesim+callbox' && cbxLoadError && (
-                  <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1 mt-2">
-                    SSH error listing /root/enb/config: <code>{cbxLoadError}</code> — Upload below works either way.
-                  </div>
-                )}
+                {kind === 'uesim+callbox' && cbxLoadError && (() => {
+                  // EHOSTUNREACH / ETIMEDOUT / ECONNREFUSED are not SSH problems
+                  // at all — the box is off, or off the network — and calling
+                  // them "SSH error" sends people looking at credentials. The
+                  // raw text stays, because it is what you would paste to
+                  // whoever owns the box.
+                  const host = hostOf(callboxSystemId);
+                  const unreachable = /EHOSTUNREACH|ETIMEDOUT|ECONNREFUSED|ENETUNREACH/i.test(cbxLoadError);
+                  return (
+                    <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1 mt-2">
+                      {unreachable ? (
+                        <>
+                          Callbox {host || ''} is not answering — nothing on port 22, so it is most
+                          likely powered off or off the network. Its config files cannot be listed
+                          from here; you can still upload one from your computer.
+                        </>
+                      ) : (
+                        <>Could not list /root/enb/config on {host || 'the callbox'} — you can still upload a config from your computer.</>
+                      )}
+                      <div className="mt-0.5 text-[11px] text-red-600"><code>{cbxLoadError}</code></div>
+                    </div>
+                  );
+                })()}
               </div>
             </>)}
 
