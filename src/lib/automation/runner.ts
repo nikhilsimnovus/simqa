@@ -151,7 +151,7 @@ export interface SuiteRunResult {
   steps: SuiteRunStep[];
 }
 
-interface RunOpts {
+export interface RunOpts {
   /** Box logins to run this suite for, in order. Omitted = just the one the
    *  suite is saved with. Each pass creates or reuses that user's own copies
    *  and executes on their own simulator, so the passes cannot collide. */
@@ -766,6 +766,12 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     const t0 = Date.now();
     const stepDetails: string[] = [];
     let itemOk = true;
+    // Which folder under /root/automation_configs holds this row's configs. A
+    // campaign row's live under the suite it was taken from — the campaign is
+    // a running order, the suite is where the files were captured — while a
+    // suite's own rows read their own. Needed from phase 0 (rebuilding a
+    // deleted testcase from test.json) through to the cleanup message.
+    const cfgFrom = item.configSuite ?? suite.name;
     /** enb.cfg's target before this row re-pointed it — reported only, so the
      *  run log records what the callbox was bound to beforehand. */
     let prevEnbLink = '';
@@ -816,11 +822,11 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         } else {
           // Nobody on the box has it any more — deleted, or the box was
           // rebuilt. The folder kept the definition, so the row still runs.
-          const saved = readTestCaseFile(suite.name, item.name, 'test.json');
+          const saved = readTestCaseFile(cfgFrom, item.name, 'test.json');
           if (saved) {
             try {
               sourceTd = JSON.parse(saved);
-              stepDetails.push(`testcase: not on ${ueOpts.host} any more — rebuilt from ${testCaseDir(suite.name, item.name)}/test.json`);
+              stepDetails.push(`testcase: not on ${ueOpts.host} any more — rebuilt from ${testCaseDir(cfgFrom, item.name)}/test.json`);
             } catch { /* a corrupt file is no better than none */ }
           }
         }
@@ -904,9 +910,9 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       // name. A file the folder does not have falls through to the old
       // behaviour — an empty folder must not silently blank a working config.
       const fromServer: Record<string, string | undefined> = {
-        [cfg]: readTestCaseFile(suite.name, item.name, 'enb.cfg'),
-        ...(item.mmeCfg ? { [item.mmeCfg]: readTestCaseFile(suite.name, item.name, 'mme.cfg') } : {}),
-        ...(item.imsCfg ? { [item.imsCfg]: readTestCaseFile(suite.name, item.name, 'ims.cfg') } : {}),
+        [cfg]: readTestCaseFile(cfgFrom, item.name, 'enb.cfg'),
+        ...(item.mmeCfg ? { [item.mmeCfg]: readTestCaseFile(cfgFrom, item.name, 'mme.cfg') } : {}),
+        ...(item.imsCfg ? { [item.imsCfg]: readTestCaseFile(cfgFrom, item.name, 'ims.cfg') } : {}),
       };
 
       try {
@@ -951,7 +957,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             // Only a file the callbox did not have is ours to clean up later.
             if (isNew) pushedCfg = cfg;
             servedFromFolder = true;
-            stepDetails.push(`cfg-source: ${testCaseDir(suite.name, item.name)}/enb.cfg → ${cfg}`);
+            stepDetails.push(`cfg-source: ${testCaseDir(cfgFrom, item.name)}/enb.cfg → ${cfg}`);
           } else if (existing.has(cfg)) {
             // Already on the callbox — link at it directly, nothing to copy.
             target = `/root/enb/config/${cfg}`;
@@ -1011,7 +1017,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               await push(pick, fromFolder, '/root/mme/config');
               existingCore.add(pick);
               justUploaded = true;
-              stepDetails.push(`cfg-source: ${linkName} from ${testCaseDir(suite.name, item.name)}`);
+              stepDetails.push(`cfg-source: ${linkName} from ${testCaseDir(cfgFrom, item.name)}`);
             }
             // An uploaded core cfg isn't on the box yet — push it under its own
             // name first, so the link reads the same as the operator's pick.
@@ -1042,7 +1048,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           // when the callbox has lost them, left alone when it still has them.
           // The MME will not start with one of them missing, and there is
           // rarely just one: a working config here includes five.
-          const folder = readAllTestCaseFiles(suite.name, item.name);
+          const folder = readAllTestCaseFiles(cfgFrom, item.name);
           const restored: string[] = [];
           for (const [name, text] of Object.entries(folder)) {
             // The role files are pushed above; test.json is not a callbox file.
@@ -1055,7 +1061,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             restored.push(name);
           }
           if (restored.length) {
-            stepDetails.push(`cfg-restore: ${restored.join(', ')} — missing on the callbox, put back from ${testCaseDir(suite.name, item.name)}`);
+            stepDetails.push(`cfg-restore: ${restored.join(', ')} — missing on the callbox, put back from ${testCaseDir(cfgFrom, item.name)}`);
           }
 
           // Nothing moved — the stack is already running the configs this row
@@ -1328,7 +1334,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               }
             });
             if (removed.length) {
-              stepDetails.push(`cfg-cleanup: removed ${removed.join(', ')} from the callbox — kept in ${testCaseDir(suite.name, item.name)}`);
+              stepDetails.push(`cfg-cleanup: removed ${removed.join(', ')} from the callbox — kept in ${testCaseDir(cfgFrom, item.name)}`);
             }
             if (kept.length) {
               stepDetails.push(`cfg-cleanup: left ${kept.join(', ')} in place — the callbox still points at it`);

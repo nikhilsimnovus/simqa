@@ -210,6 +210,15 @@ export interface SuiteItem {
    *  the radio, so the mme + ims cfgs are bound per row alongside the gnb one. */
   mmeCfg?: string;
   imsCfg?: string;
+  /**
+   * Whose folder under /root/automation_configs holds this row's configs.
+   *
+   * Absent for a suite's own rows — they live under the suite's own name. A
+   * campaign row sets it to the suite it was taken from, so the campaign reads
+   * that suite's saved configs while running on whatever setup was chosen for
+   * the campaign.
+   */
+  configSuite?: string;
   /** Max seconds to wait for the Simnovator testcase to reach a
    *  terminal state. Falls back to the suite's defaultDurationSec
    *  (or 10) when absent. */
