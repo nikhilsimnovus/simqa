@@ -640,6 +640,28 @@ export default function AutomationSuitePage() {
     return rows.reduce((acc, it) => acc + (it.durationSec ?? s.defaultDurationSec ?? MIN_POWER_ON) + PER_ROW_OVERHEAD, 0);
   }, []);
 
+  /**
+   * Which suite cards are expanded.
+   *
+   * A card carries its details, its actions and a table of every test case, so
+   * a dozen suites is a page nobody can scan. Collapsed, a suite is one line:
+   * click the name to open it. A single suite opens by itself — there is
+   * nothing to scan past, and making the only thing on the page take a click
+   * would be pedantry.
+   */
+  const [openSuites, setOpenSuites] = useState<Set<string>>(new Set());
+  const [autoOpened, setAutoOpened] = useState(false);
+  useEffect(() => {
+    if (autoOpened || suites.length === 0) return;
+    if (suites.length === 1) setOpenSuites(new Set([suites[0].id]));
+    setAutoOpened(true);
+  }, [suites, autoOpened]);
+  const toggleSuite = (id: string) => setOpenSuites(o => {
+    const next = new Set(o);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
   /** Suite + rows awaiting confirmation in the Run dialog. `rows` undefined
    *  means the whole suite. */
   const [confirmRun, setConfirmRun] = useState<{ suite: SuiteRow; rows?: SuiteItem[] } | null>(null);
@@ -1547,13 +1569,42 @@ export default function AutomationSuitePage() {
                     // saving a row is only a local inventory edit. Run controls
                     // want box-awareness; Save must not.
                     const boxBusy = s.uesimSystemId ? busyBySystem[busyKey(s.uesimSystemId, s.boxUserId)] : null;
+                    const open = openSuites.has(s.id);
                     return (
                     <article key={s.id} className="border border-line rounded-lg bg-surface">
-                      {/* The name alone. "Automation Suite" under it said what
-                          the page is already called. */}
-                      <div className="px-4 py-3 border-b border-line">
-                        <h3 className="text-sm font-semibold text-slate-900 truncate" title={s.name}>{s.name}</h3>
+                      {/* Click the name to open the suite. Run stays in the
+                          header so the common action is still one click on a
+                          collapsed card — it just must not also toggle it. */}
+                      <div className={'px-4 py-3 flex items-center gap-3' + (open ? ' border-b border-line' : '')}>
+                        <button type="button" onClick={() => toggleSuite(s.id)}
+                          className="flex items-center gap-2 min-w-0 flex-1 text-left group">
+                          <span className="text-slate-400 text-[10px] w-3">{open ? '▼' : '▶'}</span>
+                          <h3 className="text-sm font-semibold text-slate-900 truncate group-hover:underline" title={s.name}>{s.name}</h3>
+                          {/* What a collapsed card still has to say: how big it
+                              is, and which box it runs on. */}
+                          <span className="text-[11px] text-slate-500 whitespace-nowrap">
+                            {(s.items ?? []).length} test case{(s.items ?? []).length === 1 ? '' : 's'}
+                          </span>
+                          <span className="text-[11px] font-mono text-slate-400 truncate hidden sm:inline">
+                            {hostOf(s.uesimSystemId)}
+                          </span>
+                        </button>
+                        {running === s.id || (boxBusy && progress?.suiteId === s.id) ? (
+                          <button onClick={e => { e.stopPropagation(); stopRun(s); }}
+                            title="Stop the running test case and skip the rest"
+                            className="rounded-md bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-3 py-1.5">
+                            ⏹ Stop
+                          </button>
+                        ) : (
+                          <button onClick={e => { e.stopPropagation(); setConfirmRun({ suite: s }); }} disabled={!!boxBusy}
+                            title={boxBusy ? `${boxBusy.testCaseName} is already running on ${boxBusy.host}` : 'Run every test case in this suite, in order'}
+                            className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xs font-semibold px-3 py-1.5">
+                            ▶ Run Suite
+                          </button>
+                        )}
                       </div>
+
+                      {open && (<>
 
                       {/* Suite Details — one label per value. It used to be one
                           run-on line ("UESIM + CALLBOX UE 192.168.1.101 ·
@@ -1583,22 +1634,6 @@ export default function AutomationSuitePage() {
                       </dl>
 
                       <div className="px-4 py-3 flex flex-wrap items-center gap-2 border-b border-line">
-                        {/* Stop replaces Run while this suite is going — the two
-                            are never both useful, and a Run that does nothing is
-                            worse than no button. */}
-                        {running === s.id || (boxBusy && progress?.suiteId === s.id) ? (
-                          <button onClick={() => stopRun(s)}
-                            title="Stop the running test case and skip the rest"
-                            className="rounded-md bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-3 py-1.5">
-                            ⏹ Stop
-                          </button>
-                        ) : (
-                          <button onClick={() => setConfirmRun({ suite: s })} disabled={!!boxBusy}
-                            title={boxBusy ? `${boxBusy.testCaseName} is already running on ${boxBusy.host}` : 'Run every test case in this suite, in order'}
-                            className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xs font-semibold px-3 py-1.5">
-                            ▶ Run Suite
-                          </button>
-                        )}
                         {/* Only the ticked rows. Disabled until something is
                             ticked, so it can never silently mean "all". */}
                         <button
@@ -1904,6 +1939,7 @@ export default function AutomationSuitePage() {
                           </div>
                         )}
                       </div>
+                      </>)}
                     </article>
                     );
                   })}
