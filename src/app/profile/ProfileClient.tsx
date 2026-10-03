@@ -2,20 +2,22 @@
 
 // Profile — who you are, and the two things you can do about it.
 //
-// Reading and editing are separate on purpose: the page opens as a record you
-// can read at a glance, and only becomes a form when you ask it to. The
-// username appears in both states and is editable in neither — it is what
-// every suite, run and campaign is attributed to, so changing it would
-// silently rewrite who did what.
+// Reading and editing are the same two cards: the rows do not move when you
+// press Edit Profile, the right-hand column just becomes typeable. That keeps
+// the whole page inside one screen at 100% zoom, which is how it is read.
 //
-// Changing a password is a different kind of act from correcting a surname, so
-// it lives in the overflow menu behind its own dialogue. The server checks the
-// current password again before allowing it, however you got there.
+// The username appears in both states and is editable in neither — it is what
+// every suite, run and campaign is attributed to, so changing it would
+// silently rewrite who did what. Changing a password is a different kind of
+// act from correcting a surname, so it lives in the overflow menu behind its
+// own dialogue, and the server re-checks the current password however you got
+// there.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MoreVertical, KeyRound, LogOut, Lock, X } from 'lucide-react';
 import { Header } from '@/components/Header';
 import { AuthField } from '@/components/AuthField';
+import { Toast, type ToastMessage } from '@/components/Toast';
 import { passwordMeetsPolicy } from '@/components/PasswordRules';
 
 interface Me {
@@ -43,20 +45,13 @@ function stamp(iso?: string): string {
   });
 }
 
-/** Initials for the disc: the name if there is one, else the username. */
-function initials(me: Me | null): string {
-  if (!me) return '';
-  const a = (me.firstName ?? '').trim();
-  const b = (me.lastName ?? '').trim();
-  const fromName = ((a[0] ?? '') + (b[0] ?? '')).toUpperCase();
-  return fromName || me.username.slice(0, 2).toUpperCase();
-}
-
-function Row({ label, value }: { label: string; value: React.ReactNode }) {
+/** One label/value row. The grid is shared by every row in both cards, so the
+ *  values line up across the page whether they are text or an input. */
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] items-start gap-4 py-2.5">
+    <div className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)] items-center gap-4 py-2">
       <dt className="text-sm text-slate-600">{label}:</dt>
-      <dd className="text-sm text-slate-900 break-words">{value}</dd>
+      <dd className="min-w-0 text-sm text-slate-900">{children}</dd>
     </div>
   );
 }
@@ -64,6 +59,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 export function ProfileClient() {
   const [me, setMe] = useState<Me | null>(null);
   const [loadErr, setLoadErr] = useState('');
+  const [toast, setToast] = useState<ToastMessage | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -81,22 +77,19 @@ export function ProfileClient() {
   const [last, setLast] = useState('');
   const [email, setEmail] = useState('');
   const [saving, setSaving] = useState(false);
-  const [saveErr, setSaveErr] = useState<Record<string, string | null>>({});
-  const [saved, setSaved] = useState(false);
 
   function startEdit() {
     setFirst(me?.firstName ?? '');
     setLast(me?.lastName ?? '');
     setEmail(me?.email ?? '');
-    setSaveErr({});
-    setSaved(false);
+    setToast(null);
     setEditing(true);
   }
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
     if (saving) return;
-    setSaving(true); setSaveErr({}); setSaved(false);
+    setSaving(true); setToast(null);
     try {
       const r = await fetch('/api/auth/me', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -104,14 +97,17 @@ export function ProfileClient() {
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.ok) {
-        setSaveErr(d?.field ? { [d.field]: d.error } : { form: d?.error ?? 'Could not save your changes.' });
+        // The server decides what is acceptable — including that an edit must
+        // leave something behind — and the form stays open on its answer.
+        setToast({ kind: 'error', title: 'Error', message: d?.error ?? 'Could not save your changes.' });
         return;
       }
       setMe(d.user);
       setEditing(false);
-      setSaved(true);
-    } catch { setSaveErr({ form: 'Could not reach the server.' }); }
-    finally { setSaving(false); }
+      setToast({ kind: 'success', title: 'Success', message: 'Profile updated successfully' });
+    } catch {
+      setToast({ kind: 'error', title: 'Error', message: 'Could not reach the server.' });
+    } finally { setSaving(false); }
   }
 
   // ── overflow menu ───────────────────────────────────────────────────────
@@ -143,6 +139,7 @@ export function ProfileClient() {
   }
 
   const fullName = [me?.firstName, me?.lastName].filter(Boolean).join(' ');
+  const input = 'w-full rounded-md border border-slate-300 bg-surface px-3 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200';
 
   return (
     <>
@@ -188,93 +185,56 @@ export function ProfileClient() {
         }
       />
 
-      <div className="space-y-5 p-6">
+      <Toast toast={toast} onClose={() => setToast(null)} />
+
+      <div className="space-y-4 p-5">
         {loadErr ? (
           <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{loadErr}</div>
         ) : null}
 
         {/* ── who ──────────────────────────────────────────────────────── */}
-        <section className="rounded-lg border border-line bg-surface py-10">
-          <div className="flex flex-col items-center gap-4">
-            <span
-              className="grid h-24 w-24 place-items-center rounded-full bg-gradient-to-br from-orange-400 to-orange-600 text-2xl font-bold tracking-wide text-white"
-              aria-hidden
-            >
-              {initials(me)}
-            </span>
-            <div className="text-center">
-              <div className="text-xl text-slate-900">{me?.username ?? '…'}</div>
-              {fullName ? <div className="mt-0.5 text-sm text-slate-500">{fullName}</div> : null}
-            </div>
-          </div>
+        <section className="rounded-lg border border-line bg-surface px-5 py-4 text-center">
+          <div className="text-lg font-semibold text-slate-900">{me?.username ?? '…'}</div>
+          {fullName ? <div className="mt-0.5 text-sm text-slate-500">{fullName}</div> : null}
         </section>
 
-        {/* ── the record, or the form ──────────────────────────────────── */}
-        <form onSubmit={save} className="grid items-start gap-5 lg:grid-cols-2">
+        {/* ── the record, typeable in place when editing ───────────────── */}
+        <form onSubmit={save} className="grid items-start gap-4 lg:grid-cols-2">
           <section className="rounded-lg border border-line bg-surface p-5">
-            <h2 className="mb-2 text-sm font-semibold text-slate-900">Personal Details</h2>
-            {editing ? (
-              <div className="max-w-sm">
-                <AuthField
-                  label="First name"
-                  value={first}
-                  onChange={(v) => { setFirst(v); setSaveErr((f) => ({ ...f, firstName: null })); }}
-                  placeholder="First name"
-                  autoComplete="given-name"
-                  error={saveErr.firstName}
-                  disabled={saving}
-                  autoFocus
-                />
-                <AuthField
-                  label="Last name"
-                  value={last}
-                  onChange={(v) => { setLast(v); setSaveErr((f) => ({ ...f, lastName: null })); }}
-                  placeholder="Last name"
-                  autoComplete="family-name"
-                  error={saveErr.lastName}
-                  disabled={saving}
-                />
-                <AuthField
-                  label="Email"
-                  type="email"
-                  value={email}
-                  onChange={(v) => { setEmail(v); setSaveErr((f) => ({ ...f, email: null })); }}
-                  placeholder="you@example.com"
-                  autoComplete="email"
-                  error={saveErr.email}
-                  disabled={saving}
-                />
-                <div className="mt-4">
-                  <label htmlFor="username-fixed" className="mb-1.5 block text-sm font-semibold text-slate-800">Username</label>
-                  <input
-                    id="username-fixed"
-                    value={me?.username ?? ''}
-                    readOnly
-                    disabled
-                    aria-describedby="username-fixed-why"
-                    className="w-full cursor-not-allowed rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500"
-                  />
-                  <p id="username-fixed-why" className="mt-1.5 text-[11px] text-slate-500">
-                    Your username cannot be changed — everything you have run is recorded against it.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <dl className="divide-y divide-line">
-                <Row label="First name" value={me?.firstName || '—'} />
-                <Row label="Last name" value={me?.lastName || '—'} />
-                <Row label="Email" value={me?.email || '—'} />
-                <Row label="Username" value={me?.username ?? '…'} />
-              </dl>
-            )}
+            <h2 className="mb-1 text-sm font-semibold text-slate-900">Personal Details</h2>
+            <dl className="divide-y divide-line">
+              <Row label="First name">
+                {editing ? (
+                  <input className={input} value={first} onChange={(e) => setFirst(e.target.value)}
+                    placeholder="First Name" autoComplete="given-name" disabled={saving} autoFocus aria-label="First name" />
+                ) : (me?.firstName || '—')}
+              </Row>
+              <Row label="Last name">
+                {editing ? (
+                  <input className={input} value={last} onChange={(e) => setLast(e.target.value)}
+                    placeholder="Last Name" autoComplete="family-name" disabled={saving} aria-label="Last name" />
+                ) : (me?.lastName || '—')}
+              </Row>
+              <Row label="Email">
+                {editing ? (
+                  <input className={input} type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                    placeholder="Email" autoComplete="email" disabled={saving} aria-label="Email" />
+                ) : (me?.email || '—')}
+              </Row>
+              <Row label="Username">
+                <span title={editing ? 'Your username cannot be changed — everything you have run is recorded against it.' : undefined}>
+                  {me?.username ?? '…'}
+                </span>
+              </Row>
+            </dl>
           </section>
 
           <section className="rounded-lg border border-line bg-surface p-5">
-            <h2 className="mb-2 text-sm font-semibold text-slate-900">Account Details</h2>
+            <h2 className="mb-1 text-sm font-semibold text-slate-900">Account Details</h2>
             <dl className="divide-y divide-line">
-              <Row label="Date Added" value={stamp(me?.createdAt)} />
-              <Row label="Last sign-in" value={stamp(me?.lastLoginAt)} />
-              <Row label="Password changed" value={stamp(me?.passwordChangedAt)} />
+              <Row label="Date Added">{stamp(me?.createdAt)}</Row>
+              <Row label="Last sign-in">{stamp(me?.lastLoginAt)}</Row>
+              <Row label="Password changed">{stamp(me?.passwordChangedAt)}</Row>
             </dl>
           </section>
 
@@ -306,8 +266,6 @@ export function ProfileClient() {
                 Edit Profile
               </button>
             )}
-            {saveErr.form ? <span role="alert" className="text-xs text-red-600">{saveErr.form}</span> : null}
-            {saved && !editing ? <span className="text-xs text-emerald-700">Profile updated.</span> : null}
           </div>
         </form>
       </div>
@@ -315,7 +273,11 @@ export function ProfileClient() {
       {pwOpen ? (
         <ChangePassword
           onClose={() => setPwOpen(false)}
-          onDone={() => { setPwOpen(false); void load(); }}
+          onDone={() => {
+            setPwOpen(false);
+            setToast({ kind: 'success', title: 'Success', message: 'Password updated successfully' });
+            void load();
+          }}
         />
       ) : null}
     </>
@@ -334,7 +296,6 @@ function ChangePassword({ onClose, onDone }: { onClose: () => void; onDone: () =
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<Record<string, string | null>>({});
-  const [done, setDone] = useState(false);
 
   useEffect(() => {
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose(); };
@@ -359,10 +320,7 @@ function ChangePassword({ onClose, onDone }: { onClose: () => void; onDone: () =
         setErr(d?.field ? { [d.field]: d.error } : { form: d?.error ?? 'Something went wrong. Please try again.' });
         return;
       }
-      // Say it worked before closing — a dialogue that just vanishes leaves
-      // you wondering whether the password actually changed.
-      setDone(true);
-      window.setTimeout(onDone, 900);
+      onDone();
     } catch { setErr({ form: 'Could not reach the server.' }); }
     finally { setBusy(false); }
   }
@@ -398,7 +356,7 @@ function ChangePassword({ onClose, onDone }: { onClose: () => void; onDone: () =
             autoComplete="current-password"
             icon={<Lock className="h-4 w-4" />}
             error={err.current}
-            disabled={busy || done}
+            disabled={busy}
             autoFocus
           />
           <AuthField
@@ -409,7 +367,7 @@ function ChangePassword({ onClose, onDone }: { onClose: () => void; onDone: () =
             autoComplete="new-password"
             icon={<Lock className="h-4 w-4" />}
             error={err.new}
-            disabled={busy || done}
+            disabled={busy}
           />
           <AuthField
             label="Confirm New Password"
@@ -419,11 +377,10 @@ function ChangePassword({ onClose, onDone }: { onClose: () => void; onDone: () =
             autoComplete="new-password"
             icon={<Lock className="h-4 w-4" />}
             error={mismatch ? 'Passwords do not match.' : err.confirm}
-            disabled={busy || done}
+            disabled={busy}
           />
 
           {err.form ? <p role="alert" className="mt-3 text-xs text-red-600">{err.form}</p> : null}
-          {done ? <p className="mt-3 text-xs text-emerald-700">Password changed. Use the new one next time you sign in.</p> : null}
           <p className="mt-3 text-[11px] text-slate-500">
             This signs out every other browser you are signed in on. You stay signed in here.
           </p>
@@ -439,7 +396,7 @@ function ChangePassword({ onClose, onDone }: { onClose: () => void; onDone: () =
             </button>
             <button
               type="submit"
-              disabled={!canSubmit || busy || done}
+              disabled={!canSubmit || busy}
               className="rounded-md bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:bg-slate-300"
             >
               {busy ? 'Updating…' : 'Update Password'}

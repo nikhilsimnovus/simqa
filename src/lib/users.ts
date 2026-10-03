@@ -275,16 +275,27 @@ export function setProfile(username: string, edit: ProfileEdit): { ok: boolean; 
   const u = s.users.find(x => key(x.username) === key(username));
   if (!u) return { ok: false, error: 'Unable to update the account.' };
 
-  if (edit.firstName !== undefined) u.firstName = clean(edit.firstName) || undefined;
-  if (edit.lastName !== undefined)  u.lastName  = clean(edit.lastName) || undefined;
+  // Work out the result first, so nothing is written when the edit is refused.
+  const firstName = edit.firstName !== undefined ? (clean(edit.firstName) || undefined) : u.firstName;
+  const lastName  = edit.lastName  !== undefined ? (clean(edit.lastName)  || undefined) : u.lastName;
 
+  let email = u.email;
   if (edit.email !== undefined) {
     const mail = (edit.email ?? '').trim();
     if (mail && !isValidEmail(mail)) return { ok: false, field: 'email', error: 'Enter a valid email address.' };
     if (mail && emailTaken(mail, username)) return { ok: false, field: 'email', error: 'Email is already registered.' };
-    u.email = mail || undefined;
+    email = mail || undefined;
   }
 
+  // An edit that empties the profile is a mistake, not an intention — a saved
+  // form with nothing in it is the shape of someone pressing Save too early.
+  if (!firstName && !lastName && !email) {
+    return { ok: false, field: 'firstName', error: 'at least one field (first_name, last_name, email) must be provided' };
+  }
+
+  u.firstName = firstName;
+  u.lastName = lastName;
+  u.email = email;
   u.updatedAt = new Date().toISOString();
   write(s);
   return { ok: true };
