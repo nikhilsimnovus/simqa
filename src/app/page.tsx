@@ -81,6 +81,24 @@ interface BoxStatus {
 
 type StationState = 'available' | 'running' | 'unavailable';
 
+/**
+ * How far back Recent runs looks.
+ *
+ * Rolling windows, not calendar ones: "this week" on a Monday morning is an
+ * empty list and tells you nothing, while the last seven days always answers
+ * the question actually being asked — what has this box been doing lately.
+ */
+type RunRange = 'all' | 'week' | 'month';
+const RANGE_DAYS: Record<Exclude<RunRange, 'all'>, number> = { week: 7, month: 30 };
+const RANGE_META: { id: RunRange; label: string; title: string }[] = [
+  { id: 'all',   label: 'All',   title: 'Every run recorded for this box' },
+  { id: 'week',  label: 'Week',  title: 'Runs started in the last 7 days' },
+  { id: 'month', label: 'Month', title: 'Runs started in the last 30 days' },
+];
+function rangeCutoff(range: RunRange): number {
+  return range === 'all' ? 0 : Date.now() - RANGE_DAYS[range] * 24 * 60 * 60 * 1000;
+}
+
 function stationStateOf(b: { online: boolean; busy: boolean }): StationState {
   if (!b.online) return 'unavailable';
   return b.busy ? 'running' : 'available';
@@ -106,7 +124,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">{children}</h2>;
 }
 
-export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ box?: string; user?: string }> }) {
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ box?: string; user?: string; range?: string }> }) {
   // Availability history is collected by a background poller. Kick it off here
   // so opening the dashboard after a server restart resumes tracking — it is a
   // no-op once running, and thereafter ticks on its own timer.
@@ -130,6 +148,11 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   // Whose runs Recent runs shows. Set by clicking a user — on their tile or in
   // the User column — and cleared by clicking them again or "All users".
   const selectedUser = ((await searchParams)?.user ?? '').trim();
+  // How far back the list reaches. Anything unrecognised reads as "all" rather
+  // than erroring — a hand-edited URL should show more, never break.
+  const rawRange = ((await searchParams)?.range ?? '').trim().toLowerCase();
+  const selectedRange: RunRange = rawRange === 'week' || rawRange === 'month' ? rawRange : 'all';
+  const cutoff = rangeCutoff(selectedRange);
 
   // Simnovator boxes only — a plain UESIM/UE host or a callbox has no product
   // GUI to report on, and listing them made the dashboard about the lab rather
@@ -180,12 +203,17 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
 
   // Recent runs for the FOCUSED box only. The runner records the host as the
   // preflight-login step's detail, so that's the only per-run box marker.
-  const recent = listRuns(200)
+  const recent = listRuns(500)
     .map((r) => ({ ...r, host: r.steps?.find((s) => s.name === 'preflight-login')?.detail ?? '' }))
     .filter((r) => !primary || r.host === primary.host)
-    // More than the six shown: a user filter is applied after merging, and
-    // cutting to six first would leave that user with none.
-    .slice(0, 30);
+    // The window is applied HERE, before names are resolved, so narrowing to a
+    // week is cheaper than showing everything rather than the same work twice.
+    .filter((r) => Date.parse(r.startedAt) >= cutoff)
+    // A ceiling, not the list length: the user filter is applied after merging,
+    // so cutting to what is displayed this early would leave that user with
+    // none. Large enough that nothing real is lost, small enough that a box
+    // with years of history cannot stall the page.
+    .slice(0, 200);
 
   const boxLive = !!selectedProbe?.box.online && !!selectedProbe?.opts;
 
@@ -267,11 +295,11 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
       !simqaRuns.some((s) => s.testcaseId === b.testcaseId && Math.abs(s.at - b.at) < NEAR_MS)),
   ]
     .filter((r) => Number.isFinite(r.at))
+    .filter((r) => r.at >= cutoff)
     .filter((r) => !selectedUser || r.user === selectedUser)
-    .sort((a, b) => b.at - a.at)
-    // Six: the user tiles above already show what each person is running
-    // and last ran, so this is a short tail. View all has the rest.
-    .slice(0, 6);
+    .sort((a, b) => b.at - a.at);
+  // Not cut to six any more: the card scrolls inside its own frame, so the
+  // whole list can be here without the page growing past one screen.
   const runs = merged;
 
   // The lab machines bound to the focused box by its topology profile — the
@@ -359,7 +387,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
               return (
                 // Acts like a radio group: picking a box focuses the whole
                 // page on it (recent runs + its lab machines) via ?box=<host>.
-                <Link key={b.id} href={`/?box=${encodeURIComponent(b.host)}`} className="block">
+                <Link key={b.id} href={userFilterHref(b.host, undefined, selectedRange)} className="block">
                   <Card className={b.host === primary?.host ? 'ring-2 ring-primary-500' : 'hover:shadow-md transition-shadow'}>
                     <CardBody className="p-3">
                       <div className="flex items-start justify-between gap-2">
@@ -401,7 +429,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
             user's testcases on their own simulator, so this is the answer to
             "who is using the box" — several can be running at once. */}
         {activity && activity.users.length > 0 ? (
-          <BoxUsersCard host={primary?.host ?? ''} users={activity.users} systemId={primary!.id} selectedUser={selectedUser} />
+          <BoxUsersCard host={primary?.host ?? ''} users={activity.users} systemId={primary!.id} selectedUser={selectedUser} range={selectedRange} />
         ) : null}
 
         {/* The bottom row takes whatever is left and never more: no items-start,
@@ -410,13 +438,40 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           {/* ── Recent runs ─────────────────────────────────────────────── */}
           <Card className="flex min-h-0 flex-col lg:col-span-2">
             <CardHeader className="flex shrink-0 items-center justify-between">
-              <CardTitle>
-                Recent runs{primary ? ` of ${primary.host}` : ''}
-                {selectedUser ? <span className="text-primary-700"> · {selectedUser}</span> : null}
+              <CardTitle className="flex min-w-0 items-center gap-2">
+                <span className="truncate">
+                  Recent runs{primary ? ` of ${primary.host}` : ''}
+                  {selectedUser ? <span className="text-primary-700"> · {selectedUser}</span> : null}
+                </span>
+                {/* The count belongs next to the window: "23" means nothing
+                    without knowing it is 23 this week rather than 23 ever. */}
+                <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                  {runs.length}
+                </span>
               </CardTitle>
               <div className="flex items-center gap-3">
+                {/* All / Week / Month. In the URL like the box and the user, so
+                    the choice survives a refresh and can be linked to. */}
+                <div className="flex items-center rounded-md border border-line p-0.5">
+                  {RANGE_META.map((r) => (
+                    <Link
+                      key={r.id}
+                      href={userFilterHref(primary?.host, selectedUser || undefined, r.id)}
+                      scroll={false}
+                      title={r.title}
+                      aria-current={r.id === selectedRange ? 'true' : undefined}
+                      className={`rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                        r.id === selectedRange
+                          ? 'bg-primary-50 text-primary-700'
+                          : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+                      }`}
+                    >
+                      {r.label}
+                    </Link>
+                  ))}
+                </div>
                 {selectedUser ? (
-                  <Link href={userFilterHref(primary?.host)} className="text-xs text-slate-500 hover:text-slate-800 hover:underline">
+                  <Link href={userFilterHref(primary?.host, undefined, selectedRange)} className="text-xs text-slate-500 hover:text-slate-800 hover:underline">
                     All users
                   </Link>
                 ) : null}
@@ -429,9 +484,17 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
             <CardBody className="min-h-0 flex-1 overflow-y-auto p-0">
               {runs.length === 0 ? (
                 <div className="p-5 text-sm text-slate-500">
+                  {/* Say which window came back empty, and offer the way out of
+                      it — "no runs" on a box that ran plenty last month is a
+                      misleading thing to read. */}
                   {selectedUser
-                    ? <>No recent runs by <span className="font-medium text-slate-700">{selectedUser}</span> on {primary?.host ?? 'this box'}.</>
-                    : <>No runs yet for {primary?.host ?? 'this box'}. Trigger one from the Test Cases page.</>}
+                    ? <>No runs by <span className="font-medium text-slate-700">{selectedUser}</span> on {primary?.host ?? 'this box'}{selectedRange === 'all' ? '' : ` in the last ${RANGE_DAYS[selectedRange]} days`}.</>
+                    : selectedRange === 'all'
+                      ? <>No runs yet for {primary?.host ?? 'this box'}. Trigger one from the Test Cases page.</>
+                      : <>No runs on {primary?.host ?? 'this box'} in the last {RANGE_DAYS[selectedRange]} days.</>}
+                  {selectedRange === 'all' ? null : (
+                    <> <Link href={userFilterHref(primary?.host, selectedUser || undefined, 'all')} className="text-primary-700 hover:underline">Show all</Link>.</>
+                  )}
                 </div>
               ) : (
                 /* Spreadsheet-style and column-resizable, like Run History —
@@ -450,7 +513,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                     window: windowOf(r.startedAt, r.endedAt),
                     status: r.status,
                     user: r.user,
-                    userHref: r.user ? userFilterHref(primary?.host, r.user === selectedUser ? undefined : r.user) : undefined,
+                    userHref: r.user ? userFilterHref(primary?.host, r.user === selectedUser ? undefined : r.user, selectedRange) : undefined,
                     simulator: r.simulator,
                   }))}
                 />
@@ -550,11 +613,14 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   );
 }
 
-/** The dashboard for one box, optionally filtered to one user's runs. */
-function userFilterHref(host?: string, user?: string): string {
+/** The dashboard for one box, optionally filtered to one user's runs and to a
+ *  window of time. Every link on the page goes through here, so choosing a box
+ *  or a person never silently throws away the window you were looking at. */
+function userFilterHref(host?: string, user?: string, range: RunRange = 'all'): string {
   const p = new URLSearchParams();
   if (host) p.set('box', host);
   if (user) p.set('user', user);
+  if (range !== 'all') p.set('range', range);
   return p.toString() ? `/?${p}` : '/';
 }
 
@@ -572,7 +638,7 @@ function testcaseHref(systemId: string, testcaseId: string, user?: string): stri
 }
 
 /** Who is on the box: one tile per registered login. */
-function BoxUsersCard({ host, users, systemId, selectedUser }: { host: string; users: BoxUserState[]; systemId: string; selectedUser?: string }) {
+function BoxUsersCard({ host, users, systemId, selectedUser, range }: { host: string; users: BoxUserState[]; systemId: string; selectedUser?: string; range: RunRange }) {
   const running = users.filter((u) => u.running).length;
   return (
     <Card className="shrink-0">
@@ -596,7 +662,7 @@ function BoxUsersCard({ host, users, systemId, selectedUser }: { host: string; u
                   it, so this one covers the tile from underneath and the
                   testcase link sits above it — both stay clickable. */}
               <Link
-                href={userFilterHref(host, u.username === selectedUser ? undefined : u.username)}
+                href={userFilterHref(host, u.username === selectedUser ? undefined : u.username, range)}
                 scroll={false}
                 className="absolute inset-0 rounded-lg"
                 aria-label={u.username === selectedUser ? 'Show everyone\'s recent runs' : `Show only ${u.username}'s recent runs`}
