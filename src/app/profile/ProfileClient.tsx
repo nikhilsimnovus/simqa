@@ -138,7 +138,7 @@ export function ProfileClient() {
               autoComplete="off"
               icon={<Mail className="h-4 w-4" />}
               error={emailErr}
-              hint={<p className="text-[11px] text-slate-500">Where a password reset link would be sent.</p>}
+              hint={<p className="text-[11px] text-slate-500">Optional. A contact address for your account.</p>}
               disabled={savingEmail}
             />
             {emailMsg ? <p className="mt-2 text-xs text-emerald-700">{emailMsg}</p> : null}

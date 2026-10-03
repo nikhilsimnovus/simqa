@@ -89,23 +89,18 @@ export function LoginForm() {
       />
       {hint ? <p className="mt-1.5 text-xs text-slate-500">{hint}</p> : null}
 
-      <div className="mt-4 flex items-center justify-between gap-3">
-        {/* About the SESSION, not about these fields: ticked, the sign-in
-            outlives the browser being closed; left alone, it does not. */}
-        <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={remember}
-            onChange={(e) => setRemember(e.target.checked)}
-            disabled={busy}
-            className="h-4 w-4 rounded border-slate-300 accent-blue-600"
-          />
-          Remember me
-        </label>
-        <Link href="/forgot" className="text-sm font-medium text-blue-600 hover:underline">
-          Forgot password?
-        </Link>
-      </div>
+      {/* About the SESSION, not about these fields: ticked, the sign-in
+          outlives the browser being closed; left alone, it does not. */}
+      <label className="mt-4 flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={remember}
+          onChange={(e) => setRemember(e.target.checked)}
+          disabled={busy}
+          className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+        />
+        Remember me
+      </label>
 
       <AuthSubmit label="Sign in" busyLabel="Signing in…" busy={busy} disabled={!canSubmit} />
 

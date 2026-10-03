@@ -79,7 +79,7 @@ export function SignupForm() {
         autoComplete="off"
         icon={<Mail className="h-4 w-4" />}
         error={fieldErr.email}
-        hint={<p className="text-[11px] text-slate-500">Used to send you a reset link if you forget your password.</p>}
+        hint={<p className="text-[11px] text-slate-500">Optional. A contact address for your account.</p>}
         disabled={busy}
       />
 

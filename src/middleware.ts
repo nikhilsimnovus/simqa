@@ -18,9 +18,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 const SESSION_COOKIE = 'simqa-session';
 
 /** Pages reachable without a session. */
-// /forgot and /reset are reachable signed out by necessity: somebody who
-// cannot sign in is exactly who needs them.
-const PUBLIC_PATHS = new Set(['/login', '/signup', '/forgot', '/reset']);
+const PUBLIC_PATHS = new Set(['/login', '/signup']);
 
 export function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;

@@ -15,8 +15,6 @@
 //                        this is what makes "sign out everywhere" and "changing
 //                        your password ends other sessions" true rather than
 //                        cosmetic, because the session cookie is stateless
-//   reset                a HASHED single-use token with an expiry; the token
-//                        itself exists only in the link that was sent
 //   lastLoginAt,
 //   passwordChangedAt    shown on the account page
 //
@@ -25,7 +23,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { checkPassword } from './passwordPolicy';
 
 interface StoredHash { salt: string; hash: string; at?: string }
@@ -44,13 +42,6 @@ export interface UserRecord {
   sessionEpoch?: number;
   /** Most recent first, newest few only. */
   passwordHistory?: StoredHash[];
-  reset?: {
-    /** sha256 of the token in the link — never the token itself. */
-    tokenHash: string;
-    expiresAt: string;
-    createdAt: string;
-    usedAt?: string;
-  };
 }
 
 interface Store { users: UserRecord[] }
@@ -59,8 +50,6 @@ const FILE = () => path.join(process.cwd(), 'data', 'users.json');
 const KEYLEN = 64;
 /** How many previous passwords a new one may not match. */
 const HISTORY_DEPTH = 5;
-/** A reset link is useful for half an hour and then it is not. */
-export const RESET_TTL_MS = 30 * 60_000;
 
 function read(): Store {
   try {
@@ -229,10 +218,9 @@ export interface SetPasswordResult { ok: boolean; error?: string }
  * Replace an account's password.
  *
  * Enforces the policy, refuses the current password and the last few before
- * it, invalidates any outstanding reset link, and bumps the session epoch so
- * sessions opened with the old password stop working. The caller decides
- * whether the person proved themselves with the old password or with a reset
- * token — this does not care, and must not be reachable without one of them.
+ * it, and bumps the session epoch so sessions opened with the old password
+ * stop working. It must not be reachable without the current password — see
+ * the change-password route, which checks it first.
  */
 export function setPassword(username: string, newPassword: string): SetPasswordResult {
   const pw = checkPassword(newPassword);
@@ -259,7 +247,6 @@ export function setPassword(username: string, newPassword: string): SetPasswordR
   u.passwordChangedAt = now;
   u.updatedAt = now;
   u.sessionEpoch = (u.sessionEpoch ?? 1) + 1;   // other sessions end here
-  delete u.reset;                               // any outstanding link dies
   write(s);
   return { ok: true };
 }
@@ -276,67 +263,4 @@ export function setEmail(username: string, email: string): { ok: boolean; error?
   u.updatedAt = new Date().toISOString();
   write(s);
   return { ok: true };
-}
-
-const tokenHash = (token: string) => createHash('sha256').update(token, 'utf8').digest('hex');
-
-/**
- * Start a password reset for whoever matches this username or email.
- *
- * Returns the raw token ONCE, for the link being delivered; only its hash is
- * stored, so the file cannot be used to mint a reset. Returns null when
- * nothing matches — and the caller must answer identically either way, or the
- * endpoint becomes a way to find out who has an account.
- */
-export function startPasswordReset(identifier: string): { username: string; token: string; expiresAt: string } | null {
-  const id = (identifier ?? '').trim().toLowerCase();
-  if (!id) return null;
-  const s = read();
-  const u = s.users.find(x => key(x.username) === id || (x.email ?? '').toLowerCase() === id);
-  if (!u) return null;
-
-  const token = randomBytes(32).toString('base64url');
-  const expiresAt = new Date(Date.now() + RESET_TTL_MS).toISOString();
-  // A new request replaces any earlier one: the old link stops working.
-  u.reset = { tokenHash: tokenHash(token), expiresAt, createdAt: new Date().toISOString() };
-  u.updatedAt = new Date().toISOString();
-  write(s);
-  return { username: u.username, token, expiresAt };
-}
-
-export type ResetCheck =
-  | { ok: true; username: string }
-  | { ok: false; reason: 'invalid' | 'expired' | 'used' };
-
-/** Is this reset link still good? Used by the page before it shows the form,
- *  so an expired link says so instead of failing after the password is typed. */
-export function checkResetToken(token: string): ResetCheck {
-  const h = tokenHash(String(token ?? ''));
-  const u = read().users.find(x => x.reset?.tokenHash === h);
-  if (!u || !u.reset) return { ok: false, reason: 'invalid' };
-  if (u.reset.usedAt) return { ok: false, reason: 'used' };
-  if (Date.parse(u.reset.expiresAt) < Date.now()) return { ok: false, reason: 'expired' };
-  return { ok: true, username: u.username };
-}
-
-/**
- * Spend a reset token and set the new password.
- *
- * One call does both on purpose: a token that is checked in one place and
- * consumed in another is a token that can be used twice.
- */
-export function resetPasswordWithToken(token: string, newPassword: string):
-  { ok: true; username: string } | { ok: false; reason: 'invalid' | 'expired' | 'used' | 'policy'; error?: string } {
-  const check = checkResetToken(token);
-  if (!check.ok) return { ok: false, reason: check.reason };
-
-  const result = setPassword(check.username, newPassword);
-  if (!result.ok) return { ok: false, reason: 'policy', error: result.error };
-
-  // setPassword drops `reset` entirely, so the link cannot be replayed. Mark
-  // it spent as well for the case where that ever stops being true.
-  const s = read();
-  const u = s.users.find(x => key(x.username) === key(check.username));
-  if (u?.reset) { u.reset.usedAt = new Date().toISOString(); write(s); }
-  return { ok: true, username: check.username };
 }
