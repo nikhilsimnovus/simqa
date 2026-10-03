@@ -1,137 +1,116 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
-import { User, Lock, Eye, EyeOff } from 'lucide-react';
+// Creating an account.
+//
+// The rules are checked as you type so nothing is a surprise at submit, and
+// again on the server, which is where they are actually enforced. Inline
+// messages say which field is wrong — "Username already exists", "Email is
+// already registered", "Passwords do not match" — because a form that only
+// says "invalid" makes people guess.
 
-/** Mirrors the server rule in src/lib/users.ts. Checked here only to give
- *  immediate feedback — the server is what actually enforces it. */
-const MIN_PASSWORD = 6;
+import { useState } from 'react';
+import Link from 'next/link';
+import { User, Lock, Mail } from 'lucide-react';
+import { AuthField, AuthSubmit } from '@/components/AuthField';
+import { PasswordRules, passwordMeetsPolicy } from '@/components/PasswordRules';
 
 export function SignupForm() {
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [showPw, setShowPw] = useState(false);
+  const [fieldErr, setFieldErr] = useState<Record<string, string | null>>({});
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const userRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => { userRef.current?.focus(); }, []);
 
   const name = username.trim();
   const mismatch = confirm.length > 0 && password !== confirm;
-  const canSubmit =
-    name.length >= 2 && password.length >= MIN_PASSWORD && password === confirm && !busy;
+  const canSubmit = name.length >= 2 && passwordMeetsPolicy(password) && password === confirm;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmit) return;
-    setErr(null); setBusy(true);
+    if (busy || !canSubmit) return;
+    setErr(null); setFieldErr({}); setBusy(true);
     try {
       const r = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: name, password }),
+        body: JSON.stringify({ username: name, email: email.trim() || undefined, password, confirm }),
       });
-      const d = await r.json();
+      const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.ok) {
-        setErr(d?.error ?? `HTTP ${r.status}`);
+        // The server says which field it objected to; put the message there
+        // rather than in a general banner the eye has to hunt for.
+        if (d?.field) setFieldErr({ [d.field]: d.error ?? 'Not accepted.' });
+        else setErr(d?.error ?? 'Something went wrong. Please try again.');
         return;
       }
       // Signup signs you in, so go straight to the dashboard. Hard navigation
       // for the same reason as login: the App Router would serve its cached
       // signed-out payload otherwise.
       window.location.assign('/');
-    } catch (e: any) {
-      setErr(e?.message ?? String(e));
+    } catch {
+      setErr('Could not reach the server. Check your connection and try again.');
     } finally {
       setBusy(false);
     }
   }
 
-  // The same fields as the sign-in form, so the pair are one screen with one
-  // thing different rather than two designs.
-  const wrapCls = (bad: boolean) =>
-    'flex items-stretch rounded-lg border overflow-hidden bg-surface transition-colors focus-within:ring-2 ' +
-    (bad
-      ? 'border-red-400 focus-within:ring-red-200'
-      : 'border-slate-300 focus-within:ring-blue-200 focus-within:border-blue-400');
-  const inputCls = 'flex-1 h-11 px-3.5 text-sm text-slate-900 bg-transparent placeholder:text-slate-400 focus:outline-none';
-  const iconBoxCls = 'grid place-items-center w-11 shrink-0 border-r border-slate-200 bg-slate-50 text-slate-400';
-
   return (
     <form onSubmit={submit} noValidate autoComplete="off">
-      <label htmlFor="su-user" className="block text-sm font-semibold text-slate-800 mb-1.5">
-        Username
-      </label>
-      <div className={wrapCls(!!err)}>
-        <span className={iconBoxCls} aria-hidden><User className="h-4 w-4" /></span>
-        <input
-          id="su-user"
-          ref={userRef}
-          value={username}
-          onChange={(e) => { setUsername(e.target.value); if (err) setErr(null); }}
-          placeholder="Choose a username"
-          autoComplete="off"
-          spellCheck={false}
-          className={inputCls}
-        />
-      </div>
+      <AuthField
+        label="Username"
+        value={username}
+        onChange={(v) => { setUsername(v); setFieldErr(f => ({ ...f, username: null })); }}
+        placeholder="Choose a username"
+        autoComplete="off"
+        icon={<User className="h-4 w-4" />}
+        error={fieldErr.username}
+        autoFocus
+        disabled={busy}
+      />
 
-      <label htmlFor="su-pw" className="block text-sm font-semibold text-slate-800 mb-1.5 mt-4">
-        Password
-      </label>
-      <div className={wrapCls(false)}>
-        <span className={iconBoxCls} aria-hidden><Lock className="h-4 w-4" /></span>
-        <input
-          id="su-pw"
-          type={showPw ? 'text' : 'password'}
-          value={password}
-          onChange={(e) => { setPassword(e.target.value); if (err) setErr(null); }}
-          placeholder={`At least ${MIN_PASSWORD} characters`}
-          autoComplete="new-password"
-          className={inputCls}
-        />
-        <button
-          type="button"
-          onClick={() => setShowPw((v) => !v)}
-          className="px-3 text-slate-400 hover:text-slate-600"
-          aria-label={showPw ? 'Hide password' : 'Show password'}
-        >
-          {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-        </button>
-      </div>
+      <AuthField
+        label="Email"
+        type="email"
+        value={email}
+        onChange={(v) => { setEmail(v); setFieldErr(f => ({ ...f, email: null })); }}
+        placeholder="you@example.com"
+        autoComplete="off"
+        icon={<Mail className="h-4 w-4" />}
+        error={fieldErr.email}
+        hint={<p className="text-[11px] text-slate-500">Used to send you a reset link if you forget your password.</p>}
+        disabled={busy}
+      />
 
-      <label htmlFor="su-pw2" className="block text-sm font-semibold text-slate-800 mb-1.5 mt-4">
-        Confirm password
-      </label>
-      <div className={wrapCls(mismatch)}>
-        <span className={iconBoxCls} aria-hidden><Lock className="h-4 w-4" /></span>
-        <input
-          id="su-pw2"
-          type={showPw ? 'text' : 'password'}
-          value={confirm}
-          onChange={(e) => { setConfirm(e.target.value); if (err) setErr(null); }}
-          placeholder="Re-enter your password"
-          autoComplete="new-password"
-          className={inputCls}
-        />
-      </div>
-      {mismatch ? <p className="mt-1 text-xs text-red-600">Passwords don&apos;t match.</p> : null}
+      <AuthField
+        label="Password"
+        type="password"
+        value={password}
+        onChange={(v) => { setPassword(v); setFieldErr(f => ({ ...f, password: null })); }}
+        placeholder="Choose a password"
+        autoComplete="new-password"
+        icon={<Lock className="h-4 w-4" />}
+        error={fieldErr.password}
+        disabled={busy}
+      />
+      <PasswordRules password={password} />
 
-      {err ? <p className="mt-2 text-xs text-red-600">{err}</p> : null}
+      <AuthField
+        label="Confirm password"
+        type="password"
+        value={confirm}
+        onChange={(v) => { setConfirm(v); setFieldErr(f => ({ ...f, confirm: null })); }}
+        placeholder="Re-enter your password"
+        autoComplete="new-password"
+        icon={<Lock className="h-4 w-4" />}
+        error={mismatch ? 'Passwords do not match.' : fieldErr.confirm}
+        disabled={busy}
+      />
 
-      <button
-        type="submit"
-        disabled={!canSubmit}
-        className={
-          'mt-6 w-full h-12 rounded-lg text-white text-[15px] font-semibold transition-colors ' +
-          (!canSubmit ? 'bg-slate-300 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700')
-        }
-      >
-        {busy ? 'Creating account…' : 'Create account'}
-      </button>
+      {err ? <p role="alert" className="mt-3 text-xs text-red-600">{err}</p> : null}
+
+      <AuthSubmit label="Create account" busyLabel="Creating account…" busy={busy} disabled={!canSubmit} />
 
       <div className="mt-6 flex items-center gap-3" aria-hidden>
         <span className="h-px flex-1 bg-slate-200" />

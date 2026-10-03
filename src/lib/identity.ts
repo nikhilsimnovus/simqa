@@ -6,11 +6,15 @@
 // HMAC-signed session cookie (see session.ts) so it cannot be forged from the
 // browser console.
 //
-// Scope, stated plainly: lightweight sign-in for a shared lab tool on a trusted
-// network. No rate limiting, MFA, or password reset.
+// A valid signature is not enough on its own: the token also carries the
+// account's session epoch, and a token minted before the account moved past it
+// — a password change, or signing out everywhere — is refused here. That is
+// what makes ending a session mean something when the cookie itself is
+// stateless.
 
 import { cookies } from 'next/headers';
-import { readSession } from './session';
+import { readSessionFull } from './session';
+import { sessionEpoch } from './users';
 
 /** Cookie carrying the signed session token. httpOnly: the token is a
  *  credential, so page scripts have no business reading it — the UI gets the
@@ -18,6 +22,17 @@ import { readSession } from './session';
 export const SESSION_COOKIE = 'simqa-session';
 
 export { SESSION_MAX_AGE_SEC } from './session';
+
+/** The user a token really stands for: signature, expiry, and the account's
+ *  current session epoch. '' when any of the three says no. */
+function verified(token: string | undefined): string {
+  const { username, epoch } = readSessionFull(token);
+  if (!username) return '';
+  const current = sessionEpoch(username);
+  // 0 means the account is gone; anything older than current was ended.
+  if (current === 0 || epoch < current) return '';
+  return normalizeUser(username);
+}
 
 /** C0 controls and DEL — stripped so a name can never break a log line, a
  *  filename, or a Set-Cookie header. Written as escapes on purpose: literal
@@ -53,7 +68,7 @@ export function isValidUser(raw: string): boolean {
 export async function currentUser(): Promise<string> {
   try {
     const jar = await cookies();
-    return normalizeUser(readSession(jar.get(SESSION_COOKIE)?.value));
+    return verified(jar.get(SESSION_COOKIE)?.value);
   } catch {
     // cookies() throws outside a request scope (e.g. a background runner).
     return '';
@@ -75,7 +90,7 @@ export function userFromRequest(req: Request): string | undefined {
     const idx = part.indexOf('=');
     if (idx < 0) continue;
     if (part.slice(0, idx).trim() !== SESSION_COOKIE) continue;
-    const val = normalizeUser(readSession(decodeURIComponent(part.slice(idx + 1).trim())));
+    const val = verified(decodeURIComponent(part.slice(idx + 1).trim()));
     return val || undefined;
   }
   return undefined;

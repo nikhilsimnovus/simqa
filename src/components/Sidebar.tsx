@@ -325,7 +325,7 @@ export function Sidebar({ version, versionSource, user, appVersion }: SidebarPro
                   >
                     {user.slice(0, 1).toUpperCase()}
                   </span>
-                  <span className="text-[11px] text-slate-700 truncate" title={`Signed in as ${user}`}>{user}</span>
+                  <Link href="/profile" className="text-[11px] text-slate-700 truncate hover:underline" title={`Signed in as ${user} — account and security`}>{user}</Link>
                 </div>
                 <button
                   type="button"

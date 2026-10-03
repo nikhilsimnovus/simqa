@@ -56,11 +56,21 @@ function sign(payload: string): string {
   return createHmac('sha256', secret()).update(payload).digest('base64url');
 }
 
-/** Mint a token for `username`, valid for SESSION_MAX_AGE_SEC. */
-export function createSession(username: string): string {
+/**
+ * Mint a token for `username`, valid for SESSION_MAX_AGE_SEC.
+ *
+ * `e` is the account's session epoch at the moment of signing. The cookie is
+ * stateless — nothing on the server remembers it — so without that number
+ * there would be no way to end a session that has already been handed out:
+ * signing out would only drop the browser's copy, and a password change would
+ * leave every other session running. readSession returns it; identity.ts
+ * refuses a token whose epoch is behind the account's.
+ */
+export function createSession(username: string, epoch = 1, maxAgeSec = SESSION_MAX_AGE_SEC): string {
   const payload = b64url(JSON.stringify({
     u: username,
-    exp: Math.floor(Date.now() / 1000) + SESSION_MAX_AGE_SEC,
+    e: epoch,
+    exp: Math.floor(Date.now() / 1000) + maxAgeSec,
   }));
   return `${payload}.${sign(payload)}`;
 }
@@ -70,24 +80,33 @@ export function createSession(username: string): string {
  * tampered with, or expired.
  */
 export function readSession(token: string | undefined): string {
-  if (!token) return '';
+  return readSessionFull(token).username;
+}
+
+/** The username AND the epoch the token was minted under. '' when the token is
+ *  missing, malformed, tampered with or expired. */
+export function readSessionFull(token: string | undefined): { username: string; epoch: number } {
+  const none = { username: '', epoch: 0 };
+  if (!token) return none;
   const dot = token.lastIndexOf('.');
-  if (dot <= 0) return '';
+  if (dot <= 0) return none;
   const payload = token.slice(0, dot);
   const mac = token.slice(dot + 1);
 
   const expected = Buffer.from(sign(payload), 'utf8');
   const actual = Buffer.from(mac, 'utf8');
   // Length check first: timingSafeEqual throws on a length mismatch.
-  if (expected.length !== actual.length) return '';
-  if (!timingSafeEqual(expected, actual)) return '';
+  if (expected.length !== actual.length) return none;
+  if (!timingSafeEqual(expected, actual)) return none;
 
   try {
-    const { u, exp } = JSON.parse(unb64url(payload));
-    if (typeof u !== 'string' || typeof exp !== 'number') return '';
-    if (exp * 1000 < Date.now()) return '';
-    return u;
+    const { u, e, exp } = JSON.parse(unb64url(payload));
+    if (typeof u !== 'string' || typeof exp !== 'number') return none;
+    if (exp * 1000 < Date.now()) return none;
+    // Tokens minted before epochs existed count as epoch 1, which is what a
+    // fresh account starts at — so nobody is signed out by this arriving.
+    return { username: u, epoch: typeof e === 'number' ? e : 1 };
   } catch {
-    return '';
+    return none;
   }
 }
