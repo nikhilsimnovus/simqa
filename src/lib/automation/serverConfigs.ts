@@ -15,7 +15,7 @@
 // files a run uses were scattered — the cfgs on the callbox, the DB inside an
 // include line, the testcase only ever in the Simnovator's database — so
 // "what does this row actually run" could not be answered from one place, let
-// alone opened in vi. This is that place, on the machine QA KA BAAP runs on,
+// alone opened in vi. This is that place, on the machine SimQA runs on,
 // readable by anyone with root.
 //
 // Writing is best-effort by design: a callbox that is down must not stop a

@@ -1,16 +1,18 @@
 'use client';
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, FlaskConical, Server, History, Settings2, PlayCircle,
   ShieldCheck, Beaker, MousePointerClick, Info, Wrench, Database,
   FileCheck2, Activity, ChevronDown, ChevronRight, Boxes,
-  PanelLeftClose, PanelLeftOpen, RefreshCw, Globe, ClipboardList, Star, ListChecks
+  PanelLeftClose, PanelLeftOpen, RefreshCw, Globe, ClipboardList, Star, ListChecks,
+  UserRound, LogOut
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { SimQaLogo } from '@/components/SimQaLogo';
 
 // ─── Navigation model ─────────────────────────────────────────────────────
 //
@@ -85,42 +87,100 @@ const SECTIONS: NavSection[] = [
 const LS_SECTIONS = 'simqa-sidebar-sections-collapsed';
 const LS_RAILMODE = 'simqa-sidebar-rail';
 
-// ─── QA Ka BAAP mascot ────────────────────────────────────────────────────
-function QaKaBaapLogo({ size = 32 }: { size?: number }) {
+// ─── Account menu ─────────────────────────────────────────────────────────
+//
+// The signed-in name, and the two things you ever do with it: look at the
+// account, or leave. Sign out returns to /login so a shared lab machine hands
+// over cleanly. The menu opens upwards because it lives at the bottom.
+function AccountMenu({ user, rail }: { user: string; rail: boolean }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement | null>(null);
+
+  // A menu that outlives the click meant to dismiss it is worse than no menu.
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', away);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('mousedown', away);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
+
+  const signOut = useCallback(async () => {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
+    window.location.href = '/login';
+  }, []);
+
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width={size} height={size} role="img" aria-label="QA Ka BAAP — father doing QA">
-      <rect x="0" y="0" width="64" height="64" rx="14" fill="#FF6A00" />
-      <circle cx="29" cy="27" r="14" fill="#FFD3A5" />
-      <path d="M15 26 Q13 16 19 12 Q24 14 22 22 Z" fill="#2D1B0E" />
-      <path d="M43 26 Q45 16 39 12 Q34 14 36 22 Z" fill="#2D1B0E" />
-      <circle cx="23" cy="27" r="4" fill="#FFFFFF" stroke="#1A1A1A" strokeWidth="1.6" />
-      <circle cx="35" cy="27" r="4" fill="#FFFFFF" stroke="#1A1A1A" strokeWidth="1.6" />
-      <line x1="27" y1="27" x2="31" y2="27" stroke="#1A1A1A" strokeWidth="1.6" />
-      <circle cx="23" cy="27" r="1.3" fill="#1A1A1A" />
-      <circle cx="35" cy="27" r="1.3" fill="#1A1A1A" />
-      <path d="M19 35 Q23 39 29 37 Q35 39 39 35 Q38 41 31 41 Q22 41 19 35 Z" fill="#2D1B0E" />
-      <path d="M25 43 Q29 46 33 43" stroke="#1A1A1A" strokeWidth="1.3" fill="none" strokeLinecap="round" />
-      <circle cx="48" cy="46" r="9" fill="#FFFFFF" fillOpacity="0.9" stroke="#1A1A1A" strokeWidth="2" />
-      <line x1="55" y1="53" x2="62" y2="60" stroke="#1A1A1A" strokeWidth="3" strokeLinecap="round" />
-      <ellipse cx="48" cy="46" rx="2.4" ry="1.6" fill="#16A34A" />
-      <line x1="45.5" y1="45" x2="43.5" y2="44" stroke="#16A34A" strokeWidth="0.9" strokeLinecap="round" />
-      <line x1="50.5" y1="45" x2="52.5" y2="44" stroke="#16A34A" strokeWidth="0.9" strokeLinecap="round" />
-      <line x1="45.5" y1="47" x2="43.5" y2="48" stroke="#16A34A" strokeWidth="0.9" strokeLinecap="round" />
-      <line x1="50.5" y1="47" x2="52.5" y2="48" stroke="#16A34A" strokeWidth="0.9" strokeLinecap="round" />
-    </svg>
+    <div className="relative min-w-0" ref={box}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 rounded-md p-1 max-w-full hover:bg-slate-100"
+        title={`Signed in as ${user}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <span
+          className="h-7 w-7 shrink-0 rounded-full bg-orange-500 text-white text-[11px] font-bold uppercase flex items-center justify-center"
+          aria-hidden
+        >
+          {user.slice(0, 2)}
+        </span>
+        {!rail ? (
+          <span className="text-[11px] text-slate-700 truncate max-w-[86px]">{user}</span>
+        ) : null}
+      </button>
+
+      {open ? (
+        <div
+          role="menu"
+          aria-label="Account"
+          className={cn(
+            'absolute bottom-full z-30 mb-2 w-44 rounded-lg border border-line bg-surface py-1 shadow-lg',
+            rail ? 'left-0' : 'right-0',
+          )}
+        >
+          {/* On the rail the avatar shows two letters and nothing else, so the
+              menu is the only place the whole name is readable. */}
+          {rail ? (
+            <div className="px-3 pb-1.5 pt-1 text-[10px] uppercase tracking-label text-slate-400 truncate">{user}</div>
+          ) : null}
+          <Link
+            href="/profile"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2.5 px-3 py-2 text-[13px] text-slate-700 hover:bg-slate-50"
+          >
+            <UserRound className="h-4 w-4 text-slate-500" aria-hidden />
+            Profile
+          </Link>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={signOut}
+            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-orange-600 hover:bg-orange-50"
+          >
+            <LogOut className="h-4 w-4" aria-hidden />
+            Sign out
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
 interface SidebarProps {
-  version?: string;
-  versionSource?: string;
   /** Signed-in name, used to attribute work. '' when nobody has signed in. */
   user?: string;
-  /** package.json version — the footer used to hardcode v0.1.0. */
-  appVersion?: string;
 }
 
-export function Sidebar({ version, versionSource, user, appVersion }: SidebarProps = {}) {
+export function Sidebar({ user }: SidebarProps = {}) {
   const pathname = usePathname() || '/';
 
   // ── Rail (icons-only) mode + per-section collapsed state ─────────────
@@ -228,6 +288,23 @@ export function Sidebar({ version, versionSource, user, appVersion }: SidebarPro
     href === '/' ? pathname === '/' : pathname.startsWith(href)
   ), [pathname]);
 
+  // One button, both directions. Declared once and placed once per mode, so
+  // collapsing and expanding can never drift apart.
+  const railToggle = (
+    <button
+      type="button"
+      onClick={toggleRail}
+      aria-label={rail ? 'Expand sidebar' : 'Collapse sidebar'}
+      aria-expanded={!rail}
+      title={rail ? 'Expand sidebar' : 'Collapse sidebar'}
+      className="rounded-md p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100"
+    >
+      {rail
+        ? <PanelLeftOpen className="h-4 w-4" aria-hidden />
+        : <PanelLeftClose className="h-4 w-4" aria-hidden />}
+    </button>
+  );
+
   return (
     <aside
       className={cn(
@@ -239,13 +316,12 @@ export function Sidebar({ version, versionSource, user, appVersion }: SidebarPro
     >
       {/* Brand row */}
       <div className={cn('h-14 flex items-center border-b border-line', rail ? 'justify-center px-2' : 'gap-2 px-4')}>
-        <Link href="/" className="shrink-0" title="QA Ka BAAP — home">
-          <QaKaBaapLogo size={32} />
+        <Link href="/" className="shrink-0" title="SimQA — home">
+          <SimQaLogo size={32} />
         </Link>
         {!rail ? (
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold tracking-tight text-slate-900">QA Ka <span className="text-primary-700">BAAP</span></div>
-            <div className="font-mono text-[10px] uppercase tracking-label text-slate-500">Father of QA</div>
+            <div className="text-base font-bold tracking-tight text-slate-900">SimQA</div>
           </div>
         ) : null}
         {!rail && updateAvailable ? (
@@ -264,17 +340,6 @@ export function Sidebar({ version, versionSource, user, appVersion }: SidebarPro
           >
             <RefreshCw className={cn('h-3 w-3', updateBusy ? 'animate-spin' : '')} aria-hidden />
             <span>{updateLabel}</span>
-          </button>
-        ) : null}
-        {!rail ? (
-          <button
-            type="button"
-            onClick={toggleRail}
-            className="ml-auto rounded-md p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100"
-            title="Collapse to rail (Ctrl+B)"
-            aria-label="Collapse sidebar"
-          >
-            <PanelLeftClose className="h-4 w-4" />
           </button>
         ) : null}
       </div>
@@ -297,64 +362,29 @@ export function Sidebar({ version, versionSource, user, appVersion }: SidebarPro
         )}
       </nav>
 
-      {/* Footer */}
-      <div className={cn('border-t border-line', rail ? 'p-2' : 'p-3')}>
-        {rail ? (
-          <div className="flex flex-col items-center gap-2">
-            <ThemeToggle compact />
-            <button
-              type="button"
-              onClick={toggleRail}
-              className="w-full flex items-center justify-center rounded-md p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100"
-              title="Expand sidebar"
-              aria-label="Expand sidebar"
-            >
-              <PanelLeftOpen className="h-4 w-4" />
-            </button>
-          </div>
-        ) : (
-          <>
-            {/* Who work is being attributed to. Sign out returns to /login so a
-                shared lab machine can hand over cleanly. */}
-            {user ? (
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span
-                    className="h-5 w-5 shrink-0 rounded-full bg-orange-100 text-orange-700 text-[10px] font-bold flex items-center justify-center"
-                    aria-hidden
-                  >
-                    {user.slice(0, 1).toUpperCase()}
-                  </span>
-                  <Link href="/profile" className="text-[11px] text-slate-700 truncate hover:underline" title={`Signed in as ${user} — account and security`}>{user}</Link>
-                </div>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
-                    window.location.href = '/login';
-                  }}
-                  className="text-[10px] text-slate-400 hover:text-slate-700 hover:underline shrink-0"
-                >
-                  Sign out
-                </button>
-              </div>
-            ) : null}
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0 text-[11px] text-slate-500">
-                <span>v{appVersion ?? '0.0.0'}</span>
-                {version ? (
-                  <span
-                    className="ml-2 font-mono text-[10px] text-slate-400"
-                    title={`build ${version} (source: ${versionSource ?? 'unknown'})`}
-                  >
-                    {version}
-                  </span>
-                ) : null}
-              </div>
+      {/* Footer — one bar at the bottom, in both modes.
+          The same button collapses and expands: there is no longer a close
+          control at the top and an open control at the bottom pretending to be
+          two different things. The signed-in name sits at the other end and
+          opens its own menu. */}
+      <div className={cn('border-t border-line', rail ? 'p-2' : 'px-2 py-2')}>
+        <div className={cn('flex items-center', rail ? 'flex-col gap-2' : 'justify-between gap-1')}>
+          {rail ? (
+            <>
+              {user ? <AccountMenu user={user} rail /> : null}
               <ThemeToggle compact />
-            </div>
-          </>
-        )}
+              {railToggle}
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-1">
+                {railToggle}
+                <ThemeToggle compact />
+              </div>
+              {user ? <AccountMenu user={user} rail={false} /> : null}
+            </>
+          )}
+        </div>
       </div>
     </aside>
   );

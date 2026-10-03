@@ -4,9 +4,7 @@ import './globals.css';
 import { Sidebar } from '@/components/Sidebar';
 import { THEME_BOOT_SCRIPT } from '@/components/ThemeToggle';
 import { loadInventory, isUesimLike } from '@/lib/inventory';
-import { getSimqaVersion } from '@/lib/version';
 import { currentUser } from '@/lib/identity';
-import pkg from '../../package.json';
 
 export const metadata: Metadata = {
   title: 'SimQA',
@@ -23,10 +21,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
   const inv = loadInventory();
   const uesim = inv.systems.find(isUesimLike);
-  // Discover version on the server so the sidebar gets the right string
-  // before first paint (no flicker, no client-side fetch). See
-  // src/lib/version.ts for discovery rules.
-  const ver = getSimqaVersion();
   const user = await currentUser();
   return (
     // suppressHydrationWarning: the boot script below stamps data-theme on
@@ -42,7 +36,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             scrolls; the sidebar scrolls inside its own nav and the content
             column scrolls here. Scrolling one no longer moves the other. */}
         <div className="h-screen overflow-hidden flex bg-page">
-          <Sidebar version={ver.version} versionSource={ver.source} user={user} appVersion={pkg.version} />
+          <Sidebar user={user} />
           <div
             className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto"
             data-uesim-host={uesim?.host ?? ''}

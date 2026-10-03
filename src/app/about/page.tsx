@@ -54,8 +54,8 @@ export default function AboutPage() {
   return (
     <>
       <Header
-        title="About QA Ka BAAP"
-        subtitle="Father of QA — automated QA for Simnovator UESIM. What it does, how it works, and what it has caught."
+        title="About SimQA"
+        subtitle="Automated QA for Simnovator UESIM. What it does, how it works, and what it has caught."
         right={
           <div className="flex items-center gap-2">
             <Link href="/ui-tests"><Button size="sm" className="!bg-emerald-600 hover:!bg-emerald-700 !border-emerald-600"><MousePointerClick className="h-4 w-4" />UI Tests</Button></Link>
@@ -115,7 +115,7 @@ export default function AboutPage() {
         {/* ─────────── PROBLEM / SOLUTION ─────────── */}
         <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <SoftCard tone="destructive" icon={<AlertTriangle className="h-4 w-4" />} title="The problem">
-            <p>Before QA Ka BAAP, every Simnovator build was QA'd by hand — engineers clicking through the UI, eyeballing testcase results, manually filing tickets when something looked off.</p>
+            <p>Before SimQA, every Simnovator build was QA'd by hand — engineers clicking through the UI, eyeballing testcase results, manually filing tickets when something looked off.</p>
             <ul className="list-disc list-inside space-y-1.5 mt-2 text-slate-500">
               <li>Regressions slipped through (no systematic comparison vs prior build)</li>
               <li>API-level bugs were invisible without dedicated probing</li>
@@ -124,7 +124,7 @@ export default function AboutPage() {
             </ul>
           </SoftCard>
 
-          <SoftCard tone="accent" icon={<CheckCircle2 className="h-4 w-4" />} title="What QA Ka BAAP changes">
+          <SoftCard tone="accent" icon={<CheckCircle2 className="h-4 w-4" />} title="What SimQA changes">
             <p>One Next.js app on a lab machine. Anyone in the team opens the URL in a browser, picks a profile, clicks Run. ~25 min later: a self-contained HTML report with screenshots, traces, and Jira-ready comments.</p>
             <ul className="list-disc list-inside space-y-1.5 mt-2 text-slate-500">
               <li>Save any run as a <strong>baseline</strong> → next run shows what regressed</li>
@@ -171,7 +171,7 @@ export default function AboutPage() {
           <SectionTitle eyebrow="How field testing works" title="Three layers, three different bugs" />
           <div className="rounded-2xl bg-surface border border-line p-6">
             <p className="text-sm leading-relaxed max-w-3xl text-slate-500">
-              For any field where the UI auto-populates based on user input (Band → ARFCN, PRACH → root index, TDD → slot pattern, etc.), QA Ka BAAP runs three independent layers.
+              For any field where the UI auto-populates based on user input (Band → ARFCN, PRACH → root index, TDD → slot pattern, etc.), SimQA runs three independent layers.
               Each layer catches a different class of bug.
             </p>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-6">
@@ -243,7 +243,7 @@ export default function AboutPage() {
           <SectionTitle eyebrow="Impact" title="Real bugs already caught" />
           <div className="rounded-2xl bg-surface border border-line overflow-hidden">
             <div className="px-5 py-3 text-xs border-b border-line bg-panel text-slate-500">
-              28+ real product bugs filed in SIM40 from QA Ka BAAP runs. A representative sample:
+              28+ real product bugs filed in SIM40 from SimQA runs. A representative sample:
             </div>
             <ul className="divide-y divide-line">
               <BugRow ticket="SIM40-2010" sev="critical" title="POST /v2/testcases/export silently drops 1048 → 77 testcases" via="API count-integrity test" />
