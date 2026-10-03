@@ -2,8 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-
-const LS_LAST_USER = 'simqa-last-user';
+import { User, Lock, Eye, EyeOff } from 'lucide-react';
 
 /** Mirrors the server rule in src/lib/users.ts. Checked here only to give
  *  immediate feedback — the server is what actually enforces it. */
@@ -40,7 +39,6 @@ export function SignupForm() {
         setErr(d?.error ?? `HTTP ${r.status}`);
         return;
       }
-      try { window.localStorage.setItem(LS_LAST_USER, d.user); } catch { /* private mode */ }
       // Signup signs you in, so go straight to the dashboard. Hard navigation
       // for the same reason as login: the App Router would serve its cached
       // signed-out payload otherwise.
@@ -52,34 +50,40 @@ export function SignupForm() {
     }
   }
 
-  const fieldCls = (bad: boolean) =>
-    'w-full h-11 rounded-lg border px-3.5 text-sm text-slate-900 bg-white ' +
-    'placeholder:text-slate-400 focus:outline-none focus:ring-2 ' +
-    (bad ? 'border-red-400 focus:ring-red-200' : 'border-slate-300 focus:ring-orange-200 focus:border-orange-400');
+  // The same fields as the sign-in form, so the pair are one screen with one
+  // thing different rather than two designs.
+  const wrapCls = (bad: boolean) =>
+    'flex items-stretch rounded-lg border overflow-hidden bg-surface transition-colors focus-within:ring-2 ' +
+    (bad
+      ? 'border-red-400 focus-within:ring-red-200'
+      : 'border-slate-300 focus-within:ring-blue-200 focus-within:border-blue-400');
+  const inputCls = 'flex-1 h-11 px-3.5 text-sm text-slate-900 bg-transparent placeholder:text-slate-400 focus:outline-none';
+  const iconBoxCls = 'grid place-items-center w-11 shrink-0 border-r border-slate-200 bg-slate-50 text-slate-400';
 
   return (
-    <form onSubmit={submit} noValidate>
+    <form onSubmit={submit} noValidate autoComplete="off">
       <label htmlFor="su-user" className="block text-sm font-semibold text-slate-800 mb-1.5">
         Username
       </label>
-      <input
-        id="su-user"
-        ref={userRef}
-        value={username}
-        onChange={(e) => { setUsername(e.target.value); if (err) setErr(null); }}
-        placeholder="Choose a username"
-        autoComplete="username"
-        spellCheck={false}
-        className={fieldCls(!!err)}
-      />
-      <p className="mt-1 text-xs text-slate-500">
-        This name is shown against everything you create and run.
-      </p>
+      <div className={wrapCls(!!err)}>
+        <span className={iconBoxCls} aria-hidden><User className="h-4 w-4" /></span>
+        <input
+          id="su-user"
+          ref={userRef}
+          value={username}
+          onChange={(e) => { setUsername(e.target.value); if (err) setErr(null); }}
+          placeholder="Choose a username"
+          autoComplete="off"
+          spellCheck={false}
+          className={inputCls}
+        />
+      </div>
 
       <label htmlFor="su-pw" className="block text-sm font-semibold text-slate-800 mb-1.5 mt-4">
         Password
       </label>
-      <div className="relative">
+      <div className={wrapCls(false)}>
+        <span className={iconBoxCls} aria-hidden><Lock className="h-4 w-4" /></span>
         <input
           id="su-pw"
           type={showPw ? 'text' : 'password'}
@@ -87,30 +91,33 @@ export function SignupForm() {
           onChange={(e) => { setPassword(e.target.value); if (err) setErr(null); }}
           placeholder={`At least ${MIN_PASSWORD} characters`}
           autoComplete="new-password"
-          className={fieldCls(false) + ' pr-11'}
+          className={inputCls}
         />
         <button
           type="button"
           onClick={() => setShowPw((v) => !v)}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
+          className="px-3 text-slate-400 hover:text-slate-600"
           aria-label={showPw ? 'Hide password' : 'Show password'}
         >
-          {showPw ? 'Hide' : 'Show'}
+          {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
         </button>
       </div>
 
       <label htmlFor="su-pw2" className="block text-sm font-semibold text-slate-800 mb-1.5 mt-4">
         Confirm password
       </label>
-      <input
-        id="su-pw2"
-        type={showPw ? 'text' : 'password'}
-        value={confirm}
-        onChange={(e) => { setConfirm(e.target.value); if (err) setErr(null); }}
-        placeholder="Re-enter your password"
-        autoComplete="new-password"
-        className={fieldCls(mismatch)}
-      />
+      <div className={wrapCls(mismatch)}>
+        <span className={iconBoxCls} aria-hidden><Lock className="h-4 w-4" /></span>
+        <input
+          id="su-pw2"
+          type={showPw ? 'text' : 'password'}
+          value={confirm}
+          onChange={(e) => { setConfirm(e.target.value); if (err) setErr(null); }}
+          placeholder="Re-enter your password"
+          autoComplete="new-password"
+          className={inputCls}
+        />
+      </div>
       {mismatch ? <p className="mt-1 text-xs text-red-600">Passwords don&apos;t match.</p> : null}
 
       {err ? <p className="mt-2 text-xs text-red-600">{err}</p> : null}
@@ -119,16 +126,22 @@ export function SignupForm() {
         type="submit"
         disabled={!canSubmit}
         className={
-          'mt-5 w-full h-12 rounded-lg text-white text-[15px] font-semibold transition-colors ' +
-          (!canSubmit ? 'bg-slate-300 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600')
+          'mt-6 w-full h-12 rounded-lg text-white text-[15px] font-semibold transition-colors ' +
+          (!canSubmit ? 'bg-slate-300 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700')
         }
       >
         {busy ? 'Creating account…' : 'Create account'}
       </button>
 
-      <p className="mt-4 text-center text-sm text-slate-600">
+      <div className="mt-6 flex items-center gap-3" aria-hidden>
+        <span className="h-px flex-1 bg-slate-200" />
+        <span className="text-xs text-slate-400">or</span>
+        <span className="h-px flex-1 bg-slate-200" />
+      </div>
+
+      <p className="mt-5 text-center text-sm text-slate-600">
         Already have an account?{' '}
-        <Link href="/login" className="font-semibold text-orange-600 hover:underline">Sign in</Link>
+        <Link href="/login" className="font-semibold text-blue-600 hover:underline">Sign in</Link>
       </p>
     </form>
   );

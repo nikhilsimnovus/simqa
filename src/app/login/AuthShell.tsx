@@ -7,8 +7,6 @@
 // entirely rather than stacked — on a phone it would be a screen of scrolling
 // between you and a password field. The logo moves above the card there.
 
-import { getSimqaVersion } from '@/lib/version';
-
 export function SimQaLogo({ size = 36 }: { size?: number }) {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width={size} height={size} role="img" aria-label="SimQA">
@@ -39,7 +37,7 @@ export function SimQaLogo({ size = 36 }: { size?: number }) {
  *  no gradients, no shadows, nothing that dates. */
 function Illustration() {
   return (
-    <svg viewBox="0 0 520 300" className="w-full max-w-[460px]" role="img"
+    <svg viewBox="0 0 520 300" className="w-full max-w-[440px] max-h-full" role="img"
       aria-label="A test dashboard being driven automatically">
       {/* screen */}
       <rect x="60" y="40" width="300" height="200" rx="12" fill="#1E293B" />
@@ -117,12 +115,15 @@ export function AuthShell({ tagline, title, subtitle, children }: {
   subtitle?: string;
   children: React.ReactNode;
 }) {
-  const ver = getSimqaVersion();
   return (
     <main className="h-screen overflow-hidden flex flex-col bg-page">
       <div className="flex-1 min-h-0 grid lg:grid-cols-[1.05fr_1fr]">
         {/* ── what this is ──────────────────────────────────────────────── */}
-        <section className="relative hidden lg:flex flex-col justify-between px-12 py-8 overflow-hidden
+        {/* Everything here has to be visible at once — a panel whose chips or
+            illustration fall off the bottom of a laptop screen is worse than
+            no panel. So it scales with the height it is given: the type steps
+            down on short screens and the drawing takes whatever is left. */}
+        <section className="relative hidden lg:flex flex-col justify-between gap-4 px-10 xl:px-12 py-6 overflow-hidden
                             bg-blue-50/60 border-r border-line">
           {/* A dot field, quiet enough to read over. */}
           <div aria-hidden className="absolute inset-0 opacity-[0.35]"
@@ -138,18 +139,18 @@ export function AuthShell({ tagline, title, subtitle, children }: {
               <span className="text-2xl font-bold tracking-tight text-slate-900">SimQA</span>
             </div>
 
-            <h1 className="mt-10 text-6xl font-extrabold tracking-tight text-slate-900">SimQA</h1>
-            <h2 className="mt-3 text-xl font-bold text-slate-800 leading-snug max-w-sm">
+            <h1 className="mt-6 xl:mt-8 text-5xl xl:text-6xl font-extrabold tracking-tight text-slate-900">SimQA</h1>
+            <h2 className="mt-2 text-lg xl:text-xl font-bold text-slate-800 leading-snug max-w-sm">
               Automated QA Platform for Simnovator UESIM
             </h2>
-            <p className="mt-3 text-sm text-slate-600 max-w-sm leading-relaxed">{tagline}</p>
+            <p className="mt-2 text-sm text-slate-600 max-w-sm leading-relaxed">{tagline}</p>
           </div>
 
-          <div className="relative flex justify-center py-6"><Illustration /></div>
+          <div className="relative flex-1 min-h-0 flex items-center justify-center"><Illustration /></div>
 
           <div className="relative grid grid-cols-4 gap-3">
             {FEATURES.map(f => (
-              <div key={f.label} className="rounded-xl border border-line bg-surface px-3 py-3 text-center">
+              <div key={f.label} className="rounded-xl border border-line bg-surface px-2 py-2.5 text-center">
                 <svg viewBox="0 0 24 24" className={`mx-auto h-6 w-6 ${f.tint}`} fill="none"
                   stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                   {f.icon}
@@ -184,13 +185,9 @@ export function AuthShell({ tagline, title, subtitle, children }: {
         </section>
       </div>
 
-      <footer className="shrink-0 border-t border-line py-4 text-center text-xs text-slate-400">
-        <div className="flex items-center justify-center gap-3">
-          <span>SimQA</span>
-          <span aria-hidden>•</span>
-          <span className="font-mono">{ver.version}</span>
-        </div>
-        <div className="mt-1.5">Automated QA tooling for Simnovator UESIM.</div>
+      {/* The build string belonged on a status page, not on the front door. */}
+      <footer className="shrink-0 border-t border-line py-3 text-center text-xs text-slate-400">
+        Automated QA tooling for Simnovator UESIM.
       </footer>
     </main>
   );

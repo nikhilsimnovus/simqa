@@ -5,32 +5,25 @@ import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { User, Lock, Eye, EyeOff } from 'lucide-react';
 
-/** localStorage key remembering the last username typed on this machine, so a
- *  shared lab PC offers the previous user rather than a blank field. Only the
- *  username — a password is never persisted anywhere in the browser. */
-const LS_LAST_USER = 'simqa-last-user';
-
 export function LoginForm() {
   const params = useSearchParams();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
-  const [remember, setRemember] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const userRef = useRef<HTMLInputElement | null>(null);
   const pwRef = useRef<HTMLInputElement | null>(null);
 
+  // Both fields start empty, every time, including after a refresh. This is a
+  // shared lab machine: the next person at the keyboard should have to say who
+  // they are. The last username used to be remembered here and is not any
+  // more — and nothing has ever written a password to this browser.
   useEffect(() => {
-    let last = '';
-    try { last = window.localStorage.getItem(LS_LAST_USER) ?? ''; } catch { /* private mode */ }
-    if (last) {
-      setUsername(last);
-      pwRef.current?.focus();      // name already known — go straight to password
-    } else {
-      userRef.current?.focus();
-    }
+    try { window.localStorage.removeItem('simqa-last-user'); } catch { /* private mode */ }
+    setUsername(''); setPassword('');
+    userRef.current?.focus();
   }, []);
 
   async function submit(e: React.FormEvent) {
@@ -49,11 +42,6 @@ export function LoginForm() {
         if (d?.noAccountsYet) setHint('No accounts exist yet — create the first one.');
         return;
       }
-
-      try {
-        if (remember) window.localStorage.setItem(LS_LAST_USER, d.user);
-        else window.localStorage.removeItem(LS_LAST_USER);
-      } catch { /* not fatal */ }
 
       // Only same-origin relative paths — never bounce to an arbitrary target
       // handed to us in the query string.
@@ -82,7 +70,10 @@ export function LoginForm() {
   const iconBoxCls = 'grid place-items-center w-11 shrink-0 border-r border-slate-200 bg-slate-50 text-slate-400';
 
   return (
-    <form onSubmit={submit} noValidate>
+    // autoComplete="off" throughout: the browser's own saved credentials would
+    // otherwise put a name and password back into the fields, which is the
+    // thing being prevented.
+    <form onSubmit={submit} noValidate autoComplete="off">
       <label htmlFor="simqa-user" className="block text-sm font-semibold text-slate-800 mb-1.5">
         Username
       </label>
@@ -94,7 +85,7 @@ export function LoginForm() {
           value={username}
           onChange={(e) => { setUsername(e.target.value); if (err) setErr(null); }}
           placeholder="Enter your username"
-          autoComplete="username"
+          autoComplete="off"
           spellCheck={false}
           className={inputCls}
         />
@@ -112,7 +103,7 @@ export function LoginForm() {
           value={password}
           onChange={(e) => { setPassword(e.target.value); if (err) setErr(null); }}
           placeholder="Enter your password"
-          autoComplete="current-password"
+          autoComplete="new-password"
           className={inputCls}
         />
         <button
@@ -128,23 +119,11 @@ export function LoginForm() {
       {err ? <p className="mt-2 text-xs text-red-600">{err}</p> : null}
       {hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
 
-      {/* "Remember me" is about the USERNAME and nothing else — a password is
-          never written to this browser — so the label says which. */}
-      <label className="mt-4 flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={remember}
-          onChange={(e) => setRemember(e.target.checked)}
-          className="h-4 w-4 rounded border-slate-300 accent-blue-600"
-        />
-        Remember my username
-      </label>
-
       <button
         type="submit"
         disabled={!canSubmit}
         className={
-          'mt-5 w-full h-12 rounded-lg text-white text-[15px] font-semibold transition-colors ' +
+          'mt-6 w-full h-12 rounded-lg text-white text-[15px] font-semibold transition-colors ' +
           (!canSubmit ? 'bg-slate-300 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700')
         }
       >
