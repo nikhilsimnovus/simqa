@@ -17,7 +17,7 @@
 // are still there for anyone who needs them, just behind a per-check
 // "View technical details" toggle instead of shown inline for every row.
 
-import { explainFailure, explainSkip } from '@/lib/checkExplain';
+import { explainFailure, explainSkip, explainPass } from '@/lib/checkExplain';
 import { useState } from 'react';
 import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
 import {
@@ -234,8 +234,14 @@ export function CheckRow({ row, runId }: { row: CheckRowData; runId?: string }) 
   // translation falls back to its detail, exactly as before.
   const plain = row.status === 'fail' ? (row.plain ?? explainFailure(row.id, row.detail)) : undefined;
   const plainSkip = row.status === 'skip' ? explainSkip(row.id, row.skippedReason) : undefined;
+  // A passed check used to say nothing beyond its name and a green badge,
+  // which reads as an answer only to someone who already knows what the check
+  // does. Now every outcome is a sentence: what was confirmed, with the number
+  // worth reading. The raw measurement stays one click down as its evidence.
+  const plainPass = row.status === 'pass' ? (row.plain ?? explainPass(row.id, row.detail)) : undefined;
   const shortReason = row.status === 'fail' ? (plain ?? row.detail)
     : row.status === 'skip' ? (plainSkip ?? row.skippedReason)
+    : row.status === 'pass' ? plainPass
     : undefined;
   const canShowDetails = row.status === 'pass' || row.status === 'fail' || row.status === 'skip';
   // Needs the run it belongs to: the artifacts live under that run's directory
@@ -303,7 +309,7 @@ export function CheckRow({ row, runId }: { row: CheckRowData; runId?: string }) 
                   repeat of it. */}
               {row.detail ? (
                 <div className="break-all">
-                  {(plain || plainSkip) ? <span className="text-slate-400">reported: </span> : '↳ '}{row.detail}
+                  {(plain || plainSkip || plainPass) ? <span className="text-slate-400">reported: </span> : '↳ '}{row.detail}
                 </div>
               ) : null}
               <div className="flex flex-wrap gap-x-3 text-slate-400">

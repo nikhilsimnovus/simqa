@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { explainFailure, explainBoxCheck, boxMetricName, explainSkip } = await import('./checkExplain.ts');
+const { explainFailure, explainBoxCheck, boxMetricName, explainSkip, explainPass } = await import('./checkExplain.ts');
 
 test('all 64 UEs dropping off is stated as that, not as a peak/min pair', () => {
   const out = explainFailure(
@@ -178,4 +178,54 @@ test('a cfg bring-up skipped for having nothing selected says the run used what 
 test('an unknown skip falls back to the raw reason', () => {
   assert.equal(explainSkip('some-check', 'because reasons'), undefined);
   assert.equal(explainSkip('trigger-start-execution', undefined), undefined);
+});
+
+// ── What a PASS confirmed ────────────────────────────────────────────
+
+test('a passed login says it logged in, in words, and keeps the timing', () => {
+  const out = explainPass('preflight-login', '200 in 66ms, token len=1281');
+  assert.match(out!, /^Successfully logged in to the Simnovator/);
+  assert.match(out!, /66ms/);
+  // The token length is evidence, not something to put in a sentence.
+  assert.doesNotMatch(out!, /1281|token len/);
+});
+
+test('a pass still reads as a sentence when the detail carries no numbers', () => {
+  assert.match(explainPass('preflight-login', '')!, /^Successfully logged in to the Simnovator\.$/);
+});
+
+test('the UE checks say how many, not just that it worked', () => {
+  assert.match(explainPass('during-all-ues-attach', '64/64 UEs attached after 31.2s')!, /all 64 of them/);
+  assert.match(explainPass('during-all-ues-attach', '64/64 UEs attached after 31.2s')!, /within 31\.2s/);
+  assert.match(explainPass('during-ue-count-stable', 'UE count held at peak 64 across 12 samples (120s window)')!, /All 64 UEs stayed connected/);
+});
+
+test('the box verdict is quoted as the box worded it', () => {
+  assert.match(explainPass('completion-verdict-present', 'result=PASSED')!, /PASSED/);
+});
+
+test('a duration pass reads in minutes, not raw seconds', () => {
+  const out = explainPass('completion-duration-sane', 'observed=355.0s configured=360s (within ±20% + 15s slack)');
+  assert.match(out!, /5m 55s/);
+  assert.match(out!, /6m 00s/);
+});
+
+test('a check with no pass rule says nothing rather than guessing', () => {
+  assert.equal(explainPass('some-check', 'whatever'), undefined);
+});
+
+test('throughput reads as a speed whichever unit the check wrote', () => {
+  assert.match(explainPass('during-throughput-flowing', 'DL=428928 bps after 0.0s')!, /429 kbps/);
+  assert.match(explainPass('during-throughput-flowing', 'DL=1558500 bps after 0.0s')!, /1\.6 Mbps/);
+  assert.match(explainPass('during-ul-throughput-flowing', 'UL=3615.2 kbps after 0.0s (≥ 200 kbps)')!, /3615\.2 kbps/);
+});
+
+test('a BLER of exactly zero says so rather than "stayed low"', () => {
+  assert.match(explainPass('during-bler-zero', 'BLER stayed at 0 across 10 sample(s)')!, /No block errors at all across 10 samples/);
+  assert.match(explainPass('during-bler-zero', 'BLER peaked at 2% across 9 sample(s) (within 5%)')!, /peaked at 2%.*5% limit/);
+});
+
+test('a sub-second settle is not reported as "after 0s"', () => {
+  assert.equal(explainPass('completion-status-terminal', 'terminal status=COMPLETED after 0.1s'), 'The test finished on the box (COMPLETED).');
+  assert.match(explainPass('completion-status-terminal', 'terminal status=COMPLETED after 95.0s')!, /after 1m 35s/);
 });

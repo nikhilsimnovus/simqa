@@ -45,6 +45,18 @@ function round1(v: string): string {
   return Number.isFinite(n) ? String(Math.round(n * 10) / 10) : v;
 }
 
+/** " — 3615.2 kbps" from a `DL=`/`UL=` figure, whichever unit the check wrote.
+ *  Returns '' when there is no number, so the sentence still reads. */
+function rate(detail: string, dir: 'DL' | 'UL'): string {
+  const kb = detail.match(new RegExp(`${dir}=([\\d.]+) kbps`))?.[1];
+  if (kb) return ` — ${kb} kbps`;
+  const bps = Number(detail.match(new RegExp(`${dir}=([\\d.]+) bps`))?.[1] ?? NaN);
+  if (!Number.isFinite(bps)) return '';
+  return bps >= 1_000_000
+    ? ` — ${(bps / 1_000_000).toFixed(1)} Mbps`
+    : ` — ${Math.round(bps / 1000)} kbps`;
+}
+
 type Rule = (detail: string) => string | undefined;
 
 /**
@@ -224,6 +236,165 @@ export function explainFailure(id: string, detail?: string): string | undefined 
     return RULES[id]?.(detail) || undefined;
   } catch {
     // A translation is a convenience; never let a bad regex hide the failure.
+    return undefined;
+  }
+}
+
+// ── What a check that PASSED actually confirmed ──────────────────────
+//
+// The same problem as a failure, with less urgency and more readers: "200 in
+// 66ms, token len=1281" is the evidence that the login worked, not a statement
+// that it did. A passed check used to show nothing at all — the name and a
+// green badge — which is fine for someone who knows what "Simnovator Login"
+// checks and useless to everyone else.
+//
+// So each rule says, in a sentence, what was confirmed, and keeps whichever
+// number is worth reading. The raw detail stays under "View technical
+// details", unchanged, as the evidence for the sentence.
+const PASS_RULES: Record<string, Rule> = {
+  // ── Before the test ──────────────────────────────────────────────
+  'preflight-login': (d) => {
+    const ms = num(d, /in (\d+)ms/);
+    return `Successfully logged in to the Simnovator${ms !== undefined ? ` — it answered in ${ms}ms` : ''}.`;
+  },
+  'preflight-testcase-exists': (d) => {
+    const name = d.match(/name="([^"]*)"/)?.[1];
+    return name ? `Found the testcase "${name}" on the box, ready to run.` : 'Found the testcase on the box, ready to run.';
+  },
+  'preflight-api-responsive': (d) => {
+    const ms = num(d, /in (\d+)ms/);
+    return `The box's API is answering normally${ms !== undefined ? ` — ${ms}ms to respond` : ''}.`;
+  },
+  'preflight-simulators-available': (d) => {
+    const named = d.match(/^"([^"]+)"/)?.[1];
+    if (named) return `The simulator "${named}" is connected and free to take this test.`;
+    const n = num(d, /^(\d+) of \d+ simulator/);
+    return n !== undefined
+      ? `${n} simulator${n === 1 ? ' is' : 's are'} connected and free to take this test.`
+      : 'A simulator is connected and free to take this test.';
+  },
+  'preflight-cfg-bring-up': (d) =>
+    /already linked/.test(d)
+      ? 'The callbox already had the right configuration, so nothing needed restarting.'
+      : 'The callbox was pointed at this test\'s configuration and brought back up.',
+  'preflight-ftp-anon-locked': () => 'The box is reachable and not accepting anonymous FTP logins.',
+
+  // ── Starting the test ────────────────────────────────────────────
+  'trigger-start-execution': (d) =>
+    /adopted|attached|already running|validating the execution/.test(d)
+      ? 'Picked up the execution the box was already running, rather than starting a second one.'
+      : 'The box accepted the request and started the test.',
+  'trigger-execution-id-discovered': (d) => {
+    const s = d.match(/discovered in ([\d.]+)s/)?.[1];
+    return `The box created the execution${s ? ` and SimQA found it ${s}s later` : ''}.`;
+  },
+
+  // ── While it runs ────────────────────────────────────────────────
+  'during-status-running': (d) => {
+    const s = d.match(/after ([\d.]+)s/)?.[1];
+    return `The test reached the running state on the box${s ? ` after ${s}s` : ''}.`;
+  },
+  'during-ue-attach': (d) => {
+    const n = num(d, /^(\d+) UE/);
+    const s = d.match(/after ([\d.]+)s/)?.[1];
+    return `${n ?? 'The'} UE${n === 1 ? '' : 's'} connected to the network${s ? ` within ${s}s` : ''}.`;
+  },
+  'during-all-ues-attach': (d) => {
+    const m = d.match(/(\d+)\s*\/\s*(\d+)/);
+    const s = d.match(/after ([\d.]+)s/)?.[1];
+    return m
+      ? `Every UE connected — all ${m[2]} of them${s ? `, within ${s}s` : ''}.`
+      : 'Every UE the test asked for connected to the network.';
+  },
+  'during-ue-count-stable': (d) => {
+    const peak = num(d, /peak (\d+)/);
+    const win = num(d, /\((\d+)s window\)/);
+    return `All ${peak ?? 'the'} UEs stayed connected for the whole${win ? ` ${secs(win)}` : ''} window — none dropped.`;
+  },
+  // Older runs wrote raw bps, newer ones kbps. Both still turn up in stored
+  // reports, so both have to read as a speed.
+  'during-throughput-flowing': (d) => `Download traffic flowed${rate(d, 'DL')}, above the minimum the check requires.`,
+  'during-ul-throughput-flowing': (d) => `Upload traffic flowed${rate(d, 'UL')}, above the minimum the check requires.`,
+  'during-bler-zero': (d) => {
+    const peak = d.match(/peaked at ([\d.]+)%/)?.[1];
+    const max = d.match(/within ([\d.]+)%/)?.[1];
+    const samples = num(d, /across (\d+) sample/);
+    if (!peak && /stayed at 0/.test(d)) {
+      return `No block errors at all${samples !== undefined ? ` across ${samples} samples` : ''}.`;
+    }
+    return `Block error rate stayed low${peak ? ` — it peaked at ${peak}%` : ''}${max ? `, inside the ${max}% limit` : ''}.`;
+  },
+  'during-throughput-stability': () => 'Throughput held steady for the whole run — no collapses or oscillation.',
+  'during-per-cell-traffic': (d) => {
+    const n = num(d, /all (\d+) cell/);
+    if (n === 1) return 'The cell carried its share of the traffic.';
+    return n !== undefined
+      ? `All ${n} cells carried their share of the traffic.`
+      : 'Every cell carried its share of the traffic.';
+  },
+  'during-stats-consistency': (d) => {
+    const peak = num(d, /peak connected=(\d+)/);
+    return `The box's own UE figures agreed with each other throughout${peak !== undefined ? ` (${peak} connected at peak)` : ''}.`;
+  },
+  'during-zombie-execution': () => 'The execution kept making real progress — no sign of it stalling with the status left running.',
+
+  // ── Finishing ────────────────────────────────────────────────────
+  'completion-status-terminal': (d) => {
+    const st = d.match(/status=([A-Za-z_]+)/)?.[1];
+    // This elapsed is how long SimQA waited for the box to settle, not how
+    // long the test ran — under a second it says nothing worth printing, and
+    // "after 0s" invites the reader to think the test took no time at all.
+    const s = Number(d.match(/after ([\d.]+)s/)?.[1] ?? NaN);
+    const waited = Number.isFinite(s) && s >= 1 ? ` after ${secs(s)}` : '';
+    return `The test finished on the box${st ? ` (${st.toUpperCase()})` : ''}${waited}.`;
+  },
+  'completion-duration-sane': (d) => {
+    const obs = d.match(/observed=([\d.]+)s/)?.[1];
+    const cfg = d.match(/configured=([\d.]+)s/)?.[1];
+    return obs && cfg
+      ? `It ran for ${secs(Number(obs))} against the ${secs(Number(cfg))} configured — the right test ran for the right length of time.`
+      : 'It ran for about as long as it was configured to.';
+  },
+  'completion-verdict-present': (d) => {
+    const v = d.match(/result=([A-Za-z_]+)/)?.[1];
+    return v ? `The box published its own result for this run: ${v.toUpperCase()}.` : 'The box published its own result for this run.';
+  },
+
+  // ── After ────────────────────────────────────────────────────────
+  'post-logs-exportable': (d) => {
+    const b = num(d, /(\d+) bytes/);
+    return `The run's logs downloaded from the box${b !== undefined ? ` — ${Math.max(1, Math.round(b / 1024))} KB` : ''}.`;
+  },
+  'post-all-ues-power-off': (d) => {
+    const n = num(d, /all (\d+) UE/);
+    return `All ${n ?? 'the'} UEs powered off cleanly when the test ended — nothing was left running.`;
+  },
+  'post-per-ue-stats-sane': (d) => {
+    const n = num(d, /^(\d+) per-UE rows/);
+    return `Per-UE statistics look sensible${n !== undefined ? ` across all ${n} UEs` : ''} — traffic, signal and position all in range.`;
+  },
+
+  // ── The box's own web UI, watched while the test ran ──────────────
+  'ui-during-no-5xx': (d) => {
+    const n = num(d, /across (\d+) captured/);
+    return `No server errors from the box's web UI${n !== undefined ? ` across ${n} requests` : ''}.`;
+  },
+  'ui-during-no-console-errors': () => "No browser errors on the box's own pages while the test ran.",
+  'ui-during-notification-consistency': () => 'The box never announced the test as finished while it was still running.',
+  'ui-during-stop-affordance': () => 'The Stop button was available throughout, so the test could be cancelled.',
+  'ui-during-export-buttons': () => 'Every export button on the box produced a real file.',
+  'ui-post-deep-link-shareable': () => 'The statistics link opens this run for anyone it is shared with.',
+};
+
+/**
+ * What a passing check confirmed, in a sentence — or undefined when there is
+ * no rule for it, in which case the caller shows nothing rather than guessing.
+ */
+export function explainPass(id: string, detail?: string): string | undefined {
+  try {
+    return PASS_RULES[id]?.(detail ?? '') || undefined;
+  } catch {
+    // A translation is a convenience; a bad regex must not break the report.
     return undefined;
   }
 }
