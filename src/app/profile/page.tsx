@@ -6,7 +6,7 @@
 
 import { ProfileClient } from './ProfileClient';
 
-export const metadata = { title: 'Account — SimQA' };
+export const metadata = { title: 'Profile — SimQA' };
 export const dynamic = 'force-dynamic';
 
 export default function ProfilePage() {

@@ -30,7 +30,10 @@ interface StoredHash { salt: string; hash: string; at?: string }
 
 export interface UserRecord {
   username: string;
-  /** Optional: accounts predate it, and it is only used for password reset. */
+  /** Who the person is, as they want to be called. All optional: every
+   *  account predates these fields, and none of them gate anything. */
+  firstName?: string;
+  lastName?: string;
   email?: string;
   salt: string;
   hash: string;
@@ -110,6 +113,8 @@ export function countUsers(): number {
 /** Everything about an account that is safe to show its owner. */
 export interface PublicUser {
   username: string;
+  firstName?: string;
+  lastName?: string;
   email?: string;
   createdAt: string;
   lastLoginAt?: string;
@@ -121,6 +126,8 @@ export function publicUser(username: string): PublicUser | null {
   if (!u) return null;
   return {
     username: u.username,
+    firstName: u.firstName,
+    lastName: u.lastName,
     email: u.email,
     createdAt: u.createdAt,
     lastLoginAt: u.lastLoginAt,
@@ -251,15 +258,33 @@ export function setPassword(username: string, newPassword: string): SetPasswordR
   return { ok: true };
 }
 
-/** Set or clear an account's email. */
-export function setEmail(username: string, email: string): { ok: boolean; error?: string } {
-  const mail = (email ?? '').trim();
-  if (mail && !isValidEmail(mail)) return { ok: false, error: 'Enter a valid email address.' };
-  if (mail && emailTaken(mail, username)) return { ok: false, error: 'Email is already registered.' };
+export interface ProfileEdit { firstName?: string; lastName?: string; email?: string }
+
+/**
+ * Edit the parts of an account its owner is allowed to change.
+ *
+ * The username is deliberately not among them: it is the name every suite,
+ * run and campaign in the system is attributed to, and letting it change would
+ * silently rewrite who did what. Only the fields actually sent are touched, so
+ * a form that posts one of them cannot blank the other two.
+ */
+export function setProfile(username: string, edit: ProfileEdit): { ok: boolean; field?: 'firstName' | 'lastName' | 'email'; error?: string } {
+  const clean = (v: string) => v.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 60);
+
   const s = read();
   const u = s.users.find(x => key(x.username) === key(username));
   if (!u) return { ok: false, error: 'Unable to update the account.' };
-  u.email = mail || undefined;
+
+  if (edit.firstName !== undefined) u.firstName = clean(edit.firstName) || undefined;
+  if (edit.lastName !== undefined)  u.lastName  = clean(edit.lastName) || undefined;
+
+  if (edit.email !== undefined) {
+    const mail = (edit.email ?? '').trim();
+    if (mail && !isValidEmail(mail)) return { ok: false, field: 'email', error: 'Enter a valid email address.' };
+    if (mail && emailTaken(mail, username)) return { ok: false, field: 'email', error: 'Email is already registered.' };
+    u.email = mail || undefined;
+  }
+
   u.updatedAt = new Date().toISOString();
   write(s);
   return { ok: true };
