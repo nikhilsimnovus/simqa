@@ -121,20 +121,20 @@ function AccountMenu({ user, rail }: { user: string; rail: boolean }) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1.5 rounded-md p-1 max-w-full hover:bg-slate-100"
+        className={cn(
+          'flex items-center rounded-md max-w-full hover:bg-slate-100',
+          rail ? 'p-1.5 text-slate-500 hover:text-slate-800' : 'px-2 py-1.5',
+        )}
         title={`Signed in as ${user}`}
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        <span
-          className="h-7 w-7 shrink-0 rounded-full bg-orange-500 text-white text-[11px] font-bold uppercase flex items-center justify-center"
-          aria-hidden
-        >
-          {user.slice(0, 2)}
-        </span>
-        {!rail ? (
-          <span className="text-[11px] text-slate-700 truncate max-w-[86px]">{user}</span>
-        ) : null}
+        {rail ? (
+          // Nothing but icons fits on the rail; the name is in the menu.
+          <UserRound className="h-4 w-4" aria-hidden />
+        ) : (
+          <span className="text-[12px] font-medium text-slate-700 truncate max-w-[130px]">{user}</span>
+        )}
       </button>
 
       {open ? (
