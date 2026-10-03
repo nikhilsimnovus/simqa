@@ -25,7 +25,7 @@ export async function POST(req: Request) {
   const confirm = String(body?.confirm ?? password);
 
   if (!isValidUser(username)) {
-    return NextResponse.json({ ok: false, field: 'username', error: 'Enter a username of at least 2 characters.' }, { status: 400 });
+    return NextResponse.json({ ok: false, field: 'username', error: 'Enter a username.' }, { status: 400 });
   }
   if (password !== confirm) {
     return NextResponse.json({ ok: false, field: 'confirm', error: 'Passwords do not match.' }, { status: 400 });

@@ -1,34 +1,40 @@
 // The rules a password has to meet, and what the person is told when it does
 // not. Same function the server enforces with.
 //
-// The shipped default is length alone — the composition rules were asked for
-// and then asked to be removed again. They are still here, still tested, and
-// still one environment variable away, which is the point of keeping the
-// policy configurable rather than deleting it.
+// The shipped default accepts any password with at least one character —
+// "admin" is a legitimate password for this tool. The composition rules and a
+// longer minimum are still here, still tested, and still one environment
+// variable away, which is the point of keeping the policy configurable rather
+// than deleting it.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const { checkPassword, strength, DEFAULT_POLICY } = await import('./passwordPolicy.ts');
 
-test('the shipped default asks for length and nothing else', () => {
+test('the shipped default turns nothing down but an empty box', () => {
   assert.deepEqual(
     { min: DEFAULT_POLICY.minLength, upper: DEFAULT_POLICY.requireUpper, digit: DEFAULT_POLICY.requireDigit },
-    { min: 6, upper: false, digit: false },
+    { min: 1, upper: false, digit: false },
   );
-  assert.equal(checkPassword('simple').ok, true, 'lowercase and six characters is enough');
+  // The passwords people actually use on a lab box, all of them acceptable.
+  assert.equal(checkPassword('admin').ok, true, 'admin/admin is allowed, as asked');
   assert.equal(checkPassword('sruthi').ok, true);
-  assert.equal(checkPassword('short').ok, false, 'five characters is not six');
+  assert.equal(checkPassword('a').ok, true, 'one character is a password');
 });
 
 test('it says what is missing, not just "invalid"', () => {
-  assert.match(checkPassword('abc').error ?? '', /6 characters/);
+  // Only reachable with a stricter policy now, but the wording still has to
+  // name the rule rather than say "invalid".
+  const strict = { ...DEFAULT_POLICY, minLength: 6 };
+  assert.match(checkPassword('abc', strict).error ?? '', /6 characters/);
 });
 
 test('every rule comes back with its own state, for a checklist to show', () => {
-  const { rules } = checkPassword('abc');
-  assert.deepEqual(rules.map(r => r.id), ['length']);
-  assert.deepEqual(rules.map(r => r.ok), [false]);
+  const strict = { ...DEFAULT_POLICY, minLength: 6 };
+  assert.deepEqual(checkPassword('abc', strict).rules.map(r => r.id), ['length']);
+  assert.deepEqual(checkPassword('abc', strict).rules.map(r => r.ok), [false]);
+  assert.deepEqual(checkPassword('abc').rules.map(r => r.ok), [true], 'and passes under the shipped policy');
 });
 
 test('the composition rules still work when switched on', () => {

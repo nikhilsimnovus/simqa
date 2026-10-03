@@ -7,10 +7,10 @@
 // Configurable through the environment, because a lab on a closed network and
 // an instance someone exposes have different ideas of "enough":
 //
-//   SIMQA_PW_MIN_LENGTH       default 8
-//   SIMQA_PW_REQUIRE_UPPER    default on
-//   SIMQA_PW_REQUIRE_LOWER    default on
-//   SIMQA_PW_REQUIRE_DIGIT    default on
+//   SIMQA_PW_MIN_LENGTH       default 1
+//   SIMQA_PW_REQUIRE_UPPER    default off
+//   SIMQA_PW_REQUIRE_LOWER    default off
+//   SIMQA_PW_REQUIRE_DIGIT    default off
 //   SIMQA_PW_REQUIRE_SPECIAL  default off
 //
 // The policy applies when a password is SET — signing up, resetting, changing.
@@ -36,7 +36,7 @@ export interface PasswordPolicy {
 // the environment without touching code — that is what the flags below are
 // for — and the server will enforce whatever is on.
 export const DEFAULT_POLICY: PasswordPolicy = {
-  minLength: 6,
+  minLength: 1,
   requireUpper: false,
   requireLower: false,
   requireDigit: false,

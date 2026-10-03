@@ -58,7 +58,7 @@ export function LoginForm() {
     }
   }
 
-  const canSubmit = username.trim().length >= 2 && password.length > 0;
+  const canSubmit = username.trim().length > 0 && password.length > 0;
 
   return (
     // autoComplete off throughout: the browser's own saved credentials would

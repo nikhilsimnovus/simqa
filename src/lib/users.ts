@@ -134,7 +134,7 @@ export interface CreateResult { ok: boolean; error?: string; field?: 'username' 
  *  turns down; never returns or stores the raw password. */
 export function createUser(username: string, password: string, email?: string): CreateResult {
   const name = (username ?? '').trim();
-  if (name.length < 2)  return { ok: false, field: 'username', error: 'Username must be at least 2 characters.' };
+  if (name.length < 1)  return { ok: false, field: 'username', error: 'Enter a username.' };
   if (name.length > 64) return { ok: false, field: 'username', error: 'Username must be 64 characters or fewer.' };
 
   const mail = (email ?? '').trim();

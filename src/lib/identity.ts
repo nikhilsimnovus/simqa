@@ -54,10 +54,12 @@ export function normalizeUser(raw: string): string {
     .slice(0, 64);
 }
 
-/** True when the name is shaped like a usable username. */
+/** True when the name is usable at all. Any name goes — the only limits left
+ *  are the ones normalizeUser already applies for safety: no control bytes, and
+ *  a bound so a name cannot be unbounded in a log line or a filename. */
 export function isValidUser(raw: string): boolean {
   const u = normalizeUser(raw);
-  return u.length >= 2 && u.length <= 64;
+  return u.length >= 1 && u.length <= 64;
 }
 
 /**

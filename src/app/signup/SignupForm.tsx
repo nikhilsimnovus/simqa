@@ -24,7 +24,7 @@ export function SignupForm() {
 
   const name = username.trim();
   const mismatch = confirm.length > 0 && password !== confirm;
-  const canSubmit = name.length >= 2 && passwordMeetsPolicy(password) && password === confirm;
+  const canSubmit = name.length > 0 && passwordMeetsPolicy(password) && password === confirm;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
