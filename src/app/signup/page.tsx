@@ -13,7 +13,11 @@ export const dynamic = 'force-dynamic';
 
 export default function SignupPage() {
   return (
-    <AuthShell tagline="Create an account to start running tests.">
+    <AuthShell
+      tagline="Execute, automate, monitor, and validate your test scenarios from one place."
+      title="Create your account"
+      subtitle="Join SimQA to start running tests"
+    >
       <SignupForm />
 
       <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-3">

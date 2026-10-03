@@ -17,7 +17,7 @@ export const dynamic = 'force-dynamic';
 
 export default function LoginPage() {
   return (
-    <AuthShell tagline="Automated QA for Simnovator UESIM.">
+    <AuthShell tagline="Execute, automate, monitor, and validate your test scenarios from one place.">
       {/* Suspense: LoginForm reads ?next= via useSearchParams. */}
       <Suspense fallback={<div className="h-[320px]" />}>
         <LoginForm />

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { User, Lock, Eye, EyeOff } from 'lucide-react';
 
 /** localStorage key remembering the last username typed on this machine, so a
  *  shared lab PC offers the previous user rather than a blank field. Only the
@@ -70,31 +71,40 @@ export function LoginForm() {
   }
 
   const canSubmit = username.trim().length >= 2 && password.length > 0 && !busy;
-  const fieldCls = (bad: boolean) =>
-    'w-full h-11 rounded-lg border px-3.5 text-sm text-slate-900 bg-white ' +
-    'placeholder:text-slate-400 focus:outline-none focus:ring-2 ' +
-    (bad ? 'border-red-400 focus:ring-red-200' : 'border-slate-300 focus:ring-orange-200 focus:border-orange-400');
+  /** The field and its icon share one border, so the icon reads as part of the
+   *  input rather than as something sitting beside it. */
+  const wrapCls = (bad: boolean) =>
+    'flex items-stretch rounded-lg border overflow-hidden bg-surface transition-colors focus-within:ring-2 ' +
+    (bad
+      ? 'border-red-400 focus-within:ring-red-200'
+      : 'border-slate-300 focus-within:ring-blue-200 focus-within:border-blue-400');
+  const inputCls = 'flex-1 h-11 px-3.5 text-sm text-slate-900 bg-transparent placeholder:text-slate-400 focus:outline-none';
+  const iconBoxCls = 'grid place-items-center w-11 shrink-0 border-r border-slate-200 bg-slate-50 text-slate-400';
 
   return (
     <form onSubmit={submit} noValidate>
       <label htmlFor="simqa-user" className="block text-sm font-semibold text-slate-800 mb-1.5">
         Username
       </label>
-      <input
-        id="simqa-user"
-        ref={userRef}
-        value={username}
-        onChange={(e) => { setUsername(e.target.value); if (err) setErr(null); }}
-        placeholder="Enter your username"
-        autoComplete="username"
-        spellCheck={false}
-        className={fieldCls(!!err)}
-      />
+      <div className={wrapCls(!!err)}>
+        <span className={iconBoxCls} aria-hidden><User className="h-4 w-4" /></span>
+        <input
+          id="simqa-user"
+          ref={userRef}
+          value={username}
+          onChange={(e) => { setUsername(e.target.value); if (err) setErr(null); }}
+          placeholder="Enter your username"
+          autoComplete="username"
+          spellCheck={false}
+          className={inputCls}
+        />
+      </div>
 
       <label htmlFor="simqa-pw" className="block text-sm font-semibold text-slate-800 mb-1.5 mt-4">
         Password
       </label>
-      <div className="relative">
+      <div className={wrapCls(!!err)}>
+        <span className={iconBoxCls} aria-hidden><Lock className="h-4 w-4" /></span>
         <input
           id="simqa-pw"
           ref={pwRef}
@@ -103,29 +113,31 @@ export function LoginForm() {
           onChange={(e) => { setPassword(e.target.value); if (err) setErr(null); }}
           placeholder="Enter your password"
           autoComplete="current-password"
-          className={fieldCls(!!err) + ' pr-11'}
+          className={inputCls}
         />
         <button
           type="button"
           onClick={() => setShowPw((v) => !v)}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
+          className="px-3 text-slate-400 hover:text-slate-600"
           aria-label={showPw ? 'Hide password' : 'Show password'}
         >
-          {showPw ? 'Hide' : 'Show'}
+          {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
         </button>
       </div>
 
       {err ? <p className="mt-2 text-xs text-red-600">{err}</p> : null}
       {hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
 
+      {/* "Remember me" is about the USERNAME and nothing else — a password is
+          never written to this browser — so the label says which. */}
       <label className="mt-4 flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
         <input
           type="checkbox"
           checked={remember}
           onChange={(e) => setRemember(e.target.checked)}
-          className="h-4 w-4 rounded border-slate-300"
+          className="h-4 w-4 rounded border-slate-300 accent-blue-600"
         />
-        Remember my username on this machine
+        Remember my username
       </label>
 
       <button
@@ -133,15 +145,21 @@ export function LoginForm() {
         disabled={!canSubmit}
         className={
           'mt-5 w-full h-12 rounded-lg text-white text-[15px] font-semibold transition-colors ' +
-          (!canSubmit ? 'bg-slate-300 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600')
+          (!canSubmit ? 'bg-slate-300 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700')
         }
       >
-        {busy ? 'Signing in…' : 'Login'}
+        {busy ? 'Signing in…' : 'Sign in'}
       </button>
 
-      <p className="mt-4 text-center text-sm text-slate-600">
+      <div className="mt-6 flex items-center gap-3" aria-hidden>
+        <span className="h-px flex-1 bg-slate-200" />
+        <span className="text-xs text-slate-400">or</span>
+        <span className="h-px flex-1 bg-slate-200" />
+      </div>
+
+      <p className="mt-5 text-center text-sm text-slate-600">
         Don&apos;t have an account?{' '}
-        <Link href="/signup" className="font-semibold text-orange-600 hover:underline">Sign up</Link>
+        <Link href="/signup" className="font-semibold text-blue-600 hover:underline">Sign up</Link>
       </p>
     </form>
   );
