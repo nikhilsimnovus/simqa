@@ -341,13 +341,19 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           station that starts executing should show as in-use without anyone
           reaching for F5. */}
       <AutoRefresh seconds={30} />
-      <main className="p-6 space-y-5">
+      {/* One screenful, by construction.
+          main takes exactly the space left under the header and hands it out:
+          the tiles and the people take what they need, Recent runs takes the
+          rest and scrolls inside its own card. Nothing here grows the page, so
+          a box with forty runs and a box with two look the same from across
+          the room — which is how a wall-mounted dashboard is read. */}
+      <main className="flex min-h-0 flex-1 flex-col gap-3 p-4">
         {/* ── Simnovator Environments ───────────────────────────────────────────
             One tile per box, so every Simnovator in inventory is visible
             with its own live status instead of only the first. */}
-        <section>
+        <section className="shrink-0">
           <SectionLabel>Simnovator Environments</SectionLabel>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {boxes.map((b) => {
               const state = STATION_META[stationStateOf(b)];
               return (
@@ -355,12 +361,12 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                 // page on it (recent runs + its lab machines) via ?box=<host>.
                 <Link key={b.id} href={`/?box=${encodeURIComponent(b.host)}`} className="block">
                   <Card className={b.host === primary?.host ? 'ring-2 ring-primary-500' : 'hover:shadow-md transition-shadow'}>
-                    <CardBody className="p-4">
+                    <CardBody className="p-3">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           {/* Just the IP. The section heading already says these
                               are Simnovators, and systems no longer carry a name. */}
-                          <div className="text-lg font-semibold text-slate-900">{b.host}</div>
+                          <div className="text-base font-semibold text-slate-900">{b.host}</div>
                         </div>
                         {/* Same three words + colours used everywhere else a
                             station's state shows up, so one colour never
@@ -398,10 +404,12 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           <BoxUsersCard host={primary?.host ?? ''} users={activity.users} systemId={primary!.id} selectedUser={selectedUser} />
         ) : null}
 
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+        {/* The bottom row takes whatever is left and never more: no items-start,
+            so both columns are exactly as tall as the space available. */}
+        <section className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-3 gap-3">
           {/* ── Recent runs ─────────────────────────────────────────────── */}
-          <Card className="lg:col-span-2">
-            <CardHeader className="flex items-center justify-between">
+          <Card className="flex min-h-0 flex-col lg:col-span-2">
+            <CardHeader className="flex shrink-0 items-center justify-between">
               <CardTitle>
                 Recent runs{primary ? ` of ${primary.host}` : ''}
                 {selectedUser ? <span className="text-primary-700"> · {selectedUser}</span> : null}
@@ -415,7 +423,10 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                 <Link href="/runs?from=dashboard" className="text-xs text-primary-700 hover:underline">View all</Link>
               </div>
             </CardHeader>
-            <CardBody className="p-0">
+            {/* The list scrolls here rather than growing the page — this is the
+                one part of the dashboard whose height depends on how much work
+                the lab has done. */}
+            <CardBody className="min-h-0 flex-1 overflow-y-auto p-0">
               {runs.length === 0 ? (
                 <div className="p-5 text-sm text-slate-500">
                   {selectedUser
@@ -448,15 +459,15 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           </Card>
 
           {/* ── Resource status + Summary, stacked in the right column ── */}
-          <div className="space-y-4">
+          <div className="flex min-h-0 flex-col gap-3">
           {/* The focused station and every lab machine bound to it, each with
               its live state. Scoped by ?box=, so picking a different tile above
               re-points this whole card. */}
-          <Card>
-            <CardHeader>
+          <Card className="flex min-h-0 flex-1 flex-col">
+            <CardHeader className="shrink-0">
               <CardTitle>Resource Status</CardTitle>
             </CardHeader>
-            <CardBody className="p-0">
+            <CardBody className="min-h-0 flex-1 overflow-y-auto p-0">
               {members.length === 0 ? (
                 <div className="p-5 text-sm text-slate-500">
                   No topology setup binds this box to a UE, callbox and app server.
@@ -500,9 +511,9 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           </Card>
 
           {/* ── Summary ──────────────────────────────────────────────── */}
-          <div>
+          <div className="shrink-0">
             <SectionLabel>Summary</SectionLabel>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-3">
               {/* ?from=dashboard tells Systems Management it was reached from
                   here, so it can offer a Back link. Arriving from the sidebar
                   carries no such marker and shows none. */}
@@ -510,23 +521,23 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                   gives no hint that it is clickable. */}
               <Link href="/inventory?from=dashboard" className="group block">
                 <Card className="transition-all group-hover:shadow-md group-hover:border-primary-300">
-                  <CardBody className="p-4">
+                  <CardBody className="p-3">
                     <div className="flex items-start justify-between gap-2">
                       <div className="text-xs uppercase tracking-wider text-slate-500">Systems</div>
                       <ArrowUpRight className="h-4 w-4 shrink-0 text-slate-400 transition-colors group-hover:text-primary-600" />
                     </div>
-                    <div className="text-2xl font-semibold text-slate-900 mt-1">{inv.systems.length}</div>
+                    <div className="text-xl font-semibold text-slate-900 mt-0.5">{inv.systems.length}</div>
                   </CardBody>
                 </Card>
               </Link>
               <Link href="/inventory?from=dashboard#topology" className="group block">
                 <Card className="transition-all group-hover:shadow-md group-hover:border-primary-300">
-                  <CardBody className="p-4">
+                  <CardBody className="p-3">
                     <div className="flex items-start justify-between gap-2">
                       <div className="text-xs uppercase tracking-wider text-slate-500">Topology Setup</div>
                       <ArrowUpRight className="h-4 w-4 shrink-0 text-slate-400 transition-colors group-hover:text-primary-600" />
                     </div>
-                    <div className="text-2xl font-semibold text-slate-900 mt-1">{inv.profiles.length}</div>
+                    <div className="text-xl font-semibold text-slate-900 mt-0.5">{inv.profiles.length}</div>
                   </CardBody>
                 </Card>
               </Link>
@@ -564,14 +575,16 @@ function testcaseHref(systemId: string, testcaseId: string, user?: string): stri
 function BoxUsersCard({ host, users, systemId, selectedUser }: { host: string; users: BoxUserState[]; systemId: string; selectedUser?: string }) {
   const running = users.filter((u) => u.running).length;
   return (
-    <Card>
+    <Card className="shrink-0">
       <CardHeader className="flex items-center justify-between">
         <CardTitle>Users on {host}</CardTitle>
         <span className="text-xs text-slate-500">
           {running ? `${running} executing now` : 'nobody executing'} · {users.length} login{users.length === 1 ? '' : 's'}
         </span>
       </CardHeader>
-      <CardBody className="p-4">
+      {/* Capped: a box with a dozen logins must not push Recent runs off the
+          screen. Past three rows of tiles this scrolls instead. */}
+      <CardBody className="max-h-[26vh] overflow-y-auto p-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {users.map((u) => (
             <div
