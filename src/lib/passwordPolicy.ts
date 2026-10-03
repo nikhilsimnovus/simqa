@@ -31,11 +31,15 @@ export interface PasswordPolicy {
   maxLength: number;
 }
 
+// Length only, by choice: the composition rules were asked for and then asked
+// to be taken away again. Every one of them can be switched back on through
+// the environment without touching code — that is what the flags below are
+// for — and the server will enforce whatever is on.
 export const DEFAULT_POLICY: PasswordPolicy = {
-  minLength: 8,
-  requireUpper: true,
-  requireLower: true,
-  requireDigit: true,
+  minLength: 6,
+  requireUpper: false,
+  requireLower: false,
+  requireDigit: false,
   requireSpecial: false,
   maxLength: 200,
 };

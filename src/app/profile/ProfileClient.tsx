@@ -7,13 +7,12 @@
 // a token or anything about another account.
 
 import { useCallback, useEffect, useState } from 'react';
-import { Lock, Mail } from 'lucide-react';
+import { Lock } from 'lucide-react';
 import { AuthField, AuthSubmit } from '@/components/AuthField';
-import { PasswordRules, passwordMeetsPolicy } from '@/components/PasswordRules';
+import { passwordMeetsPolicy } from '@/components/PasswordRules';
 
 interface Me {
   username: string;
-  email?: string;
   createdAt: string;
   lastLoginAt?: string;
   passwordChangedAt?: string;
@@ -34,29 +33,6 @@ export function ProfileClient() {
     } catch { setLoadErr('Could not reach the server.'); }
   }, []);
   useEffect(() => { void load(); }, [load]);
-
-  // ── email ───────────────────────────────────────────────────────────────
-  const [email, setEmail] = useState('');
-  const [emailMsg, setEmailMsg] = useState<string | null>(null);
-  const [emailErr, setEmailErr] = useState<string | null>(null);
-  const [savingEmail, setSavingEmail] = useState(false);
-  useEffect(() => { setEmail(me?.email ?? ''); }, [me?.email]);
-
-  async function saveEmail(e: React.FormEvent) {
-    e.preventDefault();
-    if (savingEmail) return;
-    setSavingEmail(true); setEmailErr(null); setEmailMsg(null);
-    try {
-      const r = await fetch('/api/auth/me', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok || !d.ok) { setEmailErr(d?.error ?? 'Could not save that address.'); return; }
-      setMe(d.user); setEmailMsg('Email updated.');
-    } catch { setEmailErr('Could not reach the server.'); }
-    finally { setSavingEmail(false); }
-  }
 
   // ── password ────────────────────────────────────────────────────────────
   const [current, setCurrent] = useState('');
@@ -127,26 +103,6 @@ export function ProfileClient() {
               <dd className="text-slate-800">{when(me?.lastLoginAt)}</dd>
             </div>
           </dl>
-
-          <form onSubmit={saveEmail} className="mt-4 max-w-sm" autoComplete="off">
-            <AuthField
-              label="Email"
-              type="email"
-              value={email}
-              onChange={(v) => { setEmail(v); setEmailErr(null); setEmailMsg(null); }}
-              placeholder="you@example.com"
-              autoComplete="off"
-              icon={<Mail className="h-4 w-4" />}
-              error={emailErr}
-              hint={<p className="text-[11px] text-slate-500">Optional. A contact address for your account.</p>}
-              disabled={savingEmail}
-            />
-            {emailMsg ? <p className="mt-2 text-xs text-emerald-700">{emailMsg}</p> : null}
-            <button type="submit" disabled={savingEmail || email === (me?.email ?? '')}
-              className="mt-3 rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xs font-semibold px-3 py-1.5">
-              {savingEmail ? 'Saving…' : 'Save email'}
-            </button>
-          </form>
         </section>
 
         {/* ── security ─────────────────────────────────────────────────── */}
@@ -180,7 +136,6 @@ export function ProfileClient() {
               error={pwErr.new}
               disabled={savingPw}
             />
-            <PasswordRules password={next} />
             <AuthField
               label="Confirm new password"
               type="password"

@@ -10,13 +10,12 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { User, Lock, Mail } from 'lucide-react';
+import { User, Lock } from 'lucide-react';
 import { AuthField, AuthSubmit } from '@/components/AuthField';
-import { PasswordRules, passwordMeetsPolicy } from '@/components/PasswordRules';
+import { passwordMeetsPolicy } from '@/components/PasswordRules';
 
 export function SignupForm() {
   const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [fieldErr, setFieldErr] = useState<Record<string, string | null>>({});
@@ -35,7 +34,7 @@ export function SignupForm() {
       const r = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: name, email: email.trim() || undefined, password, confirm }),
+        body: JSON.stringify({ username: name, password, confirm }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.ok) {
@@ -71,19 +70,6 @@ export function SignupForm() {
       />
 
       <AuthField
-        label="Email"
-        type="email"
-        value={email}
-        onChange={(v) => { setEmail(v); setFieldErr(f => ({ ...f, email: null })); }}
-        placeholder="you@example.com"
-        autoComplete="off"
-        icon={<Mail className="h-4 w-4" />}
-        error={fieldErr.email}
-        hint={<p className="text-[11px] text-slate-500">Optional. A contact address for your account.</p>}
-        disabled={busy}
-      />
-
-      <AuthField
         label="Password"
         type="password"
         value={password}
@@ -94,7 +80,6 @@ export function SignupForm() {
         error={fieldErr.password}
         disabled={busy}
       />
-      <PasswordRules password={password} />
 
       <AuthField
         label="Confirm password"

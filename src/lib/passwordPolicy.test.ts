@@ -1,39 +1,49 @@
 // The rules a password has to meet, and what the person is told when it does
-// not. Same function the server enforces with and the form ticks off.
+// not. Same function the server enforces with.
+//
+// The shipped default is length alone — the composition rules were asked for
+// and then asked to be removed again. They are still here, still tested, and
+// still one environment variable away, which is the point of keeping the
+// policy configurable rather than deleting it.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const { checkPassword, strength, DEFAULT_POLICY } = await import('./passwordPolicy.ts');
 
-test('the default rules: length, upper, lower, digit', () => {
-  assert.equal(checkPassword('Str0ngEnough').ok, true);
-  assert.equal(checkPassword('short1A').ok, false, 'seven characters is not eight');
-  assert.equal(checkPassword('alllowercase1').ok, false, 'no uppercase');
-  assert.equal(checkPassword('ALLUPPERCASE1').ok, false, 'no lowercase');
-  assert.equal(checkPassword('NoDigitsHere').ok, false, 'no number');
+test('the shipped default asks for length and nothing else', () => {
+  assert.deepEqual(
+    { min: DEFAULT_POLICY.minLength, upper: DEFAULT_POLICY.requireUpper, digit: DEFAULT_POLICY.requireDigit },
+    { min: 6, upper: false, digit: false },
+  );
+  assert.equal(checkPassword('simple').ok, true, 'lowercase and six characters is enough');
+  assert.equal(checkPassword('sruthi').ok, true);
+  assert.equal(checkPassword('short').ok, false, 'five characters is not six');
 });
 
-test('it says which rule is unmet, not just "invalid"', () => {
-  assert.match(checkPassword('alllowercase1').error ?? '', /uppercase/i);
-  assert.match(checkPassword('Sh0rt').error ?? '', /8 characters/);
+test('it says what is missing, not just "invalid"', () => {
+  assert.match(checkPassword('abc').error ?? '', /6 characters/);
 });
 
-test('every rule comes back with its own state, for the checklist', () => {
+test('every rule comes back with its own state, for a checklist to show', () => {
   const { rules } = checkPassword('abc');
-  assert.deepEqual(rules.map(r => r.id), ['length', 'upper', 'lower', 'digit']);
-  assert.deepEqual(rules.map(r => r.ok), [false, false, true, false]);
+  assert.deepEqual(rules.map(r => r.id), ['length']);
+  assert.deepEqual(rules.map(r => r.ok), [false]);
 });
 
-test('a special character is optional by default and enforced when asked for', () => {
-  assert.equal(checkPassword('Str0ngEnough').ok, true);
-  const strict = { ...DEFAULT_POLICY, requireSpecial: true };
-  assert.equal(checkPassword('Str0ngEnough', strict).ok, false);
+test('the composition rules still work when switched on', () => {
+  const strict = {
+    ...DEFAULT_POLICY, minLength: 8,
+    requireUpper: true, requireLower: true, requireDigit: true, requireSpecial: true,
+  };
+  assert.equal(checkPassword('simple', strict).ok, false);
+  assert.equal(checkPassword('Str0ngEnough', strict).ok, false, 'no special character');
   assert.equal(checkPassword('Str0ngEnough!', strict).ok, true);
+  assert.match(checkPassword('alllowercase1', strict).error ?? '', /uppercase/i);
 });
 
 test('an absurdly long password is refused rather than hashed', () => {
-  const huge = 'A1' + 'a'.repeat(500);
+  const huge = 'a'.repeat(500);
   const r = checkPassword(huge);
   assert.equal(r.ok, false);
   assert.match(r.error ?? '', /or fewer/);
