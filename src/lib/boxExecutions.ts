@@ -223,16 +223,13 @@ export interface DerivedCheck {
 }
 
 /**
- * CURRENTLY UNUSED — kept, with its tests, rather than deleted.
+ * The five-stage flow for a run started on the Simnovator.
  *
- * The testcase page briefly rendered these rows so a box-driven run showed the
- * same five-stage flow as a SimQA validation. That was withdrawn: presenting a
- * reconstruction of SimQA's own report for a run SimQA never performed reads as
- * though it had, and "Validate this run" now attaches to a live box execution
- * and produces a genuine one instead. Retained for a context where the
- * reconstruction cannot be mistaken for a SimQA run.
- *
- * The five-stage flow for a run the BOX executed.
+ * Withdrawn once, for reading as though SimQA had validated a run it never
+ * drove, and brought back when a report with no before-and-after proved worse
+ * than one whose provenance is stated. The testcase page labels every row
+ * built here as read from the box's record, and keeps it at normal severity
+ * so it cannot be mistaken for one of SimQA's own critical checks.
  *
  * SimQA did not perform these checks — it was not driving the run — so every
  * one of them is decided from a field the box itself recorded, and `detail`

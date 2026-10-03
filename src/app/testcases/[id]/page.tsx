@@ -12,9 +12,9 @@ import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
 import { ChevronLeft, FileText, Download, Square, Play, Loader2 } from 'lucide-react';
 import {
   type RunStatus, type PastRunSummary, type LiveEntry, type FullReport, type CheckRowData,
-  PastRunsPanel,
+  PastRunsPanel, fmtDuration, stamp,
 } from '@/app/run-validate/ValidationReport';
-import { boxExecutionsOf } from '@/lib/boxExecutions';
+import { boxExecutionsOf, boxStageChecks } from '@/lib/boxExecutions';
 import { boxMetricName, explainBoxCheck } from '@/lib/checkExplain';
 import { decideBringUp, describeCfg, type OtherExecution, type CfgPick } from '@/lib/callboxShare';
 
@@ -747,21 +747,67 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
         ].filter(Boolean).join(' · ') || undefined,
       }));
 
-      // ONLY what the box actually measured.
+      // The stages, for a run SimQA did not drive.
       //
-      // An earlier version synthesised the other four stages from fields on the
-      // execution record, so a box-driven run rendered the full Before /
-      // Starting / During / Completion / After flow. That flow is SimQA's own
-      // validation, and presenting a reconstruction of it for a run SimQA never
-      // performed reads as though it had. The honest report for a run started
-      // on the Simnovator is the box's own success conditions — and if you want
-      // the real five-stage validation, "Validate this run" attaches SimQA to
-      // the live execution and produces a genuine one.
+      // These are NOT SimQA checks and must never read as though they were:
+      // SimQA was not there before this run started, so it cannot say what was
+      // true beforehand. What it can do is read the box's own execution record
+      // — which simulator took the run, when it started, whether it reached a
+      // finished state, whether the simulator was released — and state those
+      // facts in the same five stages, each row labelled with where it came
+      // from. Everything the box actually measured stays in During Test as
+      // before.
       //
-      // boxStageChecks() in boxExecutions.ts built those rows and is now
-      // unused; it is kept, with its tests, in case the reconstruction is
-      // wanted somewhere it cannot be confused for a SimQA run.
-      const results: CheckRowData[] = measured;
+      // The alternative, showing only the box's success conditions, left a run
+      // started on the Simnovator with no before-and-after at all. This gives
+      // it one without inventing a validation: for SimQA's own checks on a
+      // box-started run, "Validate this run" attaches to the live execution.
+      const SOURCE = 'Read from the Simnovator\'s own execution record — not a check SimQA performed.';
+      // The record's raw fields are the evidence, not the sentence: an ISO
+      // timestamp, a UUID and "668s" are all true and none of them are a thing
+      // to read. Each row says what the box did; the raw field stays under
+      // technical details, where the provenance line sits with it.
+      const said = (id: string): string | undefined => {
+        switch (id) {
+          case 'box-preflight-testcase': return 'The box holds this testcase and loaded it for the run.';
+          case 'box-preflight-simulator': return x.simulatorName
+            ? `The run was taken by simulator "${x.simulatorName}".`
+            : 'The box recorded no simulator for this run.';
+          case 'box-trigger-started': return x.startedAt
+            ? `The box started the run at ${stamp(x.startedAt)}.`
+            : 'The box recorded no start time for this run.';
+          case 'box-trigger-execution-id': return x.executionId
+            ? 'The box issued an execution id, so the run can be traced back to it.'
+            : 'The box recorded no execution id for this run.';
+          case 'box-completion-terminal': return x.status
+            ? `The run reached a finished state on the box (${x.status}).`
+            : 'The box recorded no final status for this run.';
+          case 'box-completion-duration': return x.durationSec
+            ? `It ran for ${fmtDuration(x.durationSec)}.`
+            : 'The box recorded no duration for this run.';
+          case 'box-completion-verdict': return x.result
+            ? `The box's own verdict for this run: ${x.result}.`
+            : 'The box recorded no verdict for this run.';
+          case 'box-post-simulator-released': return x.finishedAt
+            ? `The run ended at ${stamp(x.finishedAt)}, freeing the simulator for the next one.`
+            : 'The box recorded no end time, so it cannot show the simulator was released.';
+          default: return undefined;
+        }
+      };
+      const derived: CheckRowData[] = boxStageChecks(x).map((c) => ({
+        id: `${runId}:${c.id}`,
+        name: c.name,
+        phase: c.phase,
+        // Normal, not critical: the box's success conditions above are what
+        // decide the run. These describe the run, they do not judge it.
+        severity: 'normal',
+        description: `${c.description} ${SOURCE}`,
+        status: c.status,
+        plain: said(c.id),
+        detail: c.detail,
+      }));
+
+      const results: CheckRowData[] = [...derived, ...measured];
 
       summaries.push({
         runId,
@@ -815,8 +861,8 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
             // without this the panel would expand to nothing at all.
             ? `Running on the Simnovator, started ${x.startedAt ? new Date(x.startedAt).toLocaleTimeString() : 'just now'}. Its verdict and the checks behind it appear here as soon as the box finishes.`
             : x.checks.length === 0
-              ? `Executed on the Simnovator, which recorded no success conditions for this run — there is nothing to check it against.`
-              : `Executed on the Simnovator. Its verdict means the success conditions below held, not that the test exercised the network.`,
+              ? `Executed on the Simnovator, which recorded no success conditions for this run. The stages below are read from the box's own execution record — they say what the box did, not whether the traffic was any good. "Validate this run" has SimQA perform its own checks.`
+              : `Executed on the Simnovator. The stages below are read from the box's own execution record, and its verdict means the success conditions under During Test held — not that the test exercised the network. "Validate this run" has SimQA perform its own checks.`,
         observedDurationSec: x.durationSec,
         results,
       };
