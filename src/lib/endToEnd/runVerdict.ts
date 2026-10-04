@@ -86,6 +86,12 @@ function isPass(verdict: string): boolean {
  * login, no execution id, no terminal status). Marking those passed would
  * claim a validation that never happened.
  */
+/** Rows the runner adds for the box's own success conditions — see the
+ *  condition rows it builds at the end of a run. They are the box's, not
+ *  SimQA's, so they are counted and worded separately. */
+const CONDITION_PREFIX = 'box-condition:';
+const VERDICT_CHECK_ID = 'completion-verdict-present';
+
 /** The rows whose whole job is to carry the box's verdict — the SimQA check
  *  that asks for it, and the derived row on a box-executed run. */
 const VERDICT_ROW_IDS = new Set(['completion-verdict-present', 'box-completion-verdict']);
@@ -122,13 +128,27 @@ export function decideRunResult(input: { canceled?: boolean; results: ResultLike
     // disagreeing is the whole reason the checks ran. On a pass, the rows that
     // disagreed are shown as passed too (applyVerdictToChecks), so this says
     // so rather than leaving a line that contradicts the rows beneath it.
-    const disagreed = results.filter((r) => r.status === 'fail' && r.severity !== 'critical').length;
-    const mine = disagreed > 0
-      ? `${disagreed} of SimQA's own checks disagreed and follow that verdict — what each measured is on its row`
-      : `SimQA's own checks agree: ${passed} passed${skipped > 0 ? ` · ${skipped} skipped` : ''}`;
+    //
+    // The box's own conditions are counted separately from SimQA's checks.
+    // Lumping them together produced "SimQA's own checks agree: 25 passed"
+    // under a FAIL verdict, when what had actually failed was one of the box's
+    // conditions — the opposite of agreement, and not SimQA's finding at all.
+    const own = results.filter((r) => !r.id.startsWith(CONDITION_PREFIX) && r.id !== VERDICT_CHECK_ID);
+    const ownPassed = own.filter((r) => r.status === 'pass').length;
+    const ownSkipped = own.filter((r) => r.status === 'skip').length;
+    const disagreed = own.filter((r) => r.status === 'fail' && r.severity !== 'critical').length;
+    const conditionsFailed = results.filter((r) => r.id.startsWith(CONDITION_PREFIX) && r.status === 'fail').length;
+
+    const box = conditionsFailed > 0
+      ? ` ${conditionsFailed} of its own condition${conditionsFailed === 1 ? '' : 's'} failed.`
+      : '';
+    const mine = ` SimQA's own checks: ${ownPassed} passed`
+      + (disagreed > 0 ? ` · ${disagreed} disagreed and follow that verdict` : '')
+      + (ownSkipped > 0 ? ` · ${ownSkipped} skipped` : '')
+      + '.';
     return {
       ok: isPass(verdict),
-      finalDetail: `Result taken from the Simnovator's verdict (${verdict}). ${mine}.`,
+      finalDetail: `Result taken from the Simnovator's verdict (${verdict}).${box}${mine}`,
       source: 'box',
     };
   }

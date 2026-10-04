@@ -44,7 +44,7 @@ test('a box PASS makes the run pass, even with SimQA checks failing', () => {
   assert.equal(r.source, 'box');
   // And it says where the result came from, and that the checks disagreed.
   assert.match(r.finalDetail, /Simnovator's verdict \(PASS\)/);
-  assert.match(r.finalDetail, /2 of SimQA's own checks disagreed/);
+  assert.match(r.finalDetail, /2 disagreed and follow that verdict/);
 });
 
 test('a box FAIL fails the run, even with every SimQA check passing', () => {
@@ -57,7 +57,7 @@ test('a box FAIL fails the run, even with every SimQA check passing', () => {
 test('agreement is stated as agreement, not as silence', () => {
   const r = decideRunResult({ results: [verdictRow('PASS'), pass('a'), skip('b')] });
   assert.equal(r.ok, true);
-  assert.match(r.finalDetail, /own checks agree/);
+  assert.match(r.finalDetail, /SimQA's own checks: 1 passed/);
 });
 
 test('INCOMPLETE is a verdict and it is not a pass', () => {
@@ -155,7 +155,7 @@ test('the summary line says the rows were carried, not that they failed', () => 
   const r = decideRunResult({
     results: [verdictRow('PASS'), fail('during-per-cell-traffic'), fail('during-bler-zero'), pass('a')],
   });
-  assert.match(r.finalDetail, /2 of SimQA's own checks disagreed and follow that verdict/);
+  assert.match(r.finalDetail, /2 disagreed and follow that verdict/);
   assert.doesNotMatch(r.finalDetail, /2 failed/);
 });
 
@@ -172,4 +172,28 @@ test('the row carrying the verdict reports the verdict, not its own existence', 
 test('applying it twice changes nothing the second time', () => {
   const once = applyVerdictToChecks([verdictRow('FAIL'), fail('during-bler-zero')], 'FAIL');
   assert.deepEqual(applyVerdictToChecks(once, 'FAIL'), once);
+});
+
+test("the box's own conditions are counted as the box's, not as SimQA's checks", () => {
+  // Observed on a real run of untitled_6: the box failed its DL throughput
+  // criterion, every SimQA check passed, and the line read "SimQA's own
+  // checks agree: 25 passed" under a FAIL verdict.
+  const condition = (name: string, ok: boolean) => ({
+    id: `box-condition:throughput:${name}:0`,
+    status: (ok ? 'pass' : 'fail') as const,
+    severity: 'critical' as const,
+  });
+  const r = decideRunResult({
+    results: [
+      verdictRow('FAIL'),
+      condition('Achieved_Avg_DL_Throughput', false),
+      condition('Achieved_Avg_UL_Throughput', true),
+      pass('during-ue-attach'),
+      skip('preflight-cfg-bring-up'),
+    ],
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.finalDetail, /1 of its own condition failed/);
+  assert.match(r.finalDetail, /SimQA's own checks: 1 passed · 1 skipped/);
+  assert.doesNotMatch(r.finalDetail, /agree/);
 });
