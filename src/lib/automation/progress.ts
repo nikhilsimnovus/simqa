@@ -40,6 +40,12 @@ export interface SuiteProgress {
   /** Per-row outcome, keyed by the row's display name. Rows absent from this
    *  map have not been reached yet. */
   statuses: Record<string, ItemStatus>;
+  /** The box's own words for rows that have finished — its execution status
+   *  and verdict, keyed by row name. Carried live so a row reads the same
+   *  while the run is in flight as it will once the run is saved: without it
+   *  a finished-and-failed row showed 'Not Executed · Error' until a reload,
+   *  because SimQA's ok was all the live view had. */
+  boxes?: Record<string, { status?: string; verdict?: string; stopped?: boolean }>;
   finished?: boolean;
   /** Set when the process that was running this is gone — a deploy or a crash
    *  ended it. The run did not finish and nothing was saved for it. */
@@ -142,11 +148,21 @@ export function markRunning(suiteId: string, done: number, current?: string): vo
   persist(p, suiteId);
 }
 
-export function markStep(suiteId: string, name: string, ok: boolean): void {
+export function markStep(
+  suiteId: string,
+  name: string,
+  ok: boolean,
+  box?: { status?: string; verdict?: string; stopped?: boolean },
+): void {
   const s = store();
   const p = s.live.get(suiteId);
   if (!p) return;
   p.statuses[name] = ok ? 'passed' : 'failed';
+  // Only when the box actually said something. An empty object would claim a
+  // status the Simnovator never gave.
+  if (box && (box.status || box.verdict || box.stopped)) {
+    p.boxes = { ...(p.boxes ?? {}), [name]: box };
+  }
   persist(p, suiteId);
 }
 

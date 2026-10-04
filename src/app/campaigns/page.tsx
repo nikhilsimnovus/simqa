@@ -28,7 +28,13 @@ interface CampaignRow {
 }
 interface SystemRow { id: string; type: string; host: string; name?: string }
 interface BoxUser { id: string; username: string }
-interface Progress { suiteId: string; suiteName: string; done: number; total: number; current?: string; statuses: Record<string, string>; finished?: boolean }
+interface Progress {
+  suiteId: string; suiteName: string; done: number; total: number; current?: string;
+  statuses: Record<string, string>;
+  /** The box's own status and verdict per row, as each one finishes. */
+  boxes?: Record<string, { status?: string; verdict?: string; stopped?: boolean }>;
+  finished?: boolean;
+}
 
 export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
@@ -67,6 +73,33 @@ export default function CampaignsPage() {
     } catch (e: any) { setError(e?.message ?? String(e)); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+
+  // Each campaign's most recent per-row outcome, so Status and Verdict mean
+  // something before you press Run and still mean it after a refresh. One
+  // request per campaign, re-fetched when a run finishes.
+  const [lastStatus, setLastStatus] = useState<Record<string, Record<string, boolean>>>({});
+  const [lastDetail, setLastDetail] = useState<Record<string, Record<string, string>>>({});
+  const [lastBox, setLastBox] = useState<Record<string, Record<string, { status?: string; verdict?: string; stopped?: boolean }>>>({});
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const st: Record<string, Record<string, boolean>> = {};
+      const de: Record<string, Record<string, string>> = {};
+      const bx: Record<string, Record<string, { status?: string; verdict?: string; stopped?: boolean }>> = {};
+      for (const c of campaigns) {
+        try {
+          const r = await fetch(`/api/automation/campaigns/${c.id}/status`).then(x => x.json());
+          if (r?.ok) {
+            if (r.statuses) st[c.id] = r.statuses;
+            if (r.details) de[c.id] = r.details;
+            if (r.box) bx[c.id] = r.box;
+          }
+        } catch { /* a campaign that has never run is fine */ }
+      }
+      if (!cancelled) { setLastStatus(st); setLastDetail(de); setLastBox(bx); }
+    })();
+    return () => { cancelled = true; };
+  }, [campaigns, progress?.finished]);
 
   const hostOf = useCallback((id?: string) => systems.find(s => s.id === id)?.host ?? '', [systems]);
   const simnovators = useMemo(() => systems.filter(s => /SIMNOVATOR/i.test(s.type)), [systems]);
@@ -196,14 +229,32 @@ export default function CampaignsPage() {
     finally { setBusy(''); }
   };
 
-  /** What a row shows while a campaign is running, and after it has run. */
+  /**
+   * What a row shows while a campaign is running, and after it has run.
+   *
+   * Live progress answers only while this page is watching a run. Afterwards —
+   * and on any reload — the answer is the saved run record, which carries the
+   * Simnovator's own status and verdict for that row. Without it every row
+   * read "not executed" the moment the page was refreshed, however many times
+   * the campaign had run.
+   */
   const rowStatus = (c: CampaignRow, itemName: string) => {
     const live = progress && progress.suiteId === c.id ? progress.statuses?.[itemName] : undefined;
-    if (live === 'running') return { st: statusLabel({ running: true }), vd: '' };
-    if (live === 'passed') return { st: statusLabel({ ok: true, boxStatus: 'Completed', verdict: 'PASS' }), vd: verdictLabel({ ok: true, verdict: 'PASS' }) };
-    if (live === 'failed') return { st: statusLabel({ ok: false }), vd: verdictLabel({ ok: false }) };
-    if (live === 'skipped') return { st: statusLabel({ neverRun: true }), vd: '' };
-    return { st: statusLabel({ neverRun: true }), vd: '' };
+    if (live === 'running') return { st: statusLabel({ running: true }), vd: '', why: undefined as string | undefined };
+    if (live === 'passed' || live === 'failed') {
+      // The box's own words where it gave them — the same answer the saved run
+      // will show — and SimQA's pass/fail only as the fallback.
+      const b = progress?.boxes?.[itemName];
+      const o = { ok: live === 'passed', boxStatus: b?.status, verdict: b?.verdict, stopped: b?.stopped };
+      return { st: statusLabel(o), vd: verdictLabel(o), why: undefined };
+    }
+    if (live === 'skipped') return { st: statusLabel({ neverRun: true }), vd: '', why: undefined };
+
+    const prev = lastStatus[c.id]?.[itemName];
+    if (prev === undefined) return { st: statusLabel({ neverRun: true }), vd: '', why: undefined };
+    const box = lastBox[c.id]?.[itemName];
+    const o = { ok: prev, boxStatus: box?.status, verdict: box?.verdict, stopped: box?.stopped };
+    return { st: statusLabel(o), vd: verdictLabel(o), why: lastDetail[c.id]?.[itemName] };
   };
 
   return (
@@ -345,7 +396,7 @@ export default function CampaignsPage() {
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {c.items.map((it, i) => {
-                        const { st, vd } = rowStatus(c, it.name);
+                        const { st, vd, why } = rowStatus(c, it.name);
                         const style = statusStyle(st);
                         return (
                           <tr key={it.id}>
@@ -354,7 +405,7 @@ export default function CampaignsPage() {
                             <td className="px-3 py-1.5 font-medium text-slate-800 truncate" title={it.name}>{it.name}</td>
                             <td className="px-3 py-1.5 font-mono text-[11px] text-slate-600 truncate">{it.callboxCfg ?? '–'}</td>
                             <td className="px-3 py-1.5 font-mono text-[11px] text-slate-600 truncate">{it.mmeCfg ?? '–'}</td>
-                            <td className={`px-3 py-1.5 whitespace-nowrap ${style.cls}`}>{style.dot} {st}</td>
+                            <td className={`px-3 py-1.5 whitespace-nowrap ${style.cls}`} title={why}>{style.dot} {st}</td>
                             <td className={`px-3 py-1.5 whitespace-nowrap ${verdictClass(vd as any)}`}>{vd || '–'}</td>
                           </tr>
                         );

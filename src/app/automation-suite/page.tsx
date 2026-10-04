@@ -73,6 +73,8 @@ interface SuiteProgress {
   total: number;
   current?: string;
   statuses: Record<string, 'running' | 'passed' | 'failed' | 'skipped' | 'pending'>;
+  /** The box's own status and verdict per row, as each one finishes. */
+  boxes?: Record<string, { status?: string; verdict?: string; stopped?: boolean }>;
   finished?: boolean;
 }
 interface SuiteItem {
@@ -618,9 +620,17 @@ export default function AutomationSuitePage() {
     if (livePr === 'running') return show({ running: true });
     // Live rows, before the run is saved: the box's own status has not been
     // written yet, so only SimQA's pass/fail is known.
-    if (livePr === 'passed')  return show({ ok: true, boxStatus: 'Completed', verdict: 'PASS' });
-    if (livePr === 'failed')  return show({ ok: false },
-      'Failed during this run — the full reason appears once the run finishes');
+    if (livePr === 'passed' || livePr === 'failed') {
+      // The box's own words where it gave them — the same answer the saved run
+      // will show — with SimQA's pass/fail only as the fallback. Without this
+      // a row that ran and failed read "Not Executed · Error" until a reload,
+      // because SimQA's ok was all the live view carried.
+      const lb = progress?.boxes?.[it.name];
+      return show(
+        { ok: livePr === 'passed', boxStatus: lb?.status, verdict: lb?.verdict, stopped: lb?.stopped },
+        livePr === 'failed' && !lb ? 'Failed during this run — the full reason appears once the run finishes' : undefined,
+      );
+    }
     // A row the run never reached: with stopOnFail, or after a Stop.
     if (livePr === 'skipped') return show({ neverRun: true });
 

@@ -1,77 +1,22 @@
 // GET /api/automation/suites/[id]/status
 //
-// Each testcase's MOST RECENT outcome: SimQA's pass/fail, and — the part an
-// operator actually compares against the box — the Simnovator's own execution
-// status and verdict, the same two fields its GUI shows.
+// Each testcase's most recent outcome — SimQA's pass/fail plus the box's own
+// status and verdict. The logic lives in lib/automation/rowOutcomes.ts because
+// campaigns need exactly the same answer about exactly the same run records.
 //
 // The /runs listing deliberately returns summaries without steps, so the page
 // cannot derive this from it. Walking the run records here keeps the response
-// tiny (one boolean per row) instead of shipping every step to the browser.
-//
-// Newest run wins per row, not per run: executing a single testcase records
-// only that one, and the other rows' earlier results are still the truth about
-// them.
+// tiny instead of shipping every step to the browser.
 
 import { NextResponse } from 'next/server';
-import { listRunsForSuite } from '@/lib/automation/runStore';
-import type { SuiteRunStep } from '@/lib/automation/runner';
+import { rowOutcomes } from '@/lib/automation/rowOutcomes';
 
 export const dynamic = 'force-dynamic';
-
-/**
- * A one-line, human reason for a row's outcome — the thing shown on hover.
- *
- * It names the SOURCE, which is the actual question an operator has when a row
- * says "Failed": was it the Simnovator's own testcase verdict (the same PASS/
- * FAIL the box GUI shows), or did SimQA fail before the box ever judged it —
- * couldn't start the execution, couldn't reach/authenticate the box, or a
- * callbox cfg step failed. The runner already records all three shapes in the
- * step; this just words them.
- */
-function reasonFor(step: SuiteRunStep): string {
-  const d = (step.detail ?? '').trim();
-
-  // The box ran it and returned its own verdict — same signal as the GUI.
-  if (step.verdict) {
-    const bits = [`Simnovator testcase verdict: ${step.verdict}`];
-    if (step.boxStatus) bits.push(`box status ${step.boxStatus}`);
-    if (step.stopped) bits.push('stopped by SimQA after the duration window');
-    return bits.join(' · ');
-  }
-
-  // Failures on SimQA's side, before the box could judge the test.
-  if (/^trigger\b/i.test(d)) return `SimQA could not start the execution on the box — ${d}`;
-  if (/^threw:/i.test(d))    return `SimQA error while running the test — ${d.replace(/^threw:\s*/i, '')}`;
-  if (/login/i.test(d))      return `SimQA could not reach or sign in to the box — ${d}`;
-  if (/^cfg-/i.test(step.testcaseId)) return `Callbox configuration step failed — ${d}`;
-
-  return d || (step.ok ? 'Passed' : 'Failed — no detail was recorded for this run');
-}
 
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   try {
-    const runs = listRunsForSuite(id);          // newest first
-    const statuses: Record<string, boolean> = {};
-    const details: Record<string, string> = {};
-    const lastRunAt: Record<string, string> = {};
-    /** The box's own words for this row: status (COMPLETED, ABORTED, …) and
-     *  verdict (PASS/FAIL). Absent when the row never reached the box. */
-    const box: Record<string, { status?: string; verdict?: string; stopped?: boolean; boxTestcaseId?: string }> = {};
-    for (const run of runs) {
-      for (const st of run?.steps ?? []) {
-        if (!st?.testcaseId || st.testcaseId in statuses) continue;
-        statuses[st.testcaseId] = !!st.ok;
-        details[st.testcaseId] = reasonFor(st);
-        box[st.testcaseId] = {
-          status: st.boxStatus, verdict: st.verdict, stopped: st.stopped,
-          // Which testcase on the box to open a report for.
-          boxTestcaseId: st.boxTestcaseId,
-        };
-        if (run.finishedAt) lastRunAt[st.testcaseId] = run.finishedAt;
-      }
-    }
-    return NextResponse.json({ ok: true, statuses, details, lastRunAt, box });
+    return NextResponse.json({ ok: true, ...rowOutcomes(id) });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
   }

@@ -86,7 +86,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       perfQaUrl: typeof body.perfQaUrl === 'string' ? body.perfQaUrl : undefined,
       perfQaProfile: typeof body.perfQaProfile === 'string' ? body.perfQaProfile : undefined,
       onProgress: (done, _total, current) => markRunning(id, done, current),
-      onStep: (step) => markStep(id, step.testcaseId, step.ok),
+      // The box's own status and verdict ride along, so a finished row reads
+      // the same live as it will once the run is saved.
+      onStep: (step) => markStep(id, step.testcaseId, step.ok, {
+        status: step.boxStatus, verdict: step.verdict, stopped: step.stopped,
+      }),
     });
     return NextResponse.json({ ok: true, result, runId: result.runId });
   } catch (e: any) {
