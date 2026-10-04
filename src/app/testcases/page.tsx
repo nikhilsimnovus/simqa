@@ -385,21 +385,35 @@ export default function TestcasesPage() {
                   </select>
                 </label>
               )}
-              {/* Only when the setup offers a choice — a single-login setup
-                  would just be a dropdown with one entry in it. */}
-              {boxUsers.length > 1 && (
+              {/* Always beside SIM, however many logins the box has.
+                  A one-login box used to show nothing here, so which operator
+                  the catalogue belonged to was invisible on that box and
+                  obvious on the one next to it — and an operator's token only
+                  lists their own testcases, so whose list this is matters
+                  exactly as much either way. With one login there is nothing
+                  to choose, so it reads rather than opens. */}
+              {boxUsers.length > 0 && (
                 <label className="flex items-center gap-1.5">
                   <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">USER</span>
-                  <select
-                    value={boxUserId}
-                    onChange={(e) => setBoxUserId(e.target.value)}
-                    className={TOOLBAR_CONTROL}
-                    title="The box login these testcases are listed and executed as"
-                  >
-                    {boxUsers.map((u) => (
-                      <option key={u.id} value={u.id}>{u.label ? `${u.username} — ${u.label}` : u.username}</option>
-                    ))}
-                  </select>
+                  {boxUsers.length > 1 ? (
+                    <select
+                      value={boxUserId}
+                      onChange={(e) => setBoxUserId(e.target.value)}
+                      className={TOOLBAR_CONTROL}
+                      title="The box login these testcases are listed and executed as"
+                    >
+                      {boxUsers.map((u) => (
+                        <option key={u.id} value={u.id}>{u.label ? `${u.username} — ${u.label}` : u.username}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span
+                      className={`${TOOLBAR_CONTROL} inline-flex items-center bg-slate-50 text-slate-700`}
+                      title="The box login these testcases are listed and executed as — the only one registered for this box"
+                    >
+                      {boxUsers[0].username}
+                    </span>
+                  )}
                 </label>
               )}
               <Input
