@@ -2,7 +2,7 @@
 
 import { Header } from '@/components/Header';
 import { Card, CardBody, CardHeader, CardTitle, Badge } from '@/components/ui';
-import { loadInventory, uesimApiOptsFromInventory, uesimApiCredentials } from '@/lib/inventory';
+import { loadInventory, uesimApiOptsFromInventory, uesimApiCredentials, listBoxUsers } from '@/lib/inventory';
 import { listSimulators, getTestcase } from '@/lib/uesimClient';
 import { listRuns } from '@/lib/runStore';
 import { AutoRefresh } from '@/components/AutoRefresh';
@@ -263,6 +263,22 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
 
   const [simqaRuns, activity] = await Promise.all([simqaRunsP, activityP]);
 
+  // Who is registered on this box — shown whether or not the box answered.
+  //
+  // The card used to render only when the activity read came back with users,
+  // so a box that was briefly unreachable, or one login that 401'd at the
+  // wrong moment, made every person on it disappear from the dashboard. The
+  // logins are inventory, not something the box tells us: SimQA always knows
+  // who is registered, and the honest view of an unreadable box is those
+  // people with "could not be read" against them, not an empty space where
+  // the card was.
+  const boxUsers: BoxUserState[] = activity?.users?.length
+    ? activity.users
+    : listBoxUsers(selectedSys).map((u) => ({
+        username: u.username,
+        error: boxLive ? 'could not read this login from the box' : 'the box is not answering',
+      }));
+
   const toRow = (e: BoxExecution) => ({
     key: `exec:${e.executionId}`,
     href: testcaseHref(primary!.id, e.testcaseId, e.user),
@@ -428,8 +444,8 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
             what that person is running right now. The Simnovator executes each
             user's testcases on their own simulator, so this is the answer to
             "who is using the box" — several can be running at once. */}
-        {activity && activity.users.length > 0 ? (
-          <BoxUsersCard host={primary?.host ?? ''} users={activity.users} systemId={primary!.id} selectedUser={selectedUser} range={selectedRange} />
+        {primary && boxUsers.length > 0 ? (
+          <BoxUsersCard host={primary.host} users={boxUsers} systemId={primary.id} selectedUser={selectedUser} range={selectedRange} />
         ) : null}
 
         {/* The bottom row takes whatever is left and never more: no items-start,
