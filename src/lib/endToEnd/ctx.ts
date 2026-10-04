@@ -4,6 +4,7 @@
 // discovery (auth token, executionId, testcase metadata) goes onto the ctx
 // so later checks don't have to re-fetch what earlier ones already learned.
 
+import type { BoxCheck } from '../boxExecutions';
 import type { Page, Browser } from 'playwright';
 import type { InventorySystem } from '../inventory';
 import type { CfgSelection } from '../labCfgLink';
@@ -75,6 +76,16 @@ export interface RunCtx {
   attachedExecution?: { executionId: string; startedAt: number };
   /** Wall-clock when COMPLETION saw a terminal status. */
   finishedAt?: number;
+
+  /**
+   * The box's own success conditions for this execution, as it published them
+   * — the metric table behind its verdict ("Achieved_Avg_DL_Throughput 70
+   * against >=95%, FAIL"). Filled in by the completion verdict check; the
+   * runner renders one row per condition, because the conditions are what
+   * decide the run and a report that shows only their conclusion cannot be
+   * checked against the box.
+   */
+  boxConditions?: BoxCheck[];
 
   // ── Optional Playwright browser (Phase 2). Lazy. ──
   browser?: Browser;

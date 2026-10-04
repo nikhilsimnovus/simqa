@@ -24,8 +24,9 @@ import { ALL_CHECKS, type CheckDef } from './checks';
 import { tryLaunchBrowser } from './browser';
 import type { RunCtx } from './ctx';
 import { decideRunResult, applyVerdictToChecks, boxVerdictOf } from './runVerdict';
+import { boxMetricName } from '../checkExplain';
 import type {
-  CheckResult, FinalReport, RunOptions, RunRequest, RunStatusSnapshot,
+  CheckResult, FinalReport, RunOptions, RunRequest, RunStatusSnapshot, Phase, Severity,
 } from './types';
 import { appendHistoryEntry } from '../historyStore';
 import { resolveBoxBuild } from '../buildVersion';
@@ -474,6 +475,31 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
   // for directly, so a testcase the box passes reads as passed here. SimQA's
   // checks still run and still report; they just stop being the authority on
   // the headline. With no verdict from the box, SimQA's own rule applies.
+  // The box's own success conditions, one row each.
+  //
+  // These are what the Simnovator judged the run on — the metric table it
+  // shows, "Achieved_Avg_DL_Throughput 70 against >=95%, FAIL" — and since its
+  // verdict decides the run here, the report has to show the conditions behind
+  // that verdict rather than only its conclusion. Critical, so they are never
+  // carried by applyVerdictToChecks: these ARE the failures.
+  //
+  // Filed under During Test, where the box-executed report already puts them:
+  // every one of them is measured on the traffic while the test runs, whatever
+  // moment the box evaluates them at.
+  const conditionRows: CheckResult[] = (ar.ctx.boxConditions ?? []).map((c, i) => ({
+    id: `box-condition:${c.group}:${c.name}:${i}`,
+    name: boxMetricName(c.name),
+    phase: 'during' as Phase,
+    severity: 'critical' as Severity,
+    description: c.condition ? `The Simnovator's own criterion: ${c.condition}` : `${c.group} condition`,
+    status: c.verdict ? ('pass' as const) : ('fail' as const),
+    detail: [
+      c.demand !== undefined ? `required ${c.demand}` : null,
+      c.achieved !== undefined ? `measured ${c.achieved}` : null,
+    ].filter(Boolean).join(' · ') || c.condition,
+  }));
+  if (conditionRows.length) results.push(...conditionRows);
+
   const verdict = decideRunResult({ canceled: ar.canceled, results });
   ar.finishedAt = new Date().toISOString();
   ar.ok = verdict.ok;

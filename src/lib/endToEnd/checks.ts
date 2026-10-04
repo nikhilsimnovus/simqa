@@ -22,6 +22,7 @@ import type { RunCtx } from './ctx';
 import { pollUntil, sleep } from './poll';
 import { pickUserSimulator } from '../simulatorScope';
 import { newCheckContext, loginUI, snapshot } from './browser';
+import { parseBoxExecutionDetails, type BoxCheck } from '../boxExecutions';
 
 // ───────────── Helpers ─────────────
 
@@ -1600,6 +1601,13 @@ const completionVerdictPresent: CheckDef = {
     if (r.status !== 200) return makeResult(base, 'fail', `testcase fetch returned ${r.status}`, { durationMs: r.durationMs });
     const result = String(r.body?.metadata?.lastExecution?.result ?? '').toUpperCase();
     if (!result) return makeResult(base, 'fail', 'no result field on lastExecution', { durationMs: r.durationMs });
+    // Keep the conditions behind the verdict — the metric table the box shows
+    // ("Achieved_Avg_DL_Throughput 70 against >=95%, FAIL"). The runner turns
+    // each into a row of its own, so the report says what the box judged and
+    // not merely what it concluded. Parsed by the same function the testcase
+    // page uses for box-executed runs, which is pure and tested.
+    const parsed = parseBoxExecutionDetails(r.body?.metadata?.lastExecution?.executionResultDetails);
+    ctx.boxConditions = parsed.checks;
     return makeResult(base, 'pass', `result=${result}`, { durationMs: r.durationMs });
   },
 };
