@@ -157,7 +157,7 @@ const CHECK_DISPLAY_NAMES: Record<string, string> = {
   'preflight-login': 'Simnovator Login',
   'preflight-testcase-exists': 'Test Case Available',
   'preflight-api-responsive': 'System/API Connection',
-  'preflight-simulators-available': 'Required Simulator Ready',
+  'preflight-simulators-available': 'Simnovator Available to Execute a Test Case',
   'preflight-cfg-bring-up': 'Callbox Configuration Ready',
   'preflight-ftp-anon-locked': 'Connectivity Check',
   'trigger-start-execution': 'Test Started Successfully',
