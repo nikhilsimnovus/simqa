@@ -286,12 +286,16 @@ export function CheckRow({ row, runId }: { row: CheckRowData; runId?: string }) 
               <a href={shot} target="_blank" rel="noreferrer" className="block w-fit">
                 <img
                   src={shot}
-                  alt="UE summary on the Simnovator while the test was running"
+                  alt={`The Simnovator's own screen when ${friendlyName(row)} ran`}
                   className="max-h-56 rounded border border-slate-200 bg-white hover:border-primary-400"
                 />
               </a>
+              {/* One caption for every picture: they are all the box's own
+                  screen, photographed while that check ran. It used to name
+                  the UE summary specifically, which was the only check taking
+                  one at the time. */}
               <div className="text-[10px] text-slate-400 mt-0.5">
-                UE summary on the box during the run — click to open full size
+                The Simnovator&apos;s own screen while this check ran — click to open full size
               </div>
             </div>
           ) : null}

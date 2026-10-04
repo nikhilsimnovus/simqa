@@ -19,6 +19,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import type { CheckResult, Phase, Severity } from './types';
 import type { RunCtx } from './ctx';
+import type { Page } from 'playwright';
 import { pollUntil, sleep } from './poll';
 import { pickUserSimulator } from '../simulatorScope';
 import { newCheckContext, loginUI, snapshot } from './browser';
@@ -117,6 +118,9 @@ const preflightLogin: CheckDef = {
   name: 'Login to Simnovator API',
   description: 'POST /v2/login returns a JWT. Required for everything else.',
   phase: 'preflight', severity: 'critical',
+  // For the screenshot only — the check is API-driven and never skips for
+  // want of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'preflight-login', name: 'Login to Simnovator API', phase: 'preflight' as Phase, severity: 'critical' as Severity, description: 'POST /v2/login returns a JWT. Required for everything else.' };
     const t0 = Date.now();
@@ -130,7 +134,10 @@ const preflightLogin: CheckDef = {
       const token = r.body?.access_token ?? r.body?.token ?? r.body?.jwt;
       if (!token) return makeResult(base, 'fail', 'login 200 but no access_token/token/jwt in response', { durationMs: Date.now() - t0 });
       ctx.token = token;
-      return makeResult(base, 'pass', `200 in ${r.durationMs}ms, token len=${token.length}`, { durationMs: Date.now() - t0 });
+      // The same credentials, used on the box's own UI — the picture is the
+      // box signed in, which is what the API answer means in practice.
+      const shot = await snapBoxPage(ctx, base.id, '/testcase');
+      return makeResult(base, 'pass', `200 in ${r.durationMs}ms, token len=${token.length}`, { durationMs: Date.now() - t0, ...shotEvidence(shot) });
     } catch (e: any) {
       return makeResult(base, 'fail', `login threw: ${e?.message ?? e}`, { durationMs: Date.now() - t0 });
     }
@@ -142,6 +149,9 @@ const preflightTestcaseExists: CheckDef = {
   name: 'Testcase exists',
   description: 'GET /v2/testcases/{id} returns 200 with a parsed testDefinition.',
   phase: 'preflight', severity: 'critical',
+  // For the screenshot only — the check is API-driven and never skips for
+  // want of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'preflight-testcase-exists', name: 'Testcase exists', phase: 'preflight' as Phase, severity: 'critical' as Severity, description: 'GET /v2/testcases/{id} returns 200 with a parsed testDefinition.' };
     if (!ctx.token) return makeResult(base, 'skip', 'no token (login failed)');
@@ -178,7 +188,8 @@ const preflightTestcaseExists: CheckDef = {
     }
 
     const durStr = ctx.configuredDurationSec ? ` configuredDuration=${ctx.configuredDurationSec}s` : ' (no duration found — completion will use default 60s)';
-    return makeResult(base, 'pass', `id=${ctx.testcaseId} name="${ctx.testcaseName}"${durStr}`, { durationMs: r.durationMs });
+    const shot = await snapBoxPage(ctx, base.id, '/testcase');
+    return makeResult(base, 'pass', `id=${ctx.testcaseId} name="${ctx.testcaseName}"${durStr}`, { durationMs: r.durationMs, ...shotEvidence(shot) });
   },
 };
 
@@ -187,13 +198,17 @@ const preflightApiResponsive: CheckDef = {
   name: 'Simnovator API is responsive',
   description: 'GET /v2/simulators returns 2xx in under 5 seconds.',
   phase: 'preflight', severity: 'normal',
+  // For the screenshot only — the check is API-driven and never skips for
+  // want of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'preflight-api-responsive', name: 'Simnovator API is responsive', phase: 'preflight' as Phase, severity: 'normal' as Severity, description: 'GET /v2/simulators returns 2xx in under 5 seconds.' };
     if (!ctx.token) return makeResult(base, 'skip', 'no token');
     const r = await jsonFetch(`${apiBase(ctx.systemHost)}/simulators`, { headers: authHeaders(ctx) });
     if (r.status !== 200) return makeResult(base, 'fail', `got ${r.status}`, { durationMs: r.durationMs });
     const slow = r.durationMs > 5000;
-    return makeResult(base, slow ? 'fail' : 'pass', `200 in ${r.durationMs}ms${slow ? ' (slow, > 5s)' : ''}`, { durationMs: r.durationMs });
+    const shot = await snapBoxPage(ctx, base.id, '/testcase');
+    return makeResult(base, slow ? 'fail' : 'pass', `200 in ${r.durationMs}ms${slow ? ' (slow, > 5s)' : ''}`, { durationMs: r.durationMs, ...shotEvidence(shot) });
   },
 };
 
@@ -202,6 +217,9 @@ const preflightSimulatorsAvailable: CheckDef = {
   name: 'Required simulators are available',
   description: 'The testcase\'s simulator must be CONNECTED + AVAILABLE, AND no other simulator on the system can be BUSY (Simnovator enforces a system-wide mutex on test executions).',
   phase: 'preflight', severity: 'critical',
+  // For the screenshot only — the check is API-driven and never skips for
+  // want of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'preflight-simulators-available', name: 'Required simulators are available', phase: 'preflight' as Phase, severity: 'critical' as Severity, description: 'The testcase\'s simulator must be CONNECTED + AVAILABLE, AND no other simulator on the system can be BUSY (Simnovator enforces a system-wide mutex on test executions).' };
     if (!ctx.token) return makeResult(base, 'skip', 'no token');
@@ -357,9 +375,10 @@ const preflightSimulatorsAvailable: CheckDef = {
           `"${match.name}" state is not ready: connectivity=${match.connectivity} availability=${match.availability}${isStaleBusy(String(match.id)) ? ' (stale, ignored)' : ''} stability=${match.stability}`,
           { durationMs: r.durationMs });
       }
+      const shot = await snapBoxPage(ctx, base.id, '/tools/simulator-management');
       return makeResult(base, 'pass',
         `"${match.name}" CONNECTED+AVAILABLE+STABLE${busySims.length === 0 ? ' (system idle, no other test running)' : ''}${staleNote}`,
-        { durationMs: r.durationMs });
+        { durationMs: r.durationMs, ...shotEvidence(shot) });
     }
 
     // No specific sim in testcase metadata — just check at least one is ready
@@ -370,9 +389,10 @@ const preflightSimulatorsAvailable: CheckDef = {
         `no simulator is CONNECTED+AVAILABLE+STABLE (have ${items.length} total)`,
         { durationMs: r.durationMs });
     }
+    const shot = await snapBoxPage(ctx, base.id, '/tools/simulator-management');
     return makeResult(base, 'pass',
       `${ready.length} of ${items.length} simulator(s) are CONNECTED+AVAILABLE+STABLE: ${ready.map((s) => s.name).join(', ')}${staleNote}`,
-      { durationMs: r.durationMs });
+      { durationMs: r.durationMs, ...shotEvidence(shot) });
   },
 };
 
@@ -1217,6 +1237,61 @@ function duringDeadline(ctx: RunCtx): number {
  * is taken WHILE the run is in flight, which is the only time that page shows
  * this execution's UEs.
  */
+/**
+ * One logged-in page on the box's own UI, shared by every check that wants a
+ * picture.
+ *
+ * Each screenshot used to mean its own browser context and its own GUI login;
+ * on the preflight checks, which all photograph the same box moments apart,
+ * that is four logins to show four pages. Opened on first use — a run with no
+ * browser, or a box whose GUI refuses the login, simply gets no pictures and
+ * every check still reports.
+ */
+async function boxUi(ctx: RunCtx): Promise<Page | undefined> {
+  if (!ctx.browser) return undefined;
+  if (ctx.uiPage) return ctx.uiPage;
+  if (ctx.uiLoginFailed) return undefined;
+  try {
+    const c = await newCheckContext(ctx.browser);
+    const lr = await loginUI(c.page, ctx.systemHost, ctx.apiUser, ctx.apiPass);
+    if (!lr.ok) {
+      ctx.uiLoginFailed = true;
+      try { await c.context.close(); } catch { /* nothing to do about it */ }
+      return undefined;
+    }
+    ctx.uiContext = c.context;
+    ctx.uiPage = c.page;
+    return c.page;
+  } catch {
+    ctx.uiLoginFailed = true;
+    return undefined;
+  }
+}
+
+/**
+ * A photograph of the box's own page for a check, so the report shows what was
+ * looked at and not only what was concluded.
+ *
+ * Evidence, never a verdict: the check has already decided by the time this
+ * runs, and a failure here returns no picture rather than changing anything.
+ */
+async function snapBoxPage(ctx: RunCtx, checkId: string, pathname: string, waitMs = 1800): Promise<string | undefined> {
+  const page = await boxUi(ctx);
+  if (!page) return undefined;
+  try {
+    await page.goto(`http://${ctx.systemHost}${pathname}`, { waitUntil: 'domcontentloaded' });
+    // These pages fill from a follow-up fetch; a shot at domcontentloaded
+    // catches an empty frame.
+    await sleep(waitMs, ctx.isCanceled);
+    return await snapshot(page, ctx.evidenceDir, checkId);
+  } catch {
+    return undefined;
+  }
+}
+
+/** `evidence` for a result, or nothing when no picture was taken. */
+const shotEvidence = (file?: string) => (file ? { evidence: { screenshotFile: file } } : {});
+
 async function snapUeSummary(ctx: RunCtx, checkId: string): Promise<string | undefined> {
   if (!ctx.browser || !ctx.executionId) return undefined;
   let context;

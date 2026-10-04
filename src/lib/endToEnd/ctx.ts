@@ -5,7 +5,7 @@
 // so later checks don't have to re-fetch what earlier ones already learned.
 
 import type { BoxCheck } from '../boxExecutions';
-import type { Page, Browser } from 'playwright';
+import type { Page, Browser, BrowserContext } from 'playwright';
 import type { InventorySystem } from '../inventory';
 import type { CfgSelection } from '../labCfgLink';
 
@@ -76,6 +76,13 @@ export interface RunCtx {
   attachedExecution?: { executionId: string; startedAt: number };
   /** Wall-clock when COMPLETION saw a terminal status. */
   finishedAt?: number;
+
+  /** A logged-in page on the box's UI, opened on first use and shared by
+   *  every check that photographs it — see boxUi() in checks.ts. */
+  uiContext?: BrowserContext;
+  uiPage?: Page;
+  /** The GUI login was tried and refused; do not try again this run. */
+  uiLoginFailed?: boolean;
 
   /**
    * The box's own success conditions for this execution, as it published them
