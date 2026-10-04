@@ -1581,12 +1581,19 @@ export default function AutomationSuitePage() {
                           <span className="text-slate-400 text-[10px] w-3">{open ? '▼' : '▶'}</span>
                           <h3 className="text-sm font-semibold text-slate-900 truncate group-hover:underline" title={s.name}>{s.name}</h3>
                           {/* What a collapsed card still has to say: how big it
-                              is, and which box it runs on. */}
+                              is, which box it runs on — and as whom, since a
+                              Simnovator login only sees its own testcases, so
+                              the box alone does not say where these came
+                              from. */}
                           <span className="text-[11px] text-slate-500 whitespace-nowrap">
                             {(s.items ?? []).length} test case{(s.items ?? []).length === 1 ? '' : 's'}
                           </span>
                           <span className="text-[11px] font-mono text-slate-400 truncate hidden sm:inline">
                             {hostOf(s.uesimSystemId)}
+                          </span>
+                          <span className="text-[11px] text-slate-400 truncate hidden sm:inline"
+                            title={`Runs as ${userOf(s)}`}>
+                            · {userOf(s)}
                           </span>
                         </button>
                         {running === s.id || (boxBusy && progress?.suiteId === s.id) ? (
@@ -1614,6 +1621,16 @@ export default function AutomationSuitePage() {
                         <div>
                           <dt className="text-slate-500">Simnovator</dt>
                           <dd className="font-mono text-slate-800 truncate">{hostOf(s.uesimSystemId) || '–'}</dd>
+                        </div>
+                        {/* Beside the box, because it is part of the same
+                            answer: a Simnovator login only sees its own
+                            testcases, so "which box" is half of where these
+                            rows come from and who they run as is the other. */}
+                        <div>
+                          <dt className="text-slate-500">User</dt>
+                          <dd className="text-slate-800 truncate" title={`Every test case in this suite executes on ${hostOf(s.uesimSystemId) || 'the box'} as ${userOf(s)}`}>
+                            {userOf(s)}
+                          </dd>
                         </div>
                         <div>
                           <dt className="text-slate-500">Setup</dt>
