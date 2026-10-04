@@ -23,6 +23,7 @@ import { notifyRunFinished } from '../notify';
 import { ALL_CHECKS, type CheckDef } from './checks';
 import { tryLaunchBrowser } from './browser';
 import type { RunCtx } from './ctx';
+import { decideRunResult } from './runVerdict';
 import type {
   CheckResult, FinalReport, RunOptions, RunRequest, RunStatusSnapshot,
 } from './types';
@@ -450,46 +451,20 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
     ar.ctx.browser = undefined;
   }
 
-  // Verdict:
-  //   • aborted             → ok=false ("aborted")
-  //   • any critical FAIL   → ok=false ("N critical check(s) failed")
-  //   • any critical SKIPPED (prerequisite missing, browser unavailable, etc.)
-  //                          → ok=false ("N critical check(s) skipped — incomplete validation")
-  //   • non-critical fails  → ok=true  but flagged ("N non-critical fail(s)")
-  //   • zero passes at all  → ok=false ("nothing ran" — covers the onlyCheckIds=[] edge)
-  //   • otherwise           → ok=true ("M of N checks passed")
-  const passed         = results.filter((r) => r.status === 'pass').length;
-  const failed         = results.filter((r) => r.status === 'fail').length;
-  const skipped        = results.filter((r) => r.status === 'skip').length;
-  const criticalFailed = results.some((r) => r.status === 'fail' && r.severity === 'critical');
-  const criticalSkipped = results.filter((r) => r.status === 'skip' && r.severity === 'critical');
+  // Verdict: decided in runVerdict.ts, which is pure and unit-tested.
+  //
+  // The Simnovator's verdict decides the run where it published one — asked
+  // for directly, so a testcase the box passes reads as passed here. SimQA's
+  // checks still run and still report; they just stop being the authority on
+  // the headline. With no verdict from the box, SimQA's own rule applies.
+  const passed  = results.filter((r) => r.status === 'pass').length;
+  const failed  = results.filter((r) => r.status === 'fail').length;
+  const skipped = results.filter((r) => r.status === 'skip').length;
 
+  const verdict = decideRunResult({ canceled: ar.canceled, results });
   ar.finishedAt = new Date().toISOString();
-  if (ar.canceled) {
-    ar.ok = false;
-    ar.finalDetail = 'aborted';
-  } else if (criticalFailed) {
-    const n = results.filter((r) => r.status === 'fail' && r.severity === 'critical').length;
-    ar.ok = false;
-    ar.finalDetail = `${n} critical check(s) failed`;
-  } else if (criticalSkipped.length > 0 && passed === 0) {
-    ar.ok = false;
-    ar.finalDetail = `${criticalSkipped.length} critical check(s) skipped — validation incomplete (${criticalSkipped[0].skippedReason ?? 'no detail'})`;
-  } else if (passed === 0 && failed === 0 && skipped > 0) {
-    // Everything skipped, no failures. Common when onlyCheckIds points at
-    // checks whose preflight prerequisites passed but the targeted check
-    // wasn't reachable for some reason — treat as inconclusive.
-    ar.ok = false;
-    ar.finalDetail = `nothing ran successfully — ${skipped} skipped`;
-  } else if (failed > 0) {
-    ar.ok = true;  // non-critical fails don't fail the overall verdict
-    ar.finalDetail = `${passed} passed · ${failed} non-critical fail(s) · ${skipped} skipped`;
-  } else {
-    ar.ok = true;
-    ar.finalDetail = skipped > 0
-      ? `${passed} passed, ${skipped} skipped`
-      : `all ${passed} check(s) passed`;
-  }
+  ar.ok = verdict.ok;
+  ar.finalDetail = verdict.finalDetail;
 
   // Persist the report. The active-runs map gets cleared on the next
   // status call after a 30s grace period so the page has a chance to see
