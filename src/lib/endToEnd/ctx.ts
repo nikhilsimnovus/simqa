@@ -86,6 +86,9 @@ export interface RunCtx {
   uiPage?: Page;
   /** The GUI login was tried and refused; do not try again this run. */
   uiLoginFailed?: boolean;
+  /** The statistics page's time range has been set to Since Beginning. It
+   *  belongs to the page, so it is applied once and reused. */
+  kpiSinceBeginning?: boolean;
 
   /**
    * The box's own success conditions for this execution, as it published them

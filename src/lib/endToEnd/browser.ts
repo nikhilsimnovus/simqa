@@ -106,3 +106,41 @@ export async function snapshot(page: Page, evidenceDir: string, checkId: string)
     return path.relative(evidenceDir, file).split(path.sep).join('/');
   } catch { return undefined; }
 }
+
+/**
+ * Save a screenshot of ONE element — a chart card, a panel — rather than the
+ * whole page.
+ *
+ * The box's KPI cards have a zoom control that is not always in the DOM, so
+ * the reliable way to get a large readable chart is to photograph the card
+ * itself. Same path and return shape as snapshot(), so callers can use either.
+ */
+export async function snapshotOf(
+  page: Page,
+  selectorText: string,
+  evidenceDir: string,
+  checkId: string,
+): Promise<string | undefined> {
+  try {
+    const box = await page.evaluateHandle((title: string) => {
+      const heads = [...document.querySelectorAll('h1,h2,h3,h4,h5,div,span')];
+      const head = heads.find((e) => e.children.length === 0 && (e.textContent ?? '').trim() === title);
+      // Walk up to the card: the first ancestor appreciably taller than the
+      // heading is the chart's own box.
+      let el: HTMLElement | null = (head as HTMLElement) ?? null;
+      for (let up = 0; up < 6 && el; up++) {
+        if (el.getBoundingClientRect().height > 180) return el;
+        el = el.parentElement;
+      }
+      return null;
+    }, selectorText);
+    const el = box.asElement();
+    if (!el) return undefined;
+    const dir = path.join(evidenceDir, checkId);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'screenshot.png');
+    await el.scrollIntoViewIfNeeded();
+    await el.screenshot({ path: file });
+    return path.relative(evidenceDir, file).split(path.sep).join('/');
+  } catch { return undefined; }
+}

@@ -22,7 +22,7 @@ import type { RunCtx } from './ctx';
 import type { Page } from 'playwright';
 import { pollUntil, sleep } from './poll';
 import { pickUserSimulator } from '../simulatorScope';
-import { newCheckContext, loginUI, snapshot } from './browser';
+import { newCheckContext, loginUI, snapshot, snapshotOf } from './browser';
 import { parseBoxExecutionDetails, type BoxCheck } from '../boxExecutions';
 
 // ───────────── Helpers ─────────────
@@ -835,6 +835,9 @@ const duringThroughputFlowing: CheckDef = {
   name: `Downlink throughput ≥ ${DL_MIN_KBPS} kbps`,
   description: `GET /v2/testcases/executions/{eid}/statistics/cells — some cell's dl_bitrate must reach ${DL_MIN_KBPS} kbps within a duration-scaled window.`,
   phase: 'during', severity: 'normal',
+  // For the KPI picture only — the check is API-driven and never skips for
+  // want of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'during-throughput-flowing', name: `Downlink throughput ≥ ${DL_MIN_KBPS} kbps`, phase: 'during' as Phase, severity: 'normal' as Severity, description: `GET /v2/testcases/executions/{eid}/statistics/cells — some cell's dl_bitrate must reach ${DL_MIN_KBPS} kbps within a duration-scaled window.` };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
@@ -858,7 +861,8 @@ const duringThroughputFlowing: CheckDef = {
       return undefined;
     }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
     if (!r.ok) return makeResult(base, 'fail', `DL peaked at ${(peak / 1000).toFixed(1)} kbps after ${(r.elapsedMs / 1000).toFixed(1)}s — never reached ${DL_MIN_KBPS} kbps (poll window ${(timeoutMs / 1000).toFixed(0)}s — scaled from configuredDuration)`, { durationMs: r.elapsedMs });
-    return makeResult(base, 'pass', `DL=${((r.value as number) / 1000).toFixed(1)} kbps after ${(r.elapsedMs / 1000).toFixed(1)}s (≥ ${DL_MIN_KBPS} kbps)`, { durationMs: r.elapsedMs });
+    const shot = await snapKpi(ctx, base.id, 'Throughput');
+    return makeResult(base, 'pass', `DL=${((r.value as number) / 1000).toFixed(1)} kbps after ${(r.elapsedMs / 1000).toFixed(1)}s (≥ ${DL_MIN_KBPS} kbps)`, { durationMs: r.elapsedMs, ...shotEvidence(shot) });
   },
 };
 
@@ -867,6 +871,9 @@ const duringUlThroughputFlowing: CheckDef = {
   name: `Uplink throughput ≥ ${UL_MIN_KBPS} kbps`,
   description: `GET /v2/testcases/executions/{eid}/statistics/cells — some cell's ul_bitrate must reach ${UL_MIN_KBPS} kbps within a duration-scaled window.`,
   phase: 'during', severity: 'normal',
+  // For the KPI picture only — the check is API-driven and never skips for
+  // want of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'during-ul-throughput-flowing', name: `Uplink throughput ≥ ${UL_MIN_KBPS} kbps`, phase: 'during' as Phase, severity: 'normal' as Severity, description: `GET /v2/testcases/executions/{eid}/statistics/cells — some cell's ul_bitrate must reach ${UL_MIN_KBPS} kbps within a duration-scaled window.` };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
@@ -886,7 +893,8 @@ const duringUlThroughputFlowing: CheckDef = {
       return undefined;
     }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
     if (!r.ok) return makeResult(base, 'fail', `UL peaked at ${(peak / 1000).toFixed(1)} kbps after ${(r.elapsedMs / 1000).toFixed(1)}s — never reached ${UL_MIN_KBPS} kbps (poll window ${(timeoutMs / 1000).toFixed(0)}s — scaled from configuredDuration)`, { durationMs: r.elapsedMs });
-    return makeResult(base, 'pass', `UL=${((r.value as number) / 1000).toFixed(1)} kbps after ${(r.elapsedMs / 1000).toFixed(1)}s (≥ ${UL_MIN_KBPS} kbps)`, { durationMs: r.elapsedMs });
+    const shot = await snapKpi(ctx, base.id, 'Throughput');
+    return makeResult(base, 'pass', `UL=${((r.value as number) / 1000).toFixed(1)} kbps after ${(r.elapsedMs / 1000).toFixed(1)}s (≥ ${UL_MIN_KBPS} kbps)`, { durationMs: r.elapsedMs, ...shotEvidence(shot) });
   },
 };
 
@@ -1358,6 +1366,129 @@ function tcpReachable(host: string, port = 22, timeoutMs = 1500): Promise<boolea
 /** `evidence` for a result, or nothing when no picture was taken. */
 const shotEvidence = (file?: string) => (file ? { evidence: { screenshotFile: file } } : {});
 
+/**
+ * One KPI chart from the box's own statistics page, over the whole execution
+ * and opened in its zoomed view.
+ *
+ * The page defaults to a rolling live window, which shows the last few seconds
+ * of a run and nothing of what came before — so the time range is set to
+ * "Since Beginning" first. That setting belongs to the page, not the chart, so
+ * it is applied once per run and reused.
+ *
+ * `card` is the chart's own heading on that page: Throughput, Packets/Sec,
+ * Scheduled UE, CPU, Message Counter.
+ */
+async function snapKpi(ctx: RunCtx, checkId: string, card: string): Promise<string | undefined> {
+  const page = await boxUi(ctx);
+  if (!page || !ctx.executionId) return undefined;
+  try {
+    const url = `http://${ctx.systemHost}/statistics?iterationId=${encodeURIComponent(ctx.executionId)}`;
+    if (!page.url().startsWith(`http://${ctx.systemHost}/statistics`)) {
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      await sleep(2500, ctx.isCanceled);
+    }
+
+    if (!ctx.kpiSinceBeginning) {
+      try {
+        await page.locator('[aria-label="Open settings"]').first().click({ timeout: 5000 });
+        await sleep(800, ctx.isCanceled);
+        await page.getByText('Since Beginning', { exact: true }).first().click({ timeout: 5000 });
+        await page.getByText('Apply Changes', { exact: true }).first().click({ timeout: 5000 });
+        await sleep(2000, ctx.isCanceled);
+        ctx.kpiSinceBeginning = true;
+      } catch {
+        // A live-window picture is worth more than no picture; carry on.
+      }
+    }
+
+    // The zoom button belongs to the card, and the cards are not addressable
+    // by anything but their heading — so walk up from the heading to whichever
+    // ancestor owns a zoom button.
+    // Applying the time range re-renders the cards, so the first look can miss
+    // them entirely. Try a few times before giving up on the zoom.
+    let zoomed = false;
+    for (let attempt = 1; attempt <= 3 && !zoomed; attempt++) {
+      // From the button, not the title: the heading is not always a leaf of
+      // its own, so walking down from it misses. Every zoom button, however,
+      // sits a few levels under the card that carries the title.
+      zoomed = await page.evaluate((title: string) => {
+        const buttons = [...document.querySelectorAll('button[aria-label="Open zoomed view"]')] as HTMLButtonElement[];
+        const owns = (btn: HTMLButtonElement) => {
+          let el: HTMLElement | null = btn.parentElement;
+          for (let up = 0; up < 5 && el; up++) {
+            if ((el.textContent ?? '').includes(title)) return true;
+            el = el.parentElement;
+          }
+          return false;
+        };
+        const btn = buttons.find(owns);
+        if (!btn) return false;
+        btn.click();
+        return true;
+      }, card).catch(() => false);
+      if (!zoomed) await sleep(1200, ctx.isCanceled);
+    }
+    await sleep(zoomed ? 1800 : 600, ctx.isCanceled);
+
+    // Without a zoom control — it is absent on build 4.1.0-qadrop.3, where the
+    // page says "click and drag right to zoom" instead — photograph the card
+    // itself. Same chart, same size, and it does not depend on a button that
+    // comes and goes between builds.
+    const file = zoomed
+      ? await snapshot(page, ctx.evidenceDir, checkId)
+      : (await snapshotOf(page, card, ctx.evidenceDir, checkId))
+        ?? await snapshot(page, ctx.evidenceDir, checkId);
+    // Leave the zoom so the next check starts from the page, not a dialogue.
+    if (zoomed) { await page.keyboard.press('Escape').catch(() => {}); await sleep(500, ctx.isCanceled); }
+    return file;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The box's own report for this testcase, opened the way a person opens it:
+ * find the row in My Tests, click its verdict.
+ *
+ * That badge is the link to the report on the Simnovator, so the picture is
+ * the box's own account of the run — which is the thing SimQA's verdict row
+ * is quoting.
+ */
+async function snapVerdictReport(ctx: RunCtx, checkId: string): Promise<string | undefined> {
+  const page = await boxUi(ctx);
+  if (!page || !ctx.testcaseName) return undefined;
+  try {
+    await page.goto(`http://${ctx.systemHost}/testcase`, { waitUntil: 'domcontentloaded' });
+    await sleep(2200, ctx.isCanceled);
+    const opened = await page.evaluate((name: string) => {
+      const leaf = [...document.querySelectorAll('*')].find(
+        (e) => e.children.length === 0 && (e.textContent ?? '').trim() === name);
+      const row = leaf?.closest('tr');
+      if (!row) return false;
+      // The VERDICT cell, by its column — not the first badge in the row,
+      // which is Status and says things like "Aborted" that look like a
+      // verdict and are not clickable.
+      const table = row.closest('table');
+      const heads = [...(table?.querySelectorAll('thead th') ?? [])];
+      const col = heads.findIndex((h) => /^verdict$/i.test((h.textContent ?? '').trim()));
+      const cell = col >= 0 ? row.children[col] as HTMLElement | undefined : undefined;
+      const badge = cell
+        ? ([...cell.querySelectorAll('*')].find((e) => e.children.length === 0 && (e.textContent ?? '').trim())
+            ?? cell) as HTMLElement
+        : undefined;
+      if (!badge) return false;
+      badge.click();
+      return true;
+    }, ctx.testcaseName).catch(() => false);
+    // Opened or not, photograph what is on screen: the report if the click
+    // landed, the row itself if the box offers none.
+    await sleep(opened ? 2800 : 800, ctx.isCanceled);
+    return await snapshot(page, ctx.evidenceDir, checkId);
+  } catch {
+    return undefined;
+  }
+}
+
 async function snapUeSummary(ctx: RunCtx, checkId: string): Promise<string | undefined> {
   if (!ctx.browser || !ctx.executionId) return undefined;
   let context;
@@ -1415,6 +1546,9 @@ const duringUeStability: CheckDef = {
   name: 'No UEs drop out mid-run',
   description: 'Samples totalUEs through the run window; the count must never fall below its peak (silent mid-run deregistration).',
   phase: 'during', severity: 'normal',
+  // For the KPI picture only — the check is API-driven and never skips for
+  // want of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'during-ue-count-stable', name: 'No UEs drop out mid-run', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'Samples totalUEs through the run window; the count must never fall below its peak (silent mid-run deregistration).' };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
@@ -1433,10 +1567,13 @@ const duringUeStability: CheckDef = {
     }
     const dur = Date.now() - t0;
     if (samples < 2 || peak === 0) return makeResult(base, 'skip', `not enough UE-count samples (${samples}) to judge stability`, { durationMs: dur });
+    // The UE summary either way: with everyone connected, or as it looked
+    // when the count fell — the drop is the thing worth photographing.
+    const shot = await snapUeSummary(ctx, base.id);
     if (minAfterPeak < peak) {
-      return makeResult(base, 'fail', `UE count dropped from peak ${peak} to ${minAfterPeak} mid-run (${peak - minAfterPeak} UE(s) silently deregistered)`, { durationMs: dur });
+      return makeResult(base, 'fail', `UE count dropped from peak ${peak} to ${minAfterPeak} mid-run (${peak - minAfterPeak} UE(s) silently deregistered)`, { durationMs: dur, ...shotEvidence(shot) });
     }
-    return makeResult(base, 'pass', `UE count held at peak ${peak} across ${samples} samples (${(dur / 1000).toFixed(0)}s window)`, { durationMs: dur });
+    return makeResult(base, 'pass', `UE count held at peak ${peak} across ${samples} samples (${(dur / 1000).toFixed(0)}s window)`, { durationMs: dur, ...shotEvidence(shot) });
   },
 };
 
@@ -1445,6 +1582,9 @@ const duringThroughputStability: CheckDef = {
   name: 'DL throughput is stable (not just nonzero)',
   description: 'Samples total DL throughput; after ramp-up, the minimum must stay ≥ 40% of the established mean and variation must be bounded. Catches oscillation and mid-run collapse.',
   phase: 'during', severity: 'normal',
+  // For the KPI picture only — the check is API-driven and never skips for
+  // want of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'during-throughput-stability', name: 'DL throughput is stable (not just nonzero)', phase: 'during' as Phase, severity: 'normal' as Severity, description: 'Samples total DL throughput; after ramp-up, the minimum must stay ≥ 40% of the established mean and variation must be bounded. Catches oscillation and mid-run collapse.' };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
@@ -1475,10 +1615,11 @@ const duringThroughputStability: CheckDef = {
     const cv = mean > 0 ? sd / mean : 0;
     const fmt = (v: number) => v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(0)}k` : v.toFixed(0);
     const summary = `mean=${fmt(mean)} min=${fmt(min)} (${((min / mean) * 100).toFixed(0)}% of mean) cv=${cv.toFixed(2)} over ${est.length} samples`;
+    const shot = await snapKpi(ctx, base.id, 'Throughput');
     if (min < mean * 0.4 || cv > 0.4) {
-      return makeResult(base, 'fail', `DL throughput unstable: ${summary} — drops/oscillation beyond tolerance`, { durationMs: dur });
+      return makeResult(base, 'fail', `DL throughput unstable: ${summary} — drops/oscillation beyond tolerance`, { durationMs: dur, ...shotEvidence(shot) });
     }
-    return makeResult(base, 'pass', `DL stable: ${summary}`, { durationMs: dur });
+    return makeResult(base, 'pass', `DL stable: ${summary}`, { durationMs: dur, ...shotEvidence(shot) });
   },
 };
 
@@ -1684,6 +1825,9 @@ const completionStatusTerminal: CheckDef = {
   name: 'Execution reaches a terminal state',
   description: 'Status becomes COMPLETED / STOPPED / FAILED within configured duration + grace.',
   phase: 'completion', severity: 'critical',
+  // For the picture only — the check is API-driven and never skips for want
+  // of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'completion-status-terminal', name: 'Execution reaches a terminal state', phase: 'completion' as Phase, severity: 'critical' as Severity, description: 'Status becomes COMPLETED / STOPPED / FAILED within configured duration + grace.' };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
@@ -1699,7 +1843,8 @@ const completionStatusTerminal: CheckDef = {
     }, { intervalMs: 5000, timeoutMs, isCanceled: ctx.isCanceled });
     if (!r.ok) return makeResult(base, 'fail', `did not reach terminal state in ${(timeoutMs / 1000).toFixed(0)}s (reason=${r.reason})`, { durationMs: r.elapsedMs });
     ctx.finishedAt = Date.now();
-    return makeResult(base, 'pass', `terminal status=${r.value} after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs });
+    const shot = await snapBoxPage(ctx, base.id, '/testcase', { highlight: ctx.testcaseName });
+    return makeResult(base, 'pass', `terminal status=${r.value} after ${(r.elapsedMs / 1000).toFixed(1)}s`, { durationMs: r.elapsedMs, ...shotEvidence(shot) });
   },
 };
 
@@ -1708,6 +1853,9 @@ const completionDurationSane: CheckDef = {
   name: 'Observed duration matches configured duration',
   description: 'Wall-clock duration within ±20% of configured duration.',
   phase: 'completion', severity: 'normal',
+  // For the picture only — the check is API-driven and never skips for want
+  // of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'completion-duration-sane', name: 'Observed duration matches configured duration', phase: 'completion' as Phase, severity: 'normal' as Severity, description: 'Wall-clock duration within ±20% of configured duration.' };
     if (!ctx.triggeredAt || !ctx.finishedAt) return makeResult(base, 'skip', 'trigger or completion timestamp missing');
@@ -1724,7 +1872,8 @@ const completionDurationSane: CheckDef = {
     // one, hence additive slack rather than a bigger multiplier.
     const hi = configured * 1.2 + ATTACH_SETTLE_MS / 1000;
     if (observedSec >= lo && observedSec <= hi) {
-      return makeResult(base, 'pass', `observed=${observedSec.toFixed(1)}s configured=${configured}s (within ±20% + ${(ATTACH_SETTLE_MS / 1000).toFixed(0)}s slack)`);
+      const shot = await snapBoxPage(ctx, base.id, '/testcase', { highlight: ctx.testcaseName });
+    return makeResult(base, 'pass', `observed=${observedSec.toFixed(1)}s configured=${configured}s (within ±20% + ${(ATTACH_SETTLE_MS / 1000).toFixed(0)}s slack)`, shotEvidence(shot));
     }
     return makeResult(base, 'fail', `observed=${observedSec.toFixed(1)}s configured=${configured}s — outside [${lo.toFixed(0)}, ${hi.toFixed(0)}]s`);
   },
@@ -1735,6 +1884,9 @@ const completionVerdictPresent: CheckDef = {
   name: 'Execution has a verdict / result',
   description: 'metadata.lastExecution.result is one of PASS / FAIL / INCOMPLETE.',
   phase: 'completion', severity: 'normal',
+  // For the picture only — the check is API-driven and never skips for want
+  // of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'completion-verdict-present', name: 'Execution has a verdict / result', phase: 'completion' as Phase, severity: 'normal' as Severity, description: 'metadata.lastExecution.result is one of PASS / FAIL / INCOMPLETE.' };
     if (!ctx.token || !ctx.executionId) return makeResult(base, 'skip', 'no executionId');
@@ -1749,7 +1901,8 @@ const completionVerdictPresent: CheckDef = {
     // page uses for box-executed runs, which is pure and tested.
     const parsed = parseBoxExecutionDetails(r.body?.metadata?.lastExecution?.executionResultDetails);
     ctx.boxConditions = parsed.checks;
-    return makeResult(base, 'pass', `result=${result}`, { durationMs: r.durationMs });
+    const shot = await snapVerdictReport(ctx, base.id);
+    return makeResult(base, 'pass', `result=${result}`, { durationMs: r.durationMs, ...shotEvidence(shot) });
   },
 };
 
