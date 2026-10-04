@@ -23,7 +23,7 @@ import { notifyRunFinished } from '../notify';
 import { ALL_CHECKS, type CheckDef } from './checks';
 import { tryLaunchBrowser } from './browser';
 import type { RunCtx } from './ctx';
-import { decideRunResult } from './runVerdict';
+import { decideRunResult, applyVerdictToChecks, boxVerdictOf } from './runVerdict';
 import type {
   CheckResult, FinalReport, RunOptions, RunRequest, RunStatusSnapshot,
 } from './types';
@@ -275,6 +275,8 @@ export function abortRun(runId: string): boolean {
 
 export function listRuns(): Array<{
   runId: string; startedAt: string; finishedAt?: string; ok?: boolean;
+  /** The Simnovator's verdict for this execution, where it published one. */
+  verdict?: string;
   systemId: string; systemHost?: string; testcaseId: string; testcaseName?: string;
   executionId?: string;
   counts?: { total: number; passed: number; failed: number; skipped: number };
@@ -288,11 +290,26 @@ export function listRuns(): Array<{
       if (!fs.existsSync(reportPath)) return null;
       try {
         const r = JSON.parse(fs.readFileSync(reportPath, 'utf-8')) as FinalReport;
+        // Reports written before the Simnovator's verdict decided the run keep
+        // whatever SimQA concluded at the time. Rather than rewrite the files,
+        // the same rule is applied as they are read, so an old run and a new
+        // one say the same thing about the same execution.
+        const v = boxVerdictOf(r.results ?? []);
+        const rows = applyVerdictToChecks(r.results ?? [], v);
+        const counts = v && r.results?.length
+          ? {
+              total: rows.length,
+              passed: rows.filter((c) => c.status === 'pass').length,
+              failed: rows.filter((c) => c.status === 'fail').length,
+              skipped: rows.filter((c) => c.status === 'skip').length,
+            }
+          : r.counts;
         return {
           runId: r.runId,
           startedAt: r.startedAt,
           finishedAt: r.finishedAt,
-          ok: r.ok,
+          ok: v ? /^pass/i.test(v) : r.ok,
+          verdict: v,
           systemId: r.systemId,
           // Both were already saved on the full report — the summary just
           // wasn't passing them through, so the list showed the raw
@@ -306,7 +323,7 @@ export function listRuns(): Array<{
           // are the same event, and show the SimQA one — which contains the
           // box's verdict AND its own stage checks, rather than only the former.
           executionId: r.executionId,
-          counts: r.counts,
+          counts,
         };
       } catch { return null; }
     })
@@ -457,20 +474,25 @@ async function runOrchestrator(ar: ActiveRun, planned: CheckDef[]): Promise<void
   // for directly, so a testcase the box passes reads as passed here. SimQA's
   // checks still run and still report; they just stop being the authority on
   // the headline. With no verdict from the box, SimQA's own rule applies.
-  const passed  = results.filter((r) => r.status === 'pass').length;
-  const failed  = results.filter((r) => r.status === 'fail').length;
-  const skipped = results.filter((r) => r.status === 'skip').length;
-
   const verdict = decideRunResult({ canceled: ar.canceled, results });
   ar.finishedAt = new Date().toISOString();
   ar.ok = verdict.ok;
   ar.finalDetail = verdict.finalDetail;
 
+  // Decided on the original statuses above; stored on the adjusted ones below,
+  // so the saved rows and counts agree with the headline instead of a report
+  // that says PASS over a list of failures. Each adjusted row keeps what the
+  // check concluded in `overriddenStatus` and its measurement in `detail`.
+  const stored = applyVerdictToChecks(results, boxVerdictOf(results));
+  const passed  = stored.filter((r) => r.status === 'pass').length;
+  const failed  = stored.filter((r) => r.status === 'fail').length;
+  const skipped = stored.filter((r) => r.status === 'skip').length;
+
   // Persist the report. The active-runs map gets cleared on the next
   // status call after a 30s grace period so the page has a chance to see
   // the finished state before it disappears.
   ar.ctx.testcaseName = ar.testcaseName = ar.ctx.testcaseName ?? ar.testcaseId;
-  saveReport(ar, results);
+  saveReport(ar, stored);
 
   // Fire the run-finished webhook (if configured on /settings). Fire-and-
   // forget by design: a slow or broken webhook must never delay report

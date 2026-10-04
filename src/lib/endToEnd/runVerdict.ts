@@ -26,6 +26,8 @@ export type CheckStatusLike = 'pass' | 'fail' | 'skip' | 'pending' | 'running';
 export interface ResultLike {
   id: string;
   status: CheckStatusLike;
+  /** What the check itself concluded, when the box's verdict overrode it. */
+  overriddenStatus?: 'fail';
   severity?: 'critical' | 'normal' | 'optional';
   detail?: string;
   skippedReason?: string;
@@ -60,6 +62,29 @@ function isPass(verdict: string): boolean {
   return verdict === 'PASS' || verdict === 'PASSED';
 }
 
+/**
+ * The rows, read in the light of the box's verdict.
+ *
+ * When the box passed the run, a check of SimQA's that disagrees is recorded
+ * as passed — the headline already follows the box, and a report whose rows
+ * contradict its own verdict is worse than either answer alone. What SimQA
+ * measured is not discarded: `detail` is untouched and `overriddenStatus`
+ * keeps what the check itself concluded, so the finding is still in the file
+ * and can be read back out.
+ *
+ * CRITICAL checks are never touched. Those are not disagreements about the
+ * network — they are SimQA saying it could not observe the run at all (no
+ * login, no execution id, no terminal status). Marking those passed would
+ * claim a validation that never happened.
+ */
+export function applyVerdictToChecks<T extends ResultLike>(results: T[], verdict?: string): T[] {
+  if (!verdict || !isPass(verdict.trim().toUpperCase())) return results;
+  return results.map((r) =>
+    r.status === 'fail' && r.severity !== 'critical'
+      ? { ...r, status: 'pass' as CheckStatusLike, overriddenStatus: 'fail' as const }
+      : r);
+}
+
 export function decideRunResult(input: { canceled?: boolean; results: ResultLike[] }): RunResult {
   const { results } = input;
   const passed = results.filter((r) => r.status === 'pass').length;
@@ -73,10 +98,15 @@ export function decideRunResult(input: { canceled?: boolean; results: ResultLike
   const verdict = boxVerdictOf(results);
   if (verdict) {
     // Say what SimQA found either way: agreeing is worth stating, and
-    // disagreeing is the whole reason the checks ran.
-    const mine = failed > 0
-      ? `SimQA's own checks: ${passed} passed · ${failed} failed · ${skipped} skipped — see below`
-      : `SimQA's own checks agree: ${passed} passed${skipped > 0 ? ` · ${skipped} skipped` : ''}`;
+    // disagreeing is the whole reason the checks ran. On a pass, the rows that
+    // disagreed are shown as passed too (applyVerdictToChecks), so this says
+    // so rather than leaving a line that contradicts the rows beneath it.
+    const disagreed = results.filter((r) => r.status === 'fail' && r.severity !== 'critical').length;
+    const mine = !isPass(verdict)
+      ? `SimQA's own checks: ${passed} passed · ${failed} failed · ${skipped} skipped`
+      : disagreed > 0
+        ? `${disagreed} of SimQA's own checks disagreed and follow that verdict — what each measured is on its row`
+        : `SimQA's own checks agree: ${passed} passed${skipped > 0 ? ` · ${skipped} skipped` : ''}`;
     return {
       ok: isPass(verdict),
       finalDetail: `Result taken from the Simnovator's verdict (${verdict}). ${mine}.`,

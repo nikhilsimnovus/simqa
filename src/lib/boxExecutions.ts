@@ -295,9 +295,13 @@ export function boxStageChecks(x: BoxExecution): DerivedCheck[] {
   });
   rows.push({
     id: 'box-completion-verdict', phase: 'completion',
-    name: 'Test Result Available',
-    description: 'The box produced a verdict for the run.',
-    status: running ? 'running' : x.result ? 'pass' : 'fail',
+    name: 'Test Result',
+    description: "The box's own verdict for the run.",
+    // The VERDICT, not merely that one exists. This row used to pass whenever
+    // the box had published anything at all, so a run the Simnovator failed
+    // showed a green "Test Result Available" with "box verdict: FAIL" written
+    // underneath it — the report read as a pass for a failed run.
+    status: running ? 'running' : /^pass/i.test(String(x.result ?? '')) ? 'pass' : 'fail',
     detail: x.result ? `box verdict: ${x.result}` : 'the box recorded no verdict',
   });
 

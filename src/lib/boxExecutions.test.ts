@@ -264,3 +264,17 @@ test('a missing field fails its check rather than passing by default', () => {
   assert.equal(check(rows, 'box-trigger-execution-id').status, 'fail', 'no execution id');
   assert.equal(check(rows, 'box-post-simulator-released').status, 'fail', 'no end time');
 });
+
+test('the Test Result row carries the verdict, not the fact that one exists', () => {
+  // A failed run used to show a green row here, because the row asked "did the
+  // box publish a verdict?" rather than "what was it?". Observed on
+  // 192.168.1.102: untitled_6, DL throughput 70% against a 95% criterion.
+  const failed = JSON.parse(JSON.stringify(FINISHED));
+  failed.executionHistory[0].execution_result = 'FAIL';
+  const rows = boxStageChecks(boxExecutionsOf(failed)[0]);
+  const verdict = check(rows, 'box-completion-verdict');
+  assert.equal(verdict.status, 'fail');
+  assert.match(verdict.detail, /FAIL/);
+  // and the passing case still passes
+  assert.equal(check(boxStageChecks(boxExecutionsOf(FINISHED)[0]), 'box-completion-verdict').status, 'pass');
+});

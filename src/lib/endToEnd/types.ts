@@ -25,6 +25,10 @@ export interface CheckResult {
   severity: Severity;
   description: string;
   status: Exclude<CheckStatus, 'pending' | 'running'>;
+  /** What this check itself concluded, when the Simnovator's verdict
+   *  overrode it — see applyVerdictToChecks in runVerdict.ts. The finding
+   *  stays in `detail` either way. */
+  overriddenStatus?: 'fail';
   /** Short one-line description of what was observed. */
   detail?: string;
   /** Longer expected/observed pair for the UI to render under the row. */

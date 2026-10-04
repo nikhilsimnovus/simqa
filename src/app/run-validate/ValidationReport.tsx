@@ -46,6 +46,8 @@ export interface CheckRowData {
    * raw measurement, so the evidence survives under "technical details".
    */
   plain?: string;
+  /** What the check concluded before the Simnovator's verdict overrode it. */
+  overriddenStatus?: 'fail';
   /** Artifacts the check saved, relative to its run directory. Served by
    *  /api/end-to-end/evidence. */
   evidence?: { screenshotFile?: string; responseFile?: string; logFile?: string; downloadFile?: string };
@@ -412,6 +414,43 @@ function StageSection({ phase, checks, autoExpand, runId }: { phase: Phase; chec
 /** The five-stage vertical flow: Before Test -> Starting Test -> During Test
  *  -> Test Completion -> After Test. A stage with zero checks in it (e.g. UI
  *  checks weren't enabled for this run) is skipped rather than shown empty. */
+/**
+ * The Simnovator's verdict decides the run, so it decides these rows too.
+ *
+ * When the box passed the run, a check of SimQA's that disagrees is shown as
+ * passed — asked for directly, and consistent with the headline, which already
+ * follows the box. What SimQA measured is not thrown away: it moves into the
+ * row's own line ("Passed on the Simnovator's verdict. SimQA measured: …"), so
+ * the report still says what happened on the air.
+ *
+ * CRITICAL checks are left alone. Those are not disagreements about the
+ * network — they are SimQA saying it could not observe the run at all (no
+ * login, no execution id, the box never reaching a terminal status). Painting
+ * those green would claim a validation that never happened.
+ *
+ * Display only: the stored report keeps every original status, so the evidence
+ * survives a change of mind about this.
+ */
+function underVerdict(checks: CheckRowData[], verdict?: string): CheckRowData[] {
+  const passing = !!verdict && /^pass/i.test(verdict.trim());
+  return checks.map((c) => {
+    // Either the runner already adjusted it when the report was saved, or this
+    // is a run assembled here — a box execution, or a report stored before the
+    // rule existed — and the same rule applies now.
+    const overridden = c.overriddenStatus === 'fail'
+      || (passing && c.status === 'fail' && c.severity !== 'critical');
+    if (!overridden) return c;
+    const measured = c.plain ?? explainFailure(c.id, c.detail) ?? c.detail;
+    return {
+      ...c,
+      status: 'pass' as CheckStatus,
+      plain: measured
+        ? `Passed on the Simnovator's verdict. SimQA measured: ${measured}`
+        : "Passed on the Simnovator's verdict.",
+    };
+  });
+}
+
 function StageFlow({ checks, currentPhase, runId }: { checks: CheckRowData[]; currentPhase?: Phase; runId?: string }) {
   const groups = STAGE_ORDER
     .map((phase) => ({ phase, checks: checks.filter((c) => c.phase === phase) }))
@@ -530,14 +569,24 @@ function RunProgress({
   runId?: string;
 }) {
   const currentStatus = running ? 'Running' : finalDetail === 'aborted' ? 'Stopped' : 'Completed';
-  const overallResult: RunOverviewData['overallResult'] = running ? 'running' : ok === undefined ? 'unknown' : ok ? 'pass' : 'fail';
+  // The box's verdict, then everything read in its light — one place, so the
+  // result, the stage counts, the tones and the rows cannot tell different
+  // stories. Applied here rather than only where reports are written, so a run
+  // recorded before this rule existed reads the same as one recorded after it:
+  // RESULT PASSED above VERDICT FAIL was the complaint that prompted it.
+  const boxVerdict = verdict ?? boxVerdictFrom(checks);
+  const shown = underVerdict(checks, boxVerdict);
+  const overallResult: RunOverviewData['overallResult'] =
+    running ? 'running'
+    : boxVerdict ? (/^pass/i.test(boxVerdict.trim()) ? 'pass' : 'fail')
+    : ok === undefined ? 'unknown' : ok ? 'pass' : 'fail';
 
   return (
     <div className="space-y-3">
       <RunOverview data={{
         testcaseName, testcaseId, systemHost, boxUser, currentStatus, overallResult,
         startedAt, configuredDurationSec, ueSummary: ueSummaryFrom(checks),
-        verdict: verdict ?? boxVerdictFrom(checks),
+        verdict: boxVerdict,
       }} />
       {finalDetail ? (
         <div className={
@@ -549,7 +598,7 @@ function RunProgress({
           {finalDetail}
         </div>
       ) : null}
-      <StageFlow checks={checks} currentPhase={currentPhase} runId={runId} />
+      <StageFlow checks={shown} currentPhase={currentPhase} runId={runId} />
     </div>
   );
 }

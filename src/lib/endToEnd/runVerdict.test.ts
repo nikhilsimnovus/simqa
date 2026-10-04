@@ -10,15 +10,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { decideRunResult, boxVerdictOf } = await import('./runVerdict.ts');
+const { decideRunResult, boxVerdictOf, applyVerdictToChecks } = await import('./runVerdict.ts');
 
-const verdictRow = (result: string) => ({
+type Row = {
+  id: string;
+  status: 'pass' | 'fail' | 'skip';
+  severity?: 'critical' | 'normal' | 'optional';
+  detail?: string;
+  skippedReason?: string;
+  overriddenStatus?: 'fail';
+};
+
+const verdictRow = (result: string): Row => ({
   id: 'completion-verdict-present', status: 'pass' as const, severity: 'normal' as const,
   detail: `result=${result}`,
 });
-const pass = (id: string) => ({ id, status: 'pass' as const, severity: 'normal' as const });
-const fail = (id: string, severity: 'critical' | 'normal' = 'normal') => ({ id, status: 'fail' as const, severity });
-const skip = (id: string, severity: 'critical' | 'normal' = 'normal', skippedReason?: string) =>
+const pass = (id: string): Row => ({ id, status: 'pass' as const, severity: 'normal' as const });
+const fail = (id: string, severity: 'critical' | 'normal' = 'normal'): Row =>
+  ({ id, status: 'fail' as const, severity });
+const skip = (id: string, severity: 'critical' | 'normal' = 'normal', skippedReason?: string): Row =>
   ({ id, status: 'skip' as const, severity, skippedReason });
 
 test('a box PASS makes the run pass, even with SimQA checks failing', () => {
@@ -34,7 +44,7 @@ test('a box PASS makes the run pass, even with SimQA checks failing', () => {
   assert.equal(r.source, 'box');
   // And it says where the result came from, and that the checks disagreed.
   assert.match(r.finalDetail, /Simnovator's verdict \(PASS\)/);
-  assert.match(r.finalDetail, /2 failed/);
+  assert.match(r.finalDetail, /2 of SimQA's own checks disagreed/);
 });
 
 test('a box FAIL fails the run, even with every SimQA check passing', () => {
@@ -107,4 +117,37 @@ test('a clean run says so', () => {
   const r = decideRunResult({ results: [pass('a'), pass('b'), pass('c')] });
   assert.equal(r.ok, true);
   assert.equal(r.finalDetail, 'all 3 check(s) passed');
+});
+
+// ── Rows, read in the light of the verdict ───────────────────────────
+
+test('a box PASS carries SimQA\'s non-critical disagreements with it', () => {
+  const rows = applyVerdictToChecks([
+    verdictRow('PASS'),
+    fail('during-per-cell-traffic'),
+    fail('during-bler-zero'),
+    fail('preflight-login', 'critical'),
+    pass('during-ue-attach'),
+  ], 'PASS');
+  const by = (id: string) => rows.find((r) => r.id === id)!;
+  assert.equal(by('during-per-cell-traffic').status, 'pass');
+  assert.equal(by('during-per-cell-traffic').overriddenStatus, 'fail', 'what it concluded is kept');
+  assert.equal(by('during-bler-zero').status, 'pass');
+  // SimQA could not observe the run; that is not a disagreement to override.
+  assert.equal(by('preflight-login').status, 'fail');
+  assert.equal(by('preflight-login').overriddenStatus, undefined);
+});
+
+test('a box FAIL leaves every row exactly as the checks found it', () => {
+  const input = [verdictRow('FAIL'), fail('during-per-cell-traffic'), pass('a')];
+  assert.deepEqual(applyVerdictToChecks(input, 'FAIL'), input);
+  assert.deepEqual(applyVerdictToChecks(input, undefined), input);
+});
+
+test('the summary line says the rows were carried, not that they failed', () => {
+  const r = decideRunResult({
+    results: [verdictRow('PASS'), fail('during-per-cell-traffic'), fail('during-bler-zero'), pass('a')],
+  });
+  assert.match(r.finalDetail, /2 of SimQA's own checks disagreed and follow that verdict/);
+  assert.doesNotMatch(r.finalDetail, /2 failed/);
 });
