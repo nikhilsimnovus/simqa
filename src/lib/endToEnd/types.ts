@@ -105,6 +105,9 @@ export interface FinalReport {
   /** Wall-clock duration of the execution as observed by the runner. */
   observedDurationSec?: number;
   options: RunOptions;
+  /** The callbox cfg files this run linked before executing — what the test
+   *  actually ran against, as opposed to whatever the boxes hold now. */
+  cfgSelection?: { enb?: string; gnb?: string; mme?: string; mme2?: string; ims?: string };
   counts: {
     total: number;
     passed: number;

@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getTestcase } from '@/lib/uesimClient';
 import { generateConfigs, type UesimTestDefinition } from '@/lib/cfgGenerator';
-import { uesimApiOptsForSystem, loadInventory, type Inventory } from '@/lib/inventory';
-import { readRemoteFile } from '@/lib/configFidelity/ssh';
+import { uesimApiOptsForSystem, loadInventory, callboxForProfile, type Inventory } from '@/lib/inventory';
+import { listRuns, loadRun } from '@/lib/endToEnd/runner';
+import { readRemoteFile, readCommand } from '@/lib/configFidelity/ssh';
 import { moduleConfigPath, MODULE_NAMES, type ModuleName } from '@/lib/deploy';
 import { ueCfgLogName } from '@/lib/liveFidelity/watcher';
 import { listCaptures, readArtifact, hasArtifact } from '@/lib/liveFidelity/store';
@@ -85,6 +86,101 @@ function capturedUeCfg(ip: string, testcaseId: string): { text: string; startedA
   }
 }
 
+/**
+ * The cfg files THIS testcase's last SimQA run linked, read off the callbox by
+ * name.
+ *
+ * The live-config read below asks the boxes what they hold now and then has to
+ * work out whose it is — the lab holds one set at a time, so after another
+ * test runs, enb.cfg is somebody else's. This asks a different question with a
+ * definite answer: the run recorded that it linked enb-3cc.cfg, so read
+ * /root/enb/config/enb-3cc.cfg. The named file is the file, whoever ran last,
+ * and it is right from the first execution onwards.
+ *
+ * Best-effort: no run, no selection, no callbox credentials or an unreadable
+ * file yields nothing and the caller falls back as before.
+ */
+async function configsFromLastRun(
+  inv: Inventory,
+  systemId: string | undefined,
+  testcaseId: string,
+): Promise<{ files: Record<string, string>; from?: string; notes: string[] }> {
+  const notes: string[] = [];
+  if (!systemId) return { files: {}, notes };
+
+  const mine = listRuns()
+    .filter((r) => r.testcaseId === testcaseId && r.systemId === systemId)
+    .sort((a, b) => (b.startedAt > a.startedAt ? 1 : -1));
+  for (const summary of mine.slice(0, 5)) {
+    const report = loadRun(summary.runId);
+    const sel = report?.cfgSelection;
+    if (!sel || !Object.values(sel).some(Boolean)) continue;
+
+    const profile = inv.profiles.find((p) => p.simnovator === systemId);
+    const callbox = callboxForProfile(inv, profile);
+    if (!callbox) { notes.push('cfg files: this Simnovator has no callbox in its topology setup.'); return { files: {}, notes }; }
+    const usingKey = callbox.authMode === 'privateKey';
+    if (!callbox.username || (usingKey ? !callbox.privateKey : !callbox.password)) {
+      notes.push(`cfg files: ${callbox.host} has no credentials in System Management, so the files this run used could not be read.`);
+      return { files: {}, notes };
+    }
+
+    const files: Record<string, string> = {};
+    for (const mod of ['enb', 'gnb', 'mme', 'ims'] as const) {
+      const chosen = (sel as Record<string, string | undefined>)[mod];
+      if (!chosen) continue;
+      const dir = moduleConfigPath(mod as ModuleName).replace(/\/[^/]+$/, '');
+      try {
+        const text = await readRemoteFile(callbox, `${dir}/${chosen}`);
+        if (text) files[`${mod} (${chosen})`] = text;
+        else notes.push(`${chosen}: not found at ${callbox.host}:${dir}`);
+      } catch (e: any) {
+        notes.push(`${chosen}: ${callbox.host} unreachable — ${e?.message ?? e}`);
+      }
+    }
+    if (Object.keys(files).length) {
+      notes.push(
+        `Config files read from ${callbox.host} by the names this testcase's run of ${new Date(summary.startedAt).toLocaleString()} linked.`,
+      );
+      return { files, from: summary.startedAt, notes };
+    }
+  }
+
+  // Runs recorded before the selection was stored — and runs that linked
+  // nothing — leave us with the callbox itself. Its enb.cfg is a symlink to
+  // whichever file was linked last, so reading the link target names the file
+  // and reading through it gives the content. Only when the newest run on this
+  // Simnovator is THIS testcase's: otherwise those files are another test's,
+  // which is the mistake the live-config gate below exists to prevent.
+  const newestHere = mine[0];
+  const newestOnSystem = listRuns()
+    .filter((r) => r.systemId === systemId)
+    .sort((a, b) => (b.startedAt > a.startedAt ? 1 : -1))[0];
+  if (!newestHere || !newestOnSystem || newestOnSystem.runId !== newestHere.runId) return { files: {}, notes };
+
+  const profile = inv.profiles.find((p) => p.simnovator === systemId);
+  const callbox = callboxForProfile(inv, profile);
+  const usingKey = callbox?.authMode === 'privateKey';
+  if (!callbox?.username || (usingKey ? !callbox.privateKey : !callbox.password)) return { files: {}, notes };
+
+  const files: Record<string, string> = {};
+  for (const mod of ['enb', 'gnb', 'mme', 'ims'] as const) {
+    const linkPath = moduleConfigPath(mod as ModuleName);
+    try {
+      const text = await readRemoteFile(callbox, linkPath);
+      if (!text) continue;
+      // The link target, so the file is named the way it was picked.
+      const target = (await readCommand(callbox, `readlink ${linkPath} 2>/dev/null || true`)).trim();
+      files[target ? `${mod} (${target.split('/').pop()})` : mod] = text;
+    } catch { /* a module the callbox does not hold */ }
+  }
+  if (Object.keys(files).length) {
+    notes.push(`Config files read from ${callbox.host}, which still holds what this testcase's last run linked.`);
+    return { files, from: newestHere.startedAt, notes };
+  }
+  return { files: {}, notes };
+}
+
 /** GET /api/testcases/:id/preview?systemId -> { files, summary } without
  *  persisting. systemId must match the list route or the preview is generated
  *  from a different box's copy of the testcase. */
@@ -139,6 +235,17 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     let liveOwner: string | undefined;
     let liveIsOurs = false;
 
+    // The files this testcase's own last run linked, by name. These need no
+    // attribution — the run said which files it used — so they are shown
+    // whether or not the lab has since moved on to another test.
+    const fromRun = await configsFromLastRun(inv, systemId, id);
+    bundle.summary.notes.push(...fromRun.notes);
+    for (const [label, text] of Object.entries(fromRun.files)) {
+      out[label] = text;
+      liveNames.push(label);
+    }
+    const haveRunFiles = Object.keys(fromRun.files).length > 0;
+
     if (executed) {
       const live = await collectLiveConfigs(inv);
       bundle.summary.notes.push(...live.notes);
@@ -156,7 +263,10 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
           out[label] = text;
           liveNames.push(label);
         }
-      } else {
+      } else if (!haveRunFiles) {
+        // Only worth saying when nothing else answered. With the run's own
+        // files already shown, "live configs hidden" reads as though the page
+        // were missing something it is not.
         bundle.summary.notes.push(
           liveOwner
             ? `Live configs hidden: the lab machines currently hold "${liveOwner}"'s configs, not this testcase's. Run this testcase to see its own.`
@@ -189,7 +299,11 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       for (const [name, text] of Object.entries(generated)) {
         if (!isCfg(name)) { out[name] = text; continue; }
         const label = stripCfg(name);
-        if (!(label in out)) { out[`default ${label}`] = text; defaultNames.push(`default ${label}`); }
+        // A file read by the name the run linked already answers for this
+        // module — "enb (enb-3cc.cfg)" — so no "default enb" beside it to be
+        // read instead.
+        const haveReal = label in out || Object.keys(out).some((k) => k.startsWith(`${label} (`));
+        if (!haveReal) { out[`default ${label}`] = text; defaultNames.push(`default ${label}`); }
       }
     } else {
       // Either never executed, or executed but the lab has since moved on to

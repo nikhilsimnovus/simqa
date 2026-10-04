@@ -570,6 +570,10 @@ function saveReport(ar: ActiveRun, results?: CheckResult[]): void {
     configuredDurationSec: ar.ctx.configuredDurationSec,
     observedDurationSec: observedSec,
     options: ar.options,
+    // What this run linked on the callbox. Stored so the testcase page can
+    // show the files the run used by name, instead of reading whatever the
+    // boxes hold now and guessing whose they are.
+    cfgSelection: ar.ctx.cfgSelection,
     counts: { total: all.length, passed, failed, skipped },
     results: all,
   };
