@@ -351,6 +351,11 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
    *  Loaded from /api/box-users, which never sends passwords. */
   const [boxUsers, setBoxUsers] = useState<Array<{ id: string; username: string; label?: string }>>([]);
   const [boxUserId, setBoxUserId] = useState('');
+  /** The login the page was opened as, when the URL named one. Present means
+   *  Run as is settled: this testcase came out of that operator's catalogue. */
+  const fixedBoxUser = urlBoxUserId
+    ? boxUsers.find((u) => u.id === urlBoxUserId || u.username === urlBoxUserId)
+    : undefined;
   const [selEnb, setSelEnb] = useState('');
   const [selMme, setSelMme] = useState('');
   const [selIms, setSelIms] = useState('');
@@ -996,22 +1001,38 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
                 </div>
               </div>
             ) : null}
-            {/* Who this execution authenticates to the box as. Shown only when
-                the setup actually offers a choice — a one-login setup would
-                just be a dropdown with a single entry. */}
-            {systemId && boxUsers.length > 1 ? (
+            {/* Who this execution authenticates to the box as.
+                Fixed, not chosen, whenever the page was opened from a
+                catalogue: that list was one operator's, an operator's
+                testcases are visible only to them, and running this one as
+                anybody else either 404s or executes a copy nobody asked for.
+                The choice remains only when nothing named a login. */}
+            {systemId && boxUsers.length > 0 ? (
               <div className="flex items-center gap-2">
                 <label className="text-xs font-medium text-slate-700 whitespace-nowrap">Run as</label>
-                <select
-                  value={boxUserId}
-                  onChange={(e) => setBoxUserId(e.target.value)}
-                  disabled={running}
-                  className="h-9 rounded-lg border border-line-strong bg-surface px-2 text-sm text-slate-900 disabled:bg-slate-100 disabled:text-slate-400"
-                >
-                  {boxUsers.map((u) => (
-                    <option key={u.id} value={u.id}>{u.label ? `${u.username} — ${u.label}` : u.username}</option>
-                  ))}
-                </select>
+                {fixedBoxUser ? (
+                  <span
+                    className="inline-flex h-9 items-center rounded-lg border border-line-strong bg-slate-50 px-2.5 text-sm text-slate-700"
+                    title={`This testcase is ${fixedBoxUser.username}'s — only they can see it on the box, so it runs as them.`}
+                  >
+                    {fixedBoxUser.username}
+                  </span>
+                ) : boxUsers.length > 1 ? (
+                  <select
+                    value={boxUserId}
+                    onChange={(e) => setBoxUserId(e.target.value)}
+                    disabled={running}
+                    className="h-9 rounded-lg border border-line-strong bg-surface px-2 text-sm text-slate-900 disabled:bg-slate-100 disabled:text-slate-400"
+                  >
+                    {boxUsers.map((u) => (
+                      <option key={u.id} value={u.id}>{u.label ? `${u.username} — ${u.label}` : u.username}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="inline-flex h-9 items-center rounded-lg border border-line-strong bg-slate-50 px-2.5 text-sm text-slate-700">
+                    {boxUsers[0].username}
+                  </span>
+                )}
               </div>
             ) : null}
             {!systemId ? (

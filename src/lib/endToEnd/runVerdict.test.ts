@@ -178,10 +178,10 @@ test("the box's own conditions are counted as the box's, not as SimQA's checks",
   // Observed on a real run of untitled_6: the box failed its DL throughput
   // criterion, every SimQA check passed, and the line read "SimQA's own
   // checks agree: 25 passed" under a FAIL verdict.
-  const condition = (name: string, ok: boolean) => ({
+  const condition = (name: string, ok: boolean): Row => ({
     id: `box-condition:throughput:${name}:0`,
-    status: (ok ? 'pass' : 'fail') as const,
-    severity: 'critical' as const,
+    status: ok ? 'pass' : 'fail',
+    severity: 'critical',
   });
   const r = decideRunResult({
     results: [
