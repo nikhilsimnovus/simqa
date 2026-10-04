@@ -605,6 +605,9 @@ const triggerStart: CheckDef = {
   description: 'Start endpoint returns 2xx within 90 seconds. This is the first state-mutating step. Note: the Simnovator can take up to ~60s to come back with a 5xx (e.g. "Could not start LTE") — we wait so the failure surfaces as a real message, not "aborted".',
   phase: 'trigger', severity: 'critical',
   destructive: true,
+  // For the Starting Test picture only — the check is API-driven and never
+  // skips for want of a browser.
+  wantsBrowser: true,
   run: async (ctx) => {
     const base = { id: 'trigger-start-execution', name: 'POST /testcases/{id}/executions', phase: 'trigger' as Phase, severity: 'critical' as Severity, description: 'Start endpoint returns 2xx within 90 seconds. This is the first state-mutating step.' };
     if (!ctx.token) return makeResult(base, 'skip', 'no token');
@@ -635,7 +638,11 @@ const triggerStart: CheckDef = {
       body: JSON.stringify(simulatorId ? { simulatorId } : {}),
     }, 90_000);
     if (r.status !== 200 && r.status !== 201 && r.status !== 202) {
-      return makeResult(base, 'fail', `start returned ${r.status}: ${r.raw.slice(0, 200)}`, { durationMs: r.durationMs });
+      // Photograph the box as it refused. Whatever it is showing — a licence
+      // problem, a testbed that would not come up, nothing at all — is the
+      // first thing anyone reading this row will want.
+      const bad = await snapBoxPage(ctx, base.id, '/testcase');
+      return makeResult(base, 'fail', `start returned ${r.status}: ${r.raw.slice(0, 200)}`, { durationMs: r.durationMs, ...shotEvidence(bad) });
     }
     // The box answers with the execution it just started:
     //   {"status":"success","message":"Test case started successfully",
@@ -658,9 +665,15 @@ const triggerStart: CheckDef = {
       + (started ? ` — execution ${started}` : '')
       + (said ? ` — "${said}"` : '')
       + (r.durationMs > 5000 ? ' (slow but accepted)' : '');
+    // One picture for the whole Starting Test stage: the box's own screen
+    // seconds after the request, where its start-up state and the run widget
+    // are. A run SimQA triggers through the API never raises the GUI's own
+    // "Starting Testcase" dialogue — that belongs to starting one by hand —
+    // so this is the box coming up, not that dialogue.
+    const shot = await snapBoxPage(ctx, base.id, '/testcase', { highlight: ctx.testcaseName });
     return makeResult(base, ok ? 'pass' : 'fail',
       ok ? detail : `${detail} — the box accepted the request but did not report starting an execution: ${r.raw.slice(0, 200)}`,
-      { durationMs: r.durationMs });
+      { durationMs: r.durationMs, ...shotEvidence(shot) });
   },
 };
 
