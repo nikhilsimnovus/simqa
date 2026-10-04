@@ -132,8 +132,11 @@ export default function SettingsPage() {
           </div>
         }
       />
-      {/* The only scrolling region on the page. */}
-      <main className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4 max-w-3xl">
+      {/* The only scrolling region on the page.
+          Full width, two columns from `lg`: four cards stacked in a 3xl strip
+          left most of a monitor empty and pushed Run notifications below the
+          fold, when all four together are shorter than one screen. */}
+      <main className="flex-1 min-h-0 overflow-y-auto p-5 grid grid-cols-1 lg:grid-cols-2 gap-4 content-start">
         {/* ── Appearance ── */}
         <Card>
           <CardHeader><CardTitle>Appearance</CardTitle></CardHeader>
