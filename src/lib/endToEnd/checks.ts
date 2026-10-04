@@ -136,7 +136,7 @@ const preflightLogin: CheckDef = {
       ctx.token = token;
       // The same credentials, used on the box's own UI — the picture is the
       // box signed in, which is what the API answer means in practice.
-      const shot = await snapBoxPage(ctx, base.id, '/testcase');
+      const shot = await snapBoxPage(ctx, base.id, '/');
       return makeResult(base, 'pass', `200 in ${r.durationMs}ms, token len=${token.length}`, { durationMs: Date.now() - t0, ...shotEvidence(shot) });
     } catch (e: any) {
       return makeResult(base, 'fail', `login threw: ${e?.message ?? e}`, { durationMs: Date.now() - t0 });
@@ -188,7 +188,7 @@ const preflightTestcaseExists: CheckDef = {
     }
 
     const durStr = ctx.configuredDurationSec ? ` configuredDuration=${ctx.configuredDurationSec}s` : ' (no duration found — completion will use default 60s)';
-    const shot = await snapBoxPage(ctx, base.id, '/testcase');
+    const shot = await snapBoxPage(ctx, base.id, '/testcase', { highlight: ctx.testcaseName });
     return makeResult(base, 'pass', `id=${ctx.testcaseId} name="${ctx.testcaseName}"${durStr}`, { durationMs: r.durationMs, ...shotEvidence(shot) });
   },
 };
@@ -207,8 +207,25 @@ const preflightApiResponsive: CheckDef = {
     const r = await jsonFetch(`${apiBase(ctx.systemHost)}/simulators`, { headers: authHeaders(ctx) });
     if (r.status !== 200) return makeResult(base, 'fail', `got ${r.status}`, { durationMs: r.durationMs });
     const slow = r.durationMs > 5000;
-    const shot = await snapBoxPage(ctx, base.id, '/testcase');
-    return makeResult(base, slow ? 'fail' : 'pass', `200 in ${r.durationMs}ms${slow ? ' (slow, > 5s)' : ''}`, { durationMs: r.durationMs, ...shotEvidence(shot) });
+
+    // The lab machines beside it, since "can I reach the setup" is the
+    // question this row is read for. A connect attempt, not an ICMP ping:
+    // read-only, needs no credentials, and answers the same thing. Reported,
+    // never fatal — the callbox and the UE host have their own checks, and a
+    // machine SimQA was never told about must not fail this one.
+    const lab: string[] = [];
+    for (const m of [
+      { role: 'UE', host: ctx.ueHost },
+      { role: 'callbox', host: ctx.callbox?.host },
+    ]) {
+      if (!m.host) continue;
+      lab.push(`${m.role} ${m.host} ${(await tcpReachable(m.host)) ? 'reachable' : 'NOT reachable'}`);
+    }
+
+    const shot = await snapBoxPage(ctx, base.id, '/tools/network-topology');
+    const detail = `Simnovator ${ctx.systemHost} 200 in ${r.durationMs}ms${slow ? ' (slow, > 5s)' : ''}`
+      + (lab.length ? ` · ${lab.join(' · ')}` : '');
+    return makeResult(base, slow ? 'fail' : 'pass', detail, { durationMs: r.durationMs, ...shotEvidence(shot) });
   },
 };
 
@@ -375,7 +392,7 @@ const preflightSimulatorsAvailable: CheckDef = {
           `"${match.name}" state is not ready: connectivity=${match.connectivity} availability=${match.availability}${isStaleBusy(String(match.id)) ? ' (stale, ignored)' : ''} stability=${match.stability}`,
           { durationMs: r.durationMs });
       }
-      const shot = await snapBoxPage(ctx, base.id, '/tools/simulator-management');
+      const shot = await snapBoxPage(ctx, base.id, '/tools/simulator-management', { highlight: match.name });
       return makeResult(base, 'pass',
         `"${match.name}" CONNECTED+AVAILABLE+STABLE${busySims.length === 0 ? ' (system idle, no other test running)' : ''}${staleNote}`,
         { durationMs: r.durationMs, ...shotEvidence(shot) });
@@ -1275,18 +1292,54 @@ async function boxUi(ctx: RunCtx): Promise<Page | undefined> {
  * Evidence, never a verdict: the check has already decided by the time this
  * runs, and a failure here returns no picture rather than changing anything.
  */
-async function snapBoxPage(ctx: RunCtx, checkId: string, pathname: string, waitMs = 1800): Promise<string | undefined> {
+async function snapBoxPage(
+  ctx: RunCtx,
+  checkId: string,
+  pathname: string,
+  opts: { waitMs?: number; highlight?: string } = {},
+): Promise<string | undefined> {
   const page = await boxUi(ctx);
   if (!page) return undefined;
   try {
     await page.goto(`http://${ctx.systemHost}${pathname}`, { waitUntil: 'domcontentloaded' });
     // These pages fill from a follow-up fetch; a shot at domcontentloaded
     // catches an empty frame.
-    await sleep(waitMs, ctx.isCanceled);
+    await sleep(opts.waitMs ?? 1800, ctx.isCanceled);
+    // Ring the row the check is actually about. A picture of a list of forty
+    // testcases does not show that THIS testcase was found; a picture with
+    // one of them ringed does.
+    if (opts.highlight) {
+      await page.evaluate((needle: string) => {
+        const leaf = [...document.querySelectorAll('*')].find(
+          (e) => e.children.length === 0 && (e.textContent ?? '').trim() === needle);
+        const row = (leaf?.closest('tr, li, [role="row"]') ?? leaf?.parentElement) as HTMLElement | null;
+        if (!row) return;
+        row.scrollIntoView({ block: 'center' });
+        row.style.outline = '3px solid #FF6A00';
+        row.style.outlineOffset = '2px';
+        row.style.borderRadius = '4px';
+      }, opts.highlight).catch(() => { /* a picture without the ring is still a picture */ });
+      await sleep(400, ctx.isCanceled);
+    }
     return await snapshot(page, ctx.evidenceDir, checkId);
   } catch {
     return undefined;
   }
+}
+
+/** Can we open a TCP connection to a lab machine? Read-only, no credentials,
+ *  short timeout — the same question "is it pingable" is really asking. */
+function tcpReachable(host: string, port = 22, timeoutMs = 1500): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!host) return resolve(false);
+    const sock = new net.Socket();
+    const done = (ok: boolean) => { sock.destroy(); resolve(ok); };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => done(true));
+    sock.once('timeout', () => done(false));
+    sock.once('error', () => done(false));
+    sock.connect(port, host);
+  });
 }
 
 /** `evidence` for a result, or nothing when no picture was taken. */

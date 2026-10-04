@@ -40,6 +40,9 @@ export interface RunCtx {
    *  drop their test). Chosen by the operator in the "someone else is
    *  executing" prompt. Omitted = apply cfgSelection if it is safe to. */
   cfgMode?: 'shared';
+  /** The UE host from the same topology profile, when the lab has a separate
+   *  one — an integrated install has none and this stays undefined. */
+  ueHost?: string;
   /** The callbox resolved from the target Simnovator's topology profile.
    *  Required for cfgSelection to do anything; absence is reported as a
    *  failed preflight check rather than silently skipping the bring-up. */

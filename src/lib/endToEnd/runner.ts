@@ -202,6 +202,15 @@ export async function startRun(req: RunRequest): Promise<{ ok: boolean; runId?: 
     callbox: req.topologyId
       ? callboxForProfile(inv, inv.profiles.find((p) => p.id === req.topologyId))
       : callboxForSimnovator(inv, target.systemId),
+    // The UE host from the same topology, for the reachability line on the
+    // API-connection check. Undefined on an integrated install, which has no
+    // separate UE box.
+    ueHost: getSystem(
+      inv,
+      (req.topologyId
+        ? inv.profiles.find((p) => p.id === req.topologyId)
+        : inv.profiles.find((p) => p.simnovator === target.systemId))?.uesim ?? '',
+    )?.host,
     isCanceled: () => activeRuns.get(runId)?.canceled === true,
     emit: () => { /* runner manages liveStatus directly; checks don't need to emit */ },
     // Pre-seeded in attach mode so the During / Completion / After checks —
