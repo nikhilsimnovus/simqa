@@ -175,7 +175,7 @@ const CHECK_DISPLAY_NAMES: Record<string, string> = {
   'during-zombie-execution': 'Execution Progress Check',
   'completion-status-terminal': 'Test Completed',
   'completion-duration-sane': 'Test Duration Valid',
-  'completion-verdict-present': 'Test Result Available',
+  'completion-verdict-present': 'Test Result',
   'post-logs-exportable': 'Logs Exported Successfully',
   'post-all-ues-power-off': 'UE Shutdown Check',
   'post-per-ue-stats-sane': 'Per-UE Statistics Validation',
@@ -414,6 +414,10 @@ function StageSection({ phase, checks, autoExpand, runId }: { phase: Phase; chec
 /** The five-stage vertical flow: Before Test -> Starting Test -> During Test
  *  -> Test Completion -> After Test. A stage with zero checks in it (e.g. UI
  *  checks weren't enabled for this run) is skipped rather than shown empty. */
+/** The rows whose whole job is to carry the box's verdict. Mirrors the set in
+ *  runVerdict.ts, which does the same thing where reports are written. */
+const VERDICT_ROW_IDS = new Set(['completion-verdict-present', 'box-completion-verdict']);
+
 /**
  * The Simnovator's verdict decides the run, so it decides these rows too.
  *
@@ -434,19 +438,31 @@ function StageSection({ phase, checks, autoExpand, runId }: { phase: Phase; chec
 function underVerdict(checks: CheckRowData[], verdict?: string): CheckRowData[] {
   const passing = !!verdict && /^pass/i.test(verdict.trim());
   return checks.map((c) => {
+    // The row that carries the verdict carries it, whichever way it went.
+    if (VERDICT_ROW_IDS.has(c.id)) {
+      if (passing || !verdict || c.status !== 'pass') return c;
+      return {
+        ...c,
+        status: 'fail' as CheckStatus,
+        plain: `The Simnovator's verdict for this run: ${verdict.toUpperCase()}.`,
+      };
+    }
     // Either the runner already adjusted it when the report was saved, or this
     // is a run assembled here — a box execution, or a report stored before the
     // rule existed — and the same rule applies now.
     const overridden = c.overriddenStatus === 'fail'
-      || (passing && c.status === 'fail' && c.severity !== 'critical');
+      || (!!verdict && c.status === 'fail' && c.severity !== 'critical');
     if (!overridden) return c;
     const measured = c.plain ?? explainFailure(c.id, c.detail) ?? c.detail;
+    // Say which way the verdict went. "Passed on the verdict" under a run the
+    // box failed would read as though the box had passed it.
+    const lead = passing
+      ? "Passed on the Simnovator's verdict."
+      : `The Simnovator's verdict decides this run${verdict ? ` (${verdict.toUpperCase()})` : ''}, not this check.`;
     return {
       ...c,
       status: 'pass' as CheckStatus,
-      plain: measured
-        ? `Passed on the Simnovator's verdict. SimQA measured: ${measured}`
-        : "Passed on the Simnovator's verdict.",
+      plain: measured ? `${lead} SimQA measured: ${measured}` : lead,
     };
   });
 }

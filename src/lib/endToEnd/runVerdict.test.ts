@@ -138,9 +138,16 @@ test('a box PASS carries SimQA\'s non-critical disagreements with it', () => {
   assert.equal(by('preflight-login').overriddenStatus, undefined);
 });
 
-test('a box FAIL leaves every row exactly as the checks found it', () => {
-  const input = [verdictRow('FAIL'), fail('during-per-cell-traffic'), pass('a')];
-  assert.deepEqual(applyVerdictToChecks(input, 'FAIL'), input);
+test('a box FAIL carries them too — its conditions are what failed, not these', () => {
+  const input = [verdictRow('FAIL'), fail('during-per-cell-traffic'), fail('preflight-login', 'critical'), pass('a')];
+  const rows = applyVerdictToChecks(input, 'FAIL');
+  assert.equal(rows.find((r) => r.id === 'during-per-cell-traffic')!.status, 'pass');
+  assert.equal(rows.find((r) => r.id === 'during-per-cell-traffic')!.overriddenStatus, 'fail');
+  assert.equal(rows.find((r) => r.id === 'preflight-login')!.status, 'fail', 'critical is never carried');
+});
+
+test('with no verdict at all, every row stands as the check found it', () => {
+  const input = [fail('during-per-cell-traffic'), pass('a')];
   assert.deepEqual(applyVerdictToChecks(input, undefined), input);
 });
 
@@ -150,4 +157,19 @@ test('the summary line says the rows were carried, not that they failed', () => 
   });
   assert.match(r.finalDetail, /2 of SimQA's own checks disagreed and follow that verdict/);
   assert.doesNotMatch(r.finalDetail, /2 failed/);
+});
+
+test('the row carrying the verdict reports the verdict, not its own existence', () => {
+  const failed = applyVerdictToChecks([verdictRow('FAIL'), fail('during-per-cell-traffic')], 'FAIL');
+  assert.equal(failed.find((r) => r.id === 'completion-verdict-present')!.status, 'fail');
+  // and it is not swept up by the override that carries the other rows
+  assert.equal(failed.find((r) => r.id === 'completion-verdict-present')!.overriddenStatus, undefined);
+
+  const passedRun = applyVerdictToChecks([verdictRow('PASS'), fail('during-per-cell-traffic')], 'PASS');
+  assert.equal(passedRun.find((r) => r.id === 'completion-verdict-present')!.status, 'pass');
+});
+
+test('applying it twice changes nothing the second time', () => {
+  const once = applyVerdictToChecks([verdictRow('FAIL'), fail('during-bler-zero')], 'FAIL');
+  assert.deepEqual(applyVerdictToChecks(once, 'FAIL'), once);
 });

@@ -63,26 +63,47 @@ function isPass(verdict: string): boolean {
 }
 
 /**
- * The rows, read in the light of the box's verdict.
+ * The rows, once the box has published a verdict.
  *
- * When the box passed the run, a check of SimQA's that disagrees is recorded
- * as passed — the headline already follows the box, and a report whose rows
- * contradict its own verdict is worse than either answer alone. What SimQA
- * measured is not discarded: `detail` is untouched and `overriddenStatus`
- * keeps what the check itself concluded, so the finding is still in the file
- * and can be read back out.
+ * Where the Simnovator has judged the run, its own success conditions are the
+ * only things that show as failed. A measurement of SimQA's that disagrees is
+ * recorded as passed, whichever way the verdict went:
+ *
+ *   • the box passed it — SimQA's objection does not fail a run the box passed
+ *   • the box failed it — the failure is the box's conditions and the verdict
+ *     row, not SimQA's separate measurements beside them
+ *
+ * Asked for directly, twice, with the example each time: on .102 the box
+ * reported UL at 98% of its 90% criterion while SimQA's per-cell check read
+ * zero UL on the only cell. Two instruments, one of them authoritative here.
+ *
+ * Nothing is discarded. `detail` is untouched, and `overriddenStatus` keeps
+ * what the check itself concluded, so the finding stays in the file, stays on
+ * the row in words, and can be read back out if this is ever reconsidered.
  *
  * CRITICAL checks are never touched. Those are not disagreements about the
  * network — they are SimQA saying it could not observe the run at all (no
  * login, no execution id, no terminal status). Marking those passed would
  * claim a validation that never happened.
  */
+/** The rows whose whole job is to carry the box's verdict — the SimQA check
+ *  that asks for it, and the derived row on a box-executed run. */
+const VERDICT_ROW_IDS = new Set(['completion-verdict-present', 'box-completion-verdict']);
+
 export function applyVerdictToChecks<T extends ResultLike>(results: T[], verdict?: string): T[] {
-  if (!verdict || !isPass(verdict.trim().toUpperCase())) return results;
-  return results.map((r) =>
-    r.status === 'fail' && r.severity !== 'critical'
+  if (!verdict) return results;
+  const passed = isPass(verdict.trim().toUpperCase());
+  return results.map((r) => {
+    // The verdict row reports the VERDICT, not merely that one was published.
+    // Left as a pass, a failed run showed green from top to bottom with "FAIL"
+    // written inside one of the rows.
+    if (VERDICT_ROW_IDS.has(r.id)) {
+      return !passed && r.status === 'pass' ? { ...r, status: 'fail' as CheckStatusLike } : r;
+    }
+    return r.status === 'fail' && r.severity !== 'critical'
       ? { ...r, status: 'pass' as CheckStatusLike, overriddenStatus: 'fail' as const }
-      : r);
+      : r;
+  });
 }
 
 export function decideRunResult(input: { canceled?: boolean; results: ResultLike[] }): RunResult {
@@ -102,11 +123,9 @@ export function decideRunResult(input: { canceled?: boolean; results: ResultLike
     // disagreed are shown as passed too (applyVerdictToChecks), so this says
     // so rather than leaving a line that contradicts the rows beneath it.
     const disagreed = results.filter((r) => r.status === 'fail' && r.severity !== 'critical').length;
-    const mine = !isPass(verdict)
-      ? `SimQA's own checks: ${passed} passed · ${failed} failed · ${skipped} skipped`
-      : disagreed > 0
-        ? `${disagreed} of SimQA's own checks disagreed and follow that verdict — what each measured is on its row`
-        : `SimQA's own checks agree: ${passed} passed${skipped > 0 ? ` · ${skipped} skipped` : ''}`;
+    const mine = disagreed > 0
+      ? `${disagreed} of SimQA's own checks disagreed and follow that verdict — what each measured is on its row`
+      : `SimQA's own checks agree: ${passed} passed${skipped > 0 ? ` · ${skipped} skipped` : ''}`;
     return {
       ok: isPass(verdict),
       finalDetail: `Result taken from the Simnovator's verdict (${verdict}). ${mine}.`,
