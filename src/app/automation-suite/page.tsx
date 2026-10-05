@@ -220,28 +220,70 @@ export default function AutomationSuitePage() {
   /** Whether that callbox's ots.cfg is a symlink or a file in its own right —
    *  worth saying, because the same name means two different things. */
   const [otsIsLinkByCallbox, setOtsIsLinkByCallbox] = useState<Record<string, boolean>>({});
+  /**
+   * Whether each callbox has answered yet.
+   *
+   * These reads are SSH round-trips and take seconds. Until one lands there is
+   * nothing in the maps — and a cell that printed "Not configured" from an
+   * empty map was saying the box has no database when the truth was that
+   * nobody had asked it yet. The three states are kept apart so the column can
+   * say which one it is.
+   */
+  const [cfgRead, setCfgRead] = useState<Record<string, 'loading' | 'ok' | 'error'>>({});
   useEffect(() => {
     const ids = Array.from(new Set(suites.map(x => x.callboxSystemId).filter(Boolean))) as string[];
     if (ids.length === 0) return;
     let cancelled = false;
-    (async () => {
-      for (const id of ids) {
-        try {
-          const [mmeR, otsR] = await Promise.all([
-            fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(id)}&dir=mme`).then(r => r.json()),
-            fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(id)}&dir=ots`).then(r => r.json()),
-          ]);
-          if (cancelled) return;
-          if (mmeR?.ok) setDbByCallbox(prev => ({ ...prev, [id]: mmeR.ueDb ?? {} }));
-          if (otsR?.ok) {
-            setOtsByCallbox(prev => ({ ...prev, [id]: otsR.otsLink ?? '' }));
-            setOtsIsLinkByCallbox(prev => ({ ...prev, [id]: !!otsR.otsIsLink }));
-          }
-        } catch { /* the row shows "–" until the box answers */ }
+    setCfgRead(prev => {
+      const next = { ...prev };
+      for (const id of ids) if (!next[id]) next[id] = 'loading';
+      return next;
+    });
+    // In parallel across callboxes: one slow box used to hold up the next
+    // one's column for as long as it took.
+    void Promise.all(ids.map(async (id) => {
+      try {
+        const [mmeR, otsR] = await Promise.all([
+          fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(id)}&dir=mme`).then(r => r.json()),
+          fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(id)}&dir=ots`).then(r => r.json()),
+        ]);
+        if (cancelled) return;
+        if (mmeR?.ok) setDbByCallbox(prev => ({ ...prev, [id]: mmeR.ueDb ?? {} }));
+        if (otsR?.ok) {
+          setOtsByCallbox(prev => ({ ...prev, [id]: otsR.otsLink ?? '' }));
+          setOtsIsLinkByCallbox(prev => ({ ...prev, [id]: !!otsR.otsIsLink }));
+        }
+        setCfgRead(prev => ({ ...prev, [id]: mmeR?.ok || otsR?.ok ? 'ok' : 'error' }));
+      } catch {
+        if (!cancelled) setCfgRead(prev => ({ ...prev, [id]: 'error' }));
       }
-    })();
+    }));
     return () => { cancelled = true; };
   }, [suites]);
+
+  /**
+   * The Database column for one row: the subscriber DB its MME config pulls in.
+   *
+   * It is never chosen — it travels inside the mme cfg as an `include` — so it
+   * is reported, and reporting it means saying honestly which of three things
+   * is true: the box has not answered yet, it answered and this cfg includes
+   * no database, or the box could not be read at all.
+   */
+  const dbCell = useCallback((s: SuiteRow, mmeCfg?: string | null): { text: React.ReactNode; title?: string } => {
+    const cb = s.callboxSystemId ?? '';
+    if (!cb) return { text: NOT_CONFIGURED, title: 'This suite has no callbox, so there is no MME config to read a database from.' };
+    if (!mmeCfg) return { text: NOT_CONFIGURED, title: 'No MME configuration picked for this row yet.' };
+    const names = (dbByCallbox[cb] ?? {})[mmeCfg] ?? [];
+    if (names.length) return { text: names.join(', '), title: `${mmeCfg} includes ${names.join(', ')}` };
+    const state = cfgRead[cb];
+    if (state === 'loading' || state === undefined) {
+      return { text: <span className="font-sans text-slate-400">reading the callbox…</span>, title: `Reading what ${mmeCfg} includes, on the callbox` };
+    }
+    if (state === 'error') {
+      return { text: <span className="font-sans text-amber-700">callbox unreachable</span>, title: 'The callbox could not be read — check its credentials in Systems Management.' };
+    }
+    return { text: NOT_CONFIGURED, title: `${mmeCfg} on the callbox includes no subscriber database.` };
+  }, [dbByCallbox, cfgRead]);
 
   /** What /root/ots/config/ots.cfg points at on the callbox — the file the
    *  stack actually loads. Shown, never picked; it is the box's own wiring. */
@@ -1813,7 +1855,7 @@ export default function AutomationSuitePage() {
                                         </td>
                                       ))}
                                       <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-500">
-                                        {((dbByCallbox[s.callboxSystemId ?? ''] ?? {})[(rowDraft.mmeCfg ?? it.mmeCfg ?? '') as string] ?? []).join(', ') || '—'}
+                                        {dbCell(s, (rowDraft.mmeCfg ?? it.mmeCfg) as string | undefined).text}
                                       </td>
                                       {([['imsCfg', mmeFiles]] as const).map(([field, list]) => (
                                         <td key={field} className="px-2 py-1 align-top">
@@ -1911,8 +1953,8 @@ export default function AutomationSuitePage() {
                                     </td>
                                     {/* The DB this mme cfg includes, and the box's own ots config. */}
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-500 truncate"
-                                      title={((dbByCallbox[s.callboxSystemId ?? ''] ?? {})[it.mmeCfg ?? ''] ?? []).join(', ') || undefined}>
-                                      {((dbByCallbox[s.callboxSystemId ?? ''] ?? {})[it.mmeCfg ?? ''] ?? []).join(', ') || NOT_CONFIGURED}
+                                      title={dbCell(s, it.mmeCfg).title}>
+                                      {dbCell(s, it.mmeCfg).text}
                                     </td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600 truncate" title={it.imsCfg ?? undefined}>
                                       {it.imsCfg ?? NOT_CONFIGURED}
