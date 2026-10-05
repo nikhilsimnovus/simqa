@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { toImportPack } = await import('./importPack.ts');
+const { toImportPack, definitionFromPack } = await import('./importPack.ts');
 
 const detail = (name: string) => ({
   Test_Id: '01a0f718-8d18-795d-b195-4fef7193d639',
@@ -55,4 +55,32 @@ test('something else entirely is named for what it is not', () => {
   }
   // And the message points at where a real file comes from.
   assert.match(toImportPack({ hello: 'world' }).error ?? '', /test_case_details|Export/);
+});
+
+// ── The definition inside the file ───────────────────────────────────
+
+test('the definition comes out of the box\'s export pack', () => {
+  const r = definitionFromPack({ test_case_details: [detail('SA_1cell_4x2_1UEs_http')] });
+  assert.equal(r.error, undefined);
+  assert.equal(r.name, 'SA_1cell_4x2_1UEs_http');
+  assert.ok(r.definition.userPlaneConfig, 'the definition is the config inside Config_File');
+});
+
+test('a saved GET /v2/testcases/{id} file works too', () => {
+  const r = definitionFromPack({ id: '01a0', name: 'untitled_6', testDefinition: { cellConfig: {}, userPlaneConfig: {} } });
+  assert.equal(r.name, 'untitled_6');
+  assert.ok(r.definition.cellConfig);
+});
+
+test('a bare definition is taken as one, with no name of its own', () => {
+  const r = definitionFromPack({ cellConfig: {}, userPlaneConfig: { profiles: [] } });
+  assert.equal(r.error, undefined);
+  assert.equal(r.name, undefined);
+  assert.ok(r.definition.userPlaneConfig);
+});
+
+test('an export with no config says so rather than yielding an empty test', () => {
+  const r = definitionFromPack({ test_case_details: [{ Test_Name: 'x' }] });
+  assert.match(r.error ?? '', /Config_File/);
+  assert.equal(r.definition, undefined);
 });

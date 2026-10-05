@@ -63,7 +63,7 @@ const AS_SERVER_NAME: Record<string, ServerFile> = {
 export async function syncRowToServer(
   inv: Inventory,
   suite: AutomationSuite,
-  row: { name: string; simnovatorTcId: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string },
+  row: { name: string; simnovatorTcId: string; uploadedTestcase?: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string },
   callbox?: InventorySystem,
   ueSystem?: InventorySystem,
   boxUserId?: string,
@@ -89,7 +89,11 @@ export async function syncRowToServer(
   // rather than leaving two copies and no way to tell which is current.
   if (Object.keys(includes ?? {}).length > 0) dropStaleFile(suite.name, row.name, 'db');
 
-  const td = await testDefinitionJson(inv, suite, row.simnovatorTcId, boxUserId);
+  // An uploaded row's definition comes from the file, not from a box: nothing
+  // has been created on a Simnovator yet, and this folder is what the run will
+  // build it from.
+  const uploaded = row.uploadedTestcase ? suite.uploadedTestcases?.[row.uploadedTestcase] : undefined;
+  const td = uploaded ?? await testDefinitionJson(inv, suite, row.simnovatorTcId, boxUserId);
   if (td) files['test.json'] = td;
 
   return { row: row.name, ...writeTestCaseFiles(suite.name, row.name, files) };

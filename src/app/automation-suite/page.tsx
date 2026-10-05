@@ -22,6 +22,7 @@ import { cn } from '@/lib/cn';
 import { SearchableSelect } from '@/components/SearchableSelect';
 import { useColumnWidths, ResizeHandle, ColGroup } from '@/components/resizableColumns';
 import { statusLabel, verdictLabel, verdictClass, statusStyle } from '@/lib/automation/outcome';
+import { definitionFromPack } from '@/lib/automation/importPack';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
 
 interface SystemRow {
@@ -33,6 +34,10 @@ const MIN_POWER_ON = 20;
 
 /** What an empty optional configuration says. A dash reads as "unknown"; this
  *  says which it is — there is no such file for this row. */
+/** An option in the testcase picker that is an uploaded file rather than a
+ *  test case on the box. The row stores the key, not an id. */
+const UPLOAD_PREFIX = 'upload:';
+
 const NOT_CONFIGURED = <span className="font-sans text-slate-400">Not configured</span>;
 
 /** A cfg field that is reported rather than chosen — the same box as the
@@ -84,6 +89,10 @@ interface SuiteItem {
    *  different suite names save as separate suites. */
   suiteName?: string;
   simnovatorTcId: string;
+  /** Set when this row's test case came from an uploaded file: the key into
+   *  the suite's uploadedTestcases. Nothing exists on a Simnovator until the
+   *  suite runs, which is when it is created under this row's name. */
+  uploadedTestcase?: string;
   callboxCfg?: string;
   /** Core cfgs from /root/mme/config, bound per row alongside the radio one. */
   mmeCfg?: string;
@@ -99,6 +108,8 @@ interface SuiteRow {
   /** BoxUser id this suite executes as; absent = the setup's default login. */
   boxUserId?: string;
   uploadedConfigs?: Record<string, string>;
+  /** Uploaded test case definitions, by the name they came under. */
+  uploadedTestcases?: Record<string, string>;
   callboxConfig?: string;
   testcaseIds: string[];
   defaultDurationSec?: number;
@@ -180,6 +191,11 @@ export default function AutomationSuitePage() {
   const [runUsers, setRunUsers] = useState<Array<{ id: string; username: string }>>([]);
   const [runAsAll, setRunAsAll] = useState(false);
   const [runOneUser, setRunOneUser] = useState('');
+  /** Suite + rows awaiting confirmation in the Run dialog;  undefined
+   *  means the whole suite. Declared here because the busy poll needs to know
+   *  which box the dialog is pointed at. */
+  const [confirmRun, setConfirmRun] = useState<{ suite: SuiteRow; rows?: SuiteItem[] } | null>(null);
+  const [runTarget, setRunTarget] = useState<{ uesim: string; callbox: string; ue: string }>({ uesim: '', callbox: '', ue: '' });
   const [boxUserId, setBoxUserId]     = useState<string>('');
   const [callboxSystemId, setCbx]     = useState<string>('');
   /** The UE system the suite runs against — see AutomationSuite.ueSystemId. */
@@ -291,6 +307,10 @@ export default function AutomationSuitePage() {
   const [mmeFiles, setMmeFiles]       = useState<CallboxFile[]>([]);
   const [loadingCbx, setLoadingCbx]   = useState(false);
   const [uploadedConfigs, setUploads] = useState<Record<string, string>>({});
+  /** Test case definitions uploaded in this wizard session, keyed by the name
+   *  they came under. Saved with the suite; nothing is put on a box until the
+   *  suite runs. */
+  const [uploadedTcs, setUploadedTcs] = useState<Record<string, string>>({});
 
   // Selections: callbox config is single-select (radio), Simnovator
   // testcases is multi-select (Set). A uesim+callbox suite binds ONE
@@ -418,9 +438,13 @@ export default function AutomationSuitePage() {
     // simulator and run at the same time, so "is it busy?" is only meaningful
     // for the login a suite executes as — asking through the setup default
     // blocked mohan's suite because sruthi was running.
-    const ids = Array.from(new Set(
-      suites.filter(s => s.uesimSystemId).map(s => busyKey(s.uesimSystemId!, s.boxUserId)),
-    ));
+    const ids = Array.from(new Set([
+      ...suites.filter(s => s.uesimSystemId).map(s => busyKey(s.uesimSystemId!, s.boxUserId)),
+      // …and the box the run dialog is currently pointed at, which may be one
+      // no suite uses. Without it the dialog could not say whether the box you
+      // just chose is free, which is the question you opened it to answer.
+      ...(confirmRun && runTarget.uesim ? [busyKey(runTarget.uesim, runOneUser || undefined)] : []),
+    ]));
     if (ids.length === 0) { setBusyBySystem({}); return; }
     let cancelled = false;
     // Never let ticks overlap. Each request talks to the box over the network,
@@ -466,7 +490,7 @@ export default function AutomationSuitePage() {
     const onVisible = () => { if (!document.hidden) void poll(); };
     document.addEventListener('visibilitychange', onVisible);
     return () => { cancelled = true; clearInterval(t); document.removeEventListener('visibilitychange', onVisible); };
-  }, [suites]);
+  }, [suites, confirmRun?.suite.id, runTarget.uesim, runOneUser]);
 
   /** Inline editor for one row of a SAVED suite: which row, plus the draft. */
   const [editRow, setEditRow] = useState<{ suiteId: string; itemId: string } | null>(null);
@@ -716,7 +740,6 @@ export default function AutomationSuitePage() {
 
   /** Suite + rows awaiting confirmation in the Run dialog. `rows` undefined
    *  means the whole suite. */
-  const [confirmRun, setConfirmRun] = useState<{ suite: SuiteRow; rows?: SuiteItem[] } | null>(null);
 
   /**
    * Where this run goes — chosen in the dialog, not baked into the suite.
@@ -727,7 +750,6 @@ export default function AutomationSuitePage() {
    * Opens on the suite's own setup, so Run with nothing touched does exactly
    * what it did before, and nothing here is saved back to the suite.
    */
-  const [runTarget, setRunTarget] = useState<{ uesim: string; callbox: string; ue: string }>({ uesim: '', callbox: '', ue: '' });
   useEffect(() => {
     if (!confirmRun) return;
     const s = confirmRun.suite;
@@ -1057,40 +1079,36 @@ export default function AutomationSuitePage() {
   const onPickTestcaseJson = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';                       // same file twice must re-fire
-    if (!file || !uesimSystemId) return;
+    if (!file) return;
     setImportingTc(true);
     setTcImportMsg(null);
     try {
-      let pack: unknown;
-      try { pack = JSON.parse(await file.text()); }
+      let raw: unknown;
+      try { raw = JSON.parse(await file.text()); }
       catch { setTcImportMsg({ ok: false, text: `${file.name} is not valid JSON.` }); return; }
 
-      const r = await fetch('/api/automation/testcases/import', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ systemId: uesimSystemId, boxUserId: boxUserId || undefined, pack }),
-      }).then(x => x.json());
+      const { name, definition, error } = definitionFromPack(raw);
+      if (error || !definition) { setTcImportMsg({ ok: false, text: error ?? 'no test definition in that file' }); return; }
 
-      if (!r?.ok) { setTcImportMsg({ ok: false, text: r?.error ?? 'the upload failed' }); return; }
-
-      await loadUesimTestcases(uesimSystemId);
-      const made = (r.testcases ?? [])[0];
-      const name = made?.name || file.name.replace(/\.json$/i, '');
+      // Nothing is sent to a Simnovator. The definition is held with the suite,
+      // saved into the row's folder under /root/automation_configs, and created
+      // on whichever box the suite runs on when it executes.
+      const key = (name || file.name.replace(/\.json$/i, '')).trim() || 'uploaded test case';
+      setUploadedTcs(prev => ({ ...prev, [key]: JSON.stringify(definition) }));
+      setAddTcId(`${UPLOAD_PREFIX}${key}`);
+      const next = defaultRowName(key);
+      setAddDisplayName(cur => (!cur.trim() || cur === autoNameRef.current ? next : cur));
+      autoNameRef.current = next;
       setTcImportMsg({
         ok: true,
-        text: `"${name}" is now on ${r.host} as ${r.boxUser} — pick it below to add it to this suite.`,
+        text: `"${key}" is ready to add. It is kept with this suite — the test case is created on the Simnovator, under the display name below, when the suite runs.`,
       });
-      if (made?.id) {
-        setAddTcId(made.id);
-        const next = defaultRowName(name);
-        setAddDisplayName(cur => (!cur.trim() || cur === autoNameRef.current ? next : cur));
-        autoNameRef.current = next;
-      }
     } catch (err: any) {
       setTcImportMsg({ ok: false, text: err?.message ?? String(err) });
     } finally {
       setImportingTc(false);
     }
-  }, [uesimSystemId, boxUserId, loadUesimTestcases]);
+  }, []);
 
   /** "Add an upload" — reads one or more files into base64 and merges
    *  them into uploadedConfigs. Pre-selects them too. */
@@ -1148,6 +1166,7 @@ export default function AutomationSuitePage() {
     setCbx(s.callboxSystemId ?? '');
     setUeSystemId(s.ueSystemId ?? '');
     setUploads(s.uploadedConfigs ?? {});
+    setUploadedTcs(s.uploadedTestcases ?? {});
     setSelectedCfg(s.callboxConfig ?? '');
     setSelectedTcs(new Set(s.testcaseIds));
     setStopOnFail(!!s.stopOnFail);
@@ -1268,6 +1287,11 @@ export default function AutomationSuitePage() {
       callboxSystemId: kind === 'uesim+callbox' ? callboxSystemId : undefined,
       ueSystemId: ueSystemId || undefined,
       uploadedConfigs: trimmedItemUploads ?? trimmedUploads,
+      // Only the ones a row actually uses: an upload chosen and then replaced
+      // should not travel with the suite for ever.
+      uploadedTestcases: Object.fromEntries(
+        Object.entries(uploadedTcs).filter(([k]) => items.some(it => it.uploadedTestcase === k)),
+      ),
       // Legacy fields stay populated for old consumers, but the runner
       // prefers items[] when present.
       callboxConfig: kind === 'uesim+callbox' ? (cfg || undefined) : undefined,
@@ -1474,6 +1498,11 @@ export default function AutomationSuitePage() {
           const s = confirmRun.suite;
           const subset = confirmRun.rows;                     // undefined = whole suite
           const rows = subset ?? (s.items ?? []);
+          // Is the box this dialog is pointed at free, for the login it will
+          // run as? Keyed the same way the poll stores it.
+          const targetBusy = runTarget.uesim
+            ? busyBySystem[busyKey(runTarget.uesim, runOneUser || undefined)]
+            : null;
           const secs = estimateSeconds(s, rows);
           const pretty = secs >= 90 ? `${Math.round(secs / 60)} minutes` : `${secs} seconds`;
           const title = !subset ? `Run suite “${s.name}”?`
@@ -1539,6 +1568,21 @@ export default function AutomationSuitePage() {
                       {' '}{hostOf(s.callboxSystemId) || 'another callbox'} — any file this suite picks must also exist on the callbox above.
                     </div>
                   )}
+                  {/* Whether the box you have chosen can take it right now. A
+                      Simnovator runs one test at a time, so this is the
+                      difference between pressing Run and being told 409 a
+                      minute later — and it is per login, because each user has
+                      their own simulator. */}
+                  {targetBusy ? (
+                    <div className="mt-1.5 text-[11px] text-red-700">
+                      {hostOf(runTarget.uesim)} is busy — “{targetBusy.testCaseName}” is executing on it
+                      {runOneUser ? <> as {runOneUser}</> : null}. Pick another Simnovator above, or wait for it to finish.
+                    </div>
+                  ) : runTarget.uesim ? (
+                    <div className="mt-1.5 text-[11px] text-emerald-700">
+                      {hostOf(runTarget.uesim)} is free{runOneUser ? <> for {runOneUser}</> : null}.
+                    </div>
+                  ) : null}
                 </div>
 
                 {/* Who executes it. One user, or every login registered for
@@ -1649,7 +1693,13 @@ export default function AutomationSuitePage() {
                       ? runUsers.map(u => u.username)
                       : (runOneUser ? [runOneUser] : undefined),
                     { uesim: runTarget.uesim, callbox: runTarget.callbox, ue: runTarget.ue })}
-                    className="rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2">
+                    // Only the box this run is actually going to. A Simnovator
+                    // runs one test at a time, so starting on a busy one would
+                    // 409 — and the suite's own box being busy is no reason to
+                    // refuse a run pointed somewhere else.
+                    disabled={!!targetBusy}
+                    title={targetBusy ? `${targetBusy.testCaseName} is executing on ${hostOf(runTarget.uesim)} — choose another Simnovator above` : undefined}
+                    className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-sm font-semibold px-4 py-2">
                     ▶ {cfgCheck?.state === 'done' && cfgCheck.changed.length > 0
                       ? 'Run with updated configs'
                       : !subset ? 'Run Suite' : rows.length === 1 ? 'Run Test Case' : 'Run Selected'}
@@ -1808,8 +1858,13 @@ export default function AutomationSuitePage() {
                             ⏹ Stop
                           </button>
                         ) : (
-                          <button onClick={e => { e.stopPropagation(); setConfirmRun({ suite: s }); }} disabled={!!boxBusy}
-                            title={boxBusy ? `${boxBusy.testCaseName} is already running on ${boxBusy.host}` : 'Run every test case in this suite, in order'}
+                          // Opens even when this suite's own box is busy: the
+                          // dialog is where another Simnovator is chosen, and
+                          // disabling the button made "run it on the free box
+                          // instead" impossible to reach. Whether the box you
+                          // end up choosing is free is decided in there.
+                          <button onClick={e => { e.stopPropagation(); setConfirmRun({ suite: s }); }}
+                            title={boxBusy ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — open this to run on another Simnovator` : 'Run every test case in this suite, in order'}
                             className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xs font-semibold px-3 py-1.5">
                             ▶ Run Suite
                           </button>
@@ -2579,7 +2634,12 @@ export default function AutomationSuitePage() {
                         setAddDisplayName(cur => (!cur.trim() || cur === autoNameRef.current ? next : cur));
                         autoNameRef.current = next;
                       }}
-                      options={uesimTestcases.map(t => ({ value: t.id, label: t.name }))}
+                      options={[
+                        // Uploaded first: they are the ones that are not on the
+                        // box yet, and the reason you came to this field.
+                        ...Object.keys(uploadedTcs).map(k => ({ value: `${UPLOAD_PREFIX}${k}`, label: `${k} — uploaded, created on the box at run time` })),
+                        ...uesimTestcases.map(t => ({ value: t.id, label: t.name })),
+                      ]}
                       placeholder="Search test case…"
                       ariaLabel="Simnovator testcase"
                       noun="testcase"
@@ -2746,7 +2806,11 @@ export default function AutomationSuitePage() {
                         // Bind the row to the suite name as it stands now. Change
                         // the name afterwards and the next rows form a new suite.
                         suiteName: name.trim() || '(unnamed)',
-                        simnovatorTcId: addTcId,
+                        // A picked box testcase, or a file uploaded here —
+                        // in which case nothing exists on a Simnovator yet and
+                        // the row carries the definition instead of an id.
+                        simnovatorTcId: addTcId.startsWith(UPLOAD_PREFIX) ? '' : addTcId,
+                        uploadedTestcase: addTcId.startsWith(UPLOAD_PREFIX) ? addTcId.slice(UPLOAD_PREFIX.length) : undefined,
                         callboxCfg: cfgName,
                         mmeCfg: kind === 'uesim+callbox' ? (addMme || undefined) : undefined,
                         imsCfg: kind === 'uesim+callbox' ? (addIms || undefined) : undefined,

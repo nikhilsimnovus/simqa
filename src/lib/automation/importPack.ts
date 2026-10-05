@@ -43,3 +43,45 @@ export function toImportPack(raw: unknown): ImportPack {
     names: [],
   };
 }
+
+/**
+ * The test DEFINITION inside an uploaded file, and what it is called.
+ *
+ * An uploaded test case is not put on a Simnovator when you choose the file —
+ * it is kept with the suite, written into the row's folder under
+ * /root/automation_configs as test.json, and created on whichever box the
+ * suite runs on, under the row's display name, at execution time. That is how
+ * the enb/mme/ims files already work, and it is the only way one file can run
+ * on any box as any user.
+ *
+ * Three shapes arrive in practice:
+ *   • the box's export pack      test_case_details[0].Config_File.config
+ *   • a saved GET /v2/testcases/{id}   { id, name, testDefinition }
+ *   • a bare definition          { cellConfig, userPlaneConfig, … }
+ */
+export function definitionFromPack(raw: unknown): { name?: string; definition?: any; error?: string } {
+  if (!raw || typeof raw !== 'object') return { error: 'the file is not a JSON object' };
+  const any = raw as any;
+
+  const first = Array.isArray(any.test_case_details) ? any.test_case_details[0] : undefined;
+  if (first) {
+    const def = first?.Config_File?.config ?? first?.Config_File ?? first?.config;
+    if (!def || typeof def !== 'object') {
+      return { error: 'the export has no Config_File.config to build a test case from' };
+    }
+    return { name: String(first.Test_Name ?? '').trim() || undefined, definition: def };
+  }
+
+  if (any.testDefinition && typeof any.testDefinition === 'object') {
+    return { name: String(any.name ?? '').trim() || undefined, definition: any.testDefinition };
+  }
+
+  if (any.cellConfig || any.userPlaneConfig || any.subsConfig) {
+    return { name: undefined, definition: any };
+  }
+
+  return {
+    error: 'this does not look like a Simnovator test case — expected an export '
+      + '(test_case_details), a saved testcase, or a test definition',
+  };
+}

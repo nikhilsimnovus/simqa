@@ -810,24 +810,63 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       // step the testcase page does. Only pays a lookup when it is needed:
       // an existing copy of this row's name is reused before any of this.
       let sourceTd: any;
-      try {
-        const { getTestcase } = await import('../uesimClient');
-        await getTestcase(ueOpts, item.simnovatorTcId);
-      } catch {
-        const sys = getSystem(inv, suite.uesimSystemId ?? '');
-        const found = sys ? await findDefinition(sys, item.simnovatorTcId, ueOpts.username) : null;
-        if (found) {
-          sourceTd = found.td;
-          stepDetails.push(`source testcase belongs to ${found.owner} — created it for ${ueOpts.username}`);
-        } else {
-          // Nobody on the box has it any more — deleted, or the box was
-          // rebuilt. The folder kept the definition, so the row still runs.
-          const saved = readTestCaseFile(cfgFrom, item.name, 'test.json');
-          if (saved) {
-            try {
-              sourceTd = JSON.parse(saved);
-              stepDetails.push(`testcase: not on ${ueOpts.host} any more — rebuilt from ${testCaseDir(cfgFrom, item.name)}/test.json`);
-            } catch { /* a corrupt file is no better than none */ }
+      // A row whose test case came from a file has no source on any box: the
+      // definition travels with the suite and is created here, under the row's
+      // display name, as this run's login. The folder copy is preferred when
+      // it exists — it is what /root/automation_configs holds for this row,
+      // and keeping the box in step with the folder is the whole point of it.
+      const uploadKey = item.uploadedTestcase;
+      if (uploadKey) {
+        const fromFolder = readTestCaseFile(cfgFrom, item.name, 'test.json');
+        const raw = fromFolder ?? suite.uploadedTestcases?.[uploadKey];
+        if (!raw) {
+          steps.push({
+            testcaseId: item.name, status: 0, ok: false,
+            detail: `uploaded test case "${uploadKey}" is missing from the suite and from ${testCaseDir(cfgFrom, item.name)}/test.json`,
+            durationMs: Date.now() - t0,
+          });
+          failed += 1; done += 1;
+          if (suite.stopOnFail) break;
+          continue;
+        }
+        try {
+          sourceTd = JSON.parse(raw);
+          stepDetails.push(fromFolder
+            ? `testcase: built from ${testCaseDir(cfgFrom, item.name)}/test.json (uploaded)`
+            : `testcase: built from the file uploaded as "${uploadKey}"`);
+        } catch {
+          steps.push({
+            testcaseId: item.name, status: 0, ok: false,
+            detail: `uploaded test case "${uploadKey}" is not valid JSON`,
+            durationMs: Date.now() - t0,
+          });
+          failed += 1; done += 1;
+          if (suite.stopOnFail) break;
+          continue;
+        }
+      }
+      // Only when the row points at a testcase on a box. An uploaded row
+      // already has its definition and has nothing to look up.
+      if (!sourceTd) {
+        try {
+          const { getTestcase } = await import('../uesimClient');
+          await getTestcase(ueOpts, item.simnovatorTcId);
+        } catch {
+          const sys = getSystem(inv, suite.uesimSystemId ?? '');
+          const found = sys ? await findDefinition(sys, item.simnovatorTcId, ueOpts.username) : null;
+          if (found) {
+            sourceTd = found.td;
+            stepDetails.push(`source testcase belongs to ${found.owner} — created it for ${ueOpts.username}`);
+          } else {
+            // Nobody on the box has it any more — deleted, or the box was
+            // rebuilt. The folder kept the definition, so the row still runs.
+            const saved = readTestCaseFile(cfgFrom, item.name, 'test.json');
+            if (saved) {
+              try {
+                sourceTd = JSON.parse(saved);
+                stepDetails.push(`testcase: not on ${ueOpts.host} any more — rebuilt from ${testCaseDir(cfgFrom, item.name)}/test.json`);
+              } catch { /* a corrupt file is no better than none */ }
+            }
           }
         }
       }

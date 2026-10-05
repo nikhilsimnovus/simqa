@@ -196,8 +196,21 @@ export interface SuiteItem {
   /** Display name — defaults to the Simnovator testcase name when the
    *  row is first added, renameable. */
   name: string;
-  /** Simnovator REST testcase id (the UUID from /v2/testcases). */
+  /** Simnovator REST testcase id (the UUID from /v2/testcases). Empty for a
+   *  row whose test case was uploaded rather than picked off a box. */
   simnovatorTcId: string;
+  /**
+   * Key into the suite's uploadedTestcases: a test case supplied as a file
+   * rather than chosen from a Simnovator.
+   *
+   * Nothing is put on a box when the file is chosen. The definition is kept
+   * with the suite, written into this row's folder under
+   * /root/automation_configs as test.json, and created on whichever box the
+   * suite runs on — under this row's display name, as the login it runs as —
+   * at execution time. Exactly how the enb/mme/ims uploads already work, and
+   * the only way one file can run on any box as any user.
+   */
+  uploadedTestcase?: string;
   /** Which suite this row belongs to, captured from the wizard's suite-name
    *  field when the row was added. Rows added under different names are saved
    *  as separate suites, so one wizard session can build several. */
@@ -241,6 +254,11 @@ export interface AutomationSuite {
    * under whoever happened to press Run. Absent = the setup's default login.
    */
   boxUserId?: string;
+  /** Test case definitions supplied as files, keyed by the name they were
+   *  uploaded under. Values are the testDefinition as JSON text. Written into
+   *  each row's folder as test.json and created on the box at run time — the
+   *  test case equivalent of uploadedConfigs. */
+  uploadedTestcases?: Record<string, string>;
   /** Ordered list of test rows. Each row pairs a Simnovator testcase
    *  with (optionally) a callbox eNB cfg. New in 2026-06 — supersedes
    *  the flat `testcaseIds` + `callboxConfig` pair, which the runner
