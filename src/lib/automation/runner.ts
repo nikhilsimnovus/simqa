@@ -1067,6 +1067,24 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               justUploaded = true;
               stepDetails.push(`cfg-push: scp ${buf.length}B → /root/mme/config/${pick}`);
             }
+            // Nothing to link to.
+            //
+            // The folder did not have it, the suite did not upload it, and this
+            // callbox does not hold it — which is what running a suite on a
+            // setup other than the one it was built on looks like when its
+            // folder is incomplete. Linking anyway leaves mme.cfg pointing at a
+            // file that is not there, the core refuses to start, and the row
+            // fails later as "no UEs attached", which sends people looking at
+            // the radio. Say it here, naming the file and where it should have
+            // come from.
+            if (!existingCore.has(pick)) {
+              throw new Error(
+                `${linkName}: "${pick}" is not on ${callboxSys.host} and is not in `
+                + `${testCaseDir(cfgFrom, item.name)} — run this suite once on the setup it was built on, `
+                + `or upload the file, before running it here`,
+              );
+            }
+
             const prev = await ssh.execCommand(`readlink /root/mme/config/${linkName} || true`);
             const prevTarget = (prev.stdout ?? '').trim();
             if (linkName === 'mme.cfg') prevMmeLink = prevTarget; else prevImsLink = prevTarget;

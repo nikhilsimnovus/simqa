@@ -250,3 +250,32 @@ export function listTestCaseFiles(suiteName: string, rowName: string): Array<{ n
   } catch { /* nothing captured yet */ }
   return out;
 }
+
+/**
+ * Which rows cannot be run from the folder alone, and what each one lacks.
+ *
+ * The folder is what a run on ANOTHER setup is built from: the test case comes
+ * from test.json, and the callbox gets its enb/mme/ims from here under the
+ * names the row picked. A row missing one of those can only run where that
+ * file already happens to sit on the callbox — which is precisely what moving
+ * to a different setup takes away.
+ *
+ * Only what the row actually asks for is required: a uesim-only row needs no
+ * callbox files, and a row with no IMS config is not missing one.
+ */
+export function rowsMissingServerFiles(
+  suiteName: string,
+  rows: Array<{ name: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string }>,
+): Array<{ row: string; missing: string[] }> {
+  const out: Array<{ row: string; missing: string[] }> = [];
+  for (const row of rows) {
+    const have = readAllTestCaseFiles(suiteName, row.name);
+    const missing: string[] = [];
+    if (!have['test.json']) missing.push('test.json');
+    if (row.callboxCfg && !have['enb.cfg']) missing.push('enb.cfg');
+    if (row.mmeCfg && !have['mme.cfg']) missing.push('mme.cfg');
+    if (row.imsCfg && !have['ims.cfg']) missing.push('ims.cfg');
+    if (missing.length) out.push({ row: row.name, missing });
+  }
+  return out;
+}

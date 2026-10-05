@@ -20,6 +20,8 @@ import { startProgress, markRunning, markStep, finishProgress } from '@/lib/auto
 import { userFromRequest } from '@/lib/identity';
 import { recordSystemUse } from '@/lib/systemUsage';
 import { loadInventory, getSystem } from '@/lib/inventory';
+import { rowsMissingServerFiles } from '@/lib/automation/serverConfigs';
+import { syncSuiteToServer } from '@/lib/automation/syncServerConfigs';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 900;
@@ -76,6 +78,26 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     // match a different person who happens to share the name.
     if (onBox && onBox !== suite.uesimSystemId && !asUser && !Array.isArray(body.users)) {
       target.boxUserId = undefined;
+    }
+  }
+
+  // Moving to another setup runs entirely out of the server's own folder —
+  // /root/automation_configs/<suite>/<row>/ — because nothing on the new boxes
+  // knows about this suite: the test case is created from test.json and the
+  // callbox gets enb/mme/ims (and whatever the MME includes) pushed under the
+  // names the row picked.
+  //
+  // So the folder has to be complete first. When it is not, the files are
+  // fetched from the setup the suite WAS built on, which is the only place
+  // they exist. Best-effort and bounded: a suite whose original boxes are down
+  // still runs, and the row that needs a missing file fails naming it rather
+  // than linking the callbox at something that is not there.
+  if (onBox && onBox !== suite.uesimSystemId) {
+    const gaps = rowsMissingServerFiles(suite.name, target.items ?? []);
+    if (gaps.length) {
+      try {
+        await syncSuiteToServer(loadInventory(), suite, { boxUserId: suite.boxUserId });
+      } catch { /* the run reports what is still missing, row by row */ }
     }
   }
 
