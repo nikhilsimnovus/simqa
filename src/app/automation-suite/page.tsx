@@ -1544,7 +1544,20 @@ export default function AutomationSuitePage() {
                 {/* Who executes it. One user, or every login registered for
                     this Simnovator — each pass creates or reuses that user's
                     own copies and runs on their own simulator, one after the
-                    other so they cannot restart the radio under each other. */}
+                    other so they cannot restart the radio under each other.
+                    Shown even when the box has a single login: after pointing
+                    a suite at another Simnovator, WHO it will run as is the
+                    first thing worth knowing, and leaving the row out made it
+                    look like the suite's old login still applied. */}
+                {runUsers.length === 1 && (
+                  <div className="mt-3 rounded-md border border-line bg-slate-50 px-3 py-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Execute as</div>
+                    <div className="text-sm text-slate-800">
+                      {runUsers[0].username}
+                      <span className="ml-1.5 text-[11px] text-slate-500">— the only login registered for {hostOf(runTarget.uesim) || 'this box'}</span>
+                    </div>
+                  </div>
+                )}
                 {runUsers.length > 1 && (
                   <div className="mt-3 rounded-md border border-line bg-slate-50 px-3 py-2">
                     <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Execute as</div>
@@ -1627,9 +1640,14 @@ export default function AutomationSuitePage() {
                 <div className="mt-4 flex justify-end gap-2">
                   <button onClick={() => setConfirmRun(null)}
                     className="rounded-md border border-slate-300 hover:bg-slate-50 text-sm px-4 py-2">Cancel</button>
-                  <button onClick={() => runSuite(s, subset, runUsers.length > 1
-                    ? (runAsAll ? runUsers.map(u => u.username) : [runOneUser])
-                    : undefined,
+                  {/* The chosen login always travels with the run, even when
+                      the box offers only one: a suite retargeted to another
+                      Simnovator would otherwise carry the login it was saved
+                      with, which belongs to the box it came from. */}
+                  <button onClick={() => runSuite(s, subset,
+                    runAsAll && runUsers.length > 1
+                      ? runUsers.map(u => u.username)
+                      : (runOneUser ? [runOneUser] : undefined),
                     { uesim: runTarget.uesim, callbox: runTarget.callbox, ue: runTarget.ue })}
                     className="rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2">
                     ▶ {cfgCheck?.state === 'done' && cfgCheck.changed.length > 0

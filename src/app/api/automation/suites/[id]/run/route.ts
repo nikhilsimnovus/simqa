@@ -69,6 +69,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     // here rather than left to fail row by row inside the runner.
     if (onCallbox) target.kind = 'uesim+callbox';
     else if (body.callboxSystemId === null) { target.kind = 'uesim-only'; target.callboxSystemId = undefined; }
+
+    // Moving to another Simnovator without naming a login drops the saved one:
+    // it is a login on the box this suite came FROM, and carrying it across
+    // would either miss (falling back to the first login anyway) or, worse,
+    // match a different person who happens to share the name.
+    if (onBox && onBox !== suite.uesimSystemId && !asUser && !Array.isArray(body.users)) {
+      target.boxUserId = undefined;
+    }
   }
 
   // Which logins to run for. One pass each, in order — see RunOpts.asUsers.
