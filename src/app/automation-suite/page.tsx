@@ -789,38 +789,6 @@ export default function AutomationSuitePage() {
     return () => { cancelled = true; };
   }, [confirmRun?.suite.id, runTarget.uesim, confirmRun?.suite.uesimSystemId, confirmRun?.suite.boxUserId]);
 
-  /** Whether the lab configs still match what this suite last ran with.
-   *  'checking' while the boxes are being read; a list means somebody changed
-   *  a file since the last run and the operator should know before starting. */
-  const [cfgCheck, setCfgCheck] = useState<{
-    state: 'checking' | 'done';
-    changed: Array<{
-      row: string; version?: number; capturedAt?: string;
-      files: Array<{ file: string; state: string; was?: string; now?: string }>;
-      all?: Array<{ file: string; state: string; was?: string; now?: string }>;
-    }>;
-  } | null>(null);
-
-  // Read the real files off the callbox and UE while the operator is reading
-  // the dialog, so the answer is there by the time they reach the Run button.
-  // A row that has never run has nothing saved to disagree with and is silent.
-  useEffect(() => {
-    if (!confirmRun) { setCfgCheck(null); return; }
-    const { suite, rows } = confirmRun;
-    let cancelled = false;
-    setCfgCheck({ state: 'checking', changed: [] });
-    fetch(`/api/automation/suites/${suite.id}/config-check`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(rows?.length ? { itemIds: rows.map(r => r.id) } : {}),
-    })
-      .then(r => r.json())
-      .then(j => { if (!cancelled) setCfgCheck({ state: 'done', changed: j?.ok ? (j.changed ?? []) : [] }); })
-      // Unreachable boxes are not evidence that anything changed — the run is
-      // never blocked on this check.
-      .catch(() => { if (!cancelled) setCfgCheck({ state: 'done', changed: [] }); });
-    return () => { cancelled = true; };
-  }, [confirmRun?.suite.id, confirmRun?.rows]);
-
   /** Stop the suite: ends the execution on the box AND cancels the rows that
    *  have not started. Stopping only the box execution would just let the next
    *  row begin. */
@@ -1562,12 +1530,6 @@ export default function AutomationSuitePage() {
                       </select>
                     </label>
                   </div>
-                  {runTarget.uesim && runTarget.uesim !== s.uesimSystemId && (
-                    <div className="mt-1.5 text-[11px] text-amber-700">
-                      Running somewhere other than the suite's own setup. Its saved configs were captured on
-                      {' '}{hostOf(s.callboxSystemId) || 'another callbox'} — any file this suite picks must also exist on the callbox above.
-                    </div>
-                  )}
                   {/* Whether the box you have chosen can take it right now. A
                       Simnovator runs one test at a time, so this is the
                       difference between pressing Run and being told 409 a
@@ -1627,60 +1589,6 @@ export default function AutomationSuitePage() {
                   {s.kind === 'uesim+callbox' && <>, symlinks its gnb/mme/ims cfgs on {hostOf(s.callboxSystemId)} and restarts lte</>}
                   , then executes. Most of the time is bring-up, not the configured duration.
                 </p>
-                {/* What changed on the boxes since this suite last ran. Named
-                    file by file — "something changed" would only send the
-                    operator looking through six configs by hand. */}
-                {cfgCheck?.state === 'checking' && (
-                  <p className="mt-3 text-[11px] text-slate-500">Checking the configs against the last run…</p>
-                )}
-                {cfgCheck?.state === 'done' && cfgCheck.changed.length > 0 && (
-                  <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 max-h-64 overflow-y-auto">
-                    <div className="text-sm font-semibold text-amber-900">
-                      ⚠ Configuration changes detected
-                    </div>
-                    <p className="mt-0.5 text-[11px] text-amber-800">
-                      The configuration has changed since the last execution. The test will run
-                      with the updated configuration, and it will be kept as a new version.
-                    </p>
-                    {cfgCheck.changed.map(c => {
-                      const unchanged = (c.all ?? []).filter(f => f.state === 'same');
-                      return (
-                        <div key={c.row} className="mt-2 border-t border-amber-200 pt-2 first:border-t-0 first:pt-0">
-                          <div className="text-[11px] font-medium text-amber-900">
-                            {c.row}
-                            {c.capturedAt && (
-                              <span className="font-normal text-amber-700">
-                                {' '}· last saved as v{c.version} on {new Date(c.capturedAt).toLocaleString()}
-                              </span>
-                            )}
-                          </div>
-                          <div className="mt-1 text-[11px] text-amber-900">
-                            <div className="font-medium">Changed files</div>
-                            <ul className="pl-4 list-disc">
-                              {c.files.map(f => (
-                                <li key={f.file}>
-                                  <span className="font-mono">{f.file}</span>
-                                  {f.state === 'changed' && f.was && f.now && f.was !== f.now
-                                    ? <> — now {f.now} (was {f.was})</>
-                                    : f.state === 'changed' ? <> — modified</>
-                                    : f.state === 'added' ? <> — new{f.now ? ` (${f.now})` : ''}</>
-                                    : <> — no longer there</>}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                          {unchanged.length > 0 && (
-                            <div className="mt-1 text-[11px] text-amber-800">
-                              <div className="font-medium">Unchanged</div>
-                              <div className="pl-4 font-mono">{unchanged.map(f => f.file).join(', ')}</div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
                 <div className="mt-4 flex justify-end gap-2">
                   <button onClick={() => setConfirmRun(null)}
                     className="rounded-md border border-slate-300 hover:bg-slate-50 text-sm px-4 py-2">Cancel</button>
@@ -1700,9 +1608,7 @@ export default function AutomationSuitePage() {
                     disabled={!!targetBusy}
                     title={targetBusy ? `${targetBusy.testCaseName} is executing on ${hostOf(runTarget.uesim)} — choose another Simnovator above` : undefined}
                     className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-sm font-semibold px-4 py-2">
-                    ▶ {cfgCheck?.state === 'done' && cfgCheck.changed.length > 0
-                      ? 'Run with updated configs'
-                      : !subset ? 'Run Suite' : rows.length === 1 ? 'Run Test Case' : 'Run Selected'}
+                    ▶ {!subset ? 'Run Suite' : rows.length === 1 ? 'Run Test Case' : 'Run Selected'}
                   </button>
                 </div>
               </div>
