@@ -999,6 +999,8 @@ export default function AutomationSuitePage() {
 
   /** Uploading a test case JSON onto the chosen box, and what came of it. */
   const [importingTc, setImportingTc] = useState(false);
+  /** The hidden file input beside the testcase picker. */
+  const tcFileRef = useRef<HTMLInputElement | null>(null);
   const [tcImportMsg, setTcImportMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const loadUesimTestcases = useCallback(async (sysId: string) => {
@@ -2436,21 +2438,7 @@ export default function AutomationSuitePage() {
 
               {/* Add-row picker */}
               <div className="mb-4 border border-line rounded-md p-3 bg-slate-50/50">
-                <div className="flex items-center justify-between gap-3 mb-2">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Add a TestCase</div>
-                  {/* A test case that is not on this box yet. The picker can
-                      only offer what the box already holds, which left the
-                      answer "go and build it in the Simnovator first" — so a
-                      file exported from any box can be put on this one here,
-                      as the login this suite runs as, and used straight away. */}
-                  <label className={`text-[11px] rounded-md border px-2 py-1 ${uesimSystemId && !importingTc ? 'border-slate-300 text-slate-600 hover:bg-white cursor-pointer' : 'border-slate-200 text-slate-300 cursor-not-allowed'}`}
-                    title={!uesimSystemId ? 'Choose a Simnovator first' : 'Upload a test case exported from a Simnovator (.json)'}>
-                    {importingTc ? 'Uploading…' : '⤒ Upload test case JSON'}
-                    <input type="file" accept="application/json,.json" className="hidden"
-                      disabled={!uesimSystemId || importingTc}
-                      onChange={onPickTestcaseJson} />
-                  </label>
-                </div>
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Add a TestCase</div>
                 {tcImportMsg && (
                   <div className={`mb-2 text-[11px] rounded px-2 py-1 border ${tcImportMsg.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700'}`}>
                     {tcImportMsg.text}
@@ -2458,7 +2446,25 @@ export default function AutomationSuitePage() {
                 )}
                 <div className="grid grid-cols-3 gap-2 items-end">
                   <label className="flex flex-col text-xs">
-                    <span className="text-slate-500 mb-1">Simnovator testcase</span>
+                    <span className="mb-1 flex items-center justify-between gap-2">
+                      <span className="text-slate-500">Simnovator testcase</span>
+                      {/* Right here, because this is the field it answers: the
+                          picker can only offer what the box already holds, so a
+                          test case that lives in a file used to mean going and
+                          building it in the Simnovator first. Uploading puts it
+                          on this box, as the login the suite runs as, and it
+                          then appears in this very dropdown. */}
+                      <span
+                        className={`rounded border px-1.5 py-0.5 text-[10px] ${uesimSystemId && !importingTc ? 'border-slate-300 text-slate-600 hover:bg-white cursor-pointer' : 'border-slate-200 text-slate-300 cursor-not-allowed'}`}
+                        title={!uesimSystemId ? 'Choose a Simnovator first' : 'Upload a test case exported from a Simnovator (.json) — it is added to this box'}
+                        onClick={() => { if (uesimSystemId && !importingTc) tcFileRef.current?.click(); }}
+                      >
+                        {importingTc ? 'Uploading…' : '⤒ Upload JSON'}
+                      </span>
+                      <input ref={tcFileRef} type="file" accept="application/json,.json" className="hidden"
+                        disabled={!uesimSystemId || importingTc}
+                        onChange={onPickTestcaseJson} />
+                    </span>
                     {/* Searchable: a Simnovator holds hundreds of testcases,
                         and scrolling a plain dropdown to find one is the whole
                         reason rows were added by hand. */}
