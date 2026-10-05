@@ -45,6 +45,32 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     target = { ...suite, items: picked, testcaseIds: picked.map(it => it.simnovatorTcId) };
   }
 
+  // Run it anywhere.
+  //
+  // The systems saved on a suite are where it was BUILT, not where it may run:
+  // the same suite belongs on .95 as sruthi today and .102 as simuser
+  // tomorrow, which is how campaigns have always worked. Anything the caller
+  // names replaces the saved value for this run only; anything it leaves out
+  // keeps the suite's own. Nothing here is written back.
+  const pick = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  const onBox = pick(body.uesimSystemId);
+  const onCallbox = pick(body.callboxSystemId);
+  const onUe = pick(body.ueSystemId);
+  const asUser = body.boxUserId === null ? undefined : pick(body.boxUserId);
+  if (onBox || onCallbox || onUe || asUser) {
+    target = {
+      ...target,
+      uesimSystemId: onBox ?? target.uesimSystemId,
+      boxUserId: asUser ?? target.boxUserId,
+      callboxSystemId: onCallbox ?? target.callboxSystemId,
+      ueSystemId: onUe ?? target.ueSystemId,
+    };
+    // A setup with no callbox cannot link cfgs; one with a callbox can. Said
+    // here rather than left to fail row by row inside the runner.
+    if (onCallbox) target.kind = 'uesim+callbox';
+    else if (body.callboxSystemId === null) { target.kind = 'uesim-only'; target.callboxSystemId = undefined; }
+  }
+
   // Which logins to run for. One pass each, in order — see RunOpts.asUsers.
   // Absent or empty means the login the suite is saved with.
   const asUsers: string[] = Array.isArray(body.users)

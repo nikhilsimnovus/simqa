@@ -717,10 +717,39 @@ export default function AutomationSuitePage() {
   /** Suite + rows awaiting confirmation in the Run dialog. `rows` undefined
    *  means the whole suite. */
   const [confirmRun, setConfirmRun] = useState<{ suite: SuiteRow; rows?: SuiteItem[] } | null>(null);
+
+  /**
+   * Where this run goes — chosen in the dialog, not baked into the suite.
+   *
+   * A suite's systems are where it was built. The same suite belongs on .95 as
+   * sruthi today and .102 as simuser tomorrow, which is how campaigns have
+   * always worked; a suite had to be edited (or copied) to run anywhere else.
+   * Opens on the suite's own setup, so Run with nothing touched does exactly
+   * what it did before, and nothing here is saved back to the suite.
+   */
+  const [runTarget, setRunTarget] = useState<{ uesim: string; callbox: string; ue: string }>({ uesim: '', callbox: '', ue: '' });
+  useEffect(() => {
+    if (!confirmRun) return;
+    const s = confirmRun.suite;
+    setRunTarget({ uesim: s.uesimSystemId ?? '', callbox: s.callboxSystemId ?? '', ue: s.ueSystemId ?? '' });
+  }, [confirmRun?.suite.id]);
+
+  /** Moving to another Simnovator brings its own callbox and UE with it — the
+   *  topology already says which, and picking a box only to be left pointing at
+   *  another box's callbox is a trap. Both stay editable afterwards. */
+  const retargetBox = useCallback((uesim: string) => {
+    const profile = profiles.find(p => p.simnovator === uesim || p.uesim === uesim);
+    setRunTarget(prev => ({
+      uesim,
+      callbox: profile?.callbox ?? prev.callbox,
+      ue: profile?.uesim && profile.uesim !== uesim ? profile.uesim : prev.ue,
+    }));
+  }, [profiles]);
+
   // The logins registered for the suite waiting in the run dialog. Fetched
   // when it opens rather than held for every suite in the list.
   useEffect(() => {
-    const sysId = confirmRun?.suite.uesimSystemId;
+    const sysId = runTarget.uesim || confirmRun?.suite.uesimSystemId;
     if (!sysId) { setRunUsers([]); return; }
     let cancelled = false;
     fetch(`/api/box-users?systemId=${encodeURIComponent(sysId)}`)
@@ -736,7 +765,7 @@ export default function AutomationSuitePage() {
       })
       .catch(() => { /* one login, or the box is unreachable — run as saved */ });
     return () => { cancelled = true; };
-  }, [confirmRun?.suite.id, confirmRun?.suite.uesimSystemId, confirmRun?.suite.boxUserId]);
+  }, [confirmRun?.suite.id, runTarget.uesim, confirmRun?.suite.uesimSystemId, confirmRun?.suite.boxUserId]);
 
   /** Whether the lab configs still match what this suite last ran with.
    *  'checking' while the boxes are being read; a list means somebody changed
@@ -1274,7 +1303,14 @@ export default function AutomationSuitePage() {
 
   /** Run a whole suite, or — when `rows` is given — only those testcases.
    *  Confirmation happens in the dialog that calls this, not here. */
-  const runSuite = async (s: SuiteRow, rows?: SuiteItem[], users?: string[]) => {
+  const runSuite = async (
+    s: SuiteRow,
+    rows?: SuiteItem[],
+    users?: string[],
+    /** Where to run it, when the dialog pointed it somewhere other than the
+     *  suite's own setup. Omitted means the suite's. */
+    on?: { uesim?: string; callbox?: string; ue?: string },
+  ) => {
     setConfirmRun(null);
     setRunning(s.id); setError('');
     try {
@@ -1285,6 +1321,11 @@ export default function AutomationSuitePage() {
         body: JSON.stringify({
           ...(rows?.length ? { itemIds: rows.map(r => r.id) } : {}),
           ...(users?.length ? { users } : {}),
+          // Only what differs from the suite: the route keeps the saved value
+          // for anything left out, so an untouched dialog runs exactly as before.
+          ...(on?.uesim && on.uesim !== s.uesimSystemId ? { uesimSystemId: on.uesim } : {}),
+          ...(on?.callbox && on.callbox !== s.callboxSystemId ? { callboxSystemId: on.callbox } : {}),
+          ...(on?.ue && on.ue !== s.ueSystemId ? { ueSystemId: on.ue } : {}),
         }),
       });
       const d = await r.json();
@@ -1460,6 +1501,46 @@ export default function AutomationSuitePage() {
                   {runAsAll && runUsers.length > 1 ? <> × {runUsers.length} users</> : null}
                 </p>
 
+                {/* Where it runs. The suite's own setup is the default and
+                    nothing here is written back to it: a suite built on one
+                    Simnovator can be run on another, as that box's own login,
+                    without being edited or copied first. */}
+                <div className="mt-3 rounded-md border border-line bg-slate-50 px-3 py-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Run on</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <label className="flex flex-col text-[11px] text-slate-500">
+                      Simnovator
+                      <select value={runTarget.uesim} onChange={e => retargetBox(e.target.value)}
+                        className="mt-0.5 border border-slate-300 rounded-md px-2 py-1 text-xs text-slate-900">
+                        {uesimSystems.map(x => <option key={x.id} value={x.id}>{x.host || x.name || x.id}</option>)}
+                      </select>
+                    </label>
+                    {s.kind === 'uesim+callbox' && (
+                      <label className="flex flex-col text-[11px] text-slate-500">
+                        Callbox
+                        <select value={runTarget.callbox} onChange={e => setRunTarget(p => ({ ...p, callbox: e.target.value }))}
+                          className="mt-0.5 border border-slate-300 rounded-md px-2 py-1 text-xs text-slate-900">
+                          {callboxSystems.map(x => <option key={x.id} value={x.id}>{x.host || x.name || x.id}</option>)}
+                        </select>
+                      </label>
+                    )}
+                    <label className="flex flex-col text-[11px] text-slate-500">
+                      UE
+                      <select value={runTarget.ue} onChange={e => setRunTarget(p => ({ ...p, ue: e.target.value }))}
+                        className="mt-0.5 border border-slate-300 rounded-md px-2 py-1 text-xs text-slate-900">
+                        <option value="">from topology</option>
+                        {ueSystems.map(x => <option key={x.id} value={x.id}>{x.host || x.name || x.id}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                  {runTarget.uesim && runTarget.uesim !== s.uesimSystemId && (
+                    <div className="mt-1.5 text-[11px] text-amber-700">
+                      Running somewhere other than the suite's own setup. Its saved configs were captured on
+                      {' '}{hostOf(s.callboxSystemId) || 'another callbox'} — any file this suite picks must also exist on the callbox above.
+                    </div>
+                  )}
+                </div>
+
                 {/* Who executes it. One user, or every login registered for
                     this Simnovator — each pass creates or reuses that user's
                     own copies and runs on their own simulator, one after the
@@ -1548,7 +1629,8 @@ export default function AutomationSuitePage() {
                     className="rounded-md border border-slate-300 hover:bg-slate-50 text-sm px-4 py-2">Cancel</button>
                   <button onClick={() => runSuite(s, subset, runUsers.length > 1
                     ? (runAsAll ? runUsers.map(u => u.username) : [runOneUser])
-                    : undefined)}
+                    : undefined,
+                    { uesim: runTarget.uesim, callbox: runTarget.callbox, ue: runTarget.ue })}
                     className="rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-4 py-2">
                     ▶ {cfgCheck?.state === 'done' && cfgCheck.changed.length > 0
                       ? 'Run with updated configs'
