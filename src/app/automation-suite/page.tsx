@@ -1865,8 +1865,14 @@ export default function AutomationSuitePage() {
                           // end up choosing is free is decided in there.
                           <button onClick={e => { e.stopPropagation(); setConfirmRun({ suite: s }); }}
                             title={boxBusy ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — open this to run on another Simnovator` : 'Run every test case in this suite, in order'}
-                            className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xs font-semibold px-3 py-1.5">
-                            ▶ Run Suite
+                            className={'rounded-md text-white text-xs font-semibold px-3 py-1.5 '
+                              + (boxBusy ? 'bg-slate-500 hover:bg-slate-600' : 'bg-blue-600 hover:bg-blue-700')}>
+                            {/* While the box is executing, this cannot start
+                                anything — say so on the button rather than
+                                looking like a Run that will fire. It still
+                                opens, because the dialog is where another
+                                Simnovator is chosen. */}
+                            {boxBusy ? '▶ Run on another box…' : '▶ Run Suite'}
                           </button>
                         )}
                       </div>
@@ -1919,7 +1925,8 @@ export default function AutomationSuitePage() {
                             rows: (s.items ?? []).filter(i => pickedIn(s.id).has(i.id)),
                           })}
                           disabled={running === s.id || !!boxBusy || pickedIn(s.id).size === 0}
-                          title={pickedIn(s.id).size === 0 ? 'Tick one or more test cases first' : `Run the ${pickedIn(s.id).size} ticked test case(s)`}
+                          title={boxBusy ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — use Run Suite above to run on another Simnovator`
+                            : pickedIn(s.id).size === 0 ? 'Tick one or more test cases first' : `Run the ${pickedIn(s.id).size} ticked test case(s)`}
                           className="rounded-md border border-blue-600 text-blue-700 hover:bg-blue-50 disabled:border-slate-300 disabled:text-slate-400 text-xs font-semibold px-3 py-1.5">
                           ▶ Run Selected{pickedIn(s.id).size > 0 ? ` (${pickedIn(s.id).size})` : ''}
                         </button>
@@ -2193,7 +2200,7 @@ export default function AutomationSuitePage() {
                                       <button
                                         onClick={() => setConfirmRun({ suite: s, rows: [it] })}
                                         disabled={running === s.id || !!boxBusy}
-                                        title={boxBusy ? `${boxBusy.testCaseName} is already running on ${boxBusy.host}` : `Run only "${it.name}"`}
+                                        title={boxBusy ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — use Run Suite above to run on another Simnovator` : `Run only "${it.name}"`}
                                         className="rounded bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white text-[11px] px-2 py-0.5 mr-1">
                                         Run
                                       </button>
