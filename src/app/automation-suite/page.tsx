@@ -997,6 +997,10 @@ export default function AutomationSuitePage() {
     } finally { if (req === cbxReq.current) setLoadingCbx(false); }
   }, []);
 
+  /** Uploading a test case JSON onto the chosen box, and what came of it. */
+  const [importingTc, setImportingTc] = useState(false);
+  const [tcImportMsg, setTcImportMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
   const loadUesimTestcases = useCallback(async (sysId: string) => {
     if (!sysId) { setUeTcs([]); return; }
     setLoadingTc(true);
@@ -1009,6 +1013,53 @@ export default function AutomationSuitePage() {
         : '');
     } finally { setLoadingTc(false); }
   }, []);
+
+  /**
+   * Upload a test case JSON to the chosen Simnovator.
+   *
+   * The file is the box's own export — the one its Export button produces —
+   * and it is imported as the login this suite runs as, because a Simnovator
+   * login only sees its own catalogue. On success the list is pulled again and
+   * the new test case is selected, so the next thing to do is name the row and
+   * add it.
+   */
+  const onPickTestcaseJson = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';                       // same file twice must re-fire
+    if (!file || !uesimSystemId) return;
+    setImportingTc(true);
+    setTcImportMsg(null);
+    try {
+      let pack: unknown;
+      try { pack = JSON.parse(await file.text()); }
+      catch { setTcImportMsg({ ok: false, text: `${file.name} is not valid JSON.` }); return; }
+
+      const r = await fetch('/api/automation/testcases/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ systemId: uesimSystemId, boxUserId: boxUserId || undefined, pack }),
+      }).then(x => x.json());
+
+      if (!r?.ok) { setTcImportMsg({ ok: false, text: r?.error ?? 'the upload failed' }); return; }
+
+      await loadUesimTestcases(uesimSystemId);
+      const made = (r.testcases ?? [])[0];
+      const name = made?.name || file.name.replace(/\.json$/i, '');
+      setTcImportMsg({
+        ok: true,
+        text: `"${name}" is now on ${r.host} as ${r.boxUser} — pick it below to add it to this suite.`,
+      });
+      if (made?.id) {
+        setAddTcId(made.id);
+        const next = defaultRowName(name);
+        setAddDisplayName(cur => (!cur.trim() || cur === autoNameRef.current ? next : cur));
+        autoNameRef.current = next;
+      }
+    } catch (err: any) {
+      setTcImportMsg({ ok: false, text: err?.message ?? String(err) });
+    } finally {
+      setImportingTc(false);
+    }
+  }, [uesimSystemId, boxUserId, loadUesimTestcases]);
 
   /** "Add an upload" — reads one or more files into base64 and merges
    *  them into uploadedConfigs. Pre-selects them too. */
@@ -2385,7 +2436,26 @@ export default function AutomationSuitePage() {
 
               {/* Add-row picker */}
               <div className="mb-4 border border-line rounded-md p-3 bg-slate-50/50">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Add a TestCase</div>
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Add a TestCase</div>
+                  {/* A test case that is not on this box yet. The picker can
+                      only offer what the box already holds, which left the
+                      answer "go and build it in the Simnovator first" — so a
+                      file exported from any box can be put on this one here,
+                      as the login this suite runs as, and used straight away. */}
+                  <label className={`text-[11px] rounded-md border px-2 py-1 ${uesimSystemId && !importingTc ? 'border-slate-300 text-slate-600 hover:bg-white cursor-pointer' : 'border-slate-200 text-slate-300 cursor-not-allowed'}`}
+                    title={!uesimSystemId ? 'Choose a Simnovator first' : 'Upload a test case exported from a Simnovator (.json)'}>
+                    {importingTc ? 'Uploading…' : '⤒ Upload test case JSON'}
+                    <input type="file" accept="application/json,.json" className="hidden"
+                      disabled={!uesimSystemId || importingTc}
+                      onChange={onPickTestcaseJson} />
+                  </label>
+                </div>
+                {tcImportMsg && (
+                  <div className={`mb-2 text-[11px] rounded px-2 py-1 border ${tcImportMsg.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700'}`}>
+                    {tcImportMsg.text}
+                  </div>
+                )}
                 <div className="grid grid-cols-3 gap-2 items-end">
                   <label className="flex flex-col text-xs">
                     <span className="text-slate-500 mb-1">Simnovator testcase</span>
