@@ -32,6 +32,7 @@ import { duplicateTestcase } from './duplicateTestcase';
 // box replies in capitals — see isTerminalStatus.
 import { isTerminalStatus } from './outcome';
 import { saveRowConfigs } from '../suiteConfigStore';
+import { preflightRows } from './preflightConfigs';
 import { readTestCaseFile, readAllTestCaseFiles, testCaseDir } from './serverConfigs';
 import { syncRowToServer } from './syncServerConfigs';
 
@@ -754,6 +755,31 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     } catch { /* uploads still attempt */ }
   }
 
+  // Can every row actually be prepared here, from what the server holds?
+  //
+  // Decided once, up front, now that the target's own files are known: a row
+  // whose cfg exists neither in /root/automation_configs nor on this callbox
+  // cannot be made to run, and discovering that row by row means finding out
+  // several minutes apart, after a core that never started reports itself as
+  // "no UEs attached". Rows that CAN run are unaffected and still run.
+  const blockedRows = new Map<string, string[]>();
+  {
+    const folder: Record<string, Record<string, string>> = {};
+    for (const it of items) {
+      folder[it.name] = readAllTestCaseFiles(it.configSuite ?? suite.name, it.name);
+    }
+    for (const bad of preflightRows({
+      rows: items.map(it => ({ name: it.name, callboxCfg: it.callboxCfg, mmeCfg: it.mmeCfg, imsCfg: it.imsCfg })),
+      folder,
+      uploads: new Set(Object.keys(suite.uploadedConfigs ?? {})),
+      onCallboxRadio: existing,
+      onCallboxCore: existingCore,
+      withCallbox: !!callboxSys,
+    })) {
+      blockedRows.set(bad.row, bad.missing);
+    }
+  }
+
   const token = await login(ueOpts.host, ueOpts.username, ueOpts.password).catch(() => '');
   const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const simulatorId = token ? await fetchFirstSimulatorId(ueOpts.host, token) : undefined;
@@ -766,6 +792,25 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     const t0 = Date.now();
     const stepDetails: string[] = [];
     let itemOk = true;
+
+    // Refused before anything is touched, naming the row and the files. The
+    // box is left exactly as it was: no half-prepared callbox, no testcase
+    // created for a row that could never have run.
+    const blocked = blockedRows.get(item.name);
+    if (blocked) {
+      const step = {
+        testcaseId: item.name, status: 0, ok: false,
+        detail: `cannot prepare this row: ${blocked.join(', ')} — not in `
+          + `${testCaseDir(item.configSuite ?? suite.name, item.name)} and not on `
+          + `${callboxSys?.host ?? 'the callbox'}. Run the suite once on the setup it was built on to capture them, or upload the file.`,
+        durationMs: Date.now() - t0,
+      };
+      steps.push(step);
+      failed += 1; done += 1;
+      opts.onStep?.(step);
+      if (suite.stopOnFail) break;
+      continue;
+    }
     // Which folder under /root/automation_configs holds this row's configs. A
     // campaign row's live under the suite it was taken from — the campaign is
     // a running order, the suite is where the files were captured — while a
