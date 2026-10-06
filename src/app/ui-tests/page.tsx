@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Header } from '@/components/Header';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
 import { Card, CardBody, CardHeader, CardTitle, Button, Badge, Input } from '@/components/ui';
-import { DynamicUiTests } from './DynamicUiTests';
 import {
   CheckCircle2, XCircle, Loader2, MousePointerClick, ChevronRight, ChevronDown,
   Filter, Download, AlertTriangle, Circle, Square, Play, RotateCcw,
@@ -117,10 +116,7 @@ const DEFAULT_CATEGORIES: Category[] = (Object.keys(CATEGORY_META) as Category[]
 
 type StatusFilter = 'all' | 'failed' | 'passed' | 'pending';
 
-/** The 160-odd hand-written checks. Kept because they encode things a
- *  crawler cannot infer — band-to-ARFCN maths, config fidelity, known past
- *  defects — but they are no longer the whole section. */
-function BuiltInSweep() {
+export default function UiTestsPage() {
   const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null);
   const [enabled, setEnabled] = useState<Set<Category>>(new Set(DEFAULT_CATEGORIES));
   const [headless, setHeadless] = useState(true);
@@ -978,43 +974,5 @@ function EvidenceLink({ href, label, icon }: { href: string; label: string; icon
     <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 px-2 py-1 rounded border border-slate-300 bg-surface hover:bg-slate-50 text-slate-700 transition-colors">
       {icon}<span>{label}</span>
     </a>
-  );
-}
-
-// UI Tests has two halves now, and the dynamic one is the default: it is the
-// only one that can be right about a build nobody has written tests for yet.
-export default function UiTestsPage() {
-  const [mode, setMode] = useState<'dynamic' | 'builtin'>('dynamic');
-  const tab = (id: 'dynamic' | 'builtin', label: string, hint: string) => (
-    <button
-      key={id}
-      onClick={() => setMode(id)}
-      title={hint}
-      className={`px-3 py-2 text-sm border-b-2 -mb-px ${mode === id
-        ? 'border-primary-600 text-primary-800 font-semibold'
-        : 'border-transparent text-slate-600 hover:text-slate-800'}`}
-    >
-      {label}
-    </button>
-  );
-  return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      <div className="px-6 pt-3 flex items-center gap-2 border-b border-line bg-surface">
-        {tab('dynamic', 'Discovered UI', 'Read this setup’s UI off the box and validate what is actually there')}
-        {tab('builtin', 'Built-in sweep', 'The fixed catalogue of hand-written UI tests')}
-      </div>
-      {mode === 'dynamic' ? (
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          <Header
-            title="UI Tests"
-            left={<BackToRunHistory />}
-            subtitle="Discovered from the selected Simnovator: its menus, pages, tabs and controls, validated as they are on the build that is installed"
-          />
-          <DynamicUiTests />
-        </div>
-      ) : (
-        <BuiltInSweep />
-      )}
-    </div>
   );
 }
