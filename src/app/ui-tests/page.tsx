@@ -193,6 +193,12 @@ export default function UiTestsPage() {
   // Recording of the whole visit, when the host has ffmpeg. One file for the
   // run, not per check: it shows the sign-in and every click in order.
   const [uiVideo, setUiVideo] = useState<{ runDir: string; file: string } | null>(null);
+  // Once a setup has been read, its own UI is what this page is about, so the
+  // built-in catalogue is not listed beside it: selecting 1.102 as admin
+  // should show 1.102-as-admin's functionality and nothing else. It stays
+  // one click away rather than disappearing, because the things it covers
+  // (band-to-ARFCN maths, config fidelity) are not inferable from a crawl.
+  const [showBuiltIn, setShowBuiltIn] = useState(false);
 
   // Reading the stored map launches no browser, so switching setup or login
   // repopulates the Categories list immediately.
@@ -560,6 +566,10 @@ export default function UiTestsPage() {
   // The built-in rows plus the selected setup's own, as one list. Everything
   // downstream — the rows, the counts, the Categories totals — reads this,
   // so a discovered check behaves like any other row on the page.
+  /** The built-in rows are listed only when no setup has been read yet, or
+   *  when they are asked for explicitly. */
+  const builtInVisible = uiChecks.length === 0 || showBuiltIn;
+
   const allCatalog: CatalogEntry[] = useMemo(() => {
     const discovered: CatalogEntry[] = uiChecks.map((c, i) => ({
       number: i + 1,
@@ -571,8 +581,9 @@ export default function UiTestsPage() {
       needsAuth: true,
       longRunning: false,
     }));
-    return [...(catalog ?? []), ...discovered];
-  }, [catalog, uiChecks]);
+    // A category that is not on screen must not contribute rows or be run.
+    return [...(builtInVisible ? (catalog ?? []) : []), ...discovered];
+  }, [catalog, uiChecks, builtInVisible]);
 
   // Compose the display rows: post-run results overlaid on catalog (so unrun rows show as pending)
   // While a run is in flight, also overlay runStatus.liveResults so cards
@@ -874,23 +885,41 @@ export default function UiTestsPage() {
                 </div>
               )}
 
-              {(Object.entries(CATEGORY_META) as Array<[Category, { label: string; color: string }]>).map(([c, meta]) => {
-                const total = catalog?.filter((t) => t.category === c).length ?? 0;
-                const checked = enabled.has(c);
-                return (
-                  <label
-                    key={c}
-                    className={
-                      'flex items-center gap-2 text-sm px-2 py-1.5 rounded-md cursor-pointer transition-colors ' +
-                      (checked ? 'bg-slate-50 hover:bg-slate-100' : 'hover:bg-slate-50')
-                    }
-                  >
-                    <input type="checkbox" checked={checked} onChange={() => toggle(c)} className="accent-primary-600" />
-                    <span className="flex-1 text-slate-700">{meta.label}</span>
-                    <span className={'text-[10px] tabular-nums px-1.5 py-0.5 rounded border ' + meta.color}>{total}</span>
-                  </label>
-                );
-              })}
+              {builtInVisible ? (
+                (Object.entries(CATEGORY_META) as Array<[Category, { label: string; color: string }]>).map(([c, meta]) => {
+                  const total = catalog?.filter((t) => t.category === c).length ?? 0;
+                  const checked = enabled.has(c);
+                  return (
+                    <label
+                      key={c}
+                      className={
+                        'flex items-center gap-2 text-sm px-2 py-1.5 rounded-md cursor-pointer transition-colors ' +
+                        (checked ? 'bg-slate-50 hover:bg-slate-100' : 'hover:bg-slate-50')
+                      }
+                    >
+                      <input type="checkbox" checked={checked} onChange={() => toggle(c)} className="accent-primary-600" />
+                      <span className="flex-1 text-slate-700">{meta.label}</span>
+                      <span className={'text-[10px] tabular-nums px-1.5 py-0.5 rounded border ' + meta.color}>{total}</span>
+                    </label>
+                  );
+                })
+              ) : null}
+
+              {/* The built-in catalogue, one line away rather than gone. */}
+              {uiChecks.length > 0 ? (
+                <button
+                  onClick={() => {
+                    // Hiding it also deselects it, so nothing runs off-screen.
+                    if (showBuiltIn) setEnabled((cur) => new Set(Array.from(cur).filter(isUiCat)));
+                    setShowBuiltIn(!showBuiltIn);
+                  }}
+                  className="w-full text-left text-[10px] text-slate-400 hover:text-slate-600 hover:underline px-2 pt-1"
+                >
+                  {showBuiltIn
+                    ? 'Hide the built-in categories'
+                    : `Show the built-in categories (${catalog?.length ?? 0})`}
+                </button>
+              ) : null}
               <div className="text-[11px] text-slate-500 pt-2 mt-1 border-t border-slate-100 flex items-center justify-between">
                 <span>{selectedCount} tests selected</span>
                 <span className="text-slate-400">{allCatalog.length || '?'} total</span>
