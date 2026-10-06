@@ -612,18 +612,14 @@ export async function executeNodeChecks(ctx: ExecContext, checks: GeneratedCheck
   const out: CheckOutcome[] = [];
   if (checks.length === 0) return out;
 
-  // Not-applicable checks are reported without touching the box at all.
-  const toRun = checks.filter(c => !(c.notApplicable && c.kind !== 'required-field-blocks-submit'));
-  for (const c of checks) {
-    if (c.notApplicable && c.kind !== 'required-field-blocks-submit') {
-      out.push({
-        check: c, status: 'not-available',
-        actual: 'not performed',
-        reason: c.notApplicable,
-        durationMs: 0, ranAt: new Date().toISOString(),
-      });
-    }
-  }
+  // A not-applicable check is reported without the control ever being
+  // operated — but it is still worth a picture of the control it is about.
+  // "Restart is offered on this page and we did not press it" is a claim, and
+  // the ringed button is what backs it up. These stay in the loop rather than
+  // being answered before it, so they get the same capture every other row
+  // gets; only the acting is skipped, not the evidence.
+  const skipAction = (c: GeneratedCheck) => !!c.notApplicable && c.kind !== 'required-field-blocks-submit';
+  const toRun = checks;
   if (toRun.length === 0) return out;
 
   // Application-level checks do their own navigation.
@@ -668,10 +664,14 @@ export async function executeNodeChecks(ctx: ExecContext, checks: GeneratedCheck
 
     const t0 = Date.now();
     let v: { status: CheckStatus; actual: string; error?: string; reason?: string };
-    try {
-      v = await runCheck(ctx, c, reached);
-    } catch (e: any) {
-      v = { status: 'error', actual: 'the check could not be completed', error: String(e?.message ?? e).slice(0, 400) };
+    if (skipAction(c)) {
+      v = { status: 'not-available', actual: 'not performed', reason: c.notApplicable };
+    } else {
+      try {
+        v = await runCheck(ctx, c, reached);
+      } catch (e: any) {
+        v = { status: 'error', actual: 'the check could not be completed', error: String(e?.message ?? e).slice(0, 400) };
+      }
     }
     const outcome: CheckOutcome = {
       check: c,
