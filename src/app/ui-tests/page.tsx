@@ -1100,7 +1100,12 @@ export default function UiTestsPage() {
                   // panel to show. Anything with a final result is expandable.
                   const expandable = r.state !== 'pending' && r.state !== 'running';
                   const dr = r as UiTestResult & { state: 'pass' | 'fail' | 'skip' };
-                  const meta = CATEGORY_META[r.category];
+                  // metaFor, not a direct lookup: a row's category can be one
+                  // the selected setup has rather than one of the built-in
+                  // sixteen, and indexing the table for "ui:Tools" returns
+                  // undefined — which threw on meta.color for every row in a
+                  // discovered run.
+                  const meta = metaFor(r.category);
                   const isSingleRunning = singleRunningId === r.id;
                   const isInFlight = isSingleRunning || r.state === 'running';
                   return (
