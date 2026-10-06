@@ -51,6 +51,23 @@ export interface ExecContext {
   signal?: AbortSignal;
 }
 
+/** What it means when a control cannot be found.
+ *
+ *  For a control that lives in a floating, state-dependent panel this is not
+ *  a fault: the running-test widget is on screen while a test runs and gone
+ *  afterwards, and asserting its buttons as permanent turned one quiet box
+ *  into 75 failures. For anything else, missing is missing. */
+function missing(c: GeneratedCheck, what: string): { status: CheckStatus; actual: string; reason?: string } {
+  if (c.target?.transient) {
+    return {
+      status: 'skip',
+      actual: what,
+      reason: 'this control is part of a floating panel that only appears in some states — it was on screen when the UI was read',
+    };
+  }
+  return { status: 'fail', actual: what };
+}
+
 /** Capture the page with this check's control ringed in red, so the picture
  *  is proof of THAT control rather than of the page it happens to sit on.
  *
@@ -271,7 +288,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const el = await locate(page, c).first();
       const n = await el.count().catch(() => 0);
-      if (!n) return { status: 'fail', actual: `not found on the page (looked for ${c.target?.selector ?? ''} and the label "${c.element ?? ''}")` };
+      if (!n) return missing(c, `not found on the page (looked for ${c.target?.selector ?? ''} and the label "${c.element ?? ''}")`);
       const vis = await el.isVisible().catch(() => false);
       return vis
         ? { status: 'pass', actual: 'present and visible' }
@@ -282,7 +299,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
     case 'element-disabled': {
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const el = await locate(page, c).first();
-      if (!(await el.count().catch(() => 0))) return { status: 'fail', actual: 'the control is not on the page at all' };
+      if (!(await el.count().catch(() => 0))) return missing(c, 'the control is not on the page at all');
       const enabled = await el.isEnabled().catch(() => false);
       const ariaDisabled = await el.getAttribute('aria-disabled').catch(() => null);
       const effectivelyEnabled = enabled && ariaDisabled !== 'true';
@@ -296,7 +313,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
     case 'button-responds': {
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const el = await locate(page, c).first();
-      if (!(await el.count().catch(() => 0))) return { status: 'fail', actual: 'the control is not on the page' };
+      if (!(await el.count().catch(() => 0))) return missing(c, 'the control is not on the page');
       if (!(await el.isEnabled().catch(() => false))) {
         return { status: 'skip', actual: 'the control is disabled', reason: 'nothing to press' };
       }
@@ -337,7 +354,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
     case 'field-labelled': {
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const el = await locate(page, c).first();
-      if (!(await el.count().catch(() => 0))) return { status: 'fail', actual: 'the field is not on the page' };
+      if (!(await el.count().catch(() => 0))) return missing(c, 'the field is not on the page');
       const how = await el.evaluate((n: any) => {
         if (n.getAttribute('aria-label')) return 'aria-label';
         if (n.getAttribute('aria-labelledby')) return 'aria-labelledby';
@@ -354,7 +371,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
     case 'select-options-unique': {
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const el = await locate(page, c).first();
-      if (!(await el.count().catch(() => 0))) return { status: 'fail', actual: 'the dropdown is not on the page' };
+      if (!(await el.count().catch(() => 0))) return missing(c, 'the dropdown is not on the page');
       let options: string[] = await el.evaluate((n: any) =>
         Array.from(n.options ?? []).map((o: any) => String(o.textContent ?? '').trim()).filter(Boolean),
       ).catch(() => []);
@@ -391,7 +408,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
     case 'table-headers': {
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const el = await locate(page, c).first();
-      if (!(await el.count().catch(() => 0))) return { status: 'fail', actual: 'the table is not on the page' };
+      if (!(await el.count().catch(() => 0))) return missing(c, 'the table is not on the page');
       const heads: string[] = await el.evaluate((n: any) =>
         Array.from(n.querySelectorAll('th, [role="columnheader"]')).map((h: any) => String(h.innerText ?? '').replace(/\s+/g, ' ').trim()).filter(Boolean),
       ).catch(() => []);
@@ -413,7 +430,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
     case 'table-rows-or-empty-state': {
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const el = await locate(page, c).first();
-      if (!(await el.count().catch(() => 0))) return { status: 'fail', actual: 'the table is not on the page' };
+      if (!(await el.count().catch(() => 0))) return missing(c, 'the table is not on the page');
       const info = await el.evaluate((n: any) => {
         const body = n.querySelector('tbody') || n;
         const rows = Array.from(body.querySelectorAll('tr, [role="row"]')).filter((r: any) => r.getClientRects().length);
@@ -430,7 +447,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
     case 'sort-reorders': {
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const el = await locate(page, c).first();
-      if (!(await el.count().catch(() => 0))) return { status: 'fail', actual: 'the table is not on the page' };
+      if (!(await el.count().catch(() => 0))) return missing(c, 'the table is not on the page');
       const col = c.target?.columns?.[0];
       const readFirstColumn = () => el.evaluate((n: any) => {
         const body = n.querySelector('tbody') || n;
@@ -460,7 +477,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
     case 'search-filters': {
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const box = await locate(page, c).first();
-      if (!(await box.count().catch(() => 0))) return { status: 'fail', actual: 'the search box is not on the page' };
+      if (!(await box.count().catch(() => 0))) return missing(c, 'the search box is not on the page');
       const rows = () => page.evaluate(`(() => {
         const t = document.querySelector('table, [role="table"], .ant-table');
         if (!t) return { n: 0, sample: '' };
@@ -498,7 +515,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
     case 'pagination-advances': {
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const pager = await locate(page, c).first();
-      if (!(await pager.count().catch(() => 0))) return { status: 'fail', actual: 'the pagination control is not on the page' };
+      if (!(await pager.count().catch(() => 0))) return missing(c, 'the pagination control is not on the page');
       const next = pager.locator('[aria-label*="next" i], li.next a, button:has-text("Next"), a:has-text("Next"), .ant-pagination-next').first();
       if (!(await next.count().catch(() => 0))) return { status: 'skip', actual: 'no next-page control', reason: 'single page of results' };
       const disabled = await next.evaluate((n: any) =>
@@ -527,7 +544,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
     case 'dialog-opens-and-cancels': {
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const trigger = await locate(page, c).first();
-      if (!(await trigger.count().catch(() => 0))) return { status: 'fail', actual: 'the control is not on the page' };
+      if (!(await trigger.count().catch(() => 0))) return missing(c, 'the control is not on the page');
       const clicked = await trigger.click({ timeout: 8000 }).then(() => true).catch(() => false);
       if (!clicked) return { status: 'fail', actual: 'the control is present but would not take a click' };
       await page.waitForTimeout(800);
@@ -561,7 +578,7 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
       }
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the form was not reached' };
       const field = await locate(page, c).first();
-      if (!(await field.count().catch(() => 0))) return { status: 'fail', actual: 'the mandatory field is not on the form' };
+      if (!(await field.count().catch(() => 0))) return missing(c, 'the mandatory field is not on the form');
       await field.fill('', { timeout: 6000 }).catch(() => null);
       const save = page.getByRole('button', { name: /^(save|submit|create|add|apply|ok)$/i }).first();
       if (!(await save.count().catch(() => 0))) return { status: 'skip', actual: 'no submit button next to the field', reason: 'nothing to submit' };

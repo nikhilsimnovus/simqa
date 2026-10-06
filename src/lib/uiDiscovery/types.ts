@@ -45,6 +45,10 @@ export interface UiElement {
   /** Column headers and the row count seen at discovery, for a table. */
   columns?: string[];
   rowCount?: number;
+  /** True when the control lives in a floating panel — a running-test widget,
+   *  a toast bar — so its presence depends on what the box is doing, not on
+   *  the build. Absence is reported, never asserted as a fault. */
+  transient?: boolean;
   /** Set when the element is present but not usable for a check, with why. */
   note?: string;
 }
@@ -144,6 +148,8 @@ export interface GeneratedCheck {
     clickFromUrl?: string;
     /** Clicks to replay from `clickFromUrl` before the target is reachable. */
     clickChain?: string[];
+    /** The control belongs to a floating, state-dependent panel. */
+    transient?: boolean;
     options?: string[];
     columns?: string[];
     rowCount?: number;

@@ -114,6 +114,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
   const base = node.reach.via === 'url'
     ? { url: node.reach.url }
     : { selector: node.reach.selector, clickFromUrl: node.reach.fromUrl, clickChain: node.reach.chain };
+  const base2 = { ...base, transient: el.transient };
   const at = (idSuffix: string, rest: Omit<GeneratedCheck, 'section' | 'page' | 'nodeId' | 'id' | 'element' | 'elementKind'>) =>
     mk(node, { idSuffix: `${el.key}::${idSuffix}`, element: el.label || el.key, elementKind: el.kind, ...rest });
 
@@ -124,7 +125,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
     severity: sev('normal'),
     test: `Look for the ${el.kind} "${el.label || el.key}" on ${pageOf(node)}`,
     expected: 'the control is present and visible',
-    target: { ...base, selector: el.selector },
+    target: { ...base2, selector: el.selector },
   }));
 
   // Enabled state is asserted as discovered: a Save that greys out until the
@@ -137,7 +138,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
     expected: el.disabled
       ? 'the control is still disabled, as it was when the UI was discovered'
       : 'the control is enabled and can take a click',
-    target: { ...base, selector: el.selector },
+    target: { ...base2, selector: el.selector },
   }));
 
   switch (el.kind) {
@@ -148,7 +149,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
         severity: sev('optional'),
         test: `Check that the field "${el.label || el.key}" is labelled`,
         expected: 'the field has a visible label or an accessible name — not a bare box',
-        target: { ...base, selector: el.selector },
+        target: { ...base2, selector: el.selector },
       }));
       if (el.required) {
         out.push(at('required', {
@@ -159,7 +160,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
           notApplicable: opts.probeRequiredFields
             ? undefined
             : 'mandatory-field probing is off for this run: submitting a form is only safe if the validation being tested works',
-          target: { ...base, selector: el.selector },
+          target: { ...base2, selector: el.selector },
         }));
       }
       break;
@@ -172,14 +173,14 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
         expected: (el.options?.length ?? 0) > 0
           ? `the dropdown offers choices — ${el.options!.length} were there at discovery`
           : 'the dropdown offers at least one choice',
-        target: { ...base, selector: el.selector, options: el.options },
+        target: { ...base2, selector: el.selector, options: el.options },
       }));
       out.push(at('options-unique', {
         kind: 'select-options-unique',
         severity: sev('optional'),
         test: `Check the options of "${el.label || el.key}" for duplicates`,
         expected: 'no option label appears twice',
-        target: { ...base, selector: el.selector, options: el.options },
+        target: { ...base2, selector: el.selector, options: el.options },
       }));
       break;
 
@@ -191,14 +192,14 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
         expected: (el.columns?.length ?? 0) > 0
           ? `the same columns are there: ${el.columns!.join(', ')}`
           : 'the table has column headers',
-        target: { ...base, selector: el.selector, columns: el.columns, rowCount: el.rowCount },
+        target: { ...base2, selector: el.selector, columns: el.columns, rowCount: el.rowCount },
       }));
       out.push(at('rows', {
         kind: 'table-rows-or-empty-state',
         severity: sev('normal'),
         test: 'Read the table body',
         expected: 'either rows of data, or the page\'s own empty state — never a blank table with no explanation',
-        target: { ...base, selector: el.selector, rowCount: el.rowCount },
+        target: { ...base2, selector: el.selector, rowCount: el.rowCount },
       }));
       if ((el.columns?.length ?? 0) > 0) {
         out.push(at('sort', {
@@ -206,7 +207,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
           severity: sev('optional'),
           test: `Click the "${el.columns![0]}" column header`,
           expected: 'the rows reorder by that column, or the header is plainly not sortable',
-          target: { ...base, selector: el.selector, columns: el.columns },
+          target: { ...base2, selector: el.selector, columns: el.columns },
         }));
       }
       break;
@@ -217,7 +218,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
         severity: sev('normal'),
         test: 'Type a value from the table into the search box',
         expected: 'the list narrows to matching rows, and clearing the box restores it',
-        target: { ...base, selector: el.selector },
+        target: { ...base2, selector: el.selector },
       }));
       break;
 
@@ -227,7 +228,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
         severity: sev('normal'),
         test: 'Go to the next page of results and back',
         expected: 'the rows change and the page indicator follows — or there is only one page, which is reported as such',
-        target: { ...base, selector: el.selector },
+        target: { ...base2, selector: el.selector },
       }));
       break;
 
@@ -248,7 +249,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
       severity: sev('normal'),
       test: `Click "${el.label || el.key}" and watch what the page does`,
       expected: 'it navigates, opens something, or visibly changes — a control that does nothing is a broken one',
-      target: { ...base, selector: el.selector },
+      target: { ...base2, selector: el.selector },
     }));
   }
 
@@ -258,7 +259,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
       severity: sev('normal'),
       test: `Click "${el.label || el.key}", read the form it opens, then cancel`,
       expected: 'a dialog or form opens with its fields, and Cancel closes it leaving nothing behind',
-      target: { ...base, selector: el.selector },
+      target: { ...base2, selector: el.selector },
     }));
   }
 
@@ -269,7 +270,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
       test: `Confirm the action "${el.label || el.key}" is offered`,
       expected: 'the action is present, labelled and in its expected enabled state',
       notApplicable: 'not operated: this control changes or destroys state on the box, so the run verifies it is offered rather than pressing it',
-      target: { ...base, selector: el.selector },
+      target: { ...base2, selector: el.selector },
     }));
   }
 

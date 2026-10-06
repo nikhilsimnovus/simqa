@@ -55,6 +55,7 @@ interface RawEl {
   role?: string;
   selector: string;
   disabled?: boolean;
+  transient?: boolean;
   required?: boolean;
   options?: string[];
   columns?: string[];
@@ -188,6 +189,24 @@ const PAGE_SCRIPT = `(() => {
         role: el.getAttribute ? (el.getAttribute('role') || undefined) : undefined,
         selector: cssPath(el),
         disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('disabled')),
+        // Does this control live in a floating panel rather than in the page?
+        //
+        // The running-test widget on this build is fixed to the corner and
+        // carries Restart, Stats, Minimize and Collapse. Read the UI while a
+        // test happens to be running and those four are recorded as controls
+        // of every page; check them later with nothing running and they are
+        // honestly gone — which was 75 of 98 failures in one run, none of
+        // them a product defect. Floating means state-dependent, so their
+        // absence is reported as a skip rather than asserted as a fault.
+        transient: (function () {
+          let n = el;
+          for (let i = 0; n && i < 8; i++) {
+            const pos = getComputedStyle(n).position;
+            if (pos === 'fixed' || pos === 'sticky') return true;
+            n = n.parentElement;
+          }
+          return false;
+        })(),
       };
       Object.assign(e, extra || {});
       out.push(e);
@@ -328,6 +347,7 @@ function toElements(raw: RawEl[]): UiElement[] {
       selector: r.selector,
       risk: riskOf(label, r.kind),
       disabled: r.disabled || undefined,
+      transient: r.transient || undefined,
       required: r.required || undefined,
       options: r.options,
       columns: r.columns,
