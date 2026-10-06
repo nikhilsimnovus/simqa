@@ -11,8 +11,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { Browser, Page } from 'playwright';
-import { launchUiBrowser, login } from '../uiTester';
+import type { Browser, BrowserContext, Page } from 'playwright';
+import { launchUiBrowser, login, detectFfmpeg } from '../uiTester';
 import { uesimApiOptsForSystem, type Inventory } from '../inventory';
 import { resolveBoxBuild } from '../buildVersion';
 import { crawlUi } from './crawl.ts';
@@ -35,6 +35,8 @@ export interface DiscoveryRequest {
   budgetMs?: number;
   openDialogs?: boolean;
   plan?: PlanOptions;
+  /** Record the whole session to video. On where ffmpeg is installed. */
+  record?: boolean;
   /** Limit a run to these sections (top-level menus) or check ids. */
   onlySections?: string[];
   onlyCheckIds?: string[];
@@ -61,6 +63,8 @@ export interface DiscoveryRunResult {
   counts: DiscoveryCounts;
   outcomes: CheckOutcome[];
   notes: string[];
+  /** Recording of the whole session, relative to runDir. */
+  videoFile?: string;
   error?: string;
 }
 
@@ -192,7 +196,21 @@ export async function runDiscovery(inv: Inventory, req: DiscoveryRequest): Promi
       };
     }
 
-    const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1500, height: 950 } });
+    // Record the session when the box can. One video of the whole visit is
+    // the strongest proof there is — it shows the sign-in, the pages opening
+    // and every click in order — and it costs nothing per check.
+    //
+    // Gated on ffmpeg actually being installed: Playwright's recordVideo
+    // throws out of newContext() when its ffmpeg binary is missing, which
+    // would take the whole run down for the sake of a nice-to-have.
+    const canRecord = req.record !== false && detectFfmpeg();
+    const videoDir = path.join(runDir, 'video');
+    if (canRecord) fs.mkdirSync(videoDir, { recursive: true });
+    const context = await browser.newContext({
+      ignoreHTTPSErrors: true,
+      viewport: { width: 1500, height: 950 },
+      recordVideo: canRecord ? { dir: videoDir, size: { width: 1500, height: 950 } } : undefined,
+    });
     const page = await context.newPage();
     page.setDefaultTimeout(20000);
     page.setDefaultNavigationTimeout(60000);
@@ -277,6 +295,7 @@ export async function runDiscovery(inv: Inventory, req: DiscoveryRequest): Promi
 
     if (mode === 'discover') {
       state.phase = 'done';
+      result.videoFile = await finishRecording(context, page, runDir);
       writeReport(runDir, result);
       return result;
     }
@@ -332,6 +351,9 @@ export async function runDiscovery(inv: Inventory, req: DiscoveryRequest): Promi
     result.finishedAt = new Date().toISOString();
     result.ok = result.counts.failed === 0 && result.counts.errors === 0;
     state.phase = 'done';
+    // The recording is only written out when the context closes, so it is
+    // collected here rather than left for the browser teardown in finally.
+    result.videoFile = await finishRecording(context, page, runDir);
     writeReport(runDir, result);
     return result;
   } catch (e: any) {
@@ -344,6 +366,22 @@ export async function runDiscovery(inv: Inventory, req: DiscoveryRequest): Promi
   } finally {
     active.delete(target.host);
     await browser?.close().catch(() => null);
+  }
+}
+
+/** Close the context so Playwright finalises the recording, then report the
+ *  file by the name the evidence route serves it under. Best-effort: a run
+ *  whose video cannot be written is still a run with all its screenshots. */
+async function finishRecording(context: BrowserContext, page: Page, runDir: string): Promise<string | undefined> {
+  try {
+    const video = page.video();
+    if (!video) { await context.close().catch(() => null); return undefined; }
+    await context.close();
+    const full = await video.path();
+    const rel = path.relative(runDir, full).split(path.sep).join('/');
+    return rel.startsWith('..') ? undefined : rel;
+  } catch {
+    return undefined;
   }
 }
 

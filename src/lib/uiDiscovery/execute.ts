@@ -49,6 +49,16 @@ export interface ExecContext {
   signal?: AbortSignal;
 }
 
+/** Checks that do something to the page rather than only read it. Each gets
+ *  its own screenshot, taken afterwards, because the proof of a tab switch or
+ *  a filtered list is the page AFTER the action. */
+const OPERATES = new Set<string>([
+  'tab-switches', 'dialog-opens-and-cancels', 'search-filters', 'sort-reorders',
+  'pagination-advances', 'select-has-options', 'select-options-unique',
+  'required-field-blocks-submit', 'back-forward-nav', 'refresh-keeps-page',
+  'session-protected', 'page-loads',
+]);
+
 // Noise every SPA produces that is not a product defect.
 const CONSOLE_NOISE = /favicon|ResizeObserver loop|Download the React DevTools|\[HMR\]|sockjs|net::ERR_ABORTED.*(png|svg|woff)/i;
 
@@ -578,6 +588,13 @@ export async function executeNodeChecks(ctx: ExecContext, checks: GeneratedCheck
   // before them had navigated to Manage Simulators.
   const anchorUrl = reached.ok ? ctx.page.url() : '';
 
+  // One capture of the page as it was found, shared by every check that only
+  // looks at it. Taken before anything is operated, so it is the state those
+  // checks actually read.
+  const pageShot = reached.ok && !appLevel.has(toRun[0].kind)
+    ? await ctx.shot(`${toRun[0].nodeId}__as-found`)
+    : undefined;
+
   for (const c of toRun) {
     if (ctx.signal?.aborted) {
       out.push({
@@ -614,11 +631,20 @@ export async function executeNodeChecks(ctx: ExecContext, checks: GeneratedCheck
       finalUrl: ctx.page.url(),
       consoleErrors: v.status === 'fail' ? realErrors(ctx.consoleErrorsSince()).slice(0, 10) : undefined,
     };
-    // A screenshot is only interesting when something went wrong — and then it
-    // is the whole reason anyone can act on the row.
-    if (v.status === 'fail' || v.status === 'error') {
+    // Proof for every row, not only the broken ones: a pass that nobody can
+    // see is an assertion, and the point of running this against real
+    // hardware is to be able to show what the box looked like.
+    //
+    // Checks that operated something get their own capture, taken after the
+    // fact so it shows the result — the tab selected, the dialog open, the
+    // list filtered. Checks that only read the page share the one capture
+    // taken when the page was reached, because a hundred full-page
+    // screenshots of the same unchanged page is a hundred times the time and
+    // the disk for one picture's worth of evidence.
+    if (v.status === 'fail' || v.status === 'error' || OPERATES.has(c.kind)) {
       outcome.screenshotFile = await ctx.shot(c.id);
     }
+    if (!outcome.screenshotFile) outcome.screenshotFile = pageShot;
     out.push(outcome);
   }
   return out;

@@ -72,6 +72,10 @@ interface RunResponse {
   counts: { total: number; passed: number; failed: number; skipped: number };
   results: UiTestResult[];
   diff?: BaselineDiff;
+  /** Which box the run went to, and what it was running — both sources send
+   *  these, and a screenshot is only proof if it says where it was taken. */
+  targetHost?: string;
+  buildVersion?: string;
 }
 
 type RunProfile = 'smoke' | 'regression' | 'full' | 'custom';
@@ -186,6 +190,9 @@ export default function UiTestsPage() {
   const [uiMapMsg, setUiMapMsg] = useState<string | null>(null);
   const [uiPhase, setUiPhase] = useState<string | null>(null);
   const [uiRunDir, setUiRunDir] = useState<string | null>(null);
+  // Recording of the whole visit, when the host has ffmpeg. One file for the
+  // run, not per check: it shows the sign-in and every click in order.
+  const [uiVideo, setUiVideo] = useState<{ runDir: string; file: string } | null>(null);
 
   // Reading the stored map launches no browser, so switching setup or login
   // repopulates the Categories list immediately.
@@ -410,6 +417,7 @@ export default function UiTestsPage() {
     const j = await r.json();
     if (j.error) throw new Error(j.error);
     setUiRunDir(j.runDir ?? null);
+    setUiVideo(j.videoFile && j.runDir ? { runDir: j.runDir, file: j.videoFile } : null);
     if (j.map) setUiMap(j.map);
     return j;
   }
@@ -678,6 +686,16 @@ export default function UiTestsPage() {
               <Button size="sm" variant="secondary" onClick={rerunFailures} disabled={busy}>
                 <RotateCcw className="h-4 w-4" />Re-run failures ({data.counts.failed})
               </Button>
+            ) : null}
+            {uiVideo ? (
+              <a
+                href={evidenceUrl(uiVideo.runDir, 'video', uiVideo.file, 'discovery')!}
+                target="_blank" rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-purple-300 bg-purple-50 text-purple-800 text-sm hover:bg-purple-100"
+                title="Recording of the whole session on the Simnovator"
+              >
+                <Eye className="h-4 w-4" />Recording
+              </a>
             ) : null}
             {data ? (
               <Button size="sm" variant="secondary" onClick={downloadAll}>
@@ -1179,7 +1197,7 @@ export default function UiTestsPage() {
                       {/* Expanded evidence panel */}
                       {expandable && expanded.has(r.id) ? (
                         <div className="mt-3 ml-12 space-y-3">
-                          {dr.expected && r.state === 'fail' ? (
+                          {dr.expected ? (
                             <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
                               <div className="font-medium mb-1 flex items-center gap-1.5"><Eye className="h-3 w-3" />Expected</div>
                               <div className="leading-relaxed">{dr.expected}</div>
@@ -1189,7 +1207,10 @@ export default function UiTestsPage() {
                           {dr.evidence?.screenshotFile && data ? (
                             <div className="rounded-lg border border-slate-200 overflow-hidden bg-surface">
                               <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-700 flex items-center gap-2">
-                                <Eye className="h-3 w-3" />Final-state screenshot
+                                <Eye className="h-3 w-3" />
+                                {(dr as any).source === 'discovery'
+                                  ? `Taken on ${data?.targetHost ?? 'the Simnovator'} when this check ran`
+                                  : 'Final-state screenshot'}
                                 <span className="ml-auto text-[10px] text-slate-500 font-mono">{dr.evidence.screenshotFile}</span>
                               </div>
                               <div className="bg-slate-100">

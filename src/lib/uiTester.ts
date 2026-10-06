@@ -155,7 +155,7 @@ interface PageBundle {
  *  Customer sites routinely skip Playwright's per-binary download, so the
  *  default video-recording path 500s every test. Detecting at runtime lets
  *  us gracefully skip video while still capturing trace.zip on failures. */
-function detectFfmpeg(): boolean {
+export function detectFfmpeg(): boolean {
   try {
     const envPath = process.env.PLAYWRIGHT_FFMPEG_PATH;
     if (envPath && fs.existsSync(envPath)) return true;
