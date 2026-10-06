@@ -983,38 +983,49 @@ function EvidenceLink({ href, label, icon }: { href: string; label: string; icon
 
 // UI Tests has two halves now, and the dynamic one is the default: it is the
 // only one that can be right about a build nobody has written tests for yet.
+// UI Tests IS the discovered module. There is no tab strip choosing between
+// a dynamic half and a fixed one: a catalogue that cannot see a page this
+// build added has no claim to half the section. The older sweep is still
+// reachable from the bottom of the page, because the things it encodes —
+// band-to-ARFCN maths, config fidelity, specific past defects — are not
+// things a crawler can infer.
 export default function UiTestsPage() {
-  const [mode, setMode] = useState<'dynamic' | 'builtin'>('dynamic');
-  const tab = (id: 'dynamic' | 'builtin', label: string, hint: string) => (
-    <button
-      key={id}
-      onClick={() => setMode(id)}
-      title={hint}
-      className={`px-3 py-2 text-sm border-b-2 -mb-px ${mode === id
-        ? 'border-primary-600 text-primary-800 font-semibold'
-        : 'border-transparent text-slate-600 hover:text-slate-800'}`}
-    >
-      {label}
-    </button>
-  );
+  const [builtIn, setBuiltIn] = useState(false);
+
+  if (builtIn) {
+    return (
+      <div className="flex-1 min-h-0 flex flex-col">
+        <div className="px-6 pt-3">
+          <button
+            onClick={() => setBuiltIn(false)}
+            className="text-xs text-primary-700 hover:underline"
+          >
+            &larr; Back to UI Tests
+          </button>
+        </div>
+        <BuiltInSweep />
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <div className="px-6 pt-3 flex items-center gap-2 border-b border-line bg-surface">
-        {tab('dynamic', 'Discovered UI', 'Read this setup’s UI off the box and validate what is actually there')}
-        {tab('builtin', 'Built-in sweep', 'The fixed catalogue of hand-written UI tests')}
-      </div>
-      {mode === 'dynamic' ? (
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          <Header
-            title="UI Tests"
-            left={<BackToRunHistory />}
-            subtitle="Discovered from the selected Simnovator: its menus, pages, tabs and controls, validated as they are on the build that is installed"
-          />
-          <DynamicUiTests />
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <Header
+          title="UI Tests"
+          left={<BackToRunHistory />}
+          subtitle="Read from the selected Simnovator: its menus, pages, tabs and controls, validated as they are on the build that is installed"
+        />
+        <DynamicUiTests />
+        <div className="px-6 pb-8 -mt-2">
+          <button
+            onClick={() => setBuiltIn(true)}
+            className="text-[11px] text-slate-500 hover:text-slate-700 hover:underline"
+          >
+            The older fixed-catalogue sweep is still available
+          </button>
         </div>
-      ) : (
-        <BuiltInSweep />
-      )}
+      </div>
     </div>
   );
 }
