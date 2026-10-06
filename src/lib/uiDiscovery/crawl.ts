@@ -686,141 +686,153 @@ export async function crawlUi(
   // before it goes deep into any single page.
   const descendQueue: Array<{ path: string[]; id: string; url: string }> = [];
 
-  while ((queue.length || descendQueue.length) && nodes.length < maxPages && !overBudget()) {
-    while (queue.length && nodes.length < maxPages && !overBudget()) {
-    const c = queue.shift()!;
-    const reach: UiNode['reach'] = c.href
-      ? { via: 'url', url: new URL(c.href, startUrl).toString() }
-      : { via: 'click', selector: c.selector, fromUrl: page.url(), chain: c.chain };
+  // Ten minutes of walking is worth keeping even if the browser goes away in
+  // the eleventh. A crashed or externally killed Chrome used to throw out of
+  // the whole run, discarding every page already read and leaving the
+  // operator with an error and nothing to look at; now the crash is recorded
+  // as a note and the partial map is returned and stored.
+  let crashed = false;
+  try {
+    while ((queue.length || descendQueue.length) && nodes.length < maxPages && !overBudget()) {
+      while (queue.length && nodes.length < maxPages && !overBudget()) {
+      const c = queue.shift()!;
+      const reach: UiNode['reach'] = c.href
+        ? { via: 'url', url: new URL(c.href, startUrl).toString() }
+        : { via: 'click', selector: c.selector, fromUrl: page.url(), chain: c.chain };
 
-    let arrived = false;
-    const preUrl = page.url();
-    const preFingerprint = c.href ? '' : await fingerprint(page);
-    if (c.href) {
-      const url = (reach as { url: string }).url;
-      if (seenUrls.has(url)) continue;
-      seenUrls.add(url);
-      arrived = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 40000 })
-        .then(() => true).catch(() => false);
-    } else {
-      // A menu entry with no href either routes in JS or expands a submenu.
-      // Either way the click is on a nav entry we have already classified as
-      // safe, and what comes back tells us which it was.
-      // Re-expand the parents first: a submenu entry recorded three levels
-      // down is not on screen until the menus above it are open.
-      let parentsOk = true;
-      for (const step of c.chain.slice(0, -1)) {
-        parentsOk = await page.locator(step).first().click({ timeout: 6000 }).then(() => true).catch(() => false);
-        if (!parentsOk) break;
-        await page.waitForTimeout(400);
-      }
-      arrived = parentsOk && await page.locator(c.selector).first().click({ timeout: 8000 })
-        .then(() => true)
-        .catch(async () => page.getByText(c.label, { exact: true }).first().click({ timeout: 6000 })
-          .then(() => true).catch(() => false));
-    }
-
-    if (!arrived) {
-      const id = slugOf(c.path);
-      if (!seenNodeIds.has(id)) {
-        nodes.push({
-          id, kind: 'page', path: c.path, label: c.label, parentId: c.parentId, reach,
-          elements: [], unreachable: 'the menu entry could not be opened',
-        });
-        seenNodeIds.add(id);
-      }
-      continue;
-    }
-
-    // Did that click actually take us somewhere new?
-    //
-    // Two menu entries can land on the same place — this build's Home and
-    // Dashboard are one page — and mapping it twice doubles its checks and
-    // reports every failure on it twice. But the router sets the URL a beat
-    // after the click, so judging immediately would read the PREVIOUS page's
-    // URL and throw away a real page: that is what hid Cell Statistics behind
-    // Global Statistics, both of which live at /statistics?tab=…
-    //
-    // So: give the URL a moment to change. If it does, the URL decides. If it
-    // never does, the content decides — a menu entry that changed what is on
-    // screen without touching the URL (an account menu, a drawer) is still a
-    // piece of UI worth recording, and one that changed nothing is not.
-    if (!c.href) {
-      await page.waitForFunction(`location.href !== ${JSON.stringify(preUrl)}`, { timeout: 2500 }).catch(() => null);
-      const landed = page.url();
-      if (landed !== preUrl && /^https?:/.test(landed)) {
-        if (seenUrls.has(landed)) continue;
-        seenUrls.add(landed);
+      let arrived = false;
+      const preUrl = page.url();
+      const preFingerprint = c.href ? '' : await fingerprint(page);
+      if (c.href) {
+        const url = (reach as { url: string }).url;
+        if (seenUrls.has(url)) continue;
+        seenUrls.add(url);
+        arrived = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 40000 })
+          .then(() => true).catch(() => false);
       } else {
-        await page.waitForTimeout(400);
-        if (await fingerprint(page) === preFingerprint) continue;
+        // A menu entry with no href either routes in JS or expands a submenu.
+        // Either way the click is on a nav entry we have already classified as
+        // safe, and what comes back tells us which it was.
+        // Re-expand the parents first: a submenu entry recorded three levels
+        // down is not on screen until the menus above it are open.
+        let parentsOk = true;
+        for (const step of c.chain.slice(0, -1)) {
+          parentsOk = await page.locator(step).first().click({ timeout: 6000 }).then(() => true).catch(() => false);
+          if (!parentsOk) break;
+          await page.waitForTimeout(400);
+        }
+        arrived = parentsOk && await page.locator(c.selector).first().click({ timeout: 8000 })
+          .then(() => true)
+          .catch(async () => page.getByText(c.label, { exact: true }).first().click({ timeout: 6000 })
+            .then(() => true).catch(() => false));
       }
+
+      if (!arrived) {
+        const id = slugOf(c.path);
+        if (!seenNodeIds.has(id)) {
+          nodes.push({
+            id, kind: 'page', path: c.path, label: c.label, parentId: c.parentId, reach,
+            elements: [], unreachable: 'the menu entry could not be opened',
+          });
+          seenNodeIds.add(id);
+        }
+        continue;
+      }
+
+      // Did that click actually take us somewhere new?
+      //
+      // Two menu entries can land on the same place — this build's Home and
+      // Dashboard are one page — and mapping it twice doubles its checks and
+      // reports every failure on it twice. But the router sets the URL a beat
+      // after the click, so judging immediately would read the PREVIOUS page's
+      // URL and throw away a real page: that is what hid Cell Statistics behind
+      // Global Statistics, both of which live at /statistics?tab=…
+      //
+      // So: give the URL a moment to change. If it does, the URL decides. If it
+      // never does, the content decides — a menu entry that changed what is on
+      // screen without touching the URL (an account menu, a drawer) is still a
+      // piece of UI worth recording, and one that changed nothing is not.
+      if (!c.href) {
+        await page.waitForFunction(`location.href !== ${JSON.stringify(preUrl)}`, { timeout: 2500 }).catch(() => null);
+        const landed = page.url();
+        if (landed !== preUrl && /^https?:/.test(landed)) {
+          if (seenUrls.has(landed)) continue;
+          seenUrls.add(landed);
+        } else {
+          await page.waitForTimeout(400);
+          if (await fingerprint(page) === preFingerprint) continue;
+        }
+      }
+
+      const s = await snapshot(c.path, 'page', reach, c.parentId);
+      const id = slugOf(c.path);
+      const here = page.url();
+
+      // This build's sidebar has no hrefs — every menu entry is a click — but
+      // the router still puts a real URL in the bar. When it does, the node is
+      // recorded as reachable by URL, because replaying a click through an
+      // nth-of-type path is the brittlest thing a later run could do and a
+      // navigation is the sturdiest.
+      if (!c.href && reach.via === 'click' && here !== reach.fromUrl && /^https?:/.test(here)) {
+        const node = nodes.find(n => n.id === id);
+        if (node) node.reach = { via: 'url', url: here };
+        seenUrls.add(here);
+      }
+
+      // Submenu entries this click revealed — anything in the shell that was not
+      // already queued or visited. This is how Tools → Simnovator Management →
+      // Manage Simulators is reached without knowing the route.
+      // Submenu entries this click revealed. They inherit the clicks that got
+      // us here only when this node itself is click-reached — once the router
+      // gave us a real URL, that URL is the shorter and sturdier way back.
+      const hereNode = nodes.find(n => n.id === id);
+      const inherited = hereNode?.reach.via === 'click' ? (hereNode.reach.chain ?? []) : [];
+      enqueueNav(s.nav, c.path, id, inherited);
+
+      // A nav click that opened a popover (the account menu, a submenu) leaves
+      // an overlay that swallows the next click. The submenu has already been
+      // read into the queue above, so it can be dismissed now.
+      if (here === page.url()) await page.keyboard.press('Escape').catch(() => null);
+
+      await walkTabs(c.path, id, here);
+
+      // Pressing this page's own cards and buttons is the expensive part — six
+      // clicks, each with a settle and a reload — so it is deferred until every
+      // menu page has been mapped. Depth-first would spend the whole budget
+      // inside the first page's chart widgets and never reach the last menu
+      // entry, which is where Tools lives.
+      descendQueue.push({ path: c.path, id, url: here });
+
+      // Tabs and dialogs move the page around; come back to a clean copy of it
+      // before the next queue item, whose selector was recorded against a
+      // freshly loaded page.
+      if (/^https?:/.test(here)) {
+        await page.goto(here, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+        await settle(page, Math.min(settleMs, 400));
+      }
+      }
+
+      // Menu pages are done (or the queue is empty for now). Take one page and
+      // press its own controls; anything that turns out to be a page goes back
+      // on the page queue, so Tools → Manage Simulators → its tabs is reached
+      // breadth-first, one level at a time.
+      const next = descendQueue.shift();
+      if (!next) break;
+      if (overBudget() || nodes.length >= maxPages) break;
+      const back = await page.goto(next.url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+        .then(() => true).catch(() => false);
+      if (!back) continue;
+      await settle(page, settleMs);
+      await walkInPageEntries(next.path, next.id, next.url, (cand) => {
+        if (nodes.length + queue.length >= maxPages * 2) return;
+        if (queue.some(q => slugOf(q.path) === slugOf(cand.path))) return;
+        queue.push({ ...cand, chain: [cand.selector] });
+      });
     }
-
-    const s = await snapshot(c.path, 'page', reach, c.parentId);
-    const id = slugOf(c.path);
-    const here = page.url();
-
-    // This build's sidebar has no hrefs — every menu entry is a click — but
-    // the router still puts a real URL in the bar. When it does, the node is
-    // recorded as reachable by URL, because replaying a click through an
-    // nth-of-type path is the brittlest thing a later run could do and a
-    // navigation is the sturdiest.
-    if (!c.href && reach.via === 'click' && here !== reach.fromUrl && /^https?:/.test(here)) {
-      const node = nodes.find(n => n.id === id);
-      if (node) node.reach = { via: 'url', url: here };
-      seenUrls.add(here);
-    }
-
-    // Submenu entries this click revealed — anything in the shell that was not
-    // already queued or visited. This is how Tools → Simnovator Management →
-    // Manage Simulators is reached without knowing the route.
-    // Submenu entries this click revealed. They inherit the clicks that got
-    // us here only when this node itself is click-reached — once the router
-    // gave us a real URL, that URL is the shorter and sturdier way back.
-    const hereNode = nodes.find(n => n.id === id);
-    const inherited = hereNode?.reach.via === 'click' ? (hereNode.reach.chain ?? []) : [];
-    enqueueNav(s.nav, c.path, id, inherited);
-
-    // A nav click that opened a popover (the account menu, a submenu) leaves
-    // an overlay that swallows the next click. The submenu has already been
-    // read into the queue above, so it can be dismissed now.
-    if (here === page.url()) await page.keyboard.press('Escape').catch(() => null);
-
-    await walkTabs(c.path, id, here);
-
-    // Pressing this page's own cards and buttons is the expensive part — six
-    // clicks, each with a settle and a reload — so it is deferred until every
-    // menu page has been mapped. Depth-first would spend the whole budget
-    // inside the first page's chart widgets and never reach the last menu
-    // entry, which is where Tools lives.
-    descendQueue.push({ path: c.path, id, url: here });
-
-    // Tabs and dialogs move the page around; come back to a clean copy of it
-    // before the next queue item, whose selector was recorded against a
-    // freshly loaded page.
-    if (/^https?:/.test(here)) {
-      await page.goto(here, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
-      await settle(page, Math.min(settleMs, 400));
-    }
-    }
-
-    // Menu pages are done (or the queue is empty for now). Take one page and
-    // press its own controls; anything that turns out to be a page goes back
-    // on the page queue, so Tools → Manage Simulators → its tabs is reached
-    // breadth-first, one level at a time.
-    const next = descendQueue.shift();
-    if (!next) break;
-    if (overBudget() || nodes.length >= maxPages) break;
-    const back = await page.goto(next.url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-      .then(() => true).catch(() => false);
-    if (!back) continue;
-    await settle(page, settleMs);
-    await walkInPageEntries(next.path, next.id, next.url, (cand) => {
-      if (nodes.length + queue.length >= maxPages * 2) return;
-      if (queue.some(q => slugOf(q.path) === slugOf(cand.path))) return;
-      queue.push({ ...cand, chain: [cand.selector] });
-    });
+  } catch (e: any) {
+    crashed = true;
+    const why = String(e?.message ?? e).split(String.fromCharCode(10))[0].slice(0, 200);
+    notes.push(`the walk stopped early: ${why}${/closed/i.test(why) ? ' — the browser went away mid-crawl (killed, crashed, or the host restarted)' : ''}`);
   }
 
   // Both queues, because a walk can finish every page and still have pages
@@ -830,7 +842,10 @@ export async function crawlUi(
   // page that was never opened.
   const left = queue.length + descendQueue.length;
   if (left) {
-    const why = nodes.length >= maxPages ? `page budget of ${maxPages} reached` : 'time budget reached';
+    // Not the budget's fault when the browser went away first.
+    const why = crashed ? 'the walk ended early'
+      : nodes.length >= maxPages ? `page budget of ${maxPages} reached`
+      : 'time budget reached';
     notes.push(
       `${why} with ${left} still to do`
       + (queue.length ? ` — ${queue.length} page(s) not opened` : '')
