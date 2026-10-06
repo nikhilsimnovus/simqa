@@ -561,8 +561,12 @@ export async function crawlUi(
 
       if (page.url() !== beforeUrl) {
         const landed = page.url();
+        // Queued, NOT marked as seen: the queue's own visited check is what
+        // marks it, and marking it here made every card on the Tools page look
+        // already-visited the moment it was queued — so "Manage Simulators"
+        // was found, queued, and then silently dropped, taking its Stable /
+        // Unstable / Container Hosts tabs with it.
         if (!seenUrls.has(landed)) {
-          seenUrls.add(landed);
           enqueue({ path, label, href: landed, selector: t.selector, parentId });
         }
         await page.goto(parentUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
