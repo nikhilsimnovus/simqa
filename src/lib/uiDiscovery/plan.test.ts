@@ -93,6 +93,25 @@ test('each kind of control brings the checks that suit it', () => {
   }
 });
 
+test('a safe button is pressed to see whether it does anything', () => {
+  const checks = checksFromMap(MAP);
+  const responds = checks.filter(c => c.kind === 'button-responds');
+  // The search box and the table are not buttons; Add opens a form and has
+  // its own check; Delete is never pressed at all.
+  assert.deepEqual(responds.map(c => c.element), []);
+
+  // A plain button with a harmless label is the case this is for.
+  const withPlain: any = { ...MAP, nodes: [{ ...MAP.nodes[0], elements: [
+    ...MAP.nodes[0].elements,
+    el({ key: 'button:refresh-list', kind: 'button', label: 'Refresh List', risk: 'read' }),
+    el({ key: 'button:disabled-one', kind: 'button', label: 'Preview', risk: 'read', disabled: true }),
+  ] }] };
+  const now = checksFromMap(withPlain).filter(c => c.kind === 'button-responds');
+  assert.deepEqual(now.map(c => c.element), ['Refresh List']);
+  assert.match(now[0].expected, /does nothing is a broken one/);
+  assert.equal(checksFromMap(withPlain, { exerciseButtons: false }).filter(c => c.kind === 'button-responds').length, 0);
+});
+
 test('a destructive action is reported, never pressed', () => {
   const checks = checksFromMap(MAP);
   const del = checks.filter(c => c.element === 'Delete');

@@ -26,6 +26,10 @@ export interface PlanOptions {
    *  it. Off by default: if the product's validation is the thing that is
    *  broken, this is what creates the junk record that proves it. */
   probeRequiredFields?: boolean;
+  /** Press the controls the risk policy says are safe, to see whether they
+   *  do anything at all. On by default — it is the difference between "the
+   *  button is there" and "the button works". */
+  exerciseButtons?: boolean;
   /** Hard ceiling, so a UI with 400 pages cannot plan a run nobody will wait
    *  for. Checks are dropped from the end of the plan, never sampled, so a
    *  truncated plan is still a complete walk of the pages it reached. */
@@ -229,6 +233,23 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
 
     default:
       break;
+  }
+
+  // Does it actually do anything?
+  //
+  // Checking that a button is present and enabled says nothing about whether
+  // it works: a dead control looks exactly like a live one. So every control
+  // the risk policy says is safe to operate gets pressed, and the page is
+  // asked whether anything happened — it navigated, it opened something, or
+  // it changed. Nothing at all is the answer worth reporting.
+  if (el.risk === 'read' && (el.kind === 'button' || el.kind === 'link') && !el.disabled && opts.exerciseButtons !== false) {
+    out.push(at('responds', {
+      kind: 'button-responds',
+      severity: sev('normal'),
+      test: `Click "${el.label || el.key}" and watch what the page does`,
+      expected: 'it navigates, opens something, or visibly changes — a control that does nothing is a broken one',
+      target: { ...base, selector: el.selector },
+    }));
   }
 
   if (el.risk === 'open') {

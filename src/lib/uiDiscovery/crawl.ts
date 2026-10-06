@@ -392,7 +392,7 @@ function sameOrigin(href: string, host: string): boolean {
 /** Cheap "is this the same screen" signal: how much text there is plus the
  *  start of the main region. Enough to tell a real navigation from a click
  *  that did nothing, without a screenshot diff. */
-async function fingerprint(page: Page): Promise<string> {
+export async function fingerprint(page: Page): Promise<string> {
   // Whether something is floating above the page, plus the first of the main
   // region's text. Deliberately NOT the text length: a chart that redraws
   // changes its length by a few characters, and that was enough to make the

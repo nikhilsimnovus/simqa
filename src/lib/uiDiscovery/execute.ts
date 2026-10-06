@@ -13,7 +13,7 @@
 import type { Page } from 'playwright';
 import type { GeneratedCheck } from './types.ts';
 import { looksLikeEmptyState } from './classify.ts';
-import { closeAnyDialog, dialogOpen } from './crawl.ts';
+import { closeAnyDialog, dialogOpen, fingerprint } from './crawl.ts';
 
 export type CheckStatus = 'pass' | 'fail' | 'skip' | 'not-available' | 'error';
 
@@ -291,6 +291,47 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
         return { status: 'pass', actual: want ? 'enabled' : 'still disabled, as discovered' };
       }
       return { status: 'fail', actual: effectivelyEnabled ? 'enabled now — it was disabled when the UI was discovered' : 'disabled now — it was enabled when the UI was discovered' };
+    }
+
+    case 'button-responds': {
+      if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
+      const el = await locate(page, c).first();
+      if (!(await el.count().catch(() => 0))) return { status: 'fail', actual: 'the control is not on the page' };
+      if (!(await el.isEnabled().catch(() => false))) {
+        return { status: 'skip', actual: 'the control is disabled', reason: 'nothing to press' };
+      }
+      const beforeUrl = page.url();
+      const beforeFp = await fingerprint(page);
+      const clicked = await el.click({ timeout: 8000 }).then(() => true).catch(() => false);
+      if (!clicked) return { status: 'fail', actual: 'the control is present and enabled but would not take a click' };
+      await page.waitForTimeout(900);
+
+      if (page.url() !== beforeUrl) {
+        return { status: 'pass', actual: `it navigated to ${page.url()}` };
+      }
+      if (await dialogOpen(page)) {
+        const closed = await closeAnyDialog(page);
+        return {
+          status: 'pass',
+          actual: `it opened a dialog${closed ? ', which closed again' : ' that would not close'}`,
+        };
+      }
+      // A toast can come and go, so it is looked for as well as the page body.
+      const toast = await page.evaluate(`(() => {
+        const sels = ['[role="status"]', '[role="alert"]', '.toast', '.Toastify__toast', '[class*="toast" i]', '[class*="snackbar" i]'];
+        for (const s of sels) for (const el of document.querySelectorAll(s)) {
+          if (el.getClientRects().length) return (el.textContent || '').trim().slice(0, 120);
+        }
+        return '';
+      })()`).then(v => String(v ?? '')).catch(() => '');
+      if (toast) return { status: 'pass', actual: `it showed "${toast}"` };
+
+      const afterFp = await fingerprint(page);
+      if (afterFp !== beforeFp) return { status: 'pass', actual: 'the page changed in response to the click' };
+      return {
+        status: 'fail',
+        actual: 'clicking it produced no navigation, no dialog, no message and no visible change to the page',
+      };
     }
 
     case 'field-labelled': {

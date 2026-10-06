@@ -100,6 +100,7 @@ export type CheckKind =
   | 'tab-switches'
   | 'element-present'
   | 'element-enabled'
+  | 'button-responds'
   | 'element-disabled'
   | 'field-labelled'
   | 'select-has-options'
