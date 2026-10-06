@@ -250,7 +250,7 @@ async function newPageBundle(ctx: UiCtx, opts: { useAuth?: boolean; recordTraceT
   };
 }
 
-async function login(ctx: UiCtx, page: Page): Promise<{ ok: boolean; status?: number; detail: string }> {
+export async function login(ctx: { host: string; username: string; password: string }, page: Page): Promise<{ ok: boolean; status?: number; detail: string }> {
   const respPromise = page.waitForResponse((r) => r.url().includes('/v2/login') && r.request().method() === 'POST', { timeout: 45000 }).catch(() => null);
   // Retry the initial nav with a longer second-attempt timeout. The box is
   // sometimes slow on cold-start (>20s for first request) which used to fail
@@ -5892,54 +5892,14 @@ export function abortCurrentRun(targetHost?: string): boolean {
   return true;
 }
 
-export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<UiTesterResponse> {
-  const startedAt = new Date().toISOString();
-  const target = uesimApiOptsForSystem(inv, req.targetSystemId, req.boxUserId);
-  if (!target) {
-    return {
-      startedAt, finishedAt: new Date().toISOString(),
-      ok: false,
-      runDir: '',
-      counts: { total: 0, passed: 0, failed: 1, skipped: 0 },
-      results: [{ number: 1, id: 'preflight', name: 'target system not found',
-        description: `No system in inventory.yaml matched targetSystemId="${req.targetSystemId ?? '(default UESIM)'}". Add it under systems[] or pick another id.`,
-        category: 'auth', severity: 'critical', ok: false,
-        detail: req.targetSystemId ? `requested id "${req.targetSystemId}" is not a UESIM/CALLBOX system` : 'no UESIM system in inventory.yaml',
-      }],
-    };
-  }
-  const apiOpts = { host: target.host, username: target.username, password: target.password };
-
-  const wanted = new Set<UiTestCategory>(req.categories ?? DEFAULT_CATEGORIES);
-  const headless = req.headless !== false;
-  const testTimeoutMs = req.testTimeoutMs ?? 60000;
-
-  const runDir = newRunDir(target.host);
-  fs.mkdirSync(runDir, { recursive: true });
-
-  const browserType = req.browserType ?? 'chromium';
+/** Launch a browser for UI work, trying the engines in the order that works
+ *  most often on this fleet: the user's signed Chrome, then Edge, then the
+ *  bundled Chromium that Windows Defender sometimes refuses to spawn.
+ *  Exported because UI discovery needs the same ladder. */
+export async function launchUiBrowser(opts: { headless: boolean; browserType?: 'chromium' | 'firefox' }): Promise<{ browser?: Browser; tried: string[]; lastErr?: any }> {
+  const headless = opts.headless;
+  const browserType = opts.browserType ?? 'chromium';
   const launcher = browserType === 'firefox' ? firefox : chromium;
-
-  // Reject overlapping runs ON THE SAME TARGET HOST. Different hosts can run
-  // in parallel - that's the multi-user / multi-box use case.
-  const existing = activeRunsByHost.get(target.host);
-  if (existing) {
-    return {
-      startedAt, finishedAt: new Date().toISOString(),
-      ok: false,
-      runDir: '',
-      counts: { total: 0, passed: 0, failed: 1, skipped: 0 },
-      results: [{ number: 1, id: 'preflight', name: `another run is in progress on ${target.name}`,
-        description: `A UI test run is already in flight against ${target.host} (${target.name}). Stop it first, wait for it, or pick a different target system.`,
-        category: 'auth', severity: 'critical', ok: false,
-        detail: `started at ${existing.startedAt}, ${existing.completed}/${existing.totalPlanned} done`,
-      }],
-    };
-  }
-
-  // When the user wants to *watch* the browser (headless: false), use options
-  // that make the window obviously visible: maximized, brought to the front,
-  // and with a slowMo so each click is humanly observable.
   const baseOpts = headless
     ? { headless: true as const }
     : {
@@ -5983,6 +5943,57 @@ export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<
       await new Promise((r) => setTimeout(r, 800));
     }
   }
+  return { browser, tried, lastErr };
+}
+
+export async function runUiTests(inv: Inventory, req: UiTesterRequest): Promise<UiTesterResponse> {
+  const startedAt = new Date().toISOString();
+  const target = uesimApiOptsForSystem(inv, req.targetSystemId, req.boxUserId);
+  if (!target) {
+    return {
+      startedAt, finishedAt: new Date().toISOString(),
+      ok: false,
+      runDir: '',
+      counts: { total: 0, passed: 0, failed: 1, skipped: 0 },
+      results: [{ number: 1, id: 'preflight', name: 'target system not found',
+        description: `No system in inventory.yaml matched targetSystemId="${req.targetSystemId ?? '(default UESIM)'}". Add it under systems[] or pick another id.`,
+        category: 'auth', severity: 'critical', ok: false,
+        detail: req.targetSystemId ? `requested id "${req.targetSystemId}" is not a UESIM/CALLBOX system` : 'no UESIM system in inventory.yaml',
+      }],
+    };
+  }
+  const apiOpts = { host: target.host, username: target.username, password: target.password };
+
+  const wanted = new Set<UiTestCategory>(req.categories ?? DEFAULT_CATEGORIES);
+  const headless = req.headless !== false;
+  const testTimeoutMs = req.testTimeoutMs ?? 60000;
+
+  const runDir = newRunDir(target.host);
+  fs.mkdirSync(runDir, { recursive: true });
+
+  const browserType = req.browserType ?? 'chromium';
+
+  // Reject overlapping runs ON THE SAME TARGET HOST. Different hosts can run
+  // in parallel - that's the multi-user / multi-box use case.
+  const existing = activeRunsByHost.get(target.host);
+  if (existing) {
+    return {
+      startedAt, finishedAt: new Date().toISOString(),
+      ok: false,
+      runDir: '',
+      counts: { total: 0, passed: 0, failed: 1, skipped: 0 },
+      results: [{ number: 1, id: 'preflight', name: `another run is in progress on ${target.name}`,
+        description: `A UI test run is already in flight against ${target.host} (${target.name}). Stop it first, wait for it, or pick a different target system.`,
+        category: 'auth', severity: 'critical', ok: false,
+        detail: `started at ${existing.startedAt}, ${existing.completed}/${existing.totalPlanned} done`,
+      }],
+    };
+  }
+
+  // When the user wants to *watch* the browser (headless: false), use options
+  // that make the window obviously visible: maximized, brought to the front,
+  // and with a slowMo so each click is humanly observable.
+  const { browser, tried, lastErr } = await launchUiBrowser({ headless, browserType });
   if (!browser) {
     return {
       startedAt, finishedAt: new Date().toISOString(),
