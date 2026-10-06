@@ -426,7 +426,7 @@ export function DynamicUiTests() {
       {/* The discovered hierarchy. */}
       <Card>
         <CardHeader className="flex flex-wrap items-center gap-2">
-          <CardTitle>UI on this setup</CardTitle>
+          <CardTitle>Discovered UI</CardTitle>
           {map ? (
             <>
               <Badge>{map.host}</Badge>
