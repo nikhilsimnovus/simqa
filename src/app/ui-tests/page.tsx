@@ -10,7 +10,19 @@ import {
   Eye, Globe, ShieldCheck, Activity, Search,
 } from 'lucide-react';
 
-type Category = 'auth' | 'navigation' | 'testcases' | 'stats' | 'logs' | 'simulators' | 'users' | 'tools' | 'security' | 'errors' | 'patterns' | 'lifecycle' | 'perf' | 'compat' | 'field-band' | 'config-fidelity';
+// A category used to be one of sixteen fixed names. It is now any string,
+// because the categories that matter are the ones the selected setup actually
+// has: they are read off that Simnovator, as "ui:Tools", "ui:My Tests" and so
+// on, and a build that adds a menu adds a category here with nobody editing a
+// union type. The sixteen built-in names are still categories, just no longer
+// the only ones.
+type Category = string;
+
+/** Prefix marking a category that came from the selected setup's own UI
+ *  rather than from the built-in catalogue. */
+const UI_CAT = 'ui:';
+const isUiCat = (c: string) => c.startsWith(UI_CAT);
+const uiSection = (c: string) => c.slice(UI_CAT.length);
 
 interface CatalogEntry {
   number: number;
@@ -93,7 +105,7 @@ interface TestSystem {
   type: string;
 }
 
-const CATEGORY_META: Record<Category, { label: string; color: string }> = {
+const CATEGORY_META: Record<string, { label: string; color: string }> = {
   'auth':       { label: 'Authentication',      color: 'bg-violet-100 text-violet-800 border-violet-200' },
   'navigation': { label: 'Navigation',          color: 'bg-sky-100 text-sky-800 border-sky-200' },
   'testcases':  { label: 'Test Cases',          color: 'bg-blue-100 text-blue-800 border-blue-200' },
@@ -113,6 +125,12 @@ const CATEGORY_META: Record<Category, { label: string; color: string }> = {
 };
 
 const DEFAULT_CATEGORIES: Category[] = (Object.keys(CATEGORY_META) as Category[]);
+
+/** Label and colour for any category, including one discovered minutes ago. */
+function metaFor(c: Category): { label: string; color: string } {
+  if (CATEGORY_META[c]) return CATEGORY_META[c];
+  return { label: uiSection(c) || c, color: 'bg-primary-50 text-primary-800 border-primary-200' };
+}
 
 type StatusFilter = 'all' | 'failed' | 'passed' | 'pending';
 
@@ -155,6 +173,72 @@ export default function UiTestsPage() {
       .catch(() => { /* a setup with no logins sweeps as the default */ });
     return () => { cancelled = true; };
   }, [targetSystemId]);
+
+  // ---- What the SELECTED setup's UI actually is -------------------------
+  //
+  // The built-in catalogue is the same 348 rows whichever box you point it
+  // at. These are not: they are read off the chosen Simnovator as the chosen
+  // login, so picking 1.102 as admin puts 1.102-as-admin's own menus, pages,
+  // tabs and controls in the Categories list, and picking another setup puts
+  // that setup's there instead.
+  const [uiMap, setUiMap] = useState<{ host: string; username?: string; build?: string; discoveredAt: string; durationMs?: number; nodes: Array<{ id: string; path: string[]; elements: unknown[] }>; dir?: string } | null>(null);
+  const [uiChecks, setUiChecks] = useState<Array<{ id: string; kind: string; severity: 'critical' | 'normal' | 'optional'; section: string; page: string; element?: string; elementKind?: string; test: string; expected: string; notApplicable?: string }>>([]);
+  const [uiMapMsg, setUiMapMsg] = useState<string | null>(null);
+  const [uiPhase, setUiPhase] = useState<string | null>(null);
+  const [uiRunDir, setUiRunDir] = useState<string | null>(null);
+
+  // Reading the stored map launches no browser, so switching setup or login
+  // repopulates the Categories list immediately.
+  useEffect(() => {
+    if (!targetSystemId) { setUiMap(null); setUiChecks([]); setUiMapMsg(null); return; }
+    let cancelled = false;
+    const qs = new URLSearchParams({ systemId: targetSystemId });
+    if (boxUserId) qs.set('boxUserId', boxUserId);
+    fetch(`/api/ui-discovery/map?${qs}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        setUiMap(j.map ?? null);
+        setUiChecks(j.checks ?? []);
+        setUiMapMsg(j.map ? null : (j.message ?? 'This setup has not been read yet.'));
+        // Looking at a setup's own UI means wanting to verify that, so the
+        // selection follows: its sections on, the built-in catalogue off
+        // until someone ticks it back.
+        if (j.map && (j.checks ?? []).length) {
+          const sections = new Set<string>((j.checks as Array<{ section: string }>).map((c) => UI_CAT + c.section));
+          setEnabled(sections);
+        }
+      })
+      .catch(() => { if (!cancelled) { setUiMap(null); setUiChecks([]); } });
+    return () => { cancelled = true; };
+  }, [targetSystemId, boxUserId]);
+
+  // Reading a setup's UI and running its checks both take minutes, so the
+  // progress line follows the crawl page by page and the run check by check.
+  // Without it the operator watches a spinner and assumes it has hung.
+  useEffect(() => {
+    if (!uiPhase) return;
+    const host = systems?.find((x) => x.id === targetSystemId)?.host;
+    if (!host) return;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const j = await fetch(`/api/ui-discovery/status?host=${encodeURIComponent(host)}`).then((r) => r.json());
+        if (stop || !j?.current) return;
+        const c = j.current;
+        setUiPhase([
+          c.phase === 'discovering' ? `Reading ${host}` : c.phase === 'running' ? `Checking ${host}` : c.phase,
+          c.pagesFound ? `${c.pagesFound} page(s)` : '',
+          c.total ? `${c.completed}/${c.total} checks` : '',
+          c.current ? `· ${c.current}` : '',
+        ].filter(Boolean).join(' · '));
+      } catch { /* a missed poll is not a failure */ }
+    };
+    void tick();
+    const h = setInterval(tick, 2500);
+    return () => { stop = true; clearInterval(h); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uiPhase === null, targetSystemId, systems]);
 
   const [otherActiveRuns, setOtherActiveRuns] = useState<RunStatus[]>([]);
 
@@ -232,15 +316,142 @@ export default function UiTestsPage() {
     next.has(c) ? next.delete(c) : next.add(c);
     setEnabled(next);
   }
-  const selectAll = () => setEnabled(new Set(Object.keys(CATEGORY_META) as Category[]));
+  const selectAll = () => setEnabled(new Set<Category>([
+    ...(Object.keys(CATEGORY_META) as Category[]),
+    ...uiChecks.map((c) => UI_CAT + c.section),
+  ]));
   const clearAll = () => setEnabled(new Set());
+
+  /** A discovered check's outcome, in the shape this page already renders —
+   *  so the right-hand panel shows section, page, control, what was done,
+   *  what was expected, what happened, and the screenshot, with no second
+   *  results view to maintain. */
+  function outcomesToResults(outcomes: Array<any>): UiTestResult[] {
+    return outcomes.map((o, i) => {
+      const c = o.check ?? {};
+      const notRun = o.status === 'skip' || o.status === 'not-available';
+      const detail = [o.actual, o.reason ? `(${o.reason})` : '', o.error ?? '']
+        .filter(Boolean).join(' ');
+      return {
+        number: i + 1,
+        id: c.id ?? `check-${i}`,
+        name: `${c.element ? `${c.element} — ` : ''}${c.test ?? c.kind ?? 'check'}`,
+        description: [c.page, c.elementKind].filter(Boolean).join(' · '),
+        category: UI_CAT + (c.section ?? 'UI'),
+        severity: c.severity ?? 'normal',
+        needsAuth: true,
+        longRunning: false,
+        ok: o.status === 'pass' || notRun,
+        skipped: notRun || undefined,
+        skippedReason: notRun ? (o.reason ?? o.actual) : undefined,
+        detail,
+        expected: c.expected,
+        durationMs: o.durationMs,
+        finalUrl: o.finalUrl,
+        consoleErrorCount: (o.consoleErrors ?? []).length,
+        networkRequestCount: 0,
+        evidence: o.screenshotFile ? { screenshotFile: o.screenshotFile } : undefined,
+        ranAt: o.ranAt,
+        // Its screenshots live in the discovery run's folder, not the sweep's.
+        source: 'discovery',
+      } as UiTestResult;
+    });
+  }
+
+  /** Read the selected setup's UI. Launches a browser against that box and
+   *  walks it; the Categories list fills in from what it finds. */
+  async function discoverUi() {
+    if (!targetSystemId) { setErr('pick a Simnovator first'); return; }
+    setBusy(true); setErr(null); setUiPhase('starting');
+    try {
+      const r = await fetch('/api/ui-discovery', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetSystemId, boxUserId: boxUserId || undefined,
+          mode: 'discover', maxPages: 40, budgetMs: 15 * 60_000, openDialogs: true,
+        }),
+      });
+      const j = await r.json();
+      if (j.error) { setErr(j.error); return; }
+      setUiMap(j.map ?? null);
+      setUiChecks([]);
+      setUiMapMsg(null);
+      // Pull the plan for the map that was just stored, which also refreshes
+      // the per-category counts.
+      const qs = new URLSearchParams({ systemId: targetSystemId });
+      if (boxUserId) qs.set('boxUserId', boxUserId);
+      const m = await fetch(`/api/ui-discovery/map?${qs}`).then((x) => x.json());
+      setUiMap(m.map ?? null);
+      setUiChecks(m.checks ?? []);
+      if ((m.checks ?? []).length) {
+        setEnabled(new Set<string>((m.checks as Array<{ section: string }>).map((c) => UI_CAT + c.section)));
+      }
+    } catch (e: any) {
+      setErr(`discovery failed: ${e?.message ?? String(e)}`);
+    } finally {
+      setBusy(false); setUiPhase(null);
+    }
+  }
+
+  /** Run the selected sections of the setup's own UI: go to the Simnovator,
+   *  open each page, operate what is safe to operate, and report every check
+   *  with what was expected, what happened and a screenshot when it did not. */
+  async function runDiscovered(sections: string[]) {
+    setUiPhase('starting');
+    const r = await fetch('/api/ui-discovery', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetSystemId, boxUserId: boxUserId || undefined,
+        mode: uiMap ? 'run' : 'discover+run',
+        onlySections: sections,
+        maxPages: 40, budgetMs: 15 * 60_000, openDialogs: true,
+      }),
+    });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    setUiRunDir(j.runDir ?? null);
+    if (j.map) setUiMap(j.map);
+    return j;
+  }
 
   async function run(opts?: { onlyId?: string; idsToRun?: string[] }) {
     setBusy(true); setErr(null);
     if (!opts?.onlyId && !opts?.idsToRun) { setData(null); setExpanded(new Set()); }
     if (opts?.onlyId) setSingleRunningId(opts.onlyId);
+
+    // Two sources of checks share this page, and the selection decides which
+    // of them a Run touches. A re-run of one row goes to whichever source
+    // that row came from.
+    const uiSelected = Array.from(enabled).filter(isUiCat).map(uiSection);
+    const builtInSelected = Array.from(enabled).filter((c) => !isUiCat(c));
+    const onlyUiRow = opts?.onlyId ? uiChecks.some((c) => c.id === opts.onlyId) : false;
+    if (uiSelected.length > 0 && (builtInSelected.length === 0 || onlyUiRow)) {
+      try {
+        const j = await runDiscovered(onlyUiRow ? uiSelected : uiSelected);
+        const results = outcomesToResults(j.outcomes ?? []);
+        setData({
+          startedAt: j.startedAt, finishedAt: j.finishedAt, ok: !!j.ok,
+          runDir: j.runDir ?? '',
+          counts: {
+            total: results.length,
+            passed: results.filter((x) => x.ok && !x.skipped).length,
+            failed: results.filter((x) => !x.ok && !x.skipped).length,
+            skipped: results.filter((x) => x.skipped).length,
+          },
+          results,
+          targetHost: j.host, buildVersion: j.build,
+        } as RunResponse);
+        setExpanded(new Set(results.filter((x) => !x.ok).map((x) => x.id)));
+      } catch (e: any) {
+        setErr(`UI run failed: ${e?.message ?? String(e)}`);
+      } finally {
+        setBusy(false); setSingleRunningId(null); setUiPhase(null); setRunStatus({ running: false });
+      }
+      return;
+    }
+
     try {
-      const body: any = { headless, categories: Array.from(enabled), concurrency };
+      const body: any = { headless, categories: builtInSelected, concurrency };
       const sevFilter = profileSeverity[profile];
       if (sevFilter) body.severityFilter = sevFilter;
       if (activeBaseline) body.baselineId = activeBaseline;
@@ -331,9 +542,29 @@ export default function UiTestsPage() {
     setProfile(p);
     if (p !== 'custom') {
       // Smoke / Regression / Full: enable ALL categories (severityFilter does the trimming)
-      setEnabled(new Set(Object.keys(CATEGORY_META) as Category[]));
+      setEnabled((cur) => new Set<Category>([
+        ...(Object.keys(CATEGORY_META) as Category[]),
+        ...Array.from(cur).filter(isUiCat),
+      ]));
     }
   }
+
+  // The built-in rows plus the selected setup's own, as one list. Everything
+  // downstream — the rows, the counts, the Categories totals — reads this,
+  // so a discovered check behaves like any other row on the page.
+  const allCatalog: CatalogEntry[] = useMemo(() => {
+    const discovered: CatalogEntry[] = uiChecks.map((c, i) => ({
+      number: i + 1,
+      id: c.id,
+      name: `${c.element ? `${c.element} — ` : ''}${c.test}`,
+      description: [c.page, c.elementKind].filter(Boolean).join(' · '),
+      category: UI_CAT + c.section,
+      severity: c.severity,
+      needsAuth: true,
+      longRunning: false,
+    }));
+    return [...(catalog ?? []), ...discovered];
+  }, [catalog, uiChecks]);
 
   // Compose the display rows: post-run results overlaid on catalog (so unrun rows show as pending)
   // While a run is in flight, also overlay runStatus.liveResults so cards
@@ -346,17 +577,17 @@ export default function UiTestsPage() {
     | (CatalogEntry & { state: 'running' })
     | (UiTestResult & { state: 'pass' | 'fail' | 'skip' });
   const rows: Row[] = useMemo(() => {
-    if (!catalog) return [];
+    if (!catalog && uiChecks.length === 0) return [];
     const liveById = new Map((runStatus.liveResults ?? []).map((r) => [r.id, r]));
     const finalById = data ? new Map(data.results.map((r) => [r.id, r])) : null;
     const runningSet = new Set(runStatus.runningTestIds ?? []);
-    return catalog.filter((c) => enabled.has(c.category)).map((c) => {
+    return allCatalog.filter((c) => enabled.has(c.category)).map((c) => {
       const r = (finalById?.get(c.id)) ?? liveById.get(c.id);
       if (r) return { ...r, state: r.skipped ? 'skip' as const : (r.ok ? 'pass' as const : 'fail' as const) };
       if (runningSet.has(c.id)) return { ...c, state: 'running' as const };
       return { ...c, state: 'pending' as const };
     });
-  }, [data, catalog, enabled, runStatus.liveResults, runStatus.runningTestIds]);
+  }, [data, catalog, allCatalog, uiChecks, enabled, runStatus.liveResults, runStatus.runningTestIds]);
 
   const visible = useMemo(() => {
     const ql = search.trim().toLowerCase();
@@ -380,9 +611,14 @@ export default function UiTestsPage() {
     setExpanded(next);
   }
 
-  function evidenceUrl(runDir: string, testId: string, file?: string): string | null {
+  function evidenceUrl(runDir: string, testId: string, file?: string, source?: string): string | null {
     if (!file) return null;
     const runName = runDir.split(/[/\\]/).pop()!;
+    // A discovered check's screenshot sits in the discovery run's own folder,
+    // under shots/, with no per-test subdirectory.
+    if (source === 'discovery') {
+      return `/api/ui-discovery/evidence/${encodeURIComponent(runName)}/${file.split('/').map(encodeURIComponent).join('/')}`;
+    }
     return `/api/ui-tests/evidence/${encodeURIComponent(runName)}/${encodeURIComponent(testId)}/${encodeURIComponent(file)}`;
   }
 
@@ -409,10 +645,18 @@ export default function UiTestsPage() {
     return { total, passed, failed, pending, passRate };
   }, [rows]);
 
-  const selectedCount = useMemo(() => {
-    if (!catalog) return 0;
-    return catalog.filter((t) => enabled.has(t.category)).length;
-  }, [catalog, enabled]);
+  /** The selected setup's sections as category rows: one per top-level menu
+   *  the crawl reached, in the order it reached them. */
+  const uiCategories = useMemo<Array<[Category, { label: string; color: string }]>>(() => {
+    const seen: string[] = [];
+    for (const c of uiChecks) if (!seen.includes(c.section)) seen.push(c.section);
+    return seen.map((sec) => [UI_CAT + sec, metaFor(UI_CAT + sec)] as [Category, { label: string; color: string }]);
+  }, [uiChecks]);
+
+  const selectedCount = useMemo(
+    () => allCatalog.filter((t) => enabled.has(t.category)).length,
+    [allCatalog, enabled],
+  );
 
   const progressPct = runStatus.running && runStatus.totalPlanned
     ? Math.round((runStatus.completed ?? 0) / runStatus.totalPlanned * 100)
@@ -460,9 +704,11 @@ export default function UiTestsPage() {
             <div className="flex items-center justify-between text-xs text-primary-900">
               <div className="flex items-center gap-2">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                <span className="font-medium">{singleRunningId ? `Running ${singleRunningId}` : 'Running suite'}</span>
-                {runStatus.totalPlanned ? <span className="text-primary-700">— {runStatus.completed ?? 0} of {runStatus.totalPlanned} done</span> : null}
-                {runStatus.currentTestId ? <span className="text-primary-700 font-mono">[{runStatus.currentTestId}]</span> : null}
+                <span className="font-medium">
+                  {uiPhase ? uiPhase : (singleRunningId ? `Running ${singleRunningId}` : 'Running suite')}
+                </span>
+                {!uiPhase && runStatus.totalPlanned ? <span className="text-primary-700">— {runStatus.completed ?? 0} of {runStatus.totalPlanned} done</span> : null}
+                {!uiPhase && runStatus.currentTestId ? <span className="text-primary-700 font-mono">[{runStatus.currentTestId}]</span> : null}
               </div>
               {runStatus.startedAt ? (
                 <span className="text-primary-700 tabular-nums">
@@ -550,6 +796,66 @@ export default function UiTestsPage() {
               </div>
             </CardHeader>
             <CardBody className="space-y-1">
+              {/* What the selected setup actually has, read off that box as
+                  the selected login. These sit above the built-in categories
+                  because they are the ones that describe THIS setup. */}
+              {uiCategories.length > 0 ? (
+                <div className="pb-1.5 mb-1 border-b border-slate-100">
+                  <div className="flex items-center gap-1.5 px-1 pb-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      UI on {uiMap?.host ?? 'this setup'}
+                    </span>
+                    {uiMap?.username ? <Badge tone="default">as {uiMap.username}</Badge> : null}
+                    {uiMap?.build ? <Badge tone="info">build {uiMap.build}</Badge> : null}
+                    <button
+                      onClick={discoverUi}
+                      disabled={busy}
+                      title="Read this setup's UI again — picks up anything a new build added"
+                      className="ml-auto text-[10px] px-1.5 py-0.5 rounded border border-slate-300 bg-surface text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      Re-read
+                    </button>
+                  </div>
+                  {uiCategories.map(([c, meta]) => {
+                    const total = allCatalog.filter((t) => t.category === c).length;
+                    const checked = enabled.has(c);
+                    return (
+                      <label
+                        key={c}
+                        className={'flex items-center gap-2 text-sm px-2 py-1.5 rounded-md cursor-pointer transition-colors '
+                          + (checked ? 'bg-slate-50 hover:bg-slate-100' : 'hover:bg-slate-50')}
+                      >
+                        <input type="checkbox" checked={checked} onChange={() => toggle(c)} className="accent-primary-600" />
+                        <span className="flex-1 text-slate-700">{meta.label}</span>
+                        <span className={'text-[10px] tabular-nums px-1.5 py-0.5 rounded border ' + meta.color}>{total}</span>
+                      </label>
+                    );
+                  })}
+                  {uiMap ? (
+                    <div className="px-2 pt-1 text-[10px] text-slate-400">
+                      {uiMap.nodes.length} page(s), read {new Date(uiMap.discoveredAt).toLocaleString()}
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="pb-2 mb-1 border-b border-slate-100">
+                  <p className="text-[11px] text-slate-500 px-1">
+                    {uiMapMsg ?? 'Pick a Simnovator and a login to list its UI here.'}
+                  </p>
+                  <button
+                    onClick={discoverUi}
+                    disabled={busy || !targetSystemId}
+                    className="mt-1.5 w-full text-[11px] px-2 py-1.5 rounded border border-primary-300 bg-primary-50 text-primary-800 hover:bg-primary-100 disabled:opacity-50"
+                  >
+                    {uiPhase ? 'Reading this setup’s UI…' : 'Read this setup’s UI'}
+                  </button>
+                  <p className="mt-1 text-[10px] text-slate-400 px-1">
+                    Signs in to the chosen box, walks its menus, tabs and forms, and lists what it finds
+                    as categories here. A few minutes; nothing that changes the box is pressed.
+                  </p>
+                </div>
+              )}
+
               {(Object.entries(CATEGORY_META) as Array<[Category, { label: string; color: string }]>).map(([c, meta]) => {
                 const total = catalog?.filter((t) => t.category === c).length ?? 0;
                 const checked = enabled.has(c);
@@ -569,7 +875,7 @@ export default function UiTestsPage() {
               })}
               <div className="text-[11px] text-slate-500 pt-2 mt-1 border-t border-slate-100 flex items-center justify-between">
                 <span>{selectedCount} tests selected</span>
-                <span className="text-slate-400">{catalog?.length ?? '?'} total</span>
+                <span className="text-slate-400">{allCatalog.length || '?'} total</span>
               </div>
             </CardBody>
           </Card>
@@ -883,7 +1189,7 @@ export default function UiTestsPage() {
                               </div>
                               <div className="bg-slate-100">
                                 <img
-                                  src={evidenceUrl(data.runDir, r.id, dr.evidence.screenshotFile)!}
+                                  src={evidenceUrl(data.runDir, r.id, dr.evidence.screenshotFile, (dr as any).source)!}
                                   alt={`${r.id} screenshot`}
                                   className="block max-w-full cursor-zoom-in"
                                   onClick={(e) => window.open((e.currentTarget as HTMLImageElement).src, '_blank')}

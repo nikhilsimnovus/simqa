@@ -569,6 +569,15 @@ export async function executeNodeChecks(ctx: ExecContext, checks: GeneratedCheck
     ? { ok: true, how: 'self', detail: 'navigates itself' }
     : await reachNode(ctx, toRun[0]);
 
+  // Where the page stands once we have arrived. Several checks legitimately
+  // leave it somewhere else — an Edit button that routes instead of opening a
+  // modal, a card that is really a link, a search that reloads — and until
+  // this was tracked, the first such check silently moved the page and every
+  // later control on the node was reported missing from a page it was never
+  // on. On the Tools page that was seven cards "not found" because the one
+  // before them had navigated to Manage Simulators.
+  const anchorUrl = reached.ok ? ctx.page.url() : '';
+
   for (const c of toRun) {
     if (ctx.signal?.aborted) {
       out.push({
@@ -577,6 +586,16 @@ export async function executeNodeChecks(ctx: ExecContext, checks: GeneratedCheck
       });
       continue;
     }
+    // Back to the page this check is about, if the one before it wandered.
+    if (reached.ok && anchorUrl && !appLevel.has(c.kind) && ctx.page.url() !== anchorUrl) {
+      await closeAnyDialog(ctx.page).catch(() => null);
+      if (ctx.page.url() !== anchorUrl) {
+        await ctx.page.goto(anchorUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+        await ctx.page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => null);
+        await ctx.page.waitForTimeout(300);
+      }
+    }
+
     const t0 = Date.now();
     let v: { status: CheckStatus; actual: string; error?: string; reason?: string };
     try {
