@@ -44,20 +44,73 @@ export interface ExecContext {
   /** A page in a context with no session, for the logged-out check. */
   newAnonPage?: () => Promise<Page>;
   /** Save a screenshot and return its file name. */
-  shot: (name: string) => Promise<string | undefined>;
+  /** Save a capture and return its file name. `fullPage` off gives the
+   *  viewport, which is what shows a control in the context around it. */
+  shot: (name: string, opts?: { fullPage?: boolean }) => Promise<string | undefined>;
   probeRequiredFields?: boolean;
   signal?: AbortSignal;
 }
 
-/** Checks that do something to the page rather than only read it. Each gets
- *  its own screenshot, taken afterwards, because the proof of a tab switch or
- *  a filtered list is the page AFTER the action. */
-const OPERATES = new Set<string>([
-  'tab-switches', 'dialog-opens-and-cancels', 'search-filters', 'sort-reorders',
-  'pagination-advances', 'select-has-options', 'select-options-unique',
-  'required-field-blocks-submit', 'back-forward-nav', 'refresh-keeps-page',
-  'session-protected', 'page-loads',
-]);
+/** Capture the page with this check's control ringed in red, so the picture
+ *  is proof of THAT control rather than of the page it happens to sit on.
+ *
+ *  Twenty-four rows sharing one whole-page screenshot was the complaint, and
+ *  fairly: a reviewer cannot tell from it which button was checked, or even
+ *  that the right one was found. The ring is a style on one element, applied
+ *  for the length of one screenshot and put back immediately — it changes
+ *  nothing on the box and is never saved anywhere.
+ *
+ *  Falls back to a plain capture when the element cannot be resolved, which is
+ *  itself the state worth seeing on a failure. */
+async function shotOfCheck(ctx: ExecContext, c: GeneratedCheck): Promise<string | undefined> {
+  const wantsElement = !!(c.element && c.target?.selector);
+  if (!wantsElement) {
+    // A page-level check is about the whole page, so show the whole page.
+    return ctx.shot(c.id, { fullPage: true });
+  }
+  const loc = await locate(ctx.page, c).first();
+  const found = await loc.count().then((n) => n > 0).catch(() => false);
+  if (!found) return ctx.shot(c.id, { fullPage: true });
+
+  await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => null);
+
+  // Freeze transitions first. These cards animate their outline and shadow, so
+  // the ring was being captured on the transition's opening frame — painted in
+  // the site's own colour with the halo still fully transparent, which is why
+  // it came out as a black box that looked like part of the design.
+  await ctx.page.evaluate(() => {
+    const s = document.createElement('style');
+    s.id = 'simqa-freeze';
+    s.textContent = '*,*::before,*::after{transition:none !important;animation:none !important}';
+    document.head.appendChild(s);
+  }).catch(() => null);
+
+  const ringed = await loc.evaluate((el: any) => {
+    el.setAttribute('data-simqa-style', el.getAttribute('style') ?? '');
+    // !important, because the page's own outline and border rules otherwise
+    // win and the ring comes out in the site's colour — a black box around a
+    // card reads as part of the design rather than as our marker.
+    el.style.setProperty('outline', '3px solid #ef4444', 'important');
+    el.style.setProperty('outline-offset', '2px', 'important');
+    el.style.setProperty('box-shadow', '0 0 0 6px rgba(239, 68, 68, 0.35)', 'important');
+    return true;
+  }).then(() => true).catch(() => false);
+
+  try {
+    return await ctx.shot(c.id, { fullPage: false });
+  } finally {
+    if (ringed) {
+      await loc.evaluate((el: any) => {
+        const prev = el.getAttribute('data-simqa-style') ?? '';
+        el.removeAttribute('data-simqa-style');
+        if (prev) el.setAttribute('style', prev); else el.removeAttribute('style');
+      }).catch(() => null);
+    }
+    await ctx.page.evaluate(() => {
+      document.getElementById('simqa-freeze')?.remove();
+    }).catch(() => null);
+  }
+}
 
 // Noise every SPA produces that is not a product defect.
 const CONSOLE_NOISE = /favicon|ResizeObserver loop|Download the React DevTools|\[HMR\]|sockjs|net::ERR_ABORTED.*(png|svg|woff)/i;
@@ -635,16 +688,11 @@ export async function executeNodeChecks(ctx: ExecContext, checks: GeneratedCheck
     // see is an assertion, and the point of running this against real
     // hardware is to be able to show what the box looked like.
     //
-    // Checks that operated something get their own capture, taken after the
-    // fact so it shows the result — the tab selected, the dialog open, the
-    // list filtered. Checks that only read the page share the one capture
-    // taken when the page was reached, because a hundred full-page
-    // screenshots of the same unchanged page is a hundred times the time and
-    // the disk for one picture's worth of evidence.
-    if (v.status === 'fail' || v.status === 'error' || OPERATES.has(c.kind)) {
-      outcome.screenshotFile = await ctx.shot(c.id);
-    }
-    if (!outcome.screenshotFile) outcome.screenshotFile = pageShot;
+    // Every row gets its own picture, taken after the check ran so it shows
+    // the result: the control ringed where there is one, the whole page for a
+    // page-level check. The capture of the page as it was found is only a
+    // fallback for a row whose own capture could not be taken.
+    outcome.screenshotFile = (await shotOfCheck(ctx, c).catch(() => undefined)) ?? pageShot;
     out.push(outcome);
   }
   return out;

@@ -327,10 +327,12 @@ export async function runDiscovery(inv: Inventory, req: DiscoveryRequest): Promi
         const anon = await browser!.newContext({ ignoreHTTPSErrors: true });
         return anon.newPage();
       },
-      shot: async (name: string) => {
+      shot: async (name: string, opts?: { fullPage?: boolean }) => {
         const file = `${name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120)}.png`;
-        const ok = await page.screenshot({ path: path.join(shotDir, file), fullPage: true })
-          .then(() => true).catch(() => false);
+        const ok = await page.screenshot({
+          path: path.join(shotDir, file),
+          fullPage: opts?.fullPage !== false,
+        }).then(() => true).catch(() => false);
         return ok ? `shots/${file}` : undefined;
       },
     };

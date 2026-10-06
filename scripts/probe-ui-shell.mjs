@@ -1,9 +1,16 @@
 // Probe: what does the 1.102 SPA shell actually look like?
 import { chromium } from 'playwright';
 
+// Credentials come from the caller, never from this file:
+//   node probe-ui-shell.mjs <host> <user> <pass>
+// or BOX_USER / BOX_PASS in the environment.
 const HOST = process.argv[2] ?? '192.168.1.102';
-const USER = process.argv[3] ?? 'simuser';
-const PASS = process.argv[4] ?? 'simuser';
+const USER = process.argv[3] ?? process.env.BOX_USER;
+const PASS = process.argv[4] ?? process.env.BOX_PASS;
+if (!USER || !PASS) {
+  console.error('usage: node probe-ui-shell.mjs <host> <user> <pass>  (or set BOX_USER / BOX_PASS)');
+  process.exit(2);
+}
 
 const browser = await chromium.launch({ headless: true, channel: 'chrome' });
 const ctx = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1500, height: 950 } });
