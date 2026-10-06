@@ -823,7 +823,20 @@ export async function crawlUi(
     });
   }
 
-  if (queue.length) notes.push(`stopped with ${queue.length} entr(ies) still queued: ${nodes.length >= maxPages ? `page budget of ${maxPages} reached` : 'time budget reached'}`);
+  // Both queues, because a walk can finish every page and still have pages
+  // whose own cards and forms were never pressed. Counting only the page
+  // queue reported "nothing left" on a crawl that stopped one step before
+  // descending into Manage Simulators, which reads as a complete map of a
+  // page that was never opened.
+  const left = queue.length + descendQueue.length;
+  if (left) {
+    const why = nodes.length >= maxPages ? `page budget of ${maxPages} reached` : 'time budget reached';
+    notes.push(
+      `${why} with ${left} still to do`
+      + (queue.length ? ` — ${queue.length} page(s) not opened` : '')
+      + (descendQueue.length ? ` — ${descendQueue.length} page(s) opened but their own controls not followed` : ''),
+    );
+  }
   if (opts.signal?.aborted) notes.push('discovery was stopped by the operator');
 
   return {
