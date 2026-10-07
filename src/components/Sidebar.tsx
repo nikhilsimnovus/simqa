@@ -8,7 +8,7 @@ import {
   ShieldCheck, Beaker, MousePointerClick, Info, Wrench, Database,
   FileCheck2, Activity, ChevronDown, ChevronRight, Boxes,
   PanelLeftClose, PanelLeftOpen, RefreshCw, Globe, ClipboardList, Star, ListChecks,
-  UserRound, LogOut
+  UserRound, LogOut, BadgeCheck
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -47,6 +47,7 @@ const SECTIONS: NavSection[] = [
     title: 'Verify',
     items: [
       { href: '/api-tests',       label: 'API Tests',       icon: Beaker },
+      { href: '/api-validation',  label: 'API Validation (New)', icon: BadgeCheck },
       { href: '/ui-tests',        label: 'UI Tests',        icon: MousePointerClick },
       { href: '/bulk-tests',      label: 'Bulk Tests',      icon: Boxes },
       { href: '/config-fidelity', label: 'Config Fidelity', icon: FileCheck2 },

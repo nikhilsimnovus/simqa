@@ -28,6 +28,7 @@ and surface results.
 | **Build Check** | Generate a Cockpit Terminal install plan for a fresh build, then run a checklist of REST + UI smoke checks against the box |
 | **End to End** | Build "QA Test Setups" — bind a Simnovator + UESIM + Callbox + IMS/MME/AppServer into one named topology |
 | **API Tests** | REST API regression suite (login, listings, exports, round-trips) |
+| **API Validation (New)** | Drives a Simnovator against `openapi.yaml` and checks every request and response against the document: status codes, body keys, structure, content types. Negative tests generated from the documented error codes, a safety check on every update and delete, IDs chained between APIs, a one-click full suite, and a downloadable report. The document can be replaced from the page, with a preview and a rollback. |
 | **UI Tests** | Playwright-driven UI regression suite — auth, navigation, testcases, statistics, logs, security, error handling, perf, compat, plus 90+ field-band validation tests |
 | **Inventory** | The systems + topology profiles backing everything else |
 | **Runs** | History of every run, with traces / screenshots / network logs |
@@ -35,6 +36,42 @@ and surface results.
 The UI tests record video + a Playwright trace zip on failure. Open a trace at
 [trace.playwright.dev](https://trace.playwright.dev) for a frame-by-frame replay
 with the DOM and network panel.
+
+---
+
+## API Validation
+
+Ported from the standalone **API Automation and Validation** tool
+(`github.com/pkgofficial/API-Automation-and-Validation`) into SimQA's stack, so it
+runs on the same server, behind the same login, with no second service to operate.
+
+- **Select APIs** section by section, or run the **full API suite**: every section
+  in a fixed order, each as admin or as the user, with the simulator it creates
+  living on the UE IP you give it.
+- **Inputs** on any API shows its documented parameters and example bodies. Edits
+  are checked against the document as you type; anything the document does not
+  allow blocks the run.
+- **Negative tests** come from the error codes each API documents — 401 with no or
+  a bad token, 403 for an admin-only API called by a non-admin, 404 for a
+  well-formed unknown ID, 400 per missing field, wrong type, enum, length and
+  range, 409 for a duplicate create. A negative test must get the code the document
+  gives *for that reason*; any other code fails, even a documented one.
+- **Safety check** (on by default): every PUT, PATCH and DELETE may only touch what
+  the run itself created. Turning it off is recorded in the report.
+- **Bodies are compared by keys**, never by values, so a changed message or a new
+  enum value is not a failure — a missing documented key, an undocumented key, or
+  an object where an array is documented, is.
+- **The report** is one self-contained HTML file (print it to PDF) with the full
+  request and response of every exchange, an equivalent `curl`, and a self-check
+  listing documented examples that break their own schema.
+
+The document in force ships at `assets/api-validation/openapi.yaml`. A document
+uploaded from the page is stored under `data/`, which the installer excludes from
+its rsync, so uploads and rollbacks survive a deploy and upgrading SimQA never
+silently swaps the document a lab is testing against.
+
+The port keeps the original's behaviour: `src/lib/apiValidation/port.test.ts` is
+that tool's own self-check, run against the same document.
 
 ---
 
