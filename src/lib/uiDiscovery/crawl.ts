@@ -706,6 +706,15 @@ export async function crawlUi(
   // before it goes deep into any single page.
   const descendQueue: Array<{ path: string[]; id: string; url: string }> = [];
 
+  // The landing page belongs in the descend list too. Only pages that came
+  // through the queue were being added, and the landing page never does —
+  // it is snapshotted before the queue exists. That cost nothing while the
+  // landing page was a dashboard, but admin lands on Tools, so admin's maps
+  // had Manage Simulators and SDR Configuration as buttons on Home and never
+  // as pages, while simuser's had all seven. The difference looked like a
+  // permissions difference and was not.
+  descendQueue.push({ path: ['Home'], id: slugOf(['Home']), url: startUrl });
+
   // Ten minutes of walking is worth keeping even if the browser goes away in
   // the eleventh. A crashed or externally killed Chrome used to throw out of
   // the whole run, discarding every page already read and leaving the
