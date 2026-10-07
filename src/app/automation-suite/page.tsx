@@ -1607,7 +1607,7 @@ export default function AutomationSuitePage() {
                     // refuse a run pointed somewhere else.
                     disabled={!!targetBusy}
                     title={targetBusy ? `${targetBusy.testCaseName} is executing on ${hostOf(runTarget.uesim)} — choose another Simnovator above` : undefined}
-                    className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-sm font-semibold px-4 py-2">
+                    className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-on-accent text-sm font-semibold px-4 py-2">
                     ▶ {!subset ? 'Run Suite' : rows.length === 1 ? 'Run Test Case' : 'Run Selected'}
                   </button>
                 </div>
@@ -1668,7 +1668,7 @@ export default function AutomationSuitePage() {
                     const s = suites.find(x => x.id === progress.suiteId);
                     return s ? (
                       <button onClick={() => stopRun(s)}
-                        className="rounded bg-red-600 hover:bg-red-700 text-white text-[11px] font-semibold px-2 py-0.5">
+                        className="rounded bg-red-600 hover:bg-red-700 text-on-accent text-[11px] font-semibold px-2 py-0.5">
                         ⏹ Stop
                       </button>
                     ) : null;
@@ -1706,7 +1706,7 @@ export default function AutomationSuitePage() {
                 Create an automation suite by selecting a Simnovator and adding one or more test cases.
               </p>
               <button type="button" onClick={openNew}
-                className="mt-3 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5">
+                className="mt-3 rounded-md bg-blue-600 hover:bg-blue-700 text-on-accent text-xs font-semibold px-3 py-1.5">
                 + Create Suite
               </button>
             </div>
@@ -1760,7 +1760,7 @@ export default function AutomationSuitePage() {
                         {running === s.id || (boxBusy && progress?.suiteId === s.id) ? (
                           <button onClick={e => { e.stopPropagation(); stopRun(s); }}
                             title="Stop the running test case and skip the rest"
-                            className="rounded-md bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-3 py-1.5">
+                            className="rounded-md bg-red-600 hover:bg-red-700 text-on-accent text-xs font-semibold px-3 py-1.5">
                             ⏹ Stop
                           </button>
                         ) : (
@@ -1771,7 +1771,7 @@ export default function AutomationSuitePage() {
                           // end up choosing is free is decided in there.
                           <button onClick={e => { e.stopPropagation(); setConfirmRun({ suite: s }); }}
                             title={boxBusy ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — open this to run on another Simnovator` : 'Run every test case in this suite, in order'}
-                            className={'rounded-md text-white text-xs font-semibold px-3 py-1.5 '
+                            className={'rounded-md text-on-accent text-xs font-semibold px-3 py-1.5 '
                               + (boxBusy ? 'bg-slate-500 hover:bg-slate-600' : 'bg-blue-600 hover:bg-blue-700')}>
                             {/* While the box is executing, this cannot start
                                 anything — say so on the button rather than
@@ -2020,7 +2020,7 @@ export default function AutomationSuitePage() {
                                             on boxBusy: saving a row is a local inventory edit and
                                             is fine while the box runs another testcase. */}
                                         <button onClick={() => saveEditRow(s)} disabled={!!busy}
-                                          className="rounded bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-[11px] px-2 py-0.5 mr-1">Save</button>
+                                          className="rounded bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-[11px] px-2 py-0.5 mr-1">Save</button>
                                         {i > 0 && (
                                           <button onClick={() => saveEditRow(s, 'first')} disabled={!!busy}
                                             title="Save and move to position 1 — it will then execute first"
@@ -2107,7 +2107,7 @@ export default function AutomationSuitePage() {
                                         onClick={() => setConfirmRun({ suite: s, rows: [it] })}
                                         disabled={running === s.id || !!boxBusy}
                                         title={boxBusy ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — use Run Suite above to run on another Simnovator` : `Run only "${it.name}"`}
-                                        className="rounded bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white text-[11px] px-2 py-0.5 mr-1">
+                                        className="rounded bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-on-accent text-[11px] px-2 py-0.5 mr-1">
                                         Run
                                       </button>
                                       <button onClick={() => startEditRow(s, it)} disabled={running === s.id}
@@ -2151,7 +2151,7 @@ export default function AutomationSuitePage() {
                   Check 2 runs to compare ({compareSel.size}/2)
                 </span>
                 <button onClick={runCompare} disabled={compareSel.size !== 2 || compareBusy}
-                  className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-white text-xs px-3 py-1">
+                  className="rounded-md bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-on-accent text-xs px-3 py-1">
                   {compareBusy ? 'Comparing…' : 'Compare selected'}
                 </button>
                 <button onClick={() => { setHistoryFor(''); setCompareData(null); setCompareSel(new Set()); }}
@@ -2363,7 +2363,7 @@ export default function AutomationSuitePage() {
               <button
                 onClick={() => setTab('testcases')}
                 disabled={!setupComplete}
-                className="rounded-md bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-sm px-4 py-2"
+                className="rounded-md bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 disabled:cursor-not-allowed text-on-accent text-sm px-4 py-2"
               >
                 Next: Testcases →
               </button>
@@ -2523,7 +2523,7 @@ export default function AutomationSuitePage() {
                           on this box, as the login the suite runs as, and it
                           then appears in this very dropdown. */}
                       <span
-                        className={`rounded border px-1.5 py-0.5 text-[10px] ${uesimSystemId && !importingTc ? 'border-slate-300 text-slate-600 hover:bg-white cursor-pointer' : 'border-slate-200 text-slate-300 cursor-not-allowed'}`}
+                        className={`rounded border px-1.5 py-0.5 text-[10px] ${uesimSystemId && !importingTc ? 'border-slate-300 text-slate-600 hover:bg-surface cursor-pointer' : 'border-slate-200 text-slate-300 cursor-not-allowed'}`}
                         title={!uesimSystemId ? 'Choose a Simnovator first' : 'Upload a test case exported from a Simnovator (.json) — it is added to this box'}
                         onClick={() => { if (uesimSystemId && !importingTc) tcFileRef.current?.click(); }}
                       >
@@ -2735,7 +2735,7 @@ export default function AutomationSuitePage() {
                     // core, so a row bound to only some of them can't execute.
                     // A name already on the box can't be created either.
                     disabled={!addTcId || !!addNameTaken || (kind === 'uesim+callbox' && (!addCfg || !addMme || !addIms))}
-                    className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm px-3 py-1.5">
+                    className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-sm px-3 py-1.5">
                       Add
                     </button>
                   </div>
@@ -2776,7 +2776,7 @@ export default function AutomationSuitePage() {
                 <button onClick={() => setTab('setup')} className="rounded-md border border-slate-300 text-sm px-4 py-2">← Back: Setup</button>
                 <div className="flex items-center gap-2">
                   <button onClick={resetWizard} className="rounded-md border border-slate-300 text-sm px-4 py-2">Cancel</button>
-                  <button onClick={saveSuite} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-2">
+                  <button onClick={saveSuite} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-sm font-medium px-4 py-2">
                     {busy ? 'Saving…' : (editingId ? 'Update suite' : 'Save suite')}
                   </button>
                 </div>

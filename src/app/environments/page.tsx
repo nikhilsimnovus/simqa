@@ -231,7 +231,7 @@ export default function EnvironmentsPage() {
             <div className="mt-4 border border-line rounded-md p-4 bg-slate-50/50">
               <div className="flex items-center gap-3 mb-3">
                 <input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} className="border border-slate-300 rounded-md px-3 py-1.5 text-sm flex-1" />
-                <button onClick={saveDraft} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm px-4 py-1.5">Save environment</button>
+                <button onClick={saveDraft} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-sm px-4 py-1.5">Save environment</button>
                 <button onClick={() => setDraft(null)} className="text-sm text-slate-500">Cancel</button>
               </div>
               <div className="grid grid-cols-2 gap-4 text-xs">
@@ -284,11 +284,11 @@ export default function EnvironmentsPage() {
               <div className="space-y-3">
                 <div>
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Cell count</div>
-                  <div className="flex gap-2">{[1,2,3,4].map(n => <button key={n} onClick={() => selectCellCount(n)} className={`rounded-md border px-3 py-1 text-sm ${cellCount === n ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300'}`}>{n}</button>)}</div>
+                  <div className="flex gap-2">{[1,2,3,4].map(n => <button key={n} onClick={() => selectCellCount(n)} className={`rounded-md border px-3 py-1 text-sm ${cellCount === n ? 'bg-slate-800 text-on-accent border-slate-800' : 'border-slate-300'}`}>{n}</button>)}</div>
                 </div>
                 <div>
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">UE groups</div>
-                  <div className="flex gap-2">{[1,2,3,4].map(n => <button key={n} onClick={() => setGroupCount(n)} className={`rounded-md border px-3 py-1 text-sm ${ueGroups.length === n ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300'}`}>{n}</button>)}</div>
+                  <div className="flex gap-2">{[1,2,3,4].map(n => <button key={n} onClick={() => setGroupCount(n)} className={`rounded-md border px-3 py-1 text-sm ${ueGroups.length === n ? 'bg-slate-800 text-on-accent border-slate-800' : 'border-slate-300'}`}>{n}</button>)}</div>
                 </div>
                 {/* Per-group UE count + traffic. Several traffic types on one
                     group run concurrently inside the SAME testcase. */}
@@ -303,7 +303,7 @@ export default function EnvironmentsPage() {
                         </label>
                       </div>
                       <div className="flex flex-wrap gap-1.5">{TRAFFIC_OPTIONS.map(t => (
-                        <button key={t} onClick={() => toggleGroupTraffic(i, t)} className={`rounded-md border px-2 py-1 text-xs ${g.traffic.includes(t) ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300 bg-surface'}`}>{t}</button>
+                        <button key={t} onClick={() => toggleGroupTraffic(i, t)} className={`rounded-md border px-2 py-1 text-xs ${g.traffic.includes(t) ? 'bg-slate-800 text-on-accent border-slate-800' : 'border-slate-300 bg-surface'}`}>{t}</button>
                       ))}</div>
                       {g.traffic.length === 0 && <div className="text-[11px] text-red-600 mt-1">pick at least one traffic type</div>}
                     </div>
@@ -334,7 +334,7 @@ export default function EnvironmentsPage() {
               <button onClick={doPreview} disabled={!!busy} className="rounded-md border border-slate-300 hover:bg-slate-50 text-sm px-4 py-1.5">Preview</button>
               {/* Gated on a preview that actually yields a testcase — clicking
                   Generate on a rejected spec used to silently do nothing. */}
-              <button onClick={doGenerate} disabled={!!busy || running || !previewCount} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-white text-sm font-medium px-4 py-1.5">{running ? 'Generating…' : 'Generate'}</button>
+              <button onClick={doGenerate} disabled={!!busy || running || !previewCount} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-sm font-medium px-4 py-1.5">{running ? 'Generating…' : 'Generate'}</button>
               {previewCount !== null && previewCount > 0 && <span className="text-sm text-slate-700"><b>{previewCount}</b> test case will be created</span>}
             </div>
             {/* A rejected spec builds NOTHING, so the conflicts are shown in

@@ -244,7 +244,7 @@ export function ProfileClient() {
                 <button
                   type="submit"
                   disabled={saving}
-                  className="rounded-md bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:bg-slate-300"
+                  className="rounded-md bg-orange-500 px-4 py-2 text-sm font-semibold text-on-accent hover:bg-orange-600 disabled:bg-slate-300"
                 >
                   {saving ? 'Saving…' : 'Save Changes'}
                 </button>
@@ -261,7 +261,7 @@ export function ProfileClient() {
               <button
                 type="button"
                 onClick={startEdit}
-                className="rounded-md bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600"
+                className="rounded-md bg-orange-500 px-4 py-2 text-sm font-semibold text-on-accent hover:bg-orange-600"
               >
                 Edit Profile
               </button>
@@ -397,7 +397,7 @@ function ChangePassword({ onClose, onDone }: { onClose: () => void; onDone: () =
             <button
               type="submit"
               disabled={!canSubmit || busy}
-              className="rounded-md bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:bg-slate-300"
+              className="rounded-md bg-orange-500 px-4 py-2 text-sm font-semibold text-on-accent hover:bg-orange-600 disabled:bg-slate-300"
             >
               {busy ? 'Updating…' : 'Update Password'}
             </button>

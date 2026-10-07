@@ -264,10 +264,10 @@ export function CheckRow({ row, runId }: { row: CheckRowData; runId?: string }) 
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-1.5 text-sm">
             <span className="font-medium text-slate-900">{friendlyName(row)}</span>
-            {row.status === 'pass' ? <span className="text-[10px] px-1.5 rounded bg-emerald-600 text-white font-semibold">PASSED</span> : null}
-            {row.status === 'fail' ? <span className="text-[10px] px-1.5 rounded bg-red-600 text-white font-semibold">FAILED</span> : null}
-            {row.status === 'skip' ? <span className="text-[10px] px-1.5 rounded bg-slate-400 text-white font-semibold">SKIPPED</span> : null}
-            {row.status === 'running' ? <span className="text-[10px] px-1.5 rounded bg-primary-600 text-white font-semibold animate-pulse">RUNNING</span> : null}
+            {row.status === 'pass' ? <span className="text-[10px] px-1.5 rounded bg-emerald-600 text-on-accent font-semibold">PASSED</span> : null}
+            {row.status === 'fail' ? <span className="text-[10px] px-1.5 rounded bg-red-600 text-on-accent font-semibold">FAILED</span> : null}
+            {row.status === 'skip' ? <span className="text-[10px] px-1.5 rounded bg-slate-400 text-on-accent font-semibold">SKIPPED</span> : null}
+            {row.status === 'running' ? <span className="text-[10px] px-1.5 rounded bg-primary-600 text-on-accent font-semibold animate-pulse">RUNNING</span> : null}
             {row.status === 'pending' ? <span className="text-[10px] px-1.5 rounded bg-slate-100 text-slate-500 font-semibold">WAITING</span> : null}
           </div>
           {/* A failure reason is the reason you opened the report, so it gets
@@ -287,7 +287,7 @@ export function CheckRow({ row, runId }: { row: CheckRowData; runId?: string }) 
                 <img
                   src={shot}
                   alt={`The Simnovator's own screen when ${friendlyName(row)} ran`}
-                  className="max-h-56 rounded border border-slate-200 bg-white hover:border-primary-400"
+                  className="max-h-56 rounded border border-slate-200 bg-surface hover:border-primary-400"
                 />
               </a>
               {/* One caption for every picture: they are all the box's own
@@ -333,7 +333,7 @@ export function CheckRow({ row, runId }: { row: CheckRowData; runId?: string }) 
 
 export function ChecksList({ checks, runId }: { checks: CheckRowData[]; runId?: string }) {
   return (
-    <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-white">
+    <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-surface">
       {checks.map((c) => <CheckRow key={c.id} row={c} runId={runId} />)}
     </ul>
   );
@@ -530,22 +530,22 @@ function OverviewField({ label, value }: { label: string; value?: React.ReactNod
 function VerdictBadge({ verdict }: { verdict: string }) {
   const v = verdict.toUpperCase();
   const tone =
-    v === 'PASS' || v === 'PASSED' ? 'bg-emerald-600 text-white'
-    : v === 'FAIL' || v === 'FAILED' || v === 'ERROR' ? 'bg-red-600 text-white'
-    : 'bg-amber-500 text-white';
+    v === 'PASS' || v === 'PASSED' ? 'bg-emerald-600 text-on-accent'
+    : v === 'FAIL' || v === 'FAILED' || v === 'ERROR' ? 'bg-red-600 text-on-accent'
+    : 'bg-amber-500 text-on-accent';
   return <span className={`text-[11px] px-2 py-0.5 rounded font-semibold ${tone}`}>{v}</span>;
 }
 
 function RunOverview({ data }: { data: RunOverviewData }) {
   const resultBadge: Record<RunOverviewData['overallResult'], React.ReactNode> = {
-    pass:    <span className="text-[11px] px-2 py-0.5 rounded bg-emerald-600 text-white font-semibold">PASSED</span>,
-    fail:    <span className="text-[11px] px-2 py-0.5 rounded bg-red-600 text-white font-semibold">FAILED</span>,
-    running: <span className="text-[11px] px-2 py-0.5 rounded bg-primary-600 text-white font-semibold animate-pulse">IN PROGRESS</span>,
+    pass:    <span className="text-[11px] px-2 py-0.5 rounded bg-emerald-600 text-on-accent font-semibold">PASSED</span>,
+    fail:    <span className="text-[11px] px-2 py-0.5 rounded bg-red-600 text-on-accent font-semibold">FAILED</span>,
+    running: <span className="text-[11px] px-2 py-0.5 rounded bg-primary-600 text-on-accent font-semibold animate-pulse">IN PROGRESS</span>,
     unknown: <span className="text-sm text-slate-400">—</span>,
   };
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-3">
+    <div className="rounded-lg border border-slate-200 bg-surface p-4 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-3">
       <OverviewField label="Test Case" value={data.testcaseName ?? data.testcaseId} />
       <OverviewField label="Simnovator IP" value={data.systemHost ? <span className="font-mono text-xs">{data.systemHost}</span> : undefined} />
       {/* Who ran it — several people execute on one Simnovator at once. */}
@@ -706,7 +706,7 @@ export function PastRunsPanel({
         ) : !hasAny ? (
           <div className="text-xs text-slate-500">{emptyMessage ?? "No past validation runs yet. They'll appear here once a run finishes."}</div>
         ) : (
-          <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-white">
+          <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-surface">
             {liveEntry ? (
               <li key={liveEntry.runId}>
                 <button

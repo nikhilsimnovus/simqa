@@ -356,7 +356,7 @@ export function AutoBackupCard() {
           <Button
             onClick={downloadIndividually}
             disabled={!selectedVisible || !!downloading}
-            className="bg-accent-600 hover:bg-accent-700 text-white border-transparent"
+            className="bg-accent-600 hover:bg-accent-700 text-on-accent border-transparent"
           >
             {downloading?.what === 'files' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             <span className="ml-1.5">

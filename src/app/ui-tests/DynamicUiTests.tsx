@@ -327,7 +327,7 @@ export function DynamicUiTests() {
 
             {busy ? (
               <Button size="sm" variant="secondary" onClick={stop}
-                className="!bg-red-600 !text-white !border-red-600 hover:!bg-red-700">
+                className="!bg-red-600 !text-on-accent !border-red-600 hover:!bg-red-700">
                 <Square className="h-4 w-4 fill-current" />Stop
               </Button>
             ) : (
@@ -581,7 +581,7 @@ export function DynamicUiTests() {
                 <button
                   key={s}
                   onClick={() => setStatusFilter(s as Status | 'all')}
-                  className={`text-xs px-2 py-1 rounded-md border ${statusFilter === s ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}
+                  className={`text-xs px-2 py-1 rounded-md border ${statusFilter === s ? 'bg-slate-900 text-on-accent border-slate-900' : 'bg-surface border-slate-300 text-slate-700'}`}
                 >
                   {s === 'all' ? 'All' : STATUS_META[s as Status].label} {n ?? 0}
                 </button>

@@ -264,7 +264,7 @@ function HistoryWindow({ station, onClose }: { station?: string; onClose: () => 
       aria-label="Resource availability usage history"
     >
       <div
-        className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[88vh] flex flex-col"
+        className="bg-surface rounded-xl shadow-2xl w-full max-w-4xl max-h-[88vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-4 px-6 py-4 border-b border-slate-100">
@@ -283,7 +283,7 @@ function HistoryWindow({ station, onClose }: { station?: string; onClose: () => 
                   onClick={() => setRange(r.key)}
                   className={
                     'px-3 py-1 text-xs font-medium rounded-md transition-colors ' +
-                    (range === r.key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700')
+                    (range === r.key ? 'bg-surface text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700')
                   }
                 >
                   {r.label}

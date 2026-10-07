@@ -253,7 +253,7 @@ export function JobDetail({ initialJob, initialEntries }: { initialJob: Job; ini
                   onClick={() => setPhase(p.key)}
                   className={
                     'px-2.5 py-1 text-xs font-medium rounded-md transition-colors ' +
-                    (phase === p.key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700')
+                    (phase === p.key ? 'bg-surface text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700')
                   }
                 >
                   {p.label}

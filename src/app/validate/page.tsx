@@ -766,7 +766,7 @@ export default function BuildValidationPage() {
     </li>
   ) : null;
 
-  const inputCls = 'w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs bg-white';
+  const inputCls = 'w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs bg-surface';
 
   return (
     // The page owns the full height of the app shell's content column and

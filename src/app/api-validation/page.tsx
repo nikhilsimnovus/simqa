@@ -627,7 +627,7 @@ export default function ApiValidationPage() {
               <div className="flex-1" />
               {(['all', 'PASS', 'FAIL', 'SKIP', 'ERROR'] as const).map(v => (
                 <button key={v} onClick={() => setVerdictFilter(v)}
-                  className={`text-xs px-2 py-1 rounded-md border ${verdictFilter === v ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300 text-slate-700'}`}>
+                  className={`text-xs px-2 py-1 rounded-md border ${verdictFilter === v ? 'bg-slate-900 text-on-accent border-slate-900' : 'bg-surface border-slate-300 text-slate-700'}`}>
                   {v === 'all' ? `All ${rows.length}` : `${v} ${counts[v] ?? 0}`}
                 </button>
               ))}
@@ -883,10 +883,10 @@ function OpInputs({ op, ov, onChange }: { op: OpView; ov: Override; onChange: (p
             value={bodyText}
             onChange={e => onChange({ body: e.target.value })}
             spellCheck={false}
-            className="w-full h-48 font-mono text-[11px] border border-slate-300 rounded p-2 bg-white"
+            className="w-full h-48 font-mono text-[11px] border border-line-strong rounded p-2 bg-surface text-slate-900"
           />
           {schema ? (
-            <pre className="max-h-64 overflow-auto text-[10px] bg-white border border-slate-200 rounded p-2">
+            <pre className="max-h-64 overflow-auto text-[10px] bg-surface text-slate-800 border border-line rounded p-2">
               {JSON.stringify(schema, null, 2)}
             </pre>
           ) : null}

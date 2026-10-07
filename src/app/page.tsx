@@ -700,7 +700,7 @@ function BoxUsersCard({ host, users, systemId, selectedUser, range }: { host: st
               {u.running ? (
                 <Link
                   href={testcaseHref(systemId, u.running.testcaseId, u.username)}
-                  className="relative z-10 mt-2 flex items-center gap-2 rounded-md border border-sky-200 bg-white px-2 py-1.5 hover:border-sky-400 hover:bg-sky-50"
+                  className="relative z-10 mt-2 flex items-center gap-2 rounded-md border border-sky-200 bg-surface px-2 py-1.5 hover:border-sky-400 hover:bg-sky-50"
                   title={`${u.running.testcaseName} — executing now. Open its validation page.`}
                 >
                   <Play className="h-3.5 w-3.5 shrink-0 fill-sky-600 text-sky-600 animate-pulse" />
@@ -715,7 +715,7 @@ function BoxUsersCard({ host, users, systemId, selectedUser, range }: { host: st
               ) : u.last ? (
                 <Link
                   href={testcaseHref(systemId, u.last.testcaseId, u.username)}
-                  className="relative z-10 mt-2 flex items-center gap-2 rounded-md border border-line bg-white px-2 py-1.5 hover:border-slate-400 hover:bg-slate-50"
+                  className="relative z-10 mt-2 flex items-center gap-2 rounded-md border border-line bg-surface px-2 py-1.5 hover:border-slate-400 hover:bg-slate-50"
                   title={`${u.last.testcaseName} — last executed (${u.last.status}). Open its validation page.`}
                 >
                   <History className="h-3.5 w-3.5 shrink-0 text-slate-400" />

@@ -62,11 +62,11 @@ function Stepper({ current, status, onGo }: { current: number; status: Record<nu
         const st = status[s.n] ?? 'idle';
         const active = current === s.n;
         const circle =
-          st === 'ok'        ? 'bg-success-500 text-white border-success-500'
-          : st === 'failed'  ? 'bg-red-600 text-white border-red-600'
-          : st === 'running' ? 'bg-blue-600 text-white border-blue-600'
-          : active           ? 'bg-white text-primary-700 border-primary-500'
-                             : 'bg-white text-slate-400 border-slate-300';
+          st === 'ok'        ? 'bg-success-500 text-on-accent border-success-500'
+          : st === 'failed'  ? 'bg-red-600 text-on-accent border-red-600'
+          : st === 'running' ? 'bg-blue-600 text-on-accent border-blue-600'
+          : active           ? 'bg-surface text-primary-700 border-primary-500'
+                             : 'bg-surface text-slate-400 border-slate-300';
         return (
           <li key={s.n} className="flex items-center gap-2 md:gap-4 shrink-0">
             {/* Steps are clickable. Nothing is committed until Submit, so
@@ -125,7 +125,7 @@ function NavButtons({
               'inline-flex items-center gap-1.5 h-10 px-5 rounded-lg text-sm font-semibold transition-colors shrink-0 ' +
               (nextDisabled ? 'bg-slate-300 text-white cursor-not-allowed'
                 : valid ? 'bg-success-100 text-success-800 border border-success-300 hover:bg-success-200'
-                : 'bg-orange-500 text-white hover:bg-orange-600')
+                : 'bg-orange-500 text-on-accent hover:bg-orange-600')
             }
           >
             {nextLabel}<ChevronRight className="h-4 w-4" />
@@ -168,7 +168,7 @@ function BrowseDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-surface rounded-xl border border-slate-200 shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-900">{label}</div>
@@ -374,9 +374,9 @@ export function Wizard({ setups, playlists }: { setups: Setup[]; playlists: Play
     }
   }, [setupHost, skipBuild, buildUrl, componentFiles, mode, playlistId, playlist, picked, router]);
 
-  const inputCls = 'w-full h-10 rounded-lg border border-slate-300 px-3 text-sm bg-white';
-  const browseBtn = 'inline-flex items-center gap-1 shrink-0 px-2.5 rounded-lg border border-slate-300 bg-white text-[11px] font-medium text-slate-700 hover:bg-slate-50';
-  const openBtn = 'inline-flex items-center gap-1 shrink-0 px-2.5 rounded-lg border border-slate-300 bg-white text-[11px] font-medium text-slate-700 hover:bg-slate-50';
+  const inputCls = 'w-full h-10 rounded-lg border border-slate-300 px-3 text-sm bg-surface';
+  const browseBtn = 'inline-flex items-center gap-1 shrink-0 px-2.5 rounded-lg border border-slate-300 bg-surface text-[11px] font-medium text-slate-700 hover:bg-slate-50';
+  const openBtn = 'inline-flex items-center gap-1 shrink-0 px-2.5 rounded-lg border border-slate-300 bg-surface text-[11px] font-medium text-slate-700 hover:bg-slate-50';
 
   return (
     <div className="space-y-5">
@@ -397,7 +397,7 @@ export function Wizard({ setups, playlists }: { setups: Setup[]; playlists: Play
         />
       ) : null}
 
-      <div className="rounded-xl border border-slate-200 bg-white px-5 py-4">
+      <div className="rounded-xl border border-slate-200 bg-surface px-5 py-4">
         <Stepper current={step} status={stepStatus} onGo={setStep} />
       </div>
 
@@ -541,7 +541,7 @@ export function Wizard({ setups, playlists }: { setups: Setup[]; playlists: Play
                 {(['playlist', 'testcase'] as const).map((m) => (
                   <button
                     key={m} type="button" onClick={() => setMode(m)}
-                    className={'px-3 h-8 text-xs font-medium ' + (mode === m ? 'bg-primary-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50')}
+                    className={'px-3 h-8 text-xs font-medium ' + (mode === m ? 'bg-primary-600 text-on-accent' : 'bg-surface text-slate-600 hover:bg-slate-50')}
                   >
                     {m === 'playlist' ? 'Playlist' : 'Individual Test Cases'}
                   </button>
@@ -596,7 +596,7 @@ export function Wizard({ setups, playlists }: { setups: Setup[]; playlists: Play
                                     <label
                                       onClick={(e) => e.stopPropagation()}
                                       className={'flex items-center gap-1.5 text-[12px] font-mono rounded px-1 -mx-1 ' +
-                                        (gone ? 'text-red-600 line-through cursor-not-allowed' : 'text-slate-700 cursor-pointer hover:bg-white')}
+                                        (gone ? 'text-red-600 line-through cursor-not-allowed' : 'text-slate-700 cursor-pointer hover:bg-surface')}
                                       title={gone ? `Not on ${setupHost}` : undefined}
                                     >
                                       <input
@@ -717,7 +717,7 @@ export function Wizard({ setups, playlists }: { setups: Setup[]; playlists: Play
             <div className="mt-4 flex items-center gap-3 flex-wrap">
               <button
                 type="button" onClick={runCheck} disabled={checking}
-                className={'inline-flex items-center gap-1.5 h-9 px-4 rounded-lg text-sm font-semibold text-white ' + (checking ? 'bg-slate-300' : 'bg-primary-600 hover:bg-primary-700')}
+                className={'inline-flex items-center gap-1.5 h-9 px-4 rounded-lg text-sm font-semibold text-on-accent ' + (checking ? 'bg-slate-300' : 'bg-primary-600 hover:bg-primary-700')}
               >
                 {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                 {checking ? 'Checking…' : check ? 'Re-run check' : 'Run resource check'}
@@ -813,7 +813,7 @@ export function Wizard({ setups, playlists }: { setups: Setup[]; playlists: Play
               <button
                 type="button" onClick={submit}
                 disabled={submitting || !buildValid || !selectionValid || !resourceValid}
-                className={'inline-flex items-center gap-1.5 h-10 px-5 rounded-lg text-sm font-semibold text-white transition-colors ' +
+                className={'inline-flex items-center gap-1.5 h-10 px-5 rounded-lg text-sm font-semibold text-on-accent transition-colors ' +
                   (submitting || !buildValid || !selectionValid || !resourceValid ? 'bg-slate-300 cursor-not-allowed' : 'bg-success-600 hover:bg-success-700')}
               >
                 {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}

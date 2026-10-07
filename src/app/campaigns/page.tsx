@@ -289,7 +289,7 @@ export default function CampaignsPage() {
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-semibold text-slate-900">Campaigns ({campaigns.length})</h2>
           <button onClick={() => setBuilding(b => !b)}
-            className="rounded-md bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5">
+            className="rounded-md bg-blue-600 hover:bg-blue-700 text-on-accent text-xs font-semibold px-3 py-1.5">
             {building ? 'Cancel' : '+ Create Campaign'}
           </button>
         </div>
@@ -346,7 +346,7 @@ export default function CampaignsPage() {
               <button onClick={() => { setBuilding(false); setPicked([]); setNewName(''); }}
                 className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-3 py-1.5">Cancel</button>
               <button onClick={createCampaign} disabled={!newName.trim() || picked.length === 0 || busy === 'create'}
-                className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xs font-semibold px-3 py-1.5">
+                className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-on-accent text-xs font-semibold px-3 py-1.5">
                 {busy === 'create' ? 'Creating…' : `Create Campaign (${picked.length})`}
               </button>
             </div>
@@ -371,10 +371,10 @@ export default function CampaignsPage() {
                   <div className="ml-auto flex items-center gap-2">
                     {running === c.id ? (
                       <button onClick={() => stop(c)}
-                        className="rounded-md bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-3 py-1.5">⏹ Stop</button>
+                        className="rounded-md bg-red-600 hover:bg-red-700 text-on-accent text-xs font-semibold px-3 py-1.5">⏹ Stop</button>
                     ) : (
                       <button onClick={() => openRun(c)}
-                        className="rounded-md bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5">▶ Execute Campaign</button>
+                        className="rounded-md bg-blue-600 hover:bg-blue-700 text-on-accent text-xs font-semibold px-3 py-1.5">▶ Execute Campaign</button>
                     )}
                     <button onClick={() => remove(c)} disabled={!!busy}
                       className="rounded-md border border-red-300 text-red-600 hover:bg-red-50 text-xs px-3 py-1.5">Delete</button>
@@ -476,7 +476,7 @@ export default function CampaignsPage() {
                 <button onClick={() => setRunFor(null)}
                   className="rounded-md border border-slate-300 hover:bg-slate-50 text-sm px-4 py-2">Cancel</button>
                 <button onClick={execute} disabled={!runSimnovator}
-                  className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-sm font-semibold px-4 py-2">
+                  className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-on-accent text-sm font-semibold px-4 py-2">
                   ▶ Execute Campaign
                 </button>
               </div>

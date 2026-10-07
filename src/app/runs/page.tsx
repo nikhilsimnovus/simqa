@@ -427,7 +427,7 @@ export default function RunsPage() {
   // draw the chevron ourselves (selectStyle below) and the border, hover and
   // focus ring all run the whole way round.
   const fieldBase =
-    'h-8 w-[190px] shrink-0 rounded-md border border-slate-300 bg-white text-xs text-slate-900 ' +
+    'h-8 w-[190px] shrink-0 rounded-md border border-slate-300 bg-surface text-xs text-slate-900 ' +
     'hover:border-slate-400 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/30 ' +
     'disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200';
   const selectCls = `${fieldBase} appearance-none pl-2 pr-8`;
@@ -522,7 +522,7 @@ export default function RunsPage() {
             stick to the top edge of THIS element, so there is no strip of page
             above them for rows to show through on the way past — which is what
             made a sticky <thead> inside a padded scroll pane look untidy. */}
-        <main className="flex-1 min-h-0 overflow-auto border border-slate-200 rounded-lg bg-white">
+        <main className="flex-1 min-h-0 overflow-auto border border-slate-200 rounded-lg bg-surface">
           {/* table-fixed is what makes the column widths below authoritative —
               with auto layout the browser re-derives them from the content and
               a dragged width springs back on the next render. */}

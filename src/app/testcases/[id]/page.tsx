@@ -951,7 +951,7 @@ export default function TestcaseDetail({ params }: { params: Promise<{ id: strin
                 size="sm"
                 onClick={() => startValidation()}
                 disabled={!systemId || checkingShare}
-                className="bg-primary-600 hover:bg-primary-700 text-white"
+                className="bg-primary-600 hover:bg-primary-700 text-on-accent"
                 title="Apply the selected configs on the callbox (only when no other user is executing on it), then execute this testcase with full validation checks."
               >
                 {checkingShare ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}

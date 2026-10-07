@@ -501,7 +501,7 @@ function CaptureDetail({
           ) : null}
           {summary.hasUeCfg ? (
             <a href={fileUrl(summary.captureId, 'ue.cfg')}
-              className="inline-flex items-center gap-1.5 text-xs px-3 h-8 rounded-md bg-accent-600 hover:bg-accent-700 text-white font-medium">
+              className="inline-flex items-center gap-1.5 text-xs px-3 h-8 rounded-md bg-accent-600 hover:bg-accent-700 text-on-accent font-medium">
               <Download className="h-3.5 w-3.5" />ue.cfg
             </a>
           ) : null}
@@ -568,7 +568,7 @@ function CaptureDetail({
                   checked={statusFilter.size === 0}
                   onChange={(e) => onToggleAll(e.target.checked)}
                 />
-                <span className="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold text-white">All</span>
+                <span className="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold text-on-accent">All</span>
                 <span className="tabular-nums text-[11px] text-slate-500">{total}</span>
               </label>
 

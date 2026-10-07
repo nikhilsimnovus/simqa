@@ -91,7 +91,7 @@ export function AuthSubmit({ label, busyLabel, busy, disabled }: {
       disabled={off}
       aria-busy={busy || undefined}
       className={
-        'mt-6 w-full h-12 rounded-lg text-white text-[15px] font-semibold transition-colors ' +
+        'mt-6 w-full h-12 rounded-lg text-on-accent text-[15px] font-semibold transition-colors ' +
         'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 focus-visible:ring-offset-2 ' +
         (off ? 'bg-slate-300 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700')
       }

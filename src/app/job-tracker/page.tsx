@@ -29,7 +29,7 @@ export default async function JobTrackerPage() {
         right={
           <Link
             href="/job-tracker/new"
-            className="inline-flex items-center gap-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-white px-4 h-9 text-sm font-semibold transition-colors"
+            className="inline-flex items-center gap-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-on-accent px-4 h-9 text-sm font-semibold transition-colors"
           >
             <Plus className="h-4 w-4" />
             Create New Job

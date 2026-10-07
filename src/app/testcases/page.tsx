@@ -370,7 +370,7 @@ export default function TestcasesPage() {
       <main className="flex-1 min-h-0 flex flex-col px-6 pb-6 pt-0">
         <Card className="flex-1 min-h-0 flex flex-col">
           <CardHeader
-            className="shrink-0 flex flex-wrap items-center gap-3 justify-start bg-white rounded-t-xl px-4 py-2.5"
+            className="shrink-0 flex flex-wrap items-center gap-3 justify-start bg-surface rounded-t-xl px-4 py-2.5"
           >
             <div className="flex items-center gap-2 flex-wrap">
               {systems.length > 0 && (
@@ -439,7 +439,7 @@ export default function TestcasesPage() {
                   </button>
                 </label>
                 {resultOpen && (
-                  <div className="absolute z-20 mt-1 right-0 w-56 rounded-md border border-slate-200 bg-white shadow-lg p-1.5">
+                  <div className="absolute z-20 mt-1 right-0 w-56 rounded-md border border-slate-200 bg-surface shadow-lg p-1.5">
                     {/* ALL is "nothing selected" rather than a value of its own,
                         so ticking it simply clears the rest. */}
                     <label className="flex items-center gap-2 text-sm cursor-pointer px-2 py-1 rounded hover:bg-slate-50">
