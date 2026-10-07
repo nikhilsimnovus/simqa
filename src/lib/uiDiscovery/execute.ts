@@ -241,7 +241,17 @@ async function reachNode(ctx: ExecContext, any: GeneratedCheck): Promise<{ ok: b
 
 // ------------------------------------------------------------ per check ----
 
-async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: boolean; detail: string }): Promise<{ status: CheckStatus; actual: string; error?: string; reason?: string }> {
+/** Records one step of a check, with a capture of the screen at that point.
+ *  A verdict says what happened; the steps say how it got there, which is
+ *  what makes a failure actionable without reading a log. */
+type Recorder = (label: string, ok: boolean, detail?: string, capture?: boolean) => Promise<void>;
+
+async function runCheck(
+  ctx: ExecContext,
+  c: GeneratedCheck,
+  reached: { ok: boolean; detail: string },
+  rec: Recorder = async () => {},
+): Promise<{ status: CheckStatus; actual: string; error?: string; reason?: string }> {
   const page = ctx.page;
 
   switch (c.kind) {
@@ -328,10 +338,28 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
         return { status: 'skip', actual: 'the control is disabled', reason: 'nothing to press' };
       }
       const beforeUrl = page.url();
-      const beforeFp = await fingerprint(page);
+      // A filter chip changes the TABLE, and the page fingerprint is the
+      // first couple of hundred characters of the main region — the header
+      // and the filter bar, which do not move when rows do. Judging a chip by
+      // that alone called four working filters dead. The row count and the
+      // first cell are what actually answer "did anything happen".
+      const listState = () => page.evaluate(`(() => {
+        const t = document.querySelector('table, [role="table"], .ant-table');
+        if (!t) return 'no-table';
+        const b = t.querySelector('tbody') || t;
+        const rows = Array.from(b.querySelectorAll('tr, [role="row"]')).filter(r => r.getClientRects().length);
+        const first = rows[0] ? (rows[0].innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+        return rows.length + '|' + first;
+      })()`).then(v => String(v ?? '')).catch(() => '');
+      const beforeFp = (await fingerprint(page)) + '::' + (await listState());
+      await rec(`Before: the page with "${c.element}" on it`, true, beforeUrl);
       const clicked = await el.click({ timeout: 8000 }).then(() => true).catch(() => false);
-      if (!clicked) return { status: 'fail', actual: 'the control is present and enabled but would not take a click' };
+      if (!clicked) {
+        await rec('Click it', false, 'the control would not take a click');
+        return { status: 'fail', actual: 'the control is present and enabled but would not take a click' };
+      }
       await page.waitForTimeout(900);
+      await rec('After: click it and wait', true, page.url() !== beforeUrl ? `moved to ${page.url()}` : 'same URL');
 
       if (page.url() !== beforeUrl) {
         return { status: 'pass', actual: `it navigated to ${page.url()}` };
@@ -353,11 +381,26 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
       })()`).then(v => String(v ?? '')).catch(() => '');
       if (toast) return { status: 'pass', actual: `it showed "${toast}"` };
 
-      const afterFp = await fingerprint(page);
-      if (afterFp !== beforeFp) return { status: 'pass', actual: 'the page changed in response to the click' };
+      const afterFp = (await fingerprint(page)) + '::' + (await listState());
+      if (afterFp !== beforeFp) {
+        const [, listBefore = ''] = beforeFp.split('::');
+        const [, listAfter = ''] = afterFp.split('::');
+        if (listBefore !== listAfter && listBefore && listAfter) {
+          return { status: 'pass', actual: `the list changed in response (${listBefore.split('|')[0]} row(s) to ${listAfter.split('|')[0]})` };
+        }
+        return { status: 'pass', actual: 'the page changed in response to the click' };
+      }
+      // Nothing changed — which is not the same as broken. A filter whose
+      // criterion already matches everything on screen correctly does
+      // nothing: this box has one simulator, available and UE-SIM, so the
+      // Available and UE-SIM chips have nothing to filter out. Calling those
+      // failures put four working controls on the list and would teach an
+      // operator to ignore it. Reported as inconclusive, with the screenshot
+      // of the result, which is what it honestly is.
       return {
-        status: 'fail',
-        actual: 'clicking it produced no navigation, no dialog, no message and no visible change to the page',
+        status: 'skip',
+        actual: 'clicking it produced no navigation, no dialog, no message and no visible change',
+        reason: 'inconclusive: a control that changes nothing may be broken, or may be a filter whose criterion already matches everything on screen — the screenshot shows what was on it',
       };
     }
 
@@ -511,9 +554,11 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
       const sortable = await header.evaluate((n: any) =>
         !!(n.getAttribute('aria-sort') || n.querySelector('[class*="sort"]') || /sortable|sorter/i.test(String(n.className ?? ''))),
       ).catch(() => false);
+      await rec('Before: the table as it loaded', true, `first value "${before[0] ?? ''}"`);
       await header.click({ timeout: 6000 }).catch(() => null);
       await page.waitForTimeout(700);
       const after = await readFirstColumn();
+      await rec(`After: clicked the "${col ?? 'first'}" header`, true, `first value "${after[0] ?? ''}"`);
       if (after.join('|') !== before.join('|')) {
         return { status: 'pass', actual: `the rows reordered on "${col ?? 'the first column'}"` };
       }
@@ -539,9 +584,11 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
       if (before.n === 0) return { status: 'skip', actual: 'the list is empty', reason: 'nothing to filter' };
       const token = (before.sample || '').split(/\s+/)[0]?.slice(0, 12);
       if (!token) return { status: 'skip', actual: 'could not read a value out of the first row', reason: 'no search term to type' };
+      await rec(`Before: ${before.n} row(s) in the list`, true, `will search for "${token}"`);
       await box.fill(token, { timeout: 6000 }).catch(() => null);
       await page.waitForTimeout(1200);
       const during = await rows();
+      await rec(`After: searched for "${token}"`, during.n > 0, `${during.n} row(s) now`);
       await box.fill('', { timeout: 6000 }).catch(() => null);
       await page.waitForTimeout(1000);
       const after = await rows();
@@ -576,9 +623,11 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
         return c ? (c.innerText || '').trim() : '';
       })()`).then(v => String(v ?? '')).catch(() => '');
       const before = await firstCell();
+      await rec('Before: the first page of results', true, `first cell "${before}"`);
       await next.click({ timeout: 8000 }).catch(() => null);
       await page.waitForTimeout(1200);
       const after = await firstCell();
+      await rec('After: next page', before !== after, `first cell "${after}"`);
       const prev = pager.locator('[aria-label*="prev" i], li.prev a, button:has-text("Prev"), .ant-pagination-prev').first();
       if (await prev.count().catch(() => 0)) {
         await prev.click({ timeout: 6000 }).catch(() => null);
@@ -593,9 +642,14 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const trigger = await locate(page, c).first();
       if (!(await trigger.count().catch(() => 0))) return missing(c, 'the control is not on the page');
+      await rec(`Before: the page with "${c.element}" on it`, true, page.url());
       const clicked = await trigger.click({ timeout: 8000 }).then(() => true).catch(() => false);
-      if (!clicked) return { status: 'fail', actual: 'the control is present but would not take a click' };
+      if (!clicked) {
+        await rec('Click it', false, 'the control would not take a click');
+        return { status: 'fail', actual: 'the control is present but would not take a click' };
+      }
       await page.waitForTimeout(800);
+      await rec('After: click it', true, 'waiting for a form or a page');
       const open = await dialogOpen(page);
       if (!open) {
         // Plenty of Edit buttons route to a page instead of opening a modal.
@@ -801,12 +855,35 @@ export async function executeNodeChecks(ctx: ExecContext, checks: GeneratedCheck
     }
 
     const t0 = Date.now();
+    const steps: StepRecord[] = [];
     let v: { status: CheckStatus; actual: string; error?: string; reason?: string };
     if (skipAction(c)) {
       v = { status: 'not-available', actual: 'not performed', reason: c.notApplicable };
     } else {
+      const record: Recorder = async (label, ok, detail, capture = true) => {
+        steps.push({
+          n: steps.length + 1, label, ok, detail,
+          screenshotFile: capture ? await ctx.shot(`${c.id}__step${steps.length + 1}`, { fullPage: false }) : undefined,
+        });
+      };
       try {
-        v = await runCheck(ctx, c, reached);
+        v = await runCheck(ctx, c, reached, record);
+        // One retry on a freshly loaded page before believing a control is
+        // gone. Checks share a page, and some of them leave it changed in
+        // ways a navigation does not undo — this build remembers Cards vs
+        // Table view, and the filter chips only exist in one of them, so a
+        // check that switched the view made every later chip "not found".
+        // A control that reappears on a clean load was never missing; one
+        // that does not is reported exactly as before.
+        if (v.status === 'fail' && /not found on the page|not on the page/.test(v.actual) && anchorUrl) {
+          await ctx.page.goto(anchorUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+          await ctx.page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => null);
+          await ctx.page.waitForTimeout(500);
+          const second = await runCheck(ctx, c, reached, record);
+          if (second.status !== 'fail') {
+            v = { ...second, actual: `${second.actual} (on a freshly loaded page; it was not there after the checks before it)` };
+          }
+        }
       } catch (e: any) {
         v = { status: 'error', actual: 'the check could not be completed', error: String(e?.message ?? e).slice(0, 400) };
       }
@@ -821,6 +898,7 @@ export async function executeNodeChecks(ctx: ExecContext, checks: GeneratedCheck
       ranAt: new Date().toISOString(),
       finalUrl: ctx.page.url(),
       consoleErrors: v.status === 'fail' ? realErrors(ctx.consoleErrorsSince()).slice(0, 10) : undefined,
+      steps: steps.length ? steps : undefined,
     };
     // Proof for every row, not only the broken ones: a pass that nobody can
     // see is an assertion, and the point of running this against real

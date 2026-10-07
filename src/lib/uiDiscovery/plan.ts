@@ -257,7 +257,14 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
     }));
   }
 
-  if (el.risk === 'open') {
+  // Only buttons and links open things. A radio or a checkbox labelled
+  // "Cards view" / "Table view" also classifies as 'open', and clicking one
+  // to see whether a dialog appears silently switched the Manage Simulators
+  // page into Table view for the whole run — where the Stable, Unstable,
+  // Available and Busy chips do not exist, so twenty of them were reported
+  // missing. A check that changes what the page is has no business being a
+  // read-only check.
+  if (el.risk === 'open' && (el.kind === 'button' || el.kind === 'link')) {
     out.push(at('dialog', {
       kind: 'dialog-opens-and-cancels',
       severity: sev('normal'),
