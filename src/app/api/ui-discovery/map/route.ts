@@ -7,7 +7,7 @@
 
 import { NextResponse } from 'next/server';
 import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
-import { readMap, listHistory, previousBuildMap } from '@/lib/uiDiscovery/store';
+import { readMap, listHistory, previousBuildMap, otherLoginMaps } from '@/lib/uiDiscovery/store';
 import { checksFromMap, planSummary } from '@/lib/uiDiscovery/plan';
 import { diffMaps, describeDiff } from '@/lib/uiDiscovery/diff';
 
@@ -35,7 +35,10 @@ export async function GET(req: Request) {
     });
   }
 
-  const checks = checksFromMap(map, { probeRequiredFields, includeMutating });
+  const checks = checksFromMap(map, {
+    probeRequiredFields, includeMutating,
+    otherLogins: otherLoginMaps(target.host, target.username),
+  });
   const previous = previousBuildMap(target.host, target.username, map.build);
   const diff = previous && previous.discoveredAt !== map.discoveredAt ? diffMaps(previous, map) : undefined;
 

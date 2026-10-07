@@ -361,6 +361,44 @@ async function runCheck(ctx: ExecContext, c: GeneratedCheck, reached: { ok: bool
       };
     }
 
+    case 'access-not-offered': {
+      const url = c.target?.url;
+      if (!url) return { status: 'skip', actual: 'no URL to ask for', reason: 'nothing to request' };
+      const ok = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 40000 })
+        .then(() => true).catch(() => false);
+      if (!ok) return { status: 'pass', actual: `the box would not serve ${url} to this login at all` };
+      await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => null);
+      await page.waitForTimeout(600);
+      const text = await bodyText(page);
+      const landed = page.url();
+      if (looksLikeLogin(landed, text)) {
+        return { status: 'pass', actual: 'asking for it ended at the login form' };
+      }
+      if (landed.replace(/\/$/, '') !== url.replace(/\/$/, '')) {
+        return { status: 'pass', actual: `the box redirected to ${landed} instead of serving it` };
+      }
+      if (/\b(403|401|not authori[sz]ed|forbidden|permission|access denied)\b/i.test(text.slice(0, 600))) {
+        return { status: 'pass', actual: 'the page answered with a refusal' };
+      }
+      if (text.trim().length < 60) {
+        return { status: 'pass', actual: `the route resolved but rendered nothing for this login (${text.trim().length} characters)` };
+      }
+      // It rendered. Say precisely what was seen and name the other reading,
+      // because a page missing from a login's map can also mean that login's
+      // crawl simply never got to it.
+      //
+      // A page that serves itself and then says "admin role required" is a
+      // third thing again — the action is gated, the page and its data are
+      // not — and a verdict that does not mention that is misleading.
+      const gated = /(admin role required|role required|permission denied|not authori[sz]ed|read[- ]only)/i.exec(text);
+      return {
+        status: 'fail',
+        actual: `${url} was served to this login with ${text.trim().length} characters of content, although only ${c.element}'s UI offers it`
+          + (gated ? ` — the page itself says "${gated[0]}", so the action is gated but the page and its contents are not` : ''),
+        error: 'either the page is reachable by anyone who knows the URL and only the menu hides it, or this login can legitimately use it and its own crawl never reached it — the screenshot shows which',
+      };
+    }
+
     case 'field-labelled': {
       if (!reached.ok) return { status: 'skip', actual: reached.detail, reason: 'the page was not reached' };
       const el = await locate(page, c).first();

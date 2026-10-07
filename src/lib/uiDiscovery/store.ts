@@ -97,6 +97,27 @@ export function previousBuildMap(host: string, username: string | undefined, cur
   return newest ? readHistoryFile(host, username, newest.file) : undefined;
 }
 
+/** Every login whose UI has been read on this host, other than the one
+ *  given. Role-based access can only be judged by comparison: what one
+ *  account's UI offers and another's does not is the question. */
+export function otherLoginMaps(host: string, exceptUsername?: string): Array<{ username: string; map: UiMap }> {
+  const out: Array<{ username: string; map: UiMap }> = [];
+  try {
+    const hostDir = path.join(ROOT, slug(host));
+    if (!fs.existsSync(hostDir)) return out;
+    for (const u of fs.readdirSync(hostDir)) {
+      if (exceptUsername && slug(exceptUsername) === u) continue;
+      const f = path.join(hostDir, u, 'latest.json');
+      if (!fs.existsSync(f)) continue;
+      try {
+        const map = JSON.parse(fs.readFileSync(f, 'utf8')) as UiMap;
+        out.push({ username: map.username ?? u, map });
+      } catch { /* a map we cannot read is a map we cannot compare */ }
+    }
+  } catch { /* no history on this host yet */ }
+  return out;
+}
+
 export function discoveryRunDir(host: string): string {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const dir = path.join(process.cwd(), 'data', 'ui-discovery', `disc-${ts}__${slug(host)}`);

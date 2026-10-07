@@ -128,7 +128,8 @@ export type CheckKind =
   | 'login-rejects-wrong'
   | 'login-accepts-valid'
   | 'login-remember-me'
-  | 'login-link-opens';
+  | 'login-link-opens'
+  | 'access-not-offered';
 
 export type CheckSeverity = 'critical' | 'normal' | 'optional';
 

@@ -18,6 +18,7 @@ import type {
   UiMap, UiNode, UiElement, GeneratedCheck, CheckSeverity,
 } from './types.ts';
 import { LOGIN_NODE_ID, loginChecks, type LoginForm } from './login.ts';
+import { accessChecks } from './access.ts';
 
 export interface PlanOptions {
   /** Operate controls that change the box (Save, Delete, Start). Off, and
@@ -31,6 +32,8 @@ export interface PlanOptions {
    *  do anything at all. On by default — it is the difference between "the
    *  button is there" and "the button works". */
   exerciseButtons?: boolean;
+  /** Other logins' maps for this box, for the role-based access comparison. */
+  otherLogins?: Array<{ username: string; map: UiMap }>;
   /** Hard ceiling, so a UI with 400 pages cannot plan a run nobody will wait
    *  for. Checks are dropped from the end of the plan, never sampled, so a
    *  truncated plan is still a complete walk of the pages it reached. */
@@ -341,6 +344,11 @@ export function checksFromMap(map: UiMap, opts: PlanOptions = {}): GeneratedChec
     }
   }
   for (const c of globalChecks(map)) push(c);
+  // Role-based access: what another login on this box is shown and this one
+  // is not, asked for directly.
+  if (opts.otherLogins?.length) {
+    for (const c of accessChecks(map, opts.otherLogins)) push(c);
+  }
 
   const cap = opts.maxChecks ?? 0;
   return cap > 0 ? out.slice(0, cap) : out;

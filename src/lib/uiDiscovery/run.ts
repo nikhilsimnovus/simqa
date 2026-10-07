@@ -20,7 +20,7 @@ import { checksFromMap, planSummary, type PlanOptions } from './plan.ts';
 import { executeNodeChecks, type CheckOutcome, type ExecContext } from './execute.ts';
 import { diffMaps, describeDiff } from './diff.ts';
 import { readLoginPage, loginNode, LOGIN_NODE_ID } from './login.ts';
-import { saveMap, readMap, previousBuildMap, discoveryRunDir } from './store.ts';
+import { saveMap, readMap, previousBuildMap, discoveryRunDir, otherLoginMaps } from './store.ts';
 import type { GeneratedCheck, UiMap, UiMapDiff } from './types.ts';
 
 export interface DiscoveryRequest {
@@ -283,7 +283,9 @@ export async function runDiscovery(inv: Inventory, req: DiscoveryRequest): Promi
     // 5 — plan. Generated from the map that was just read, so a page this
     // build added is in scope without anyone writing a test for it.
     state.phase = 'planning';
-    let checks = checksFromMap(map, req.plan ?? {});
+    // Role-based access is a comparison, so the other logins' maps come too.
+    const others = otherLoginMaps(target.host, target.username);
+    let checks = checksFromMap(map, { ...(req.plan ?? {}), otherLogins: others });
     if (req.onlySections?.length) {
       const want = new Set(req.onlySections);
       checks = checks.filter(c => want.has(c.section));
