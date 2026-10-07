@@ -1,0 +1,9 @@
+# The API document is hashed, not just read.
+#
+# Its sha256 is the "fingerprint" printed on every API Validation report and
+# shown in the document panel, so two machines holding the same document must
+# agree on it. Left to git's end-of-line normalisation, a Windows checkout and
+# the Linux server produced different fingerprints for the same file — which
+# makes the one thing the fingerprint exists for, identifying a version,
+# useless. -text keeps the bytes exactly as committed.
+assets/api-validation/*.yaml -text
