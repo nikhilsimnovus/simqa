@@ -264,7 +264,11 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
   // Available and Busy chips do not exist, so twenty of them were reported
   // missing. A check that changes what the page is has no business being a
   // read-only check.
-  if (el.risk === 'open' && (el.kind === 'button' || el.kind === 'link')) {
+  // …and not one that was disabled when it was found. Asking a disabled
+  // control to open a form and reporting that it would not take a click is
+  // a failure the UI is entitled to: its own element-disabled check already
+  // asserts it should stay that way.
+  if (el.risk === 'open' && !el.disabled && (el.kind === 'button' || el.kind === 'link')) {
     out.push(at('dialog', {
       kind: 'dialog-opens-and-cancels',
       severity: sev('normal'),

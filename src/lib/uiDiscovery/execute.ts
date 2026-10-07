@@ -61,6 +61,28 @@ export interface ExecContext {
   signal?: AbortSignal;
 }
 
+/** Dismiss anything floating above the page.
+ *
+ *  Checks share a page, and operating one control often opens a menu, a
+ *  listbox or a popover that covers the ones beside it. The next check then
+ *  finds its control present and enabled and cannot click it, which reads as
+ *  a broken button — four filter buttons and both zoom controls were reported
+ *  that way, and every one of them clicks fine on a freshly loaded page.
+ *
+ *  Escape first, because that is what closes a popover without choosing
+ *  anything from it; a real dialog gets the Cancel treatment. */
+async function dismissOverlays(page: Page): Promise<void> {
+  const open = await page.evaluate(`(() => {
+    const sels = ['[role="menu"]', '[role="listbox"]', '[data-state="open"]', '.ant-dropdown', '.ant-select-dropdown', '[data-radix-popper-content-wrapper]'];
+    return sels.some(s => Array.from(document.querySelectorAll(s)).some(e => e.getClientRects().length));
+  })()`).then(v => !!v).catch(() => false);
+  if (open) {
+    await page.keyboard.press('Escape').catch(() => null);
+    await page.waitForTimeout(250);
+  }
+  if (await dialogOpen(page)) await closeAnyDialog(page).catch(() => null);
+}
+
 /** What it means when a control cannot be found.
  *
  *  For a control that lives in a floating, state-dependent panel this is not
@@ -844,7 +866,10 @@ export async function executeNodeChecks(ctx: ExecContext, checks: GeneratedCheck
       });
       continue;
     }
-    // Back to the page this check is about, if the one before it wandered.
+    // Clear anything the check before left floating over the page, then go
+    // back to the page this check is about if it wandered.
+    if (reached.ok && !appLevel.has(c.kind)) await dismissOverlays(ctx.page).catch(() => null);
+
     if (reached.ok && anchorUrl && !appLevel.has(c.kind) && ctx.page.url() !== anchorUrl) {
       await closeAnyDialog(ctx.page).catch(() => null);
       if (ctx.page.url() !== anchorUrl) {
