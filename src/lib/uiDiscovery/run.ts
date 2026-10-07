@@ -19,6 +19,7 @@ import { crawlUi } from './crawl.ts';
 import { checksFromMap, planSummary, type PlanOptions } from './plan.ts';
 import { executeNodeChecks, type CheckOutcome, type ExecContext } from './execute.ts';
 import { diffMaps, describeDiff } from './diff.ts';
+import { readLoginPage, loginNode, LOGIN_NODE_ID } from './login.ts';
 import { saveMap, readMap, previousBuildMap, discoveryRunDir } from './store.ts';
 import type { GeneratedCheck, UiMap, UiMapDiff } from './types.ts';
 
@@ -216,8 +217,11 @@ export async function runDiscovery(inv: Inventory, req: DiscoveryRequest): Promi
     page.setDefaultNavigationTimeout(60000);
     const capture = attachCapture(page);
 
-    // 1 — sign in as the chosen box login.
+    // 1 — read the login page, then sign in. In that order: once there is a
+    // session the login screen is unreachable, and it is the screen every
+    // user meets first.
     state.phase = 'login';
+    const loginForm = await readLoginPage(page, target.host).catch(() => undefined);
     const auth = await login({ host: target.host, username: target.username, password: target.password }, page);
     if (!auth.ok) {
       return {
@@ -264,6 +268,10 @@ export async function runDiscovery(inv: Inventory, req: DiscoveryRequest): Promi
         ...capture,
       });
       map = crawled.map;
+      if (loginForm) {
+        map.loginForm = loginForm;
+        map.nodes.unshift(loginNode(loginForm));
+      }
       notes.push(...(map.notes ?? []));
     }
 
@@ -322,6 +330,14 @@ export async function runDiscovery(inv: Inventory, req: DiscoveryRequest): Promi
       host: target.host,
       ...capture,
       probeRequiredFields: req.plan?.probeRequiredFields,
+      creds: { host: target.host, username: target.username, password: target.password },
+      loginForm: (loginForm ?? (map.loginForm as any)) as any,
+      shotOf: async (p, name: string) => {
+        const file = `${name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120)}.png`;
+        const ok = await p.screenshot({ path: path.join(shotDir, file), fullPage: false })
+          .then(() => true).catch(() => false);
+        return ok ? `shots/${file}` : undefined;
+      },
       signal: abort.signal,
       newAnonPage: async () => {
         const anon = await browser!.newContext({ ignoreHTTPSErrors: true });

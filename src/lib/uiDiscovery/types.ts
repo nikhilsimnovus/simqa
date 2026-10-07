@@ -95,6 +95,8 @@ export interface UiMap {
   notes?: string[];
   /** Directory holding this discovery's screenshots. */
   dir?: string;
+  /** What the login page offered when it was read, for the Login checks. */
+  loginForm?: unknown;
 }
 
 export type CheckKind =
@@ -118,7 +120,15 @@ export type CheckKind =
   | 'required-field-blocks-submit'
   | 'back-forward-nav'
   | 'refresh-keeps-page'
-  | 'session-protected';
+  | 'session-protected'
+  | 'login-page-loads'
+  | 'login-accepts-input'
+  | 'login-password-masked'
+  | 'login-rejects-empty'
+  | 'login-rejects-wrong'
+  | 'login-accepts-valid'
+  | 'login-remember-me'
+  | 'login-link-opens';
 
 export type CheckSeverity = 'critical' | 'normal' | 'optional';
 

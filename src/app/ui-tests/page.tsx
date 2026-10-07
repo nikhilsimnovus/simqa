@@ -367,6 +367,7 @@ export default function UiTestsPage() {
         ranAt: o.ranAt,
         // Its screenshots live in the discovery run's folder, not the sweep's.
         source: 'discovery',
+        steps: o.steps,
       } as UiTestResult;
     });
   }
@@ -1230,6 +1231,34 @@ export default function UiTestsPage() {
                             <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
                               <div className="font-medium mb-1 flex items-center gap-1.5"><Eye className="h-3 w-3" />Expected</div>
                               <div className="leading-relaxed">{dr.expected}</div>
+                            </div>
+                          ) : null}
+
+                          {Array.isArray((dr as any).steps) && (dr as any).steps.length > 0 && data ? (
+                            <div className="rounded-lg border border-slate-200 overflow-hidden bg-surface">
+                              <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 text-xs font-medium text-slate-700">
+                                Execution steps
+                              </div>
+                              <ol className="divide-y divide-slate-100">
+                                {((dr as any).steps as Array<{ n: number; label: string; ok: boolean; detail?: string; screenshotFile?: string }>).map((st) => (
+                                  <li key={st.n} className="px-3 py-2">
+                                    <div className="flex items-start gap-2 text-xs">
+                                      <span className={st.ok ? 'text-emerald-600' : 'text-red-600'}>{st.ok ? '✓' : '✗'}</span>
+                                      <span className="text-slate-500 tabular-nums">Step {st.n}</span>
+                                      <span className="text-slate-900 font-medium">{st.label}</span>
+                                      {st.detail ? <span className="text-slate-600">— {st.detail}</span> : null}
+                                    </div>
+                                    {st.screenshotFile ? (
+                                      <img
+                                        src={evidenceUrl(data.runDir, r.id, st.screenshotFile, (dr as any).source)!}
+                                        alt={`step ${st.n}`}
+                                        className="mt-1.5 block max-w-md border border-slate-200 rounded cursor-zoom-in"
+                                        onClick={(e) => window.open((e.currentTarget as HTMLImageElement).src, '_blank')}
+                                      />
+                                    ) : null}
+                                  </li>
+                                ))}
+                              </ol>
                             </div>
                           ) : null}
 

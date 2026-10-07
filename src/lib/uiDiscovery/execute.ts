@@ -14,6 +14,7 @@ import type { Page } from 'playwright';
 import type { GeneratedCheck } from './types.ts';
 import { looksLikeEmptyState } from './classify.ts';
 import { closeAnyDialog, dialogOpen, fingerprint } from './crawl.ts';
+import { runLoginCheck, type LoginForm, type StepRecord } from './login.ts';
 
 export type CheckStatus = 'pass' | 'fail' | 'skip' | 'not-available' | 'error';
 
@@ -29,8 +30,11 @@ export interface CheckOutcome {
   ranAt: string;
   finalUrl?: string;
   consoleErrors?: string[];
-  /** Screenshot file (relative to the run dir), captured on anything but a pass. */
+  /** Screenshot file, relative to the run dir. */
   screenshotFile?: string;
+  /** For checks that walk a sequence — the login flows — what each step did
+   *  and a capture of the screen at that point. */
+  steps?: StepRecord[];
 }
 
 export interface ExecContext {
@@ -48,6 +52,12 @@ export interface ExecContext {
    *  viewport, which is what shows a control in the context around it. */
   shot: (name: string, opts?: { fullPage?: boolean }) => Promise<string | undefined>;
   probeRequiredFields?: boolean;
+  /** Who this run signs in as — the login checks type these. */
+  creds?: { host: string; username: string; password: string };
+  /** What the login page offered when it was read. */
+  loginForm?: LoginForm;
+  /** Capture a given page (not necessarily ctx.page) for a step record. */
+  shotOf?: (page: Page, name: string) => Promise<string | undefined>;
   signal?: AbortSignal;
 }
 
@@ -682,6 +692,38 @@ export async function executeNodeChecks(ctx: ExecContext, checks: GeneratedCheck
 
   // Application-level checks do their own navigation.
   const appLevel = new Set(['back-forward-nav', 'refresh-keeps-page', 'session-protected']);
+  const isLogin = (k: string) => k.startsWith('login-');
+
+  // The login flows run in their own signed-out sessions, so they neither use
+  // nor disturb the page the rest of the run is working on. Handled here and
+  // returned, rather than reaching a node first: there is nothing to navigate
+  // to, and reaching anything would mean being signed in.
+  if (isLogin(toRun[0].kind)) {
+    for (const c of toRun) {
+      if (ctx.signal?.aborted) break;
+      const t0 = Date.now();
+      if (!ctx.creds || !ctx.loginForm || !ctx.newAnonPage || !ctx.shotOf) {
+        out.push({
+          check: c, status: 'skip', actual: 'the login page was not read for this run',
+          reason: 'nothing to type into', durationMs: 0, ranAt: new Date().toISOString(),
+        });
+        continue;
+      }
+      const r = await runLoginCheck({
+        newAnonPage: ctx.newAnonPage,
+        host: ctx.creds.host,
+        username: ctx.creds.username,
+        password: ctx.creds.password,
+        shotOf: ctx.shotOf,
+      }, c, ctx.loginForm);
+      out.push({
+        check: c, status: r.status, actual: r.actual, error: r.error, reason: r.reason,
+        durationMs: Date.now() - t0, ranAt: new Date().toISOString(),
+        screenshotFile: r.screenshotFile, steps: r.steps,
+      });
+    }
+    return out;
+  }
   const reached = appLevel.has(toRun[0].kind)
     ? { ok: true, how: 'self', detail: 'navigates itself' }
     : await reachNode(ctx, toRun[0]);

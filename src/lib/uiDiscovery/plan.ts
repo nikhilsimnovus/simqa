@@ -17,6 +17,7 @@
 import type {
   UiMap, UiNode, UiElement, GeneratedCheck, CheckSeverity,
 } from './types.ts';
+import { LOGIN_NODE_ID, loginChecks, type LoginForm } from './login.ts';
 
 export interface PlanOptions {
   /** Operate controls that change the box (Save, Delete, Start). Off, and
@@ -324,6 +325,13 @@ export function checksFromMap(map: UiMap, opts: PlanOptions = {}): GeneratedChec
   };
 
   for (const node of map.nodes) {
+    // The login page is not browsed like the others — it is typed into, with
+    // wrong passwords and empty fields, in sessions of its own — so it brings
+    // its own checks rather than the generic present-and-enabled ones.
+    if (node.id === LOGIN_NODE_ID && map.loginForm) {
+      for (const c of loginChecks(map.loginForm as LoginForm)) push(c);
+      continue;
+    }
     for (const c of nodeChecks(node)) push(c);
     // A page the crawler could not open has nothing to say about its
     // elements; the page-loads check above is what reports it.
