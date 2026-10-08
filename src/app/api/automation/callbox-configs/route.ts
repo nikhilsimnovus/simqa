@@ -116,11 +116,14 @@ export async function GET(req: Request) {
         // .107 ots.cfg is a plain file and the only thing in the directory, so
         // looking for it among the choices reported "no ots config" for a
         // callbox that plainly has one.
+        // Parenthesised so the two tests are one condition: written as
+        // `sudo test … && echo yes || test … && echo yes`, the shell's
+        // left-to-right chaining runs the second `echo yes` as well.
         const stat = await readCommand(
           sys,
-          `sudo -n test -f '${dir}/ots.cfg' 2>/dev/null && echo yes || test -f '${dir}/ots.cfg' && echo yes || echo no`,
+          `( sudo -n test -f '${dir}/ots.cfg' 2>/dev/null || test -f '${dir}/ots.cfg' ) && echo yes || echo no`,
         ).catch(() => 'no');
-        if (stat.trim().endsWith('yes')) {
+        if (stat.trim() === 'yes') {
           otsLink = 'ots.cfg';
           otsIsLink = false;
         }
