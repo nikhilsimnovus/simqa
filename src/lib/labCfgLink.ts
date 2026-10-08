@@ -170,8 +170,13 @@ const CONFIG_NAME = /\.cfg(_[^.]*)?$/;
  * eNB config links enb.cfg to itself, destroying the radio config. They used
  * to sit among 171 alphabetised names; newest-first puts them at the very top,
  * because relinking bumps their mtime — so they are dropped here.
+ *
+ * ots.cfg joined the list when /root/ots/config became pickable rather than
+ * only reported. On .107 it is the ONLY file in that directory and a plain
+ * file at that, so it was the first thing the new picker offered — and
+ * choosing it would have pointed ots.cfg at itself.
  */
-const SLOT_LINK_NAMES = new Set(['enb.cfg', 'gnb.cfg', 'mme.cfg', 'mme2.cfg', 'ims.cfg']);
+const SLOT_LINK_NAMES = new Set(['enb.cfg', 'gnb.cfg', 'mme.cfg', 'mme2.cfg', 'ims.cfg', 'ots.cfg']);
 
 /**
  * Parse the `find -printf '%T@\t%y%Y\t%m\t%f\n'` listing listCfgDir runs into

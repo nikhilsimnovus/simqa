@@ -1254,6 +1254,13 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           // .simqa-backup before being replaced, and put back by cleanup.
           if (item.otsCfg) {
             const pick = item.otsCfg;
+            // The link can never be its own target. The picker drops the slot
+            // names, but a suite saved by hand or carried from a box where
+            // ots.cfg was a plain file could still name it, and `ln -sfn
+            // ots.cfg ots.cfg` leaves the stack with no config at all.
+            if (pick === 'ots.cfg') {
+              throw new Error('ots.cfg cannot be bound to itself — pick the file it should point at');
+            }
             if (!existingOts.has(pick)) {
               const text = fromServer[pick] ?? uploaded(pick);
               if (!text) {
