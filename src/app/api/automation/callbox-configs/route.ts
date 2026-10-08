@@ -108,9 +108,22 @@ export async function GET(req: Request) {
       if (target) {
         otsLink = target;
         otsIsLink = true;
-      } else if (files.some((f) => f.name === 'ots.cfg')) {
-        otsLink = 'ots.cfg';
-        otsIsLink = false;
+      } else {
+        // Asked of the filesystem, not of `files`.
+        //
+        // `files` is the PICKABLE list, and ots.cfg is excluded from it for
+        // the same reason enb.cfg is: picking it would link it to itself. On
+        // .107 ots.cfg is a plain file and the only thing in the directory, so
+        // looking for it among the choices reported "no ots config" for a
+        // callbox that plainly has one.
+        const stat = await readCommand(
+          sys,
+          `sudo -n test -f '${dir}/ots.cfg' 2>/dev/null && echo yes || test -f '${dir}/ots.cfg' && echo yes || echo no`,
+        ).catch(() => 'no');
+        if (stat.trim().endsWith('yes')) {
+          otsLink = 'ots.cfg';
+          otsIsLink = false;
+        }
       }
     }
     return NextResponse.json({

@@ -392,6 +392,14 @@ export async function ueDbForAll(callbox: InventorySystem): Promise<Record<strin
       if (!inc || !/db|subscriber|ue/i.test(inc)) continue;
       (map[name] ??= []).push(inc);
     }
+    // Deduped, because the command runs grep twice.
+    //
+    // `sudo -n sh -c '…' || sh -c '…'` falls through to the second grep
+    // whenever the first exits non-zero — and grep over a whole directory
+    // exits 2 if even one file is unreadable, which is the normal state of
+    // /root/mme/config. Both greps then print, and the DB column read
+    // "2000ue_db.cfg, 2000ue_db.cfg".
+    for (const k of Object.keys(map)) map[k] = [...new Set(map[k])];
     return map;
   } catch {
     return {};
