@@ -224,6 +224,29 @@ export interface SuiteItem {
   mmeCfg?: string;
   imsCfg?: string;
   /**
+   * Subscriber database for this row, when it is NOT the one `mmeCfg` already
+   * includes.
+   *
+   * There is no ue_db.cfg symlink convention on the callboxes — a survey of
+   * /root/mme/config found twelve different DB files pulled in by name from
+   * inside the MME configs and no generic one. So an override cannot be a
+   * symlink like the other slots: the runner writes a COPY of mmeCfg with its
+   * `include` line pointing at this file and binds mme.cfg to the copy, which
+   * leaves the shared original exactly as it was for every other setup using
+   * it. Absent = the DB travels with mmeCfg, which is the old behaviour.
+   */
+  dbCfg?: string;
+  /**
+   * Filename under /root/ots/config to bind as ots.cfg, when it is not what
+   * the callbox is already on.
+   *
+   * ots.cfg decides which component configs the stack loads at all, and the
+   * box's own documentation says to point the symlink at your own file. On
+   * some callboxes it IS a plain file rather than a link (.107), so the runner
+   * keeps a one-time backup before replacing it.
+   */
+  otsCfg?: string;
+  /**
    * Whose folder under /root/automation_configs holds this row's configs.
    *
    * Absent for a suite's own rows — they live under the suite's own name. A

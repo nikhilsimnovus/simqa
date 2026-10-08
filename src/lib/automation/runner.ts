@@ -33,6 +33,7 @@ import { duplicateTestcase } from './duplicateTestcase';
 import { isTerminalStatus } from './outcome';
 import { saveRowConfigs } from '../suiteConfigStore';
 import { preflightRows } from './preflightConfigs';
+import { validateCfg, withDbInclude, ROLE_LABEL, type CfgRole } from '../cfgValidate';
 import { readTestCaseFile, readAllTestCaseFiles, testCaseDir } from './serverConfigs';
 import { syncRowToServer } from './syncServerConfigs';
 
@@ -744,6 +745,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
   // Cache of files currently on the callbox so we don't re-ls per item.
   let existing = new Set<string>();
   let existingCore = new Set<string>();
+  let existingOts = new Set<string>();
   if (callboxSys) {
     try {
       const raw = await readCommand(callboxSys, 'sudo -n ls -1 /root/enb/config 2>/dev/null || ls -1 /root/enb/config 2>/dev/null');
@@ -752,6 +754,10 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     try {
       const raw = await readCommand(callboxSys, 'sudo -n ls -1 /root/mme/config 2>/dev/null || ls -1 /root/mme/config 2>/dev/null');
       existingCore = new Set(raw.split('\n').map(s => s.trim()).filter(Boolean));
+    } catch { /* uploads still attempt */ }
+    try {
+      const raw = await readCommand(callboxSys, 'sudo -n ls -1 /root/ots/config 2>/dev/null || ls -1 /root/ots/config 2>/dev/null');
+      existingOts = new Set(raw.split('\n').map(s => s.trim()).filter(Boolean));
     } catch { /* uploads still attempt */ }
   }
 
@@ -769,11 +775,15 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       folder[it.name] = readAllTestCaseFiles(it.configSuite ?? suite.name, it.name);
     }
     for (const bad of preflightRows({
-      rows: items.map(it => ({ name: it.name, callboxCfg: it.callboxCfg, mmeCfg: it.mmeCfg, imsCfg: it.imsCfg })),
+      rows: items.map(it => ({
+        name: it.name, callboxCfg: it.callboxCfg, mmeCfg: it.mmeCfg, imsCfg: it.imsCfg,
+        dbCfg: it.dbCfg, otsCfg: it.otsCfg,
+      })),
       folder,
       uploads: new Set(Object.keys(suite.uploadedConfigs ?? {})),
       onCallboxRadio: existing,
       onCallboxCore: existingCore,
+      onCallboxOts: existingOts,
       withCallbox: !!callboxSys,
     })) {
       blockedRows.set(bad.row, bad.missing);
@@ -822,6 +832,16 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     let prevEnbLink = '';
     let prevMmeLink = '';
     let prevImsLink = '';
+    /** What ots.cfg pointed at before this row, and whether it was a plain file
+     *  rather than a link — the two callboxes differ, and putting it back
+     *  afterwards means something different in each case. */
+    let prevOtsLink = '';
+    let otsWasPlain = false;
+    /** What mme.cfg was actually linked at. Differs from item.mmeCfg when the
+     *  row overrode the subscriber database, in which case it is the generated
+     *  copy that includes it — and cleanup has to know that name to take it
+     *  away again. */
+    let mmePick = item.mmeCfg;
     /** Set only when this row UPLOADED a cfg that wasn't already on the callbox;
      *  that file is the sole thing opt-in cleanup may remove. */
     let pushedCfg = '';
@@ -997,7 +1017,15 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         [cfg]: readTestCaseFile(cfgFrom, item.name, 'enb.cfg'),
         ...(item.mmeCfg ? { [item.mmeCfg]: readTestCaseFile(cfgFrom, item.name, 'mme.cfg') } : {}),
         ...(item.imsCfg ? { [item.imsCfg]: readTestCaseFile(cfgFrom, item.name, 'ims.cfg') } : {}),
+        ...(item.otsCfg ? { [item.otsCfg]: readTestCaseFile(cfgFrom, item.name, 'ots.cfg') } : {}),
+        // Under its own name: the folder saves everything the MME config
+        // includes by the name it is included as, so that is what to look for.
+        ...(item.dbCfg ? { [item.dbCfg]: readTestCaseFile(cfgFrom, item.name, item.dbCfg) } : {}),
       };
+      /** A file the suite carries as an upload, as text. */
+      const uploaded = (nm?: string) => (nm && suite.uploadedConfigs?.[nm]
+        ? Buffer.from(suite.uploadedConfigs[nm], 'base64').toString('utf8')
+        : undefined);
 
       try {
         // One connection for the whole phase. Every step here used to open an
@@ -1016,7 +1044,23 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
            * temp file rather than echoed through the shell because a
            * subscriber DB is a third of a megabyte.
            */
-          const push = async (name: string, text: string, where: string) => {
+          const push = async (name: string, text: string, where: string, role?: CfgRole) => {
+            // Check the bytes before they land on the hardware.
+            //
+            // The wizard refuses a bad upload at the point it is picked, but a
+            // suite saved months ago, a file edited in the server folder by
+            // hand, or a row carried onto a different setup can all arrive
+            // here with a config that cannot work. Writing it anyway costs a
+            // bring-up and then fails the row as "no UEs attached", which
+            // sends the investigation to the radio. Saying it here names the
+            // file and the reason.
+            if (role) {
+              const v = validateCfg(role, name, text);
+              if (!v.ok) {
+                const why = v.issues.filter((i) => i.severity === 'error').map((i) => i.message);
+                throw new Error(`${name} is not a usable ${ROLE_LABEL[role]}: ${why.join('; ')}`);
+              }
+            }
             const tmp = `/tmp/.simqa-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
             const sftp = await ssh.requestSFTP();
             await new Promise<void>((resolve, reject) => {
@@ -1035,7 +1079,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           if (serverEnb) {
             target = `/root/enb/config/${cfg}`;
             const isNew = !existing.has(cfg);
-            await push(cfg, serverEnb, '/root/enb/config');
+            await push(cfg, serverEnb, '/root/enb/config', 'enb');
             if (isNew) addedThisRun.add(cfg);
             existing.add(cfg);
             // Only a file the callbox did not have is ours to clean up later.
@@ -1049,7 +1093,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           } else if (blob) {
             const buf = Buffer.from(blob, 'base64');
             target = `/root/enb/config/${cfg}`;
-            await push(cfg, buf.toString('utf8'), '/root/enb/config');
+            await push(cfg, buf.toString('utf8'), '/root/enb/config', 'enb');
             existing.add(cfg);
             pushedCfg = cfg;
             stepDetails.push(`cfg-push: scp ${buf.length}B → ${cfg}`);
@@ -1083,11 +1127,67 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             }
           }
 
-          // Core cfgs live in /root/mme/config and are picked from files already
-          // on the box (no upload path), so we only ever re-point the symlink the
-          // services read. A test needs the core up as well as the radio.
+          // ── The row's subscriber database ──────────────────────────────
+          //
+          // A DB choice cannot be a symlink like the other slots: the
+          // callboxes have no ue_db.cfg convention — every MME config names
+          // its database in an `include` line, and /root/mme/config holds a
+          // dozen different ones. So the row binds a COPY of its MME config
+          // with that line pointing at the chosen database, and mme.cfg is
+          // linked at the copy. The shared original is never edited, because
+          // other setups are using it.
+          //
+          // Absent dbCfg = the database travels with the MME config, exactly
+          // as it always has.
+          if (item.mmeCfg && item.dbCfg) {
+            const db = item.dbCfg;
+            // The database file itself has to be on the box to be included.
+            if (!existingCore.has(db)) {
+              const dbText = fromServer[db] ?? uploaded(db);
+              if (!dbText) {
+                throw new Error(
+                  `database "${db}" is not on ${callboxSys.host}, is not in `
+                  + `${testCaseDir(cfgFrom, item.name)}, and is not uploaded with this suite`,
+                );
+              }
+              await push(db, dbText, '/root/mme/config', 'db');
+              existingCore.add(db);
+              addedThisRun.add(db);
+              stepDetails.push(`cfg-push: ${db} → /root/mme/config`);
+            }
+            // The MME config's text, from wherever this row gets it.
+            const base = fromServer[item.mmeCfg] ?? uploaded(item.mmeCfg)
+              ?? await (async () => {
+                const r = await ssh.execCommand(
+                  `sudo -n cat ${q(`/root/mme/config/${item.mmeCfg}`)} 2>/dev/null `
+                  + `|| cat ${q(`/root/mme/config/${item.mmeCfg}`)} 2>/dev/null || true`);
+                return (r.stdout ?? '').trim() ? r.stdout : undefined;
+              })();
+            if (!base) {
+              throw new Error(`cannot read "${item.mmeCfg}" to point it at database "${db}"`);
+            }
+            const bound = withDbInclude(base, db);
+            if (!bound.changed) {
+              stepDetails.push(`cfg-db: ${item.mmeCfg} already includes ${db}`);
+            } else {
+              // A name that says what it is and which database it carries, so
+              // an operator reading /root/mme/config can tell at a glance.
+              const derived = `${item.mmeCfg.replace(/\.cfg$/, '')}.simqa-${db.replace(/\.(cfg|json)$/, '').replace(/[^A-Za-z0-9_-]+/g, '_')}.cfg`;
+              // Pushed by the loop below, which already handles "the server's
+              // copy wins" and the relink that changed content requires.
+              fromServer[derived] = bound.text;
+              mmePick = derived;
+              stepDetails.push(
+                `cfg-db: mme.cfg → ${derived}, a copy of ${item.mmeCfg} including ${db}`
+                + `${bound.replaced.length ? ` instead of ${bound.replaced.join(', ')}` : ''} — ${item.mmeCfg} itself is untouched`,
+              );
+            }
+          }
+
+          // Core cfgs live in /root/mme/config. A test needs the core up as
+          // well as the radio, so both links are re-pointed per row.
           const coreLinks: Array<[string, string | undefined]> = [
-            ['mme.cfg', item.mmeCfg],
+            ['mme.cfg', mmePick],
             ['ims.cfg', item.imsCfg],
           ];
           // Relative, same as enb.cfg above: `mme.cfg -> demo-mme.cfg`.
@@ -1098,7 +1198,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             const fromFolder = fromServer[pick];
             if (fromFolder) {
               if (!existingCore.has(pick)) addedThisRun.add(pick);
-              await push(pick, fromFolder, '/root/mme/config');
+              await push(pick, fromFolder, '/root/mme/config', linkName === 'mme.cfg' ? 'mme' : 'ims');
               existingCore.add(pick);
               justUploaded = true;
               stepDetails.push(`cfg-source: ${linkName} from ${testCaseDir(cfgFrom, item.name)}`);
@@ -1107,7 +1207,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             // name first, so the link reads the same as the operator's pick.
             if (!existingCore.has(pick) && suite.uploadedConfigs?.[pick]) {
               const buf = Buffer.from(suite.uploadedConfigs[pick], 'base64');
-              await push(pick, buf.toString('utf8'), '/root/mme/config');
+              await push(pick, buf.toString('utf8'), '/root/mme/config', linkName === 'mme.cfg' ? 'mme' : 'ims');
               existingCore.add(pick);
               justUploaded = true;
               stepDetails.push(`cfg-push: scp ${buf.length}B → /root/mme/config/${pick}`);
@@ -1142,6 +1242,53 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             if (r.code !== 0) throw new Error(`ln ${linkName}: ${r.stderr || r.stdout || `exit ${r.code}`}`);
             relinked = true;
             stepDetails.push(`cfg-link: ln -sfn ${pick} ${linkName}`);
+          }
+
+          // ── ots.cfg ────────────────────────────────────────────────────
+          //
+          // /root/ots/config/ots.cfg decides which component configs the stack
+          // loads at all, and the box's own ots.default.cfg tells operators to
+          // point the symlink at their own file. It is NOT a symlink
+          // everywhere though — on .107 it is a plain file while .106 has
+          // ots.cfg -> ots.default.cfg — so a plain file is kept once under
+          // .simqa-backup before being replaced, and put back by cleanup.
+          if (item.otsCfg) {
+            const pick = item.otsCfg;
+            if (!existingOts.has(pick)) {
+              const text = fromServer[pick] ?? uploaded(pick);
+              if (!text) {
+                throw new Error(
+                  `ots.cfg: "${pick}" is not on ${callboxSys.host}, is not in `
+                  + `${testCaseDir(cfgFrom, item.name)}, and is not uploaded with this suite`,
+                );
+              }
+              await push(pick, text, '/root/ots/config', 'ots');
+              existingOts.add(pick);
+              addedThisRun.add(pick);
+              stepDetails.push(`cfg-push: ${pick} → /root/ots/config`);
+            }
+            const prev = await ssh.execCommand(`readlink /root/ots/config/ots.cfg || true`);
+            prevOtsLink = (prev.stdout ?? '').trim().split('/').filter(Boolean).pop() ?? '';
+            if (!prevOtsLink) {
+              const there = await ssh.execCommand(`test -e /root/ots/config/ots.cfg && echo yes || echo no`);
+              if ((there.stdout ?? '').trim() === 'yes') {
+                otsWasPlain = true;
+                // Once: a second row must not back up the link this run made.
+                const bk = `/root/ots/config/ots.cfg.simqa-backup`;
+                await ssh.execCommand(
+                  `test -e ${q(bk)} || sudo -n cp -a /root/ots/config/ots.cfg ${q(bk)} 2>/dev/null `
+                  + `|| test -e ${q(bk)} || cp -a /root/ots/config/ots.cfg ${q(bk)}`);
+                stepDetails.push('cfg-ots: the callbox had ots.cfg as a plain file — kept as ots.cfg.simqa-backup');
+              }
+            }
+            if (otsWasPlain || !sameCfg(prevOtsLink, pick)) {
+              const r = await ssh.execCommand(sudoLink('/root/ots/config', q(pick), 'ots.cfg'));
+              if (r.code !== 0) throw new Error(`ln ots.cfg: ${r.stderr || r.stdout || `exit ${r.code}`}`);
+              relinked = true;
+              stepDetails.push(`cfg-link: ln -sfn ${pick} ots.cfg`);
+            } else {
+              stepDetails.push(`cfg-link: ots.cfg already → ${pick}`);
+            }
           }
 
           // Everything else the row's configs depend on: the files the MME
@@ -1402,6 +1549,18 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               for (const [linkName, prev] of [['mme.cfg', prevMmeLink], ['ims.cfg', prevImsLink]] as const) {
                 if (prev) await ssh.execCommand(`cd /root/mme/config && sudo -n ln -sfn ${sq(prev)} ${sq(linkName)} 2>/dev/null || ln -sfn ${sq(prev)} ${sq(linkName)}`);
               }
+              // ots.cfg: a link goes back to where it pointed; a plain file
+              // that this row replaced with a link is restored from the backup,
+              // because re-pointing a link it never had would leave the callbox
+              // in a shape its operators did not set up.
+              if (otsWasPlain) {
+                const bk = '/root/ots/config/ots.cfg.simqa-backup';
+                await ssh.execCommand(
+                  `test -e ${sq(bk)} && (sudo -n mv -f ${sq(bk)} /root/ots/config/ots.cfg 2>/dev/null `
+                  + `|| mv -f ${sq(bk)} /root/ots/config/ots.cfg) || true`);
+              } else if (prevOtsLink) {
+                await ssh.execCommand(`cd /root/ots/config && sudo -n ln -sfn ${sq(prevOtsLink)} 'ots.cfg' 2>/dev/null || ln -sfn ${sq(prevOtsLink)} 'ots.cfg'`);
+              }
               // What the box still depends on: the targets of the live links,
               // and every file the live MME config includes.
               const needed = new Set<string>();
@@ -1418,10 +1577,16 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
                 [item.callboxCfg, '/root/enb/config'],
                 [item.mmeCfg, '/root/mme/config'],
                 [item.imsCfg, '/root/mme/config'],
+                // The DB and the mme copy that includes it, and the ots pick.
+                // Without these the derived copy stayed behind every run,
+                // unreferenced, accumulating in /root/mme/config.
+                [item.dbCfg, '/root/mme/config'],
+                [mmePick !== item.mmeCfg ? mmePick : undefined, '/root/mme/config'],
+                [item.otsCfg, '/root/ots/config'],
               ] as const) {
                 if (!name) continue;
                 // Never the live links themselves — only what they point at.
-                if (['enb.cfg', 'mme.cfg', 'ims.cfg'].includes(name)) continue;
+                if (['enb.cfg', 'mme.cfg', 'ims.cfg', 'ots.cfg'].includes(name)) continue;
                 if (needed.has(name)) { kept.push(name); continue; }
                 // Only what THIS run put on the box. Removing configs that were
                 // already there took them out of the pickers and emptied the

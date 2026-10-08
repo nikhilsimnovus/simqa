@@ -29,6 +29,12 @@ export interface RowNeeds {
   callboxCfg?: string;
   mmeCfg?: string;
   imsCfg?: string;
+  /** Subscriber database override, and the ots.cfg to bind. Both optional, and
+   *  both have to be providable from somewhere before the row can run — the
+   *  same question as the other three, asked of the two slots that were only
+   *  reported before they could be chosen. */
+  dbCfg?: string;
+  otsCfg?: string;
 }
 
 export interface RowCheck {
@@ -46,6 +52,8 @@ export interface PreflightInput {
   /** Filenames on the target callbox: /root/enb/config and /root/mme/config. */
   onCallboxRadio?: Set<string>;
   onCallboxCore?: Set<string>;
+  /** Filenames in /root/ots/config, for a row that binds its own ots.cfg. */
+  onCallboxOts?: Set<string>;
   /** False for a uesim-only run: no callbox, so no cfg files are needed. */
   withCallbox: boolean;
 }
@@ -83,6 +91,12 @@ export function preflightRows(input: PreflightInput): RowCheck[] {
       check(row.callboxCfg, 'enb.cfg', radio);
       check(row.mmeCfg, 'mme.cfg', core);
       check(row.imsCfg, 'ims.cfg', core);
+      // The DB is kept in the row's folder under its OWN name, because that is
+      // the name the MME config includes it by — the same way every other
+      // include is saved. ots.cfg is kept under the role name, like the three
+      // above, whatever the file on the box is called.
+      check(row.dbCfg, row.dbCfg ?? 'db', core);
+      check(row.otsCfg, 'ots.cfg', input.onCallboxOts ?? new Set<string>());
 
       // What the row's own MME config includes — the subscriber DB and any
       // fragments. Only checkable when the server holds the mme.cfg; when it

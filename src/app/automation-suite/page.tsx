@@ -24,10 +24,53 @@ import { useColumnWidths, ResizeHandle, ColGroup } from '@/components/resizableC
 import { statusLabel, verdictLabel, verdictClass, statusStyle } from '@/lib/automation/outcome';
 import { definitionFromPack } from '@/lib/automation/importPack';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
+import { validateCfg, dbIncludesOf, ROLE_LABEL, type CfgRole, type CfgVerdict } from '@/lib/cfgValidate';
 
 interface SystemRow {
   id: string; name: string; host: string; type: string;
 }
+
+/** The config pickers a uesim+callbox row binds. Named after the symlink each
+ *  one ends up as on the callbox, which is also how the runner refers to them. */
+type CfgSlot = 'gnb' | 'mme' | 'ims' | 'db' | 'ots';
+
+/** Which validator rules apply to each slot. The radio slot is checked as
+ *  'enb' because that is the link the runner writes (enb.cfg), and the
+ *  validator treats enb and gnb as one format in two slots. */
+const SLOT_ROLE: Record<CfgSlot, CfgRole> = {
+  gnb: 'enb', mme: 'mme', ims: 'ims', db: 'db', ots: 'ots',
+};
+
+/** Which callbox directory each slot's file is pushed to — the runner needs
+ *  this, and so does the message that says where a file went. */
+const SLOT_DIR: Record<CfgSlot, string> = {
+  gnb: '/root/enb/config', mme: '/root/mme/config', ims: '/root/mme/config',
+  db: '/root/mme/config', ots: '/root/ots/config',
+};
+
+/** Base64 of the bytes as uploaded.
+ *
+ *  Not btoa(text): the runner decodes with Buffer.from(b64,'base64') and writes
+ *  the result, so the blob has to be the file's own bytes. Chunked because
+ *  String.fromCharCode on a 300KB subscriber database blows the argument
+ *  limit — and the lab's DBs are exactly that size. */
+function bytesToBase64(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(s);
+}
+
+/** A verdict with the file and slot it belongs to, for the dialog. */
+type CfgCheck = CfgVerdict & { name: string; slot: CfgSlot };
+
+/** Does this filename look like a subscriber database rather than a core cfg?
+ *  The same rule the callbox side uses (labCfgLink.ueDbFor): of everything in
+ *  /root/mme/config, the DBs are the ones whose names say so. Used only to
+ *  order the DB picker — every file in the directory is still offered, because
+ *  the lab's naming is a convention and not a rule. */
+const looksLikeDbName = (n: string) => /db|subscriber|ue_/i.test(n);
 /** Shortest power-on duration a row may ask for — below this the UEs cannot come
  *  up and still pass traffic. Mirrors MIN_POWER_ON_SEC in duplicateTestcase. */
 const MIN_POWER_ON = 20;
@@ -40,12 +83,8 @@ const UPLOAD_PREFIX = 'upload:';
 
 const NOT_CONFIGURED = <span className="font-sans text-slate-400">Not configured</span>;
 
-/** A cfg field that is reported rather than chosen — the same box as the
- *  pickers beside it, greyed so it reads as "this follows from another
- *  choice" rather than looking like an input somebody forgot to fill. */
-const READONLY_CFG_BOX =
-  'h-9 w-full rounded-lg border border-line-strong bg-slate-100 px-3 text-sm text-slate-600 '
-  + 'cursor-default truncate focus:outline-none';
+/* The read-only cfg box that used to live here is gone: the DB and ots fields
+   were the only two that used it, and both are now pickers like the rest. */
 
 /**
  * What a row is called on the Simnovator by default: the source testcase's
@@ -97,6 +136,14 @@ interface SuiteItem {
   /** Core cfgs from /root/mme/config, bound per row alongside the radio one. */
   mmeCfg?: string;
   imsCfg?: string;
+  /** Subscriber database for the row, when it is NOT the one mmeCfg already
+   *  includes. Set only to override: the runner then binds a copy of the mme
+   *  config whose include line names this file, leaving the shared original
+   *  untouched — there is no ue_db.cfg symlink on the callboxes to repoint. */
+  dbCfg?: string;
+  /** /root/ots/config/ots.cfg for the row, when it is not what the callbox is
+   *  already on. */
+  otsCfg?: string;
   durationSec?: number;
 }
 interface SuiteRow {
@@ -295,8 +342,17 @@ export default function AutomationSuitePage() {
    * is true: the box has not answered yet, it answered and this cfg includes
    * no database, or the box could not be read at all.
    */
-  const dbCell = useCallback((s: SuiteRow, mmeCfg?: string | null): { text: React.ReactNode; title?: string } => {
+  const dbCell = useCallback((s: SuiteRow, mmeCfg?: string | null, override?: string | null): { text: React.ReactNode; title?: string } => {
     const cb = s.callboxSystemId ?? '';
+    // A row that chose its own database is not reporting the box any more —
+    // it is stating what the run will bind, and the cell has to say that or it
+    // contradicts the run it is describing.
+    if (override) {
+      return {
+        text: <span title="">{override}</span>,
+        title: `This row binds ${override}: the run uses a copy of ${mmeCfg ?? 'its MME config'} that includes it, leaving the original alone.`,
+      };
+    }
     if (!cb) return { text: NOT_CONFIGURED, title: 'This suite has no callbox, so there is no MME config to read a database from.' };
     if (!mmeCfg) return { text: NOT_CONFIGURED, title: 'No MME configuration picked for this row yet.' };
     const names = (dbByCallbox[cb] ?? {})[mmeCfg] ?? [];
@@ -314,6 +370,13 @@ export default function AutomationSuitePage() {
   /** What /root/ots/config/ots.cfg points at on the callbox — the file the
    *  stack actually loads. Shown, never picked; it is the box's own wiring. */
   const [otsLink, setOtsLink] = useState<string>('');
+  /** Whether that ots.cfg is a symlink. On .107 it is a plain file and on .106
+   *  a link to ots.default.cfg, and binding a different one means different
+   *  things in those two cases — so the picker says which it is dealing with. */
+  const [otsIsLink, setOtsIsLink] = useState<boolean | undefined>(undefined);
+  /** The files in /root/ots/config, so ots.cfg can be picked like the others
+   *  instead of only reported. */
+  const [otsFiles, setOtsFiles]       = useState<CallboxFile[]>([]);
   const [mmeFiles, setMmeFiles]       = useState<CallboxFile[]>([]);
   const [loadingCbx, setLoadingCbx]   = useState(false);
   const [uploadedConfigs, setUploads] = useState<Record<string, string>>({});
@@ -351,6 +414,16 @@ export default function AutomationSuitePage() {
   const [addCfg,   setAddCfg]           = useState<string>('');
   const [addMme,   setAddMme]           = useState<string>('');
   const [addIms,   setAddIms]           = useState<string>('');
+  /** Subscriber DB for the row. Defaults to the one the picked mme.cfg already
+   *  includes, which is what it has always been — the difference is that it can
+   *  now be changed, and uploaded. */
+  const [addDb,    setAddDb]            = useState<string>('');
+  /** /root/ots/config/ots.cfg for the row, which decides which component
+   *  configs the stack loads at all. */
+  const [addOts,   setAddOts]           = useState<string>('');
+  /** The verdict on the file just uploaded. Shown as a dialog, because a
+   *  refusal the operator can scroll past is a refusal they will not read. */
+  const [cfgCheck, setCfgCheck]         = useState<CfgCheck | null>(null);
   /** Optional name for the copy created on the box — blank reuses the source. */
   const [addDisplayName, setAddDisplayName] = useState<string>('');
   /** The last name this filled in, so a hand-typed one is never overwritten. */
@@ -1006,11 +1079,11 @@ export default function AutomationSuitePage() {
 
   const loadCallboxConfigs = useCallback(async (sysId: string) => {
     const req = ++cbxReq.current;
-    if (!sysId) { setCbxFiles([]); setMmeFiles([]); setCbxLoadError(''); return; }
+    if (!sysId) { setCbxFiles([]); setMmeFiles([]); setOtsFiles([]); setCbxLoadError(''); return; }
     setLoadingCbx(true); setCbxLoadError('');
     try {
-      // Three directories: the radio cfgs, the core (mme + ims) cfgs, and the
-      // box's own /root/ots/config — the last is shown, never picked.
+      // Three directories: the radio cfgs, the core (mme + ims + the subscriber
+      // DBs they include) and the box's own /root/ots/config.
       const [enbR, mmeR, otsR] = await Promise.all([
         fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(sysId)}&dir=enb`).then(r => r.json()),
         fetch(`/api/automation/callbox-configs?systemId=${encodeURIComponent(sysId)}&dir=mme`).then(r => r.json()),
@@ -1025,6 +1098,8 @@ export default function AutomationSuitePage() {
       // inside the MME config as an `include` line.
       setUeDbByMme(mmeR?.ok ? (mmeR.ueDb ?? {}) : {});
       setOtsLink(otsR?.ok ? (otsR.otsLink ?? '') : '');
+      setOtsIsLink(otsR?.ok ? otsR.otsIsLink : undefined);
+      setOtsFiles(otsR?.ok ? (otsR.files ?? []) : []);
       if (!enbR?.ok) setCbxLoadError(enbR?.error ?? 'failed to list callbox configs');
     } finally { if (req === cbxReq.current) setLoadingCbx(false); }
   }, []);
@@ -1103,25 +1178,56 @@ export default function AutomationSuitePage() {
 
   /** "Add an upload" — reads one or more files into base64 and merges
    *  them into uploadedConfigs. Pre-selects them too. */
-  /** Upload a SINGLE .cfg file and bind it to one of the three pickers.
-   *  `target` says which — the core cfgs (mme/ims) land in /root/mme/config and
-   *  the radio one in /root/enb/config, so the runner needs to know which the
-   *  blob belongs to as well as which dropdown to preselect. */
-  const onPickUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>, target: 'gnb' | 'mme' | 'ims') => {
+  /** Upload a SINGLE config file and bind it to one of the pickers.
+   *
+   *  `target` says which — the core cfgs (mme/ims/db) land in /root/mme/config,
+   *  the radio one in /root/enb/config and ots in /root/ots/config, so the
+   *  runner needs to know which the blob belongs to as well as which dropdown
+   *  to preselect.
+   *
+   *  The file is CHECKED before it is accepted. Nothing used to look inside the
+   *  bytes, so a truncated cfg, or an ims.cfg dropped into the mme box, was
+   *  taken happily and surfaced minutes into the run as a core that would not
+   *  start or "0 UEs attached" — which sends the investigation to the radio.
+   *  A file with an error is refused here, where the operator can still fix it;
+   *  warnings go through and say what they are. */
+  const onPickUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>, target: CfgSlot) => {
     const f = e.target.files?.[0];
+    e.target.value = '';                             // same file twice must re-fire
     if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const data = String(reader.result ?? '');
-      const b64 = data.includes(',') ? data.split(',', 2)[1] : btoa(data);
-      setUploads({ ...uploadedConfigs, [f.name]: b64 });
+    try {
+      const buf = await f.arrayBuffer();
+      // Decoded for the checks, kept as bytes for the blob: the runner writes
+      // what was uploaded, so re-encoding a UTF-8 config through btoa() would
+      // corrupt any config with a non-ASCII character in it.
+      const text = new TextDecoder().decode(buf);
+      const verdict = validateCfg(SLOT_ROLE[target], f.name, text);
+      setCfgCheck({ ...verdict, name: f.name, slot: target });
+      if (!verdict.ok) return;                       // refused — nothing is bound
+
+      setUploads(prev => ({ ...prev, [f.name]: bytesToBase64(new Uint8Array(buf)) }));
       if (target === 'gnb') { setSelectedCfg(f.name); setAddCfg(f.name); }
-      else if (target === 'mme') setAddMme(f.name);
-      else setAddIms(f.name);
-    };
-    reader.readAsDataURL(f);
-    e.target.value = '';
-  }, [uploadedConfigs]);
+      else if (target === 'mme') {
+        setAddMme(f.name);
+        // The DB an uploaded mme.cfg brings with it, read from the file itself.
+        // The box cannot answer this yet — the cfg is not on it — and leaving
+        // the DB field blank for a config that plainly names one reads as "no
+        // subscribers", which is the opposite of true.
+        const db = dbIncludesOf(verdict.includes);
+        setUeDbByMme(prev => ({ ...prev, [f.name]: db }));
+        if (db.length) setAddDb(db[0]);
+      }
+      else if (target === 'ims') setAddIms(f.name);
+      else if (target === 'db') setAddDb(f.name);
+      else if (target === 'ots') setAddOts(f.name);
+    } catch (err: unknown) {
+      setCfgCheck({
+        ok: false, role: SLOT_ROLE[target], name: f.name, slot: target,
+        summary: `${f.name} could not be read`, facts: {}, includes: [],
+        issues: [{ severity: 'error', message: (err as Error)?.message ?? String(err) }],
+      });
+    }
+  }, []);
 
   const removeUpload = useCallback((filename: string) => {
     const next = { ...uploadedConfigs };
@@ -1434,6 +1540,23 @@ export default function AutomationSuitePage() {
   // selection (since the callbox system is also potentially different).
   useEffect(() => { setSelectedCfg(''); }, [kind]);
 
+  // The DB follows the mme.cfg, which is how it has always behaved — picking
+  // the core config is what picks the subscribers. Only the DEFAULT follows:
+  // once it has been changed by hand that choice stands, so switching mme.cfg
+  // and back does not quietly undo it.
+  const dbFollowedMme = useRef<string>('');
+  useEffect(() => {
+    if (!addMme) return;
+    if (dbFollowedMme.current === addMme) return;
+    dbFollowedMme.current = addMme;
+    const included = (ueDbByMme[addMme] ?? [])[0] ?? '';
+    setAddDb(included);
+  }, [addMme, ueDbByMme]);
+
+  // ots.cfg starts on whatever the callbox is already using, so a row that
+  // does not care about it binds the box's own wiring rather than nothing.
+  useEffect(() => { setAddOts(cur => cur || otsLink); }, [otsLink]);
+
   // Callbox file list = uploads at the top + on-box files below.
   type CfgItem = { id: string; label: string; sub?: string; upload?: boolean };
   const cfgItems: CfgItem[] = [
@@ -1461,6 +1584,40 @@ export default function AutomationSuitePage() {
     && uesimTestcases.some(t => t.name === addNameNormalized)
     ? addNameNormalized
     : '';
+
+  /** The subscriber DB the picked mme.cfg pulls in, as the box (or, for a cfg
+   *  only just uploaded, the file itself) reports it. This is what the DB field
+   *  has always shown; it is now also the default for the picker. */
+  const dbFromMme = (ueDbByMme[addMme] ?? [])[0] ?? '';
+
+  /** DB choices: uploads first, then the DB the mme.cfg names, then everything
+   *  else in /root/mme/config. The whole directory is offered because the
+   *  lab's "…db…" naming is a convention, not a rule — a DB called
+   *  `1000UE.mme.cfg` is on .107 right now. */
+  const dbOptions = (() => {
+    const seen = new Set<string>();
+    const out: Array<{ value: string; label: string; hint?: string }> = [];
+    const add = (value: string, hint?: string) => {
+      if (!value || seen.has(value)) return;
+      seen.add(value);
+      out.push({ value, label: value, hint });
+    };
+    for (const fn of Object.keys(uploadedConfigs)) add(fn, 'uploaded');
+    add(dbFromMme, 'included by the mme.cfg');
+    for (const f of mmeFiles.filter(f => looksLikeDbName(f.name))) add(f.name, f.mtime);
+    for (const f of mmeFiles) add(f.name, f.mtime);
+    return out;
+  })();
+
+  /** What the DB choice will actually do, said plainly — the one place where
+   *  this picker is not like the others, because a DB is included by name from
+   *  inside the mme.cfg rather than being its own symlink. */
+  const dbNote = (() => {
+    if (!addMme) return '';
+    if (!addDb) return dbFromMme ? `${dbFromMme} is included by ${addMme}` : `${addMme} includes no database`;
+    if (addDb === dbFromMme) return `included by ${addMme}`;
+    return `${addMme} includes ${dbFromMme || 'no database'} — the run will bind a copy of it that includes ${addDb} instead, leaving the original alone`;
+  })();
 
   /** Wizard rows grouped by the suite name they were added under, in insertion
    *  order. Each group is rendered — and saved — as its own suite. */
@@ -1499,6 +1656,85 @@ export default function AutomationSuitePage() {
         {/* Run confirmation. Spells out what will happen and roughly how long —
             the configured duration is a small fraction of the real wall clock,
             so quoting it alone would badly mislead. */}
+        {/* What the checker made of the file just uploaded.
+            A dialog rather than a line in the form: a refusal the operator can
+            scroll past is a refusal they will not read, and the whole point is
+            that they learn the config is wrong now instead of ten minutes into
+            a run. A file that only drew warnings is already bound, so this is
+            an acknowledgement for that case and a refusal for the other. */}
+        {cfgCheck && (() => {
+          const errors = cfgCheck.issues.filter(i => i.severity === 'error');
+          const warnings = cfgCheck.issues.filter(i => i.severity === 'warning');
+          const facts = Object.entries(cfgCheck.facts);
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4"
+              onClick={() => setCfgCheck(null)}>
+              <div className="bg-surface rounded-xl shadow-xl border border-line max-w-lg w-full p-5"
+                onClick={e => e.stopPropagation()}>
+                <h3 className={cn('text-base font-semibold', cfgCheck.ok ? 'text-slate-900' : 'text-red-700')}>
+                  {cfgCheck.ok
+                    ? `${cfgCheck.name} uploaded`
+                    : `${cfgCheck.name} was not uploaded`}
+                </h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  {cfgCheck.ok
+                    ? <>Checked as {ROLE_LABEL[cfgCheck.role]} and bound to the <b>{cfgCheck.slot}</b> field.
+                      It will be copied to {SLOT_DIR[cfgCheck.slot]} on the callbox when the suite runs.</>
+                    : <>It was checked as {ROLE_LABEL[cfgCheck.role]}, for the <b>{cfgCheck.slot}</b> field, and cannot be used as one.</>}
+                </p>
+
+                {!!errors.length && (
+                  <ul className="mt-3 space-y-1.5">
+                    {errors.map((i, n) => (
+                      <li key={n} className="text-xs rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-red-800">
+                        {i.line ? <span className="font-mono text-[10px] text-red-600 mr-1.5">line {i.line}</span> : null}
+                        {i.message}
+                        {i.hint && <span className="block text-[11px] text-red-700/80 mt-0.5">{i.hint}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {!!warnings.length && (
+                  <ul className="mt-2 space-y-1.5">
+                    {warnings.map((i, n) => (
+                      <li key={n} className="text-xs rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-amber-800">
+                        {i.line ? <span className="font-mono text-[10px] text-amber-700 mr-1.5">line {i.line}</span> : null}
+                        {i.message}
+                        {i.hint && <span className="block text-[11px] text-amber-800/80 mt-0.5">{i.hint}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {!!facts.length && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {facts.map(([k, v]) => (
+                      <span key={k} className="text-[10px] rounded border border-line px-1.5 py-0.5 text-slate-600">
+                        {k} <b className="text-slate-800">{String(v)}</b>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {/* The files it needs beside it. A config that links cleanly and
+                    still fails is nearly always one whose includes are not on
+                    the box, and that is invisible until the core refuses to
+                    start — so it is said here, with the file in hand. */}
+                {!!cfgCheck.includes.length && (
+                  <p className="mt-3 text-[11px] text-slate-500">
+                    This file pulls in <span className="font-mono text-slate-700">{cfgCheck.includes.join(', ')}</span>.
+                    {' '}Each of those has to be on the callbox too, or uploaded here, or the component will not start.
+                  </p>
+                )}
+                <div className="mt-4 flex justify-end">
+                  <button onClick={() => setCfgCheck(null)}
+                    className="rounded-md bg-slate-800 hover:bg-slate-900 text-on-accent text-sm px-4 py-2">
+                    {cfgCheck.ok ? 'Done' : 'Close'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {confirmRun && (() => {
           const s = confirmRun.suite;
           const subset = confirmRun.rows;                     // undefined = whole suite
@@ -1997,10 +2233,11 @@ export default function AutomationSuitePage() {
                                           </select>
                                         </label>
                                       </td>
-                                      {/* gnb · mme · DB · ims · ots — the DB and
-                                          ots cells are read-only: the DB is an
-                                          include inside the mme cfg, and ots is
-                                          the box's own wiring. */}
+                                      {/* gnb · mme · DB · ims · ots. The DB and
+                                          ots cells default to what the callbox
+                                          already has — leave them alone and the
+                                          row behaves exactly as it used to —
+                                          and can now be pointed elsewhere. */}
                                       {([['callboxCfg', callboxFiles], ['mmeCfg', mmeFiles]] as const).map(([field, list]) => (
                                         <td key={field} className="px-2 py-1 align-top">
                                           <select
@@ -2012,8 +2249,18 @@ export default function AutomationSuitePage() {
                                           </select>
                                         </td>
                                       ))}
-                                      <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-500">
-                                        {dbCell(s, (rowDraft.mmeCfg ?? it.mmeCfg) as string | undefined).text}
+                                      {/* The DB is included by name from inside
+                                          the mme cfg, so "— from mme.cfg —"
+                                          means exactly that: whatever the
+                                          chosen core config brings with it. */}
+                                      <td className="px-2 py-1 align-top">
+                                        <select
+                                          value={(rowDraft.dbCfg ?? it.dbCfg ?? '') as string}
+                                          onChange={e => setRowDraft({ ...rowDraft, dbCfg: e.target.value || undefined })}
+                                          className="w-full border border-slate-300 rounded px-1 py-0.5 text-[11px]">
+                                          <option value="">— from mme.cfg —</option>
+                                          {mmeFiles.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
+                                        </select>
                                       </td>
                                       {([['imsCfg', mmeFiles]] as const).map(([field, list]) => (
                                         <td key={field} className="px-2 py-1 align-top">
@@ -2026,8 +2273,16 @@ export default function AutomationSuitePage() {
                                           </select>
                                         </td>
                                       ))}
-                                      <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-500 truncate">
-                                        {otsByCallbox[s.callboxSystemId ?? ''] || NOT_CONFIGURED}
+                                      <td className="px-2 py-1 align-top">
+                                        <select
+                                          value={(rowDraft.otsCfg ?? it.otsCfg ?? '') as string}
+                                          onChange={e => setRowDraft({ ...rowDraft, otsCfg: e.target.value || undefined })}
+                                          className="w-full border border-slate-300 rounded px-1 py-0.5 text-[11px]">
+                                          <option value="">
+                                            {otsByCallbox[s.callboxSystemId ?? ''] ? `— the callbox's own: ${otsByCallbox[s.callboxSystemId ?? '']} —` : '— the callbox’s own —'}
+                                          </option>
+                                          {otsFiles.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
+                                        </select>
                                       </td>
                                       <td className="px-2 py-1 text-right align-top">
                                         {/* Store the raw typed number and only raise it to the
@@ -2109,21 +2364,25 @@ export default function AutomationSuitePage() {
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600 truncate" title={it.mmeCfg ?? undefined}>
                                       {it.mmeCfg ?? NOT_CONFIGURED}
                                     </td>
-                                    {/* The DB this mme cfg includes, and the box's own ots config. */}
+                                    {/* The DB the row will bind: its own choice
+                                        when it made one, otherwise whatever its
+                                        mme cfg includes. */}
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-500 truncate"
-                                      title={dbCell(s, it.mmeCfg).title}>
-                                      {dbCell(s, it.mmeCfg).text}
+                                      title={dbCell(s, it.mmeCfg, it.dbCfg).title}>
+                                      {dbCell(s, it.mmeCfg, it.dbCfg).text}
                                     </td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-600 truncate" title={it.imsCfg ?? undefined}>
                                       {it.imsCfg ?? NOT_CONFIGURED}
                                     </td>
                                     <td className="px-2 py-1 font-mono text-[11px] text-slate-500 truncate"
-                                      title={otsByCallbox[s.callboxSystemId ?? '']
-                                        ? (otsIsLinkByCallbox[s.callboxSystemId ?? '']
-                                            ? `/root/ots/config/ots.cfg → ${otsByCallbox[s.callboxSystemId ?? '']}`
-                                            : '/root/ots/config/ots.cfg — a file on this callbox, not a symlink')
-                                        : undefined}>
-                                      {otsByCallbox[s.callboxSystemId ?? ''] || NOT_CONFIGURED}
+                                      title={it.otsCfg
+                                        ? `This row binds /root/ots/config/ots.cfg → ${it.otsCfg} before it runs`
+                                        : otsByCallbox[s.callboxSystemId ?? '']
+                                          ? (otsIsLinkByCallbox[s.callboxSystemId ?? '']
+                                              ? `/root/ots/config/ots.cfg → ${otsByCallbox[s.callboxSystemId ?? '']}`
+                                              : '/root/ots/config/ots.cfg — a file on this callbox, not a symlink')
+                                          : undefined}>
+                                      {it.otsCfg || otsByCallbox[s.callboxSystemId ?? ''] || NOT_CONFIGURED}
                                     </td>
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
                                       {it.durationSec ?? s.defaultDurationSec ?? MIN_POWER_ON} s
@@ -2688,18 +2947,30 @@ export default function AutomationSuitePage() {
                         noun="config"
                       />
                     </label>
-                    {/* The DB travels INSIDE the mme cfg as an include line, so
-                        it gets a box of its own and cannot be picked: choosing
-                        the mme cfg is what chooses the subscribers. */}
+                    {/* The DB travels INSIDE the mme cfg as an `include` line,
+                        so picking the mme cfg still fills this in — that part
+                        has not changed. What is new is that the choice can be
+                        overridden and uploaded, like every other file here.
+                        When it differs from what the mme cfg includes, the
+                        runner binds a copy of that cfg with the include
+                        rewritten rather than editing the shared original. */}
                     <label className="flex flex-col text-xs">
-                      <span className="text-slate-500 mb-1">DB</span>
-                      <input
-                        readOnly
-                        value={addMme ? ((ueDbByMme[addMme] ?? []).join(', ') || 'none included') : ''}
-                        placeholder="— from mme.cfg —"
-                        title="Read-only — the DB is included by the mme.cfg beside it"
-                        className={READONLY_CFG_BOX}
+                      <span className="text-slate-500 mb-1 flex items-center justify-between">
+                        DB
+                        <label className="cursor-pointer text-[10px] text-blue-700 hover:underline">
+                          upload…
+                          <input type="file" onChange={e => onPickUpload(e, 'db')} className="hidden" />
+                        </label>
+                      </span>
+                      <SearchableSelect
+                        value={addDb}
+                        onChange={setAddDb}
+                        options={dbOptions}
+                        placeholder="Search database…"
+                        ariaLabel="subscriber database"
+                        noun="database"
                       />
+                      {dbNote && <span className="text-[10px] text-slate-500 mt-1">{dbNote}</span>}
                     </label>
                     <label className="flex flex-col text-xs">
                       <span className="text-slate-500 mb-1 flex items-center justify-between">
@@ -2721,18 +2992,38 @@ export default function AutomationSuitePage() {
                         noun="config"
                       />
                     </label>
-                    {/* /root/ots/config/ots.cfg on the callbox — the config the
-                        stack actually loads. The box's own wiring: shown, never
-                        picked, so it is read-only like the DB. */}
+                    {/* /root/ots/config/ots.cfg — the file that decides which
+                        component configs the stack loads at all. Pickable now,
+                        and pre-filled with whatever the callbox is on, so
+                        leaving it alone keeps today's behaviour exactly. */}
                     <label className="flex flex-col text-xs">
-                      <span className="text-slate-500 mb-1">ots.cfg</span>
-                      <input
-                        readOnly
-                        value={otsLink}
-                        placeholder="—"
-                        title="Read-only — what /root/ots/config/ots.cfg points at on the callbox"
-                        className={READONLY_CFG_BOX}
+                      <span className="text-slate-500 mb-1 flex items-center justify-between">
+                        ots.cfg
+                        <label className="cursor-pointer text-[10px] text-blue-700 hover:underline">
+                          upload…
+                          <input type="file" onChange={e => onPickUpload(e, 'ots')} className="hidden" />
+                        </label>
+                      </span>
+                      <SearchableSelect
+                        value={addOts}
+                        onChange={setAddOts}
+                        options={[
+                          ...Object.keys(uploadedConfigs).map(fn => ({ value: fn, label: fn, hint: 'uploaded' })),
+                          ...otsFiles.map(f => ({ value: f.name, label: f.name, hint: f.mtime })),
+                        ]}
+                        placeholder="Search config…"
+                        ariaLabel="ots.cfg"
+                        noun="config"
                       />
+                      <span className="text-[10px] text-slate-500 mt-1">
+                        {addOts && otsLink && addOts !== otsLink
+                          ? (otsIsLink === false
+                            ? `the callbox has ots.cfg as a plain file — it will be kept as ots.cfg.simqa-backup and replaced with a link to ${addOts}`
+                            : `ots.cfg will be re-pointed from ${otsLink} to ${addOts}`)
+                          : otsLink
+                            ? `the callbox is on ${otsLink}${otsIsLink === false ? ' (a plain file, not a link)' : ''}`
+                            : ''}
+                      </span>
                     </label>
                   </>)}
                   <div className="col-span-3 flex gap-2 justify-end">
@@ -2780,9 +3071,18 @@ export default function AutomationSuitePage() {
                         callboxCfg: cfgName,
                         mmeCfg: kind === 'uesim+callbox' ? (addMme || undefined) : undefined,
                         imsCfg: kind === 'uesim+callbox' ? (addIms || undefined) : undefined,
+                        // Only stored when it is NOT simply what the mme.cfg
+                        // already includes: a row that recorded the derived DB
+                        // would make the runner rewrite an include line to the
+                        // value it already has, for no reason.
+                        dbCfg: kind === 'uesim+callbox' && addDb && addDb !== dbFromMme ? addDb : undefined,
+                        // Likewise: only when it differs from what the box is
+                        // already on, so an untouched picker changes nothing.
+                        otsCfg: kind === 'uesim+callbox' && addOts && addOts !== otsLink ? addOts : undefined,
                       };
                       setItems([...items, newItem]);
                       setAddTcId(''); setAddCfg(''); setAddMme(''); setAddIms(''); setAddDisplayName('');
+                      setAddDb(''); dbFollowedMme.current = '';
                     }}
                     // All three cfgs are required: a run needs the radio AND the
                     // core, so a row bound to only some of them can't execute.

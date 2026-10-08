@@ -82,3 +82,64 @@ test('includes are read by name, path stripped, deduped', () => {
   const text = '  include "demo-1000ue_db-ims-volte.cfg",\ninclude "/root/mme/config/demo-1000ue_db-ims-volte.cfg",\n# include "commented.cfg"\n';
   assert.deepEqual(includesOf(text), ['demo-1000ue_db-ims-volte.cfg']);
 });
+
+test('a database the row chose must come from somewhere, like any other file', () => {
+  const pick = { ...row('TC1'), dbCfg: 'chosen-ue_db.cfg' };
+  // Nowhere to be found.
+  const missing = preflightRows({
+    rows: [pick],
+    folder: { TC1: { 'test.json': '{}' } },
+    onCallboxRadio: new Set(['SA-1cell.cfg']),
+    onCallboxCore: new Set(['demo-mme.cfg', 'demo-ims.cfg']),
+    withCallbox: true,
+  });
+  assert.deepEqual(missing[0].missing, ['chosen-ue_db.cfg ("chosen-ue_db.cfg")']);
+  // On the callbox already: nothing to provide.
+  assert.deepEqual(preflightRows({
+    rows: [pick],
+    folder: { TC1: { 'test.json': '{}' } },
+    onCallboxRadio: new Set(['SA-1cell.cfg']),
+    onCallboxCore: new Set(['demo-mme.cfg', 'demo-ims.cfg', 'chosen-ue_db.cfg']),
+    withCallbox: true,
+  }), []);
+  // Or carried by the suite as an upload.
+  assert.deepEqual(preflightRows({
+    rows: [pick],
+    folder: { TC1: { 'test.json': '{}' } },
+    uploads: new Set(['chosen-ue_db.cfg']),
+    onCallboxRadio: new Set(['SA-1cell.cfg']),
+    onCallboxCore: new Set(['demo-mme.cfg', 'demo-ims.cfg']),
+    withCallbox: true,
+  }), []);
+});
+
+test('an ots.cfg the row binds is checked against /root/ots/config', () => {
+  const pick = { ...row('TC1'), otsCfg: 'my-ots.cfg' };
+  const base = {
+    folder: { TC1: { 'test.json': '{}' } },
+    onCallboxRadio: new Set(['SA-1cell.cfg']),
+    onCallboxCore: new Set(['demo-mme.cfg', 'demo-ims.cfg']),
+    withCallbox: true,
+  };
+  assert.deepEqual(preflightRows({ rows: [pick], ...base }), [
+    { row: 'TC1', missing: ['ots.cfg ("my-ots.cfg")'] },
+  ]);
+  // The ots directory is its own: a file of that name in /root/mme/config
+  // would not do.
+  assert.deepEqual(preflightRows({ rows: [pick], ...base, onCallboxOts: new Set(['my-ots.cfg']) }), []);
+  // The folder keeps it under the role name, whatever the box calls the file.
+  assert.deepEqual(preflightRows({
+    rows: [pick], ...base,
+    folder: { TC1: { 'test.json': '{}', 'ots.cfg': 'COMPONENTS+=" MME"' } },
+  }), []);
+});
+
+test('a row that overrides neither is unaffected', () => {
+  assert.deepEqual(preflightRows({
+    rows: [row('TC1')],
+    folder: { TC1: { 'test.json': '{}' } },
+    onCallboxRadio: new Set(['SA-1cell.cfg']),
+    onCallboxCore: new Set(['demo-mme.cfg', 'demo-ims.cfg']),
+    withCallbox: true,
+  }), []);
+});
