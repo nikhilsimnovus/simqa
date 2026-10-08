@@ -1,9 +1,18 @@
-// GET /api/automation/uesim-testcases?systemId=sys-6
+// GET /api/automation/uesim-testcases?systemId=sys-6&boxUserId=bu-akefumo
 //
 // Pulls the catalogue of testcases from a Simnovator/UESIM by hitting
 // GET /v2/testcases?limit=1000 (the only endpoint on this build that
 // returns more than 50 rows reliably — see overnight bug-report P5/P8).
 // Used by the Automation Suite wizard's testcase multi-select.
+//
+// boxUserId picks WHOSE catalogue, and in practice it is not optional: a
+// Simnovator scopes /v2/testcases to the token's own account, and the accounts
+// are not nested. On 192.168.1.95 sruthi holds 59 testcases, simuser 158,
+// admin 355. This route used to omit it and always listed as the setup's FIRST
+// login, so a suite set to run as simuser was offered sruthi's catalogue:
+// LTE_3CC_UDP_256UEs, created as simuser, was absent from the picker even
+// though the runner — which does honour suite.boxUserId — could have executed
+// it perfectly well. The picker and the runner must read the same catalogue.
 
 import { NextResponse } from 'next/server';
 import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
@@ -14,8 +23,9 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const systemId = url.searchParams.get('systemId');
   if (!systemId) return NextResponse.json({ ok: false, error: 'systemId required' }, { status: 400 });
+  const boxUserId = url.searchParams.get('boxUserId') ?? undefined;
   const inv = loadInventory();
-  const opts = uesimApiOptsForSystem(inv, systemId);
+  const opts = uesimApiOptsForSystem(inv, systemId, boxUserId);
   if (!opts) return NextResponse.json({ ok: false, error: `system "${systemId}" not testable` }, { status: 404 });
 
   try {
@@ -91,7 +101,12 @@ export async function GET(req: Request) {
       const bx = b.lastModifiedOn || b.lastExecutedOn || b.createdOn || '';
       return bx.localeCompare(ax);
     });
-    return NextResponse.json({ ok: true, testcases: out, total: out.length, serverTotal, truncated, host: opts.host });
+    // boxUser is echoed so the picker can name whose catalogue it is showing.
+    // Without it, "my test case is missing" has nothing visible to explain it.
+    return NextResponse.json({
+      ok: true, testcases: out, total: out.length, serverTotal, truncated,
+      host: opts.host, boxUser: opts.boxUser,
+    });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
   }

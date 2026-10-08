@@ -28,7 +28,11 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
   let stopped: string | null = null;
   let stopError: string | null = null;
   try {
-    const opts = uesimApiOptsForSystem(loadInventory(), suite.uesimSystemId ?? undefined);
+    // As the login that STARTED the run. findBusy asks the box which simulator
+    // this account owns and what it is running; asking as the setup default
+    // instead looked at a different operator's simulator, found it idle, and
+    // reported "nothing to stop" while the suite's own execution carried on.
+    const opts = uesimApiOptsForSystem(loadInventory(), suite.uesimSystemId ?? undefined, suite.boxUserId);
     if (opts) {
       const busy = await findBusy(opts);
       if (busy?.executionId) {

@@ -187,6 +187,9 @@ export default function AutomationSuitePage() {
   /** Box logins the chosen Simnovator offers, and which one this suite runs as.
    *  Fetched from /api/box-users, which never returns passwords. */
   const [suiteBoxUsers, setSuiteBoxUsers] = useState<Array<{ id: string; username: string; label?: string }>>([]);
+  /** The system suiteBoxUsers/boxUserId currently describe. The testcase list
+   *  is pulled per login, so it must not be fetched before this catches up. */
+  const [boxUsersFor, setBoxUsersFor] = useState('');
   /** Logins of the suite waiting in the run dialog, and the choice made. */
   const [runUsers, setRunUsers] = useState<Array<{ id: string; username: string }>>([]);
   const [runAsAll, setRunAsAll] = useState(false);
@@ -204,6 +207,13 @@ export default function AutomationSuitePage() {
   // UESIM-only data: testcases pulled from Simnovator REST
   const [uesimTestcases, setUeTcs]    = useState<UesimTestcase[]>([]);
   const [loadingTc, setLoadingTc]     = useState(false);
+  /** Whose catalogue is on screen — the box login the list was pulled as.
+   *  A Simnovator shows each login only its OWN testcases, so the count means
+   *  nothing without the name beside it. */
+  const [tcListedAs, setTcListedAs]   = useState('');
+  /** systemId|boxUserId of the catalogue already fetched, so switching tabs or
+   *  re-rendering does not re-pull 700 rows. */
+  const tcLoadedKey = useRef('');
   /** Non-fatal notice when the box served fewer testcases than it claims to
    *  hold (the REST list is capped at ~1000 rows — see uesim-testcases route). */
   const [tcNotice, setTcNotice]       = useState('');
@@ -947,7 +957,7 @@ export default function AutomationSuitePage() {
   // it still exists means switching system and back does not silently re-point
   // the suite at a different person.
   useEffect(() => {
-    if (!uesimSystemId) { setSuiteBoxUsers([]); return; }
+    if (!uesimSystemId) { setSuiteBoxUsers([]); setBoxUsersFor(''); return; }
     let cancelled = false;
     fetch(`/api/box-users?systemId=${encodeURIComponent(uesimSystemId)}`)
       .then(r => r.json())
@@ -957,7 +967,10 @@ export default function AutomationSuitePage() {
         setSuiteBoxUsers(users);
         setBoxUserId(cur => (cur && users.some((u: any) => u.id === cur) ? cur : (users[0]?.id ?? '')));
       })
-      .catch(() => { /* no users configured — the runner uses the setup default */ });
+      .catch(() => { /* no users configured — the runner uses the setup default */ })
+      // Settled either way: the testcase list is gated on this, and a box that
+      // will not answer must not leave the picker empty forever.
+      .finally(() => { if (!cancelled) setBoxUsersFor(uesimSystemId); });
     return () => { cancelled = true; };
   }, [uesimSystemId]);
   // Pair the callbox to the chosen Simnovator via its topology profile, so
@@ -1022,12 +1035,22 @@ export default function AutomationSuitePage() {
   const tcFileRef = useRef<HTMLInputElement | null>(null);
   const [tcImportMsg, setTcImportMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const loadUesimTestcases = useCallback(async (sysId: string) => {
-    if (!sysId) { setUeTcs([]); return; }
+  /** Pull the catalogue for one box login.
+   *
+   *  userId matters: the suite EXECUTES as this login (runner.ts passes
+   *  suite.boxUserId), and a Simnovator only serves a login its own testcases.
+   *  Listing as anyone else offered rows the run could not have executed and
+   *  hid the ones it could — a test case created minutes earlier as simuser was
+   *  simply absent while the picker showed the default login's older set. */
+  const loadUesimTestcases = useCallback(async (sysId: string, userId?: string) => {
+    if (!sysId) { setUeTcs([]); setTcListedAs(''); return; }
     setLoadingTc(true);
     try {
-      const r = await fetch(`/api/automation/uesim-testcases?systemId=${encodeURIComponent(sysId)}`).then(r => r.json());
+      const qs = new URLSearchParams({ systemId: sysId });
+      if (userId) qs.set('boxUserId', userId);
+      const r = await fetch(`/api/automation/uesim-testcases?${qs}`).then(r => r.json());
       setUeTcs(r?.ok ? (r.testcases ?? []) : []);
+      setTcListedAs(r?.ok ? (r.boxUser ?? '') : '');
       if (!r?.ok) setError(r?.error ?? 'failed to pull testcases');
       setTcNotice(r?.ok && r.truncated
         ? `showing ${r.total} of ${r.serverTotal} testcases — the box's REST list cannot serve rows past ~1000; older testcases are not selectable here`
@@ -1110,7 +1133,8 @@ export default function AutomationSuitePage() {
   const resetWizard = useCallback(() => {
     setEditingId(''); setName(''); setEditingName(''); setKind('uesim-only');
     setUesim(''); setCbx(''); setUeSystemId(''); setCbxFiles([]); setUploads({}); setCbxLoadError('');
-    setUeTcs([]); setSelectedCfg(''); setSelectedTcs(new Set());
+    setUeTcs([]); setTcListedAs(''); tcLoadedKey.current = '';
+    setSelectedCfg(''); setSelectedTcs(new Set());
     setStopOnFail(false); setRemoveCfgAfterRun(true); setCbxFilter(''); setTcFilter('');
     setDefaultDur(MIN_POWER_ON); setPerTcDur({}); setMassDurInput(String(MIN_POWER_ON));
     setItems([]); setAddTcId(''); setAddCfg(''); setEditRowId(null);
@@ -1162,7 +1186,12 @@ export default function AutomationSuitePage() {
     setShowWizard(true);
     setTab(startTab);
     if (s.callboxSystemId && s.kind === 'uesim+callbox') void loadCallboxConfigs(s.callboxSystemId);
-    if (s.uesimSystemId) void loadUesimTestcases(s.uesimSystemId);
+    // As the suite's OWN login, not the setup default — and record the key so
+    // the effect below does not immediately pull the same catalogue again.
+    if (s.uesimSystemId) {
+      tcLoadedKey.current = `${s.uesimSystemId}|${s.boxUserId ?? ''}`;
+      void loadUesimTestcases(s.uesimSystemId, s.boxUserId);
+    }
   }, [resetWizard, loadCallboxConfigs, loadUesimTestcases]);
 
   /** Open the row editor, loading that suite's cfg lists so the dropdowns have
@@ -1171,7 +1200,7 @@ export default function AutomationSuitePage() {
     setEditRow({ suiteId: s.id, itemId: it.id });
     setRowDraft({ ...it });
     if (s.callboxSystemId) void loadCallboxConfigs(s.callboxSystemId);
-    if (s.uesimSystemId) void loadUesimTestcases(s.uesimSystemId);
+    if (s.uesimSystemId) void loadUesimTestcases(s.uesimSystemId, s.boxUserId);
   }, [loadCallboxConfigs, loadUesimTestcases]);
 
   /** Persist the drafted row back into its suite. `move` optionally repositions
@@ -1390,9 +1419,17 @@ export default function AutomationSuitePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, callboxSystemId]);
   useEffect(() => {
-    if (uesimSystemId) void loadUesimTestcases(uesimSystemId);
+    // Wait until this system's logins have been resolved. Firing earlier would
+    // list as the setup default, show that login's testcases for a beat, and
+    // then replace them — the wrong catalogue, briefly, plus a wasted fetch of
+    // the whole thing.
+    if (!uesimSystemId || boxUsersFor !== uesimSystemId) return;
+    const key = `${uesimSystemId}|${boxUserId}`;
+    if (tcLoadedKey.current === key) return;
+    tcLoadedKey.current = key;
+    void loadUesimTestcases(uesimSystemId, boxUserId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uesimSystemId]);
+  }, [uesimSystemId, boxUserId, boxUsersFor]);
   // Switching kind keeps the testcase selection but clears the callbox
   // selection (since the callbox system is also potentially different).
   useEffect(() => { setSelectedCfg(''); }, [kind]);
@@ -2380,6 +2417,22 @@ export default function AutomationSuitePage() {
               {tcNotice && (
                 <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 text-amber-800 text-xs px-3 py-2">
                   ⚠ {tcNotice}
+                </div>
+              )}
+
+              {/* Whose catalogue this is. A Simnovator serves each login only
+                  its own testcases, so "my test case is not in the list" is
+                  nearly always "it belongs to another login" — which is only
+                  answerable if the list says who it is showing. */}
+              {tcListedAs && (
+                <div className="mb-3 text-[11px] text-slate-500">
+                  {loadingTc
+                    ? 'Loading test cases'
+                    : `${uesimTestcases.length} test case${uesimTestcases.length === 1 ? '' : 's'}`} on{' '}
+                  <span className="font-mono">{uesimSystems.find(s => s.id === uesimSystemId)?.host ?? uesimSystemId}</span>, listed as{' '}
+                  <b className="text-slate-700">{tcListedAs}</b> — the login this suite runs as. Test cases created by another
+                  login are not offered here, and would not be executable by this one either. Change <b>Run as user</b> on
+                  the Setup tab to see theirs.
                 </div>
               )}
 
