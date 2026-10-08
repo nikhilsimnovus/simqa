@@ -65,7 +65,31 @@ async function listAll(opts: any, limit: number, startPage: number) {
     if (items.length >= limit) break;
     if (total && (pageIndex + 1) * pageSize >= total) break;
   }
-  return { items, total: total || items.length };
+  return { items: inCreationOrder(items), total: total || items.length };
+}
+
+/** Newest-created first, which is the order the catalogue was built in.
+ *
+ *  The box cannot do this itself: POST /testcases/search sorts by test_name,
+ *  date_modified, execution_status, execution_result, completed_duration,
+ *  simulator_name, execution_start_time or test_duration — there is no
+ *  created_on — and GET /testcases defaults to execution_start_time DESC.
+ *  That puts whatever ran most recently on top and leaves everything never
+ *  executed in no order at all, which is why page one of 192.168.1.95 read
+ *  Oct 8, Oct 8, Oct 8, Sep 24, Jun 10 and page two jumped Oct 8, Sep 24,
+ *  Oct 8, Oct 7.
+ *
+ *  Every item carries metadata.createdOn, so the order is ours to impose.
+ *  Ties break on name rather than being left to the box: a bulk import gives
+ *  dozens of test cases the same second (sruthi's 59 are all within two), and
+ *  without a tiebreak those shuffle between requests — the same complaint in
+ *  a smaller form. */
+function inCreationOrder<T extends { name?: string; metadata?: { createdOn?: string } }>(items: T[]): T[] {
+  const at = (t: T) => {
+    const v = Date.parse(t?.metadata?.createdOn ?? '');
+    return Number.isNaN(v) ? -Infinity : v;   // undated sinks to the bottom
+  };
+  return [...items].sort((a, b) => (at(b) - at(a)) || String(a?.name ?? '').localeCompare(String(b?.name ?? '')));
 }
 
 export async function GET(req: Request) {

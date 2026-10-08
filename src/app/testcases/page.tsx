@@ -11,14 +11,17 @@ import { formatDuration, windowOf, endFromDuration } from '@/lib/timeFormat';
 
 /** The table's columns, and the width each one starts at. Drag any column's
  *  right-hand edge to resize it, spreadsheet-style. */
-const TC_COLUMNS: Array<{ label: string; key: 'name' | 'result' | 'executed' | null }> = [
+const TC_COLUMNS: Array<{ label: string; key: 'name' | 'result' | 'executed' | 'created' | null }> = [
   { label: 'Test Case', key: 'name' },
   { label: 'Result',    key: 'result' },
+  // The order the catalogue arrives in, and the one the box cannot sort by
+  // itself — so it is shown, not just applied silently.
+  { label: 'Created',   key: 'created' },
   { label: 'Execution', key: 'executed' },
   { label: 'Action',    key: null },
 ];
 // Execution holds two lines now — how long it ran, and the window under it.
-const TC_COL_WIDTHS = [430, 150, 250, 130];
+const TC_COL_WIDTHS = [400, 130, 150, 230, 120];
 
 interface Tc {
   id: string;
@@ -83,7 +86,7 @@ export default function TestcasesPage() {
   // Id of the testcase the selected box is executing right now, if any.
   const [runningId, setRunningId] = useState<string | null>(null);
   // Column sort. null key = the box's own order.
-  const [sortKey, setSortKey] = useState<'name' | 'result' | 'executed' | null>(null);
+  const [sortKey, setSortKey] = useState<'name' | 'result' | 'executed' | 'created' | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [executed, setExecuted] = useState<'any' | '1d' | '7d' | '30d' | 'never'>('any');
   // Render in pages so 842 rows don't all hit the DOM at once; grows as you
@@ -309,6 +312,15 @@ export default function TestcasesPage() {
     // Copy first — filtered is memoised and must not be mutated in place.
     return [...filtered].sort((a, b) => {
       if (sortKey === 'executed') return (when(a) - when(b)) * dir;
+      if (sortKey === 'created') {
+        // Same tiebreak as the server's default order, so clicking Created
+        // and clicking it back lands on the list you started with.
+        const at = (tc: Tc) => {
+          const t = Date.parse(tc.metadata?.createdOn ?? '');
+          return Number.isNaN(t) ? -Infinity : t;
+        };
+        return ((at(a) - at(b)) || String(b.name ?? '').localeCompare(String(a.name ?? ''))) * dir;
+      }
       const av = sortKey === 'name' ? (a.name ?? '') : resultText(a);
       const bv = sortKey === 'name' ? (b.name ?? '') : resultText(b);
       return av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' }) * dir;
@@ -319,7 +331,7 @@ export default function TestcasesPage() {
    *  Both setters are called at the top level — nesting setSortDir inside the
    *  setSortKey updater made the flip cancel itself out, because React invokes
    *  updaters twice in development. */
-  const toggleSort = useCallback((key: 'name' | 'result' | 'executed') => {
+  const toggleSort = useCallback((key: 'name' | 'result' | 'executed' | 'created') => {
     if (sortKey === key) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     } else {
@@ -551,6 +563,20 @@ export default function TestcasesPage() {
                             </Link>
                           </td>
                           <td className={tdCls}><ResultBadge value={last?.result} inProgress={tc.id === runningId} /></td>
+                          {/* When it was made. The list arrives newest-first
+                              by this, because the box has no created_on sort
+                              of its own and its default order is whatever ran
+                              most recently. */}
+                          <td className={tdCls}>
+                            {tc.metadata?.createdOn ? (
+                              <>
+                                <div className="text-sm text-slate-700 num truncate">{createdDate(tc.metadata.createdOn)}</div>
+                                <div className="text-xs text-slate-500 truncate">{createdTime(tc.metadata.createdOn)}</div>
+                              </>
+                            ) : (
+                              <span className="text-xs text-slate-400">not recorded</span>
+                            )}
+                          </td>
                           {/* How long it ran, and under it when — the same
                               shape the dashboard's Recent Runs uses, so one
                               execution reads the same on both pages. The box
@@ -594,6 +620,18 @@ export default function TestcasesPage() {
   );
 }
 
+
+/** The creation date, in the viewer's own locale. Split over two lines so a
+ *  narrow column still shows the day without hiding the time. */
+function createdDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
+}
+
+function createdTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
 
 function ResultBadge({ value, inProgress }: { value?: string; inProgress?: boolean }) {
   // A live execution outranks whatever the last finished run said — the box
