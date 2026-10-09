@@ -33,6 +33,8 @@ import { duplicateTestcase } from './duplicateTestcase';
 import { isTerminalStatus } from './outcome';
 import { saveRowConfigs } from '../suiteConfigStore';
 import { preflightRows } from './preflightConfigs';
+// Read a saved test.json the same way an uploaded one is read.
+import { definitionFromPack } from './importPack';
 import { expectedRunSeconds } from './durationFit';
 import { validateCfg, withDbInclude, ROLE_LABEL, type CfgRole } from '../cfgValidate';
 import { readTestCaseFile, readAllTestCaseFiles, testCaseDir } from './serverConfigs';
@@ -979,30 +981,92 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           continue;
         }
       }
-      // Only when the row points at a testcase on a box. An uploaded row
-      // already has its definition and has nothing to look up.
+      // Where this row's definition comes from, in order:
+      //
+      //   1. the selected Simnovator's own copy, when the row still names one
+      //      that is there;
+      //   2. another login's copy of that same testcase on the same box — a
+      //      testcase belongs to one operator and is invisible to the others;
+      //   3. the copy saved on the automation server, which is the whole point
+      //      of saving them.
+      //
+      // (3) is what makes a row survive its source being deleted, or being
+      // carried to a box that never had it: the saved definition is created on
+      // the SELECTED Simnovator under the row's own name, fitted to the row's
+      // power-on duration, and executed. An uploaded row already holds its
+      // definition and skips all of this.
       if (!sourceTd) {
-        try {
-          const { getTestcase } = await import('../uesimClient');
-          await getTestcase(ueOpts, item.simnovatorTcId);
-        } catch {
+        // A row with no id has nothing to look up — and asking the box for an
+        // empty one is a 404 that reads like a missing testcase rather than a
+        // row that never named one.
+        let onBox = false;
+        if (item.simnovatorTcId) {
+          try {
+            const { getTestcase } = await import('../uesimClient');
+            await getTestcase(ueOpts, item.simnovatorTcId);
+            onBox = true;
+          } catch { /* not this login's, or not there at all */ }
+        }
+        if (!onBox) {
           const sys = getSystem(inv, suite.uesimSystemId ?? '');
-          const found = sys ? await findDefinition(sys, item.simnovatorTcId, ueOpts.username) : null;
+          const found = item.simnovatorTcId && sys
+            ? await findDefinition(sys, item.simnovatorTcId, ueOpts.username)
+            : null;
           if (found) {
             sourceTd = found.td;
             stepDetails.push(`source testcase belongs to ${found.owner} — created it for ${ueOpts.username}`);
           } else {
-            // Nobody on the box has it any more — deleted, or the box was
-            // rebuilt. The folder kept the definition, so the row still runs.
             const saved = readTestCaseFile(cfgFrom, item.name, 'test.json');
-            if (saved) {
-              try {
-                sourceTd = JSON.parse(saved);
-                stepDetails.push(`testcase: not on ${ueOpts.host} any more — rebuilt from ${testCaseDir(cfgFrom, item.name)}/test.json`);
-              } catch { /* a corrupt file is no better than none */ }
+            const where = `${testCaseDir(cfgFrom, item.name)}/test.json`;
+            if (saved !== undefined) {
+              // Read the way an uploaded file is read, not with a bare
+              // JSON.parse. The folder holds a bare definition today, but an
+              // operator dropping the Simnovator's own export in there is the
+              // obvious thing to do — and a bare parse of that yields an object
+              // with no cellConfig, which the box answers with "CellConfig:
+              // Section is required but missing". That is the box describing
+              // our mistake, and it reads as though the testcase were broken.
+              let parsed: unknown;
+              let bad = '';
+              try { parsed = JSON.parse(saved); } catch { bad = 'it is not valid JSON'; }
+              const pack = bad ? { definition: undefined, error: bad } : definitionFromPack(parsed);
+              if (pack.definition) {
+                sourceTd = pack.definition;
+                stepDetails.push(
+                  item.simnovatorTcId
+                    ? `testcase: not on ${ueOpts.host} any more — recreated from the copy saved at ${where}`
+                    : `testcase: this row names none on a box — created from the copy saved at ${where}`,
+                );
+              } else {
+                steps.push({
+                  testcaseId: item.name, status: 0, ok: false,
+                  detail: `the copy saved at ${where} cannot be used to rebuild this test case: ${pack.error}`,
+                  durationMs: Date.now() - t0,
+                });
+                failed += 1; done += 1;
+                if (suite.stopOnFail) break;
+                continue;
+              }
             }
           }
         }
+      }
+
+      // Nothing on the box, nothing on the server, nothing uploaded. Say that,
+      // rather than handing the box an empty definition and letting it answer
+      // "CellConfig: Section is required but missing" — which is true, and
+      // tells the operator nothing about what to do.
+      if (!sourceTd && !item.simnovatorTcId) {
+        steps.push({
+          testcaseId: item.name, status: 0, ok: false,
+          detail: `this row has no test case to run: it names none on ${ueOpts.host}, and `
+            + `${testCaseDir(cfgFrom, item.name)}/test.json does not exist. Sync the suite while the `
+            + `test case is still on a box, upload its JSON, or pick the test case again.`,
+          durationMs: Date.now() - t0,
+        });
+        failed += 1; done += 1;
+        if (suite.stopOnFail) break;
+        continue;
       }
       const dup = await duplicateTestcase(ueOpts, item.simnovatorTcId, item.name, durSec, sourceTd);
       if (dup.error || !dup.testCaseId) {
