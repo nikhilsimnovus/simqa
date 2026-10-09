@@ -14,7 +14,7 @@ import { ensureToken, getTestcase, listTestcases, type ApiOpts } from '../uesimC
 import { diffSections, reconcileCellArrays, type SectionName } from '../testcaseSections';
 // The duration arithmetic lives in durationFit.ts so it can be unit-tested;
 // re-exported here because this module is where callers already look for it.
-import { applyDuration, sessionFloorFromError, expectedRunSeconds, MIN_POWER_ON_SEC } from './durationFit';
+import { applyDuration, sessionFloorFromError, totalDurationFromError, applyTotalTestDuration, expectedRunSeconds, MIN_POWER_ON_SEC } from './durationFit';
 export { applyDuration, sessionFloorFromError, MIN_POWER_ON_SEC } from './durationFit';
 
 
@@ -318,6 +318,24 @@ export async function createFromDefinition(
         applyDuration(td, grown);
         warnings.push(`the box requires a session over ${floor}s for this profile — power-on duration raised to ${grown}s`);
         r = await post(opts, token, path, { userPlaneConfig: td.userPlaneConfig });
+      }
+    }
+
+    // The power-cycle section has a rule the box keeps to itself.
+    //
+    // Its form checks (powerOn + powerOff) × cycles + attachDelay, but the API
+    // also refuses "Total Test Duration should be at least Power On Time +
+    // Power Off Time + Ramp-up offset for profile 0. Minimum: 183.00" — and
+    // "Ramp-up offset" appears nowhere in the form's code, so there is no
+    // formula to copy. The box names the figure it wants, so take it rather
+    // than guess: this is what stopped AIO_64UEs_UDP_TCP_VONR_attach-detach-loop
+    // from ever being created at a 100s power-on duration.
+    if (!r.ok && step === 'power-cycle') {
+      const minTotal = totalDurationFromError(r.text);
+      if (minTotal != null) {
+        applyTotalTestDuration(td, minTotal);
+        warnings.push(`the box requires a total test duration of at least ${minTotal}s for this power-cycle profile — raised to it`);
+        r = await post(opts, token, path, { powerCycleConfig: td.powerCycleConfig });
       }
     }
 

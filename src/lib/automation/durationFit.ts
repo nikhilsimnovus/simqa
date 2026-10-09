@@ -76,6 +76,8 @@ const MIN_CALL = 5;
 const MIN_GAP = 1;
 /** callDuration is capped at 3600 in the box's schema. */
 const MAX_CALL = 3600;
+/** Shortest power-off worth scaling to. The UEs have to actually detach. */
+const MIN_POWER_OFF = 5;
 
 const num = (v: unknown): number => {
   const n = Number(v ?? 0);
@@ -388,6 +390,36 @@ export function expectedRunSeconds(td: any): number {
   return Math.ceil(worst);
 }
 
+/**
+ * The Total Test Duration the box demands, read back out of its refusal.
+ *
+ *   "PowerCycleConfig: Total Test Duration should be at least Power On Time +
+ *    Power Off Time + Ramp-up offset for profile 0. Minimum: 183.00"
+ *
+ * The ramp-up offset is a server-side figure — the term does not appear in the
+ * box's form bundle at all — so there is no formula here to get right. The box
+ * states the number it wants; this takes it.
+ *
+ * Also matches the form's own wording ("Minimum: 420s)") so a build that moves
+ * the check client-side keeps working.
+ */
+export function totalDurationFromError(text: string): number | null {
+  if (!/total test duration/i.test(text ?? '')) return null;
+  const m = /Minimum:\s*([\d.]+)/i.exec(text ?? '');
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? Math.ceil(n) : null;
+}
+
+/** Set every power-cycle profile's total to at least `seconds`. Used after the
+ *  box has named the figure it wants. */
+export function applyTotalTestDuration(td: any, seconds: number): void {
+  for (const pc of profilesOf(td?.powerCycleConfig)) {
+    if (pc.totalTestDuration === undefined || pc.totalTestDuration === null) continue;
+    pc.totalTestDuration = Math.max(num(pc.totalTestDuration), Math.ceil(seconds));
+  }
+}
+
 /** The floor the box names when it refuses a session, read back out of the
  *  refusal. Kept as a safety net: the arithmetic above is the box's own, but a
  *  build that changes a constant would say so here first. */
@@ -439,6 +471,10 @@ export function applyDuration(td: any, seconds: number): string[] {
   // code wrote powerOn − attachDelay — happened to pass only because the test
   // was then valid for the wrong reason.
   for (const pc of profilesOf(td?.powerCycleConfig)) {
+    const wasOn = num(pc.powerOnTime);
+    const wasOff = num(pc.powerOffTime);
+    const wasTotal = num(pc.totalTestDuration);
+
     const mine = ups.filter((u) => sharesGroup(pc?.subscriberGroup, u?.subscriberGroup));
     const busiest = mine.reduce(
       (best: any, u: any) => (requiredPowerOn(u) > requiredPowerOn(best ?? {}) ? u : best),
@@ -447,10 +483,50 @@ export function applyDuration(td: any, seconds: number): string[] {
     pc.durationP = busiest ? requiredPowerOn(busiest) : 0;
     pc.powerOnTime = Math.max(powerOn, num(pc.durationP));
     if (busiest) pc.dataLoopP = looping(busiest);
-    // A total that has to cover every power-on/off cycle, by the box's own sum.
+
+    // The time the UEs spend OFF between cycles follows the window down.
+    //
+    // An attach-detach test is a shape — so long on, so long off, so many
+    // times — and shrinking only the on-time would change that shape rather
+    // than scale it. Only ever shortened, and never below a few seconds:
+    // growing a power-off the author chose is not what a shorter run means.
+    if (wasOff > 0 && wasOn > 0 && num(pc.powerOnTime) < wasOn) {
+      const scaled = Math.max(MIN_POWER_OFF, Math.round(wasOff * (num(pc.powerOnTime) / wasOn)));
+      if (scaled < wasOff) {
+        pc.powerOffTime = scaled;
+        notes.push(`power-off shortened from ${wasOff}s to ${scaled}s, in step with the power-on window`);
+      }
+    }
+
+    // The total the whole test is allowed to take.
+    //
+    // The box has TWO rules here and they are not the same. Its form checks
+    // (powerOn + powerOff) × cycles + attachDelay; the API additionally
+    // refuses "Total Test Duration should be at least Power On Time + Power
+    // Off Time + Ramp-up offset for profile 0. Minimum: N", and the ramp-up
+    // offset appears nowhere in the form — it is the box's own, measured at
+    // 63s for AIO_64UEs_UDP_TCP_VONR_attach-detach-loop whether its power-on
+    // was 330s or 100s, so it does not scale with the window.
+    //
+    // Whatever the author left on top of their cycles IS that offset, so it is
+    // carried over untouched and the cycles are rebuilt around the new window.
+    // That reproduced the box's 183s minimum for the row above exactly. When
+    // it does not, the create retries on the figure the box names — see
+    // powerCycleMinimumFromError.
     if (pc.totalTestDuration !== undefined && pc.totalTestDuration !== null) {
-      const cycles = Math.max(1, int(pc.noOfPowerOnCycles, 1));
-      pc.totalTestDuration = (num(pc.powerOnTime) + num(pc.powerOffTime)) * cycles + num(pc.attachDelay);
+      const declared = int(pc.noOfPowerOnCycles, 0);
+      const perCycleWas = wasOn + wasOff;
+      const cycles = declared >= 1 ? declared
+        : perCycleWas > 0 && wasTotal > 0 ? Math.max(1, Math.round(wasTotal / perCycleWas))
+        : 1;
+      const rampUp = Math.max(0, wasTotal - perCycleWas * cycles);
+      // attachDelay is in the form's rule and may or may not be inside the
+      // API's ramp-up; adding it costs a second or two and satisfies both.
+      pc.totalTestDuration = (num(pc.powerOnTime) + num(pc.powerOffTime)) * cycles + rampUp + num(pc.attachDelay);
+      if (wasTotal && num(pc.totalTestDuration) !== wasTotal) {
+        notes.push(`total test duration ${wasTotal}s → ${pc.totalTestDuration}s`
+          + ` (${cycles} power-on/off cycle${cycles === 1 ? '' : 's'}${rampUp ? ` plus the box's ${rampUp}s ramp-up` : ''})`);
+      }
     }
   }
 

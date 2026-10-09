@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 const {
   applyDuration, sessionFloorFromError, boxComplaints, powerOnOf,
   requiredPowerOn, voiceSessionFloor, pingPackets, MIN_POWER_ON_SEC,
+  totalDurationFromError, applyTotalTestDuration,
 } = await import('./durationFit.ts');
 
 /** Nothing the box would object to, after a fit. */
@@ -305,7 +306,10 @@ test('a total test duration covers every power-on/off cycle, by the box’s own 
   });
   applyDuration(td, 200);
   const p = td.powerCycleConfig.profiles[0];
-  assert.equal(p.totalTestDuration, (200 + 10) * 3 + 2);
+  // Three cycles of the NEW window, and the power-off scaled with it
+  // (10 x 200/600 = 3, held up to the 5s floor), plus the attach delay.
+  assert.equal(p.powerOffTime, 5);
+  assert.equal(p.totalTestDuration, (200 + 5) * 3 + 2);
   accepted(td);
 });
 
@@ -447,4 +451,84 @@ test('what powerOnOf reads is what applyDuration would put back', () => {
   assert.equal(powerOnOf(td).powerOnTime, 605);
   assert.equal(td.userPlaneConfig.profiles[0].sessionDuration, 600);
   accepted(td);
+});
+
+// ── the power-cycle section: cycles, power-off and the total ─────────────
+
+test('an attach-detach loop keeps its shape: power-off and the total follow the window', () => {
+  // AIO_64UEs_UDP_TCP_VONR_attach-detach-loop, exactly as .102 holds it. Its
+  // total of 413 is 330 + 20 + 63, and the box refused a 100s power-on with
+  // "Minimum: 183.00" — 100 + 20 + the same 63s ramp-up.
+  const td: any = {
+    userPlaneConfig: {
+      profiles: [
+        { dataType: 'iperf', subscriberGroup: [-1], sessionDuration: 300, startDelay: 5 },
+        { dataType: 'volte', subscriberGroup: [-1], sessionDuration: 320, startDelay: 5, callSetupDelay: 5, callDuration: 300 },
+      ],
+    },
+    powerCycleConfig: {
+      profiles: [{
+        subscriberGroup: [-1], attachDelay: 0, attachRate: 1, attachType: 'bursty',
+        loopProfile: 'time', powerOnTime: 330, powerOffTime: 20, totalTestDuration: 413,
+      }],
+    },
+  };
+  const notes = applyDuration(td, 100);
+  const pc = td.powerCycleConfig.profiles[0];
+  assert.equal(pc.powerOnTime, 100);
+  assert.equal(pc.powerOffTime, 6, 'power-off scales with the window: 20 × 100/330');
+  // One cycle, plus the 63s the author left on top — which is the box's own
+  // ramp-up offset, and does not scale.
+  assert.equal(pc.totalTestDuration, 100 + 6 + 63);
+  assert.match(notes.join(' '), /power-off shortened from 20s to 6s/);
+  assert.match(notes.join(' '), /total test duration 413s → 169s/);
+  accepted(td);
+});
+
+test('power-off is never grown, and never cut below a few seconds', () => {
+  const longer: any = def({ dataType: 'iperf', startDelay: 5 }, { powerOnTime: 100, powerOffTime: 20, totalTestDuration: 120 });
+  applyDuration(longer, 900);
+  assert.equal(longer.powerCycleConfig.profiles[0].powerOffTime, 20, 'a longer window does not lengthen the power-off');
+
+  const tiny: any = def({ dataType: 'iperf', startDelay: 5 }, { powerOnTime: 3600, powerOffTime: 20, totalTestDuration: 3620 });
+  applyDuration(tiny, 30);
+  assert.equal(tiny.powerCycleConfig.profiles[0].powerOffTime, 5, '20 × 30/3600 rounds to 0 — the floor holds');
+});
+
+test('a declared cycle count is honoured, not re-derived', () => {
+  const td: any = def({ dataType: 'iperf', startDelay: 5 }, {
+    powerOnTime: 100, powerOffTime: 10, noOfPowerOnCycles: 4, totalTestDuration: 440,
+  });
+  applyDuration(td, 200);
+  const pc = td.powerCycleConfig.profiles[0];
+  assert.equal(pc.powerOnTime, 200);
+  assert.equal(pc.totalTestDuration, (200 + 10) * 4 + 0);   // power-off unchanged: the window grew
+  accepted(td);
+});
+
+test('a test with no total test duration is left without one', () => {
+  const td: any = def({ dataType: 'iperf', startDelay: 5 }, { powerOnTime: 605, powerOffTime: 0 });
+  applyDuration(td, 100);
+  assert.equal('totalTestDuration' in td.powerCycleConfig.profiles[0], false);
+  accepted(td);
+});
+
+test('the total the box demands is read back out of its refusal', () => {
+  assert.equal(
+    totalDurationFromError('{"code":"BAD_REQUEST","message":"PowerCycleConfig: Total Test Duration should be at least Power On Time + Power Off Time + Ramp-up offset for profile 0. Minimum: 183.00"}'),
+    183,
+  );
+  // The form's own wording, for a build that moves the check client-side.
+  assert.equal(totalDurationFromError('Total Test Duration should be at least equal to the total time taken for all power on/off cycles. (Minimum: 420s)'), 420);
+  // Not this rule, and not a number at all.
+  assert.equal(totalDurationFromError('sessionDuration 200 should be greater than 520s for VOLTE'), null);
+  assert.equal(totalDurationFromError(''), null);
+});
+
+test('applyTotalTestDuration raises the total and never lowers it', () => {
+  const td: any = def({ dataType: 'iperf' }, { totalTestDuration: 120 });
+  applyTotalTestDuration(td, 183);
+  assert.equal(td.powerCycleConfig.profiles[0].totalTestDuration, 183);
+  applyTotalTestDuration(td, 50);
+  assert.equal(td.powerCycleConfig.profiles[0].totalTestDuration, 183);
 });
