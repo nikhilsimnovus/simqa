@@ -965,21 +965,29 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           if (suite.stopOnFail) break;
           continue;
         }
-        try {
-          sourceTd = JSON.parse(raw);
-          stepDetails.push(fromFolder
-            ? `testcase: built from ${testCaseDir(cfgFrom, item.name)}/test.json (uploaded)`
-            : `testcase: built from the file uploaded as "${uploadKey}"`);
-        } catch {
+        // Read, not just parsed. The wizard checks an upload as it is picked,
+        // but suites carry definitions saved before it did — four rows of the
+        // Subscriber suite hold a ue.cfg, which is valid JSON, so a bare parse
+        // handed the box an object with no cellConfig and the row failed on
+        // the hardware with "CellConfig: Section is required but missing".
+        let parsed: unknown;
+        let bad = '';
+        try { parsed = JSON.parse(raw); } catch { bad = 'it is not valid JSON'; }
+        const pack = bad ? { definition: undefined, error: bad } : definitionFromPack(parsed);
+        if (!pack.definition) {
           steps.push({
             testcaseId: item.name, status: 0, ok: false,
-            detail: `uploaded test case "${uploadKey}" is not valid JSON`,
+            detail: `the test case uploaded as "${uploadKey}" cannot be used: ${pack.error}`,
             durationMs: Date.now() - t0,
           });
           failed += 1; done += 1;
           if (suite.stopOnFail) break;
           continue;
         }
+        sourceTd = pack.definition;
+        stepDetails.push(fromFolder
+          ? `testcase: built from ${testCaseDir(cfgFrom, item.name)}/test.json (uploaded)`
+          : `testcase: built from the file uploaded as "${uploadKey}"`);
       }
       // Where this row's definition comes from, in order:
       //
