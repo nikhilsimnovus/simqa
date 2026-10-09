@@ -279,10 +279,14 @@ export async function createFromDefinition(
       }
     }
 
-    // The box does its own arithmetic on a voice session and names the floor
-    // it wants. Rather than guess at which delays it counted, take the number
-    // it gave, refit the whole definition around it and send the section again
-    // — power-cycle has not gone up yet, so it carries the new window too.
+    // The safety net, not the plan.
+    //
+    // durationFit now does the box's own arithmetic — transcribed from its form
+    // bundle and checked against every testcase on .94 and .95 — so a refusal
+    // here means a build changed a constant and this file's transcription is
+    // stale. Growing the window to the floor the box names is the wrong policy
+    // (the row asked for a duration and should get it) but it is better than
+    // the row not running at all, and the warning says what happened.
     if (!r.ok && step === 'user-plane') {
       const floor = sessionFloorFromError(r.text);
       if (floor != null) {
