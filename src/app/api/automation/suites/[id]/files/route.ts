@@ -29,9 +29,24 @@ function describeTestJson(text: string | undefined) {
   if (text === undefined) return { present: false as const };
   let parsed: unknown;
   try { parsed = JSON.parse(text); }
-  catch { return { present: true as const, usable: false, why: 'not valid JSON', bytes: text.length }; }
+  catch {
+    return {
+      present: true as const, usable: false, why: 'not valid JSON', bytes: text.length,
+      // Where it stops being JSON is usually the whole story — a write that
+      // was cut off looks exactly like this.
+      head: text.slice(0, 200), tail: text.slice(-200),
+    };
+  }
   const { definition, error } = definitionFromPack(parsed);
-  if (!definition) return { present: true as const, usable: false, why: error, bytes: text.length };
+  if (!definition) {
+    return {
+      present: true as const, usable: false, why: error, bytes: text.length,
+      // What it IS, since it is not what was expected. Keys only: enough to
+      // recognise the shape without serving the file's contents back out.
+      keys: parsed && typeof parsed === 'object' ? Object.keys(parsed as object).slice(0, 40) : [],
+      head: text.slice(0, 200),
+    };
+  }
   const sections = Object.keys(definition).filter((k) => /Config$|^settings$/.test(k));
   return {
     present: true as const,
