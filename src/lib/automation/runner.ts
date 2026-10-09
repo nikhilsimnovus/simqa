@@ -33,8 +33,9 @@ import { duplicateTestcase } from './duplicateTestcase';
 import { isTerminalStatus } from './outcome';
 import { saveRowConfigs } from '../suiteConfigStore';
 import { preflightRows } from './preflightConfigs';
-// Read a saved test.json the same way an uploaded one is read.
-import { definitionFromPack } from './importPack';
+// Read a saved test.json the same way an uploaded one is read — tolerating
+// the comments and trailing commas a hand edit leaves in it.
+import { definitionFromText } from './importPack';
 import { expectedRunSeconds } from './durationFit';
 import { validateCfg, withDbInclude, ROLE_LABEL, type CfgRole } from '../cfgValidate';
 import { readTestCaseFile, readAllTestCaseFiles, testCaseDir } from './serverConfigs';
@@ -970,10 +971,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         // Subscriber suite hold a ue.cfg, which is valid JSON, so a bare parse
         // handed the box an object with no cellConfig and the row failed on
         // the hardware with "CellConfig: Section is required but missing".
-        let parsed: unknown;
-        let bad = '';
-        try { parsed = JSON.parse(raw); } catch { bad = 'it is not valid JSON'; }
-        const pack = bad ? { definition: undefined, error: bad } : definitionFromPack(parsed);
+        const pack = definitionFromText(raw);
         if (!pack.definition) {
           steps.push({
             testcaseId: item.name, status: 0, ok: false,
@@ -988,6 +986,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         stepDetails.push(fromFolder
           ? `testcase: built from ${testCaseDir(cfgFrom, item.name)}/test.json (uploaded)`
           : `testcase: built from the file uploaded as "${uploadKey}"`);
+        if (pack.repaired) stepDetails.push(`note: that file has ${pack.repaired} in it — read anyway, but it is not valid JSON`);
       }
       // Where this row's definition comes from, in order:
       //
@@ -1034,10 +1033,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               // with no cellConfig, which the box answers with "CellConfig:
               // Section is required but missing". That is the box describing
               // our mistake, and it reads as though the testcase were broken.
-              let parsed: unknown;
-              let bad = '';
-              try { parsed = JSON.parse(saved); } catch { bad = 'it is not valid JSON'; }
-              const pack = bad ? { definition: undefined, error: bad } : definitionFromPack(parsed);
+              const pack = definitionFromText(saved);
               if (pack.definition) {
                 sourceTd = pack.definition;
                 stepDetails.push(
@@ -1045,6 +1041,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
                     ? `testcase: not on ${ueOpts.host} any more — recreated from the copy saved at ${where}`
                     : `testcase: this row names none on a box — created from the copy saved at ${where}`,
                 );
+                if (pack.repaired) stepDetails.push(`note: that copy has ${pack.repaired} in it — read anyway, but it is not valid JSON`);
               } else {
                 steps.push({
                   testcaseId: item.name, status: 0, ok: false,

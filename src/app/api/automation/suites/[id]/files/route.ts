@@ -19,7 +19,7 @@
 import { NextResponse } from 'next/server';
 import { getSuite } from '@/lib/automation/store';
 import { listTestCaseFiles, readTestCaseFile, testCaseDir, automationRoot } from '@/lib/automation/serverConfigs';
-import { definitionFromPack } from '@/lib/automation/importPack';
+import { definitionFromText } from '@/lib/automation/importPack';
 import { powerOnOf } from '@/lib/automation/durationFit';
 
 export const dynamic = 'force-dynamic';
@@ -42,32 +42,20 @@ function windowAround(text: string, message: string): { position: number; before
 /** Can this saved test.json actually rebuild the row, and what does it hold? */
 function describeTestJson(text: string | undefined) {
   if (text === undefined) return { present: false as const };
-  let parsed: unknown;
-  try { parsed = JSON.parse(text); }
-  catch (e: unknown) {
-    return {
-      present: true as const, usable: false,
-      // The parser names the character it gave up at, which is the whole
-      // story for a file that was written over by a shorter one.
-      why: `not valid JSON: ${(e as Error)?.message ?? 'parse failed'}`, bytes: text.length,
-      // Where it stops being JSON is usually the whole story — a write that
-      // was cut off looks exactly like this.
-      head: text.slice(0, 200), tail: text.slice(-200),
-      // And the damage itself. A saved copy is the only thing standing
-      // between a row and a deleted test case, so "it is corrupt" is not a
-      // useful place to stop: this is what has to be looked at to decide
-      // whether the definition can be salvaged or has to be captured again.
-      at: windowAround(text, (e as Error)?.message ?? ''),
-    };
-  }
-  const { definition, error } = definitionFromPack(parsed);
+  const { definition, error, repaired } = definitionFromText(text);
   if (!definition) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { /* the error already says so */ }
     return {
       present: true as const, usable: false, why: error, bytes: text.length,
       // What it IS, since it is not what was expected. Keys only: enough to
       // recognise the shape without serving the file's contents back out.
       keys: parsed && typeof parsed === 'object' ? Object.keys(parsed as object).slice(0, 40) : [],
-      head: text.slice(0, 200),
+      head: text.slice(0, 200), tail: text.slice(-200),
+      // And, for a file that is not JSON at all, the damage itself: a saved
+      // copy is the only thing standing between a row and a deleted test
+      // case, so "it is corrupt" is not a useful place to stop.
+      at: windowAround(text, error ?? ''),
     };
   }
   const sections = Object.keys(definition).filter((k) => /Config$|^settings$/.test(k));
@@ -75,6 +63,9 @@ function describeTestJson(text: string | undefined) {
     present: true as const,
     usable: true,
     bytes: text.length,
+    // Usable, but say when it only parsed because comments or a stray comma
+    // were forgiven — that is a hand edit, and worth knowing about.
+    ...(repaired ? { repaired } : {}),
     sections,
     // The two that the box refuses a create without.
     hasCells: !!definition.cellConfig,

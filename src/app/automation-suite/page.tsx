@@ -22,7 +22,7 @@ import { cn } from '@/lib/cn';
 import { SearchableSelect } from '@/components/SearchableSelect';
 import { useColumnWidths, ResizeHandle, ColGroup } from '@/components/resizableColumns';
 import { statusLabel, verdictLabel, verdictClass, statusStyle } from '@/lib/automation/outcome';
-import { definitionFromPack } from '@/lib/automation/importPack';
+import { definitionFromText } from '@/lib/automation/importPack';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
 import { validateCfg, dbIncludesOf, ROLE_LABEL, type CfgRole, type CfgVerdict } from '@/lib/cfgValidate';
 // The same reading of a definition the power-on route does, so an uploaded
@@ -1208,11 +1208,9 @@ export default function AutomationSuitePage() {
     setImportingTc(true);
     setTcImportMsg(null);
     try {
-      let raw: unknown;
-      try { raw = JSON.parse(await file.text()); }
-      catch { setTcImportMsg({ ok: false, text: `${file.name} is not valid JSON.` }); return; }
-
-      const { name, definition, error } = definitionFromPack(raw);
+      // The same reader the runner uses, so a file it accepts here is one it
+      // can rebuild the row from later — comments and all.
+      const { name, definition, error, repaired } = definitionFromText(await file.text());
       if (error || !definition) { setTcImportMsg({ ok: false, text: error ?? 'no test definition in that file' }); return; }
 
       // Nothing is sent to a Simnovator. The definition is held with the suite,
@@ -1232,7 +1230,11 @@ export default function AutomationSuitePage() {
       setAddDur(got.powerOnTime ? String(got.powerOnTime) : '');
       setTcImportMsg({
         ok: true,
-        text: `"${key}" is ready to add. It is kept with this suite — the test case is created on the Simnovator, under the display name below, when the suite runs.`,
+        text: `"${key}" is ready to add. It is kept with this suite — the test case is created on the Simnovator, under the display name below, when the suite runs.`
+          // What is kept is the definition that came out of the reader, so a
+          // hand-edited file is stored as valid JSON from here on. Worth
+          // saying, because the file on disk still is not.
+          + (repaired ? ` That file has ${repaired} in it, which JSON does not allow — it was read anyway, and what is kept here is valid.` : ''),
       });
     } catch (err: any) {
       setTcImportMsg({ ok: false, text: err?.message ?? String(err) });

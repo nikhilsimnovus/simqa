@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { toImportPack, definitionFromPack } = await import('./importPack.ts');
+const { toImportPack, definitionFromPack, definitionFromText } = await import('./importPack.ts');
 
 const detail = (name: string) => ({
   Test_Id: '01a0f718-8d18-795d-b195-4fef7193d639',
@@ -103,4 +103,58 @@ test('an unrecognised file says what it actually contains', () => {
   const r = definitionFromPack({ alpha: 1, beta: 2, gamma: 3 });
   assert.equal(r.definition, undefined);
   assert.match(r.error ?? '', /top-level keys are: alpha, beta, gamma/);
+});
+
+// ── reading a saved copy an operator has edited ──────────────────────────
+
+test('a line commented out with // is forgiven, and said out loud', () => {
+  // AIO_Validation_of_IMEISV_automation's saved test.json, in miniature: a
+  // hand edit that made the one file standing between the row and a deleted
+  // test case unreadable.
+  const text = `{
+  "settings": { "test_name": "AIO_Validation_of_IMEISV" },
+  "subsConfig": {
+    "subs": [
+      {
+        "algorithm": "xor",
+        // "algorithmKeyMode": "opc",
+        "asRelease": 16
+      }
+    ]
+  },
+  "cellConfig": { "cells": [] }
+}`;
+  const r = definitionFromText(text);
+  assert.ok(r.definition, r.error);
+  assert.equal(r.repaired, 'comments');
+  assert.equal(r.definition.subsConfig.subs[0].asRelease, 16);
+  assert.equal('algorithmKeyMode' in r.definition.subsConfig.subs[0], false);
+});
+
+test('a block comment and a trailing comma are forgiven too', () => {
+  const r = definitionFromText('{ /* kept for reference */ "cellConfig": { "cells": [] }, }');
+  assert.ok(r.definition, r.error);
+  assert.equal(r.repaired, 'comments and a trailing comma');
+});
+
+test('a double slash inside a string is not a comment', () => {
+  const r = definitionFromText('{"cellConfig":{},"settings":{"log_filename":"/tmp//ue.log","url":"http://x/y"}}');
+  assert.ok(r.definition, r.error);
+  assert.equal(r.repaired, undefined);
+  assert.equal(r.definition.settings.log_filename, '/tmp//ue.log');
+  assert.equal(r.definition.settings.url, 'http://x/y');
+});
+
+test('clean JSON is not reported as repaired', () => {
+  const r = definitionFromText('{"cellConfig":{"cells":[]}}');
+  assert.ok(r.definition);
+  assert.equal(r.repaired, undefined);
+});
+
+test('a file broken in any other way is still broken', () => {
+  const r = definitionFromText('{"cellConfig": }');
+  assert.equal(r.definition, undefined);
+  assert.match(r.error ?? '', /not valid JSON/);
+  // And a ue.cfg is still a ue.cfg, however it is punctuated.
+  assert.match(definitionFromText('{ /* x */ "ue_list": [], "cell_groups": [] }').error ?? '', /this is a ue\.cfg/);
 });
