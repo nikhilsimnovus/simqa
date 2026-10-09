@@ -80,8 +80,24 @@ export function definitionFromPack(raw: unknown): { name?: string; definition?: 
     return { name: undefined, definition: any };
   }
 
+  // The near miss, named.
+  //
+  // A ue.cfg is JSON, it is full of cells and UEs, and it sits in the same
+  // folders as everything else — so it is the obvious wrong file to pick, and
+  // four rows of the Subscriber suite on .102 were built from one. The generic
+  // "this does not look like a Simnovator test case" left nothing to act on,
+  // and the row went on to fail much later with the box's own complaint that
+  // the cell section was missing.
+  if (any.ue_list || any.cell_groups) {
+    return {
+      error: 'this is a ue.cfg — the UE simulator’s own config, not a Simnovator test case. '
+        + 'Use the Simnovator’s Export button on the test case itself.',
+    };
+  }
+
   return {
     error: 'this does not look like a Simnovator test case — expected an export '
-      + '(test_case_details), a saved testcase, or a test definition',
+      + '(test_case_details), a saved testcase, or a test definition. '
+      + `This file's top-level keys are: ${Object.keys(any).slice(0, 8).join(', ') || '(none)'}.`,
   };
 }

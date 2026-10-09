@@ -29,9 +29,12 @@ function describeTestJson(text: string | undefined) {
   if (text === undefined) return { present: false as const };
   let parsed: unknown;
   try { parsed = JSON.parse(text); }
-  catch {
+  catch (e: unknown) {
     return {
-      present: true as const, usable: false, why: 'not valid JSON', bytes: text.length,
+      present: true as const, usable: false,
+      // The parser names the character it gave up at, which is the whole
+      // story for a file that was written over by a shorter one.
+      why: `not valid JSON: ${(e as Error)?.message ?? 'parse failed'}`, bytes: text.length,
       // Where it stops being JSON is usually the whole story — a write that
       // was cut off looks exactly like this.
       head: text.slice(0, 200), tail: text.slice(-200),

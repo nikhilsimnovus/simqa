@@ -84,3 +84,23 @@ test('an export with no config says so rather than yielding an empty test', () =
   assert.match(r.error ?? '', /Config_File/);
   assert.equal(r.definition, undefined);
 });
+
+test('a ue.cfg picked by mistake is named, not called unrecognisable', () => {
+  // The file four rows of the Subscriber suite were actually built from. It is
+  // JSON, it is full of cells and UEs, and it lives beside the real thing.
+  const ueCfg = {
+    cell_groups: [{ cell_sync: false, cells: [{ band: 78, bandwidth: 20, dl_nr_arfcn: 632628 }] }],
+    com_addr: '[::]:9002', log_filename: '/tmp/ue0.log', log_options: 'all.level=error',
+    rf_driver: { name: 'sdr' }, rx_gain: 40, tx_gain: 0, ue_list: [{ imsi: '001010000000001' }],
+  };
+  const r = definitionFromPack(ueCfg);
+  assert.equal(r.definition, undefined);
+  assert.match(r.error ?? '', /this is a ue\.cfg/);
+  assert.match(r.error ?? '', /Export button/);
+});
+
+test('an unrecognised file says what it actually contains', () => {
+  const r = definitionFromPack({ alpha: 1, beta: 2, gamma: 3 });
+  assert.equal(r.definition, undefined);
+  assert.match(r.error ?? '', /top-level keys are: alpha, beta, gamma/);
+});
