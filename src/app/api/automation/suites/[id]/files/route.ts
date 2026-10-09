@@ -24,6 +24,21 @@ import { powerOnOf } from '@/lib/automation/durationFit';
 
 export const dynamic = 'force-dynamic';
 
+/** The text either side of the character the JSON parser gave up at, which it
+ *  names in its own message. Returns undefined when the message carries no
+ *  position — the wording differs between runtimes. */
+function windowAround(text: string, message: string): { position: number; before: string; after: string } | undefined {
+  const m = /position (\d+)/.exec(message);
+  if (!m) return undefined;
+  const position = Number(m[1]);
+  if (!Number.isFinite(position)) return undefined;
+  return {
+    position,
+    before: text.slice(Math.max(0, position - 260), position),
+    after: text.slice(position, position + 260),
+  };
+}
+
 /** Can this saved test.json actually rebuild the row, and what does it hold? */
 function describeTestJson(text: string | undefined) {
   if (text === undefined) return { present: false as const };
@@ -38,6 +53,11 @@ function describeTestJson(text: string | undefined) {
       // Where it stops being JSON is usually the whole story — a write that
       // was cut off looks exactly like this.
       head: text.slice(0, 200), tail: text.slice(-200),
+      // And the damage itself. A saved copy is the only thing standing
+      // between a row and a deleted test case, so "it is corrupt" is not a
+      // useful place to stop: this is what has to be looked at to decide
+      // whether the definition can be salvaged or has to be captured again.
+      at: windowAround(text, (e as Error)?.message ?? ''),
     };
   }
   const { definition, error } = definitionFromPack(parsed);
