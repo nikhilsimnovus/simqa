@@ -14,7 +14,7 @@ import { ensureToken, getTestcase, listTestcases, type ApiOpts } from '../uesimC
 import { diffSections, reconcileCellArrays, type SectionName } from '../testcaseSections';
 // The duration arithmetic lives in durationFit.ts so it can be unit-tested;
 // re-exported here because this module is where callers already look for it.
-import { applyDuration, sessionFloorFromError, MIN_POWER_ON_SEC } from './durationFit';
+import { applyDuration, sessionFloorFromError, expectedRunSeconds, MIN_POWER_ON_SEC } from './durationFit';
 export { applyDuration, sessionFloorFromError, MIN_POWER_ON_SEC } from './durationFit';
 
 
@@ -120,6 +120,17 @@ export interface DuplicateResult {
   /** True when an existing testcase of that name was executed rather than a new
    *  one being created. */
   reused?: boolean;
+  /**
+   * How long the testcase that will actually run keeps the box busy, by the
+   * box's own sum — see expectedRunSeconds.
+   *
+   * The caller needs this to know how long to listen for. It is not the
+   * duration the row asked for: a profile whose traffic cannot be shortened
+   * raises the window, and a looped power-cycle profile multiplies it. Waiting
+   * on the row's figure instead made the runner stop executions the box went
+   * on to complete, which surfaced as a suite row that never updated.
+   */
+  expectedRunSec?: number;
 }
 
 /**
@@ -169,7 +180,16 @@ export async function duplicateTestcase(
       } catch { /* unreadable: leave it alone and just run it */ }
     }
 
-    if (!staleDesc) return { testCaseId: already, name: finalName, reused: true };
+    if (!staleDesc) {
+      // Reusing means running what is already on the box, so how long THAT
+      // takes is what the caller has to wait for — not the row's figure.
+      let expectedRunSec: number | undefined;
+      try {
+        const cur: any = await getTestcase(opts, already);
+        expectedRunSec = expectedRunSeconds(cur?.testDefinition ?? {}) || undefined;
+      } catch { /* unreadable: the caller falls back to the row's duration */ }
+      return { testCaseId: already, name: finalName, reused: true, expectedRunSec };
+    }
 
     const gone = await del(opts, token, `/testcases/${encodeURIComponent(already)}`);
     if (!gone.ok) {
@@ -220,7 +240,9 @@ export async function duplicateTestcase(
 
   const result = await createFromDefinition(opts, token, td, finalName, notes);
   if (result.failedStep) return result;
-  return { ...result, reused: !!rebuiltNote };   // same name as before, rebuilt rather than added
+  // td is the definition that was just built on the box, including anything
+  // the create lifecycle had to grow — so this is the real timeline.
+  return { ...result, reused: !!rebuiltNote, expectedRunSec: expectedRunSeconds(td) || undefined };
 }
 
 /**

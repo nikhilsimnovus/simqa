@@ -33,6 +33,7 @@ import { duplicateTestcase } from './duplicateTestcase';
 import { isTerminalStatus } from './outcome';
 import { saveRowConfigs } from '../suiteConfigStore';
 import { preflightRows } from './preflightConfigs';
+import { expectedRunSeconds } from './durationFit';
 import { validateCfg, withDbInclude, ROLE_LABEL, type CfgRole } from '../cfgValidate';
 import { readTestCaseFile, readAllTestCaseFiles, testCaseDir } from './serverConfigs';
 import { syncRowToServer } from './syncServerConfigs';
@@ -130,8 +131,15 @@ export interface SuiteRunStep {
    *  window). One of: PASS, FAIL, INCOMPLETE, ABORTED, STOPPED,
    *  TIMEOUT, ERROR — or '' if we never got a status back. */
   verdict?: string;
-  /** Box's last reported execution status text (for diagnostics). */
+  /** Box's last reported execution status text, in its own spelling. One of
+   *  the two fields the Status and Verdict columns show, so it is stored raw
+   *  and mapped only at render time. */
   boxStatus?: string;
+  /** Box's last reported execution RESULT, in its own spelling (PASS, FAIL,
+   *  INCOMPLETE, ERROR, NOT_EXECUTED). Kept separate from `verdict`, which
+   *  folds the status in and so could not be shown beside it without the two
+   *  columns contradicting the Simnovator's own screen. */
+  boxResult?: string;
   /** Whether the test was stopped explicitly by simqa (vs. finished
    *  on its own within the duration window). */
   stopped?: boolean;
@@ -232,6 +240,69 @@ async function pollExecutionToTerminal(host: string, token: string, tcId: string
     await new Promise(r => setTimeout(r, 2000));
   }
   return last;
+}
+
+/**
+ * How long the testcase on the box will actually take, by the box's own sum.
+ *
+ * Needed by the paths that run a testcase AS IT IS rather than making a copy
+ * with a new duration: the row's figure says nothing about those, and they
+ * used to be polled for exactly that figure with no margin at all — so a
+ * testcase authored to run for 605s was stopped after the row's 100s and
+ * recorded as aborted while the Simnovator completed it.
+ *
+ * 0 when the testcase cannot be read, which leaves the caller on the row's
+ * duration — no worse than before.
+ */
+async function fetchExpectedRun(host: string, token: string, tcId: string): Promise<number> {
+  try {
+    const r = await fetch(`http://${host}/v2/testcases/${encodeURIComponent(tcId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!r.ok) return 0;
+    const j: any = await r.json();
+    return expectedRunSeconds(j?.testDefinition ?? {});
+  } catch { return 0; }
+}
+
+/**
+ * Wait for an execution to reach a terminal state, and stop it only if it
+ * really has not got there.
+ *
+ * One implementation for all three trigger paths, because they had three
+ * different windows — two of them the row's duration with no margin — and the
+ * difference was invisible until a row that passed on the box showed as
+ * aborted in the suite.
+ *
+ * The last look before stopping matters: lastExecution is polled every two
+ * seconds, so a test that finished inside the final gap would otherwise be
+ * stopped after the fact and recorded as though SimQA had cut it short.
+ */
+async function settleExecution(
+  host: string, token: string, tcId: string,
+  triggerExecId: string | undefined, windowSec: number,
+  signal?: AbortSignal, simulatorId?: string,
+): Promise<{ finalState: ExecutionState | null; stoppedByUs: boolean; execId?: string; lateFinish: boolean }> {
+  let finalState = await pollExecutionToTerminal(host, token, tcId, triggerExecId, windowSec, signal);
+  let naturallyDone = isTerminalStatus(finalState?.status);
+  let lateFinish = false;
+  if (!naturallyDone && !signal?.aborted) {
+    const late = await fetchLastExecution(host, token, tcId);
+    if (late && isTerminalStatus(late.status)) {
+      finalState = late;
+      naturallyDone = true;
+      lateFinish = true;
+    }
+  }
+  const execId = finalState?.executionId ?? triggerExecId;
+  let stoppedByUs = false;
+  if (!naturallyDone && execId && !signal?.aborted) {
+    const settled = await stopAndFinalize(host, token, tcId, execId, signal, simulatorId);
+    if (settled) finalState = settled;
+    stoppedByUs = true;
+  }
+  return { finalState, stoppedByUs, execId, lateFinish };
 }
 
 /** Stop an in-flight execution then settle into a terminal verdict.
@@ -403,24 +474,21 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
       await new Promise(res => setTimeout(res, 1500));
       // execId is read from lastExecution by the poller since we abort
       // the trigger fetch before getting its body.
-      let finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, undefined, durSec, opts.signal);
-      const execId = finalState?.executionId;
-      let stoppedByUs = false;
-      const naturallyDone = isTerminalStatus(finalState?.status);
-      if (!naturallyDone && execId && !opts.signal?.aborted) {
-        const settled = await stopAndFinalize(ueOpts.host, token, tcId, execId, opts.signal, simulatorId);
-        if (settled) finalState = settled;
-        stoppedByUs = true;
-      }
+      // This path runs the testcase as it stands, so how long it takes is the
+      // testcase's business, not the row's figure.
+      const window1 = Math.max(durSec, await fetchExpectedRun(ueOpts.host, token, tcId)) + POLL_MARGIN_SEC;
+      const { finalState, stoppedByUs, execId, lateFinish } =
+        await settleExecution(ueOpts.host, token, tcId, undefined, window1, opts.signal, simulatorId);
       const verdict = deriveVerdict(finalState, !finalState);
       const passLike = verdict === 'PASS';
       steps.push({
         testcaseId: tcId, status: r.status, ok: passLike,
         executionId: finalState?.executionId ?? execId,
-        verdict, boxStatus: finalState?.status, stopped: stoppedByUs,
+        verdict, boxStatus: finalState?.status, boxResult: finalState?.result, stopped: stoppedByUs,
         detail: finalState
-          ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s${stoppedByUs ? ' (stopped by simqa)' : ''}`
-          : `triggered but no terminal state within ${durSec}s — stop attempted${stoppedByUs ? '; box never settled' : ''}`,
+          ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s`
+            + `${lateFinish ? ' (the box finished while the last poll was in flight)' : ''}${stoppedByUs ? ' (stopped by simqa)' : ''}`
+          : `triggered but no terminal state within ${window1}s — stop attempted${stoppedByUs ? '; box never settled' : ''}`,
         durationMs: Date.now() - t0,
       });
       if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) break; }
@@ -655,24 +723,22 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
           done += 1;
           continue;
         }
-        // Trigger worked — now poll until terminal state or duration hits.
-        let finalState = await pollExecutionToTerminal(ueOpts.host, token, tcId, execId, durSec, opts.signal);
-        let stoppedByUs = false;
-        const naturallyDone = isTerminalStatus(finalState?.status);
-        if (!naturallyDone && execId && !opts.signal?.aborted) {
-          const settled = await stopAndFinalize(ueOpts.host, token, tcId, execId, opts.signal, simulatorId);
-          if (settled) finalState = settled;
-          stoppedByUs = true;
-        }
+        // Trigger worked — now wait for the testcase's own run to finish, not
+        // for the row's figure to elapse.
+        const window2 = Math.max(durSec, await fetchExpectedRun(ueOpts.host, token, tcId)) + POLL_MARGIN_SEC;
+        const settledRun = await settleExecution(ueOpts.host, token, tcId, execId, window2, opts.signal, simulatorId);
+        const finalState = settledRun.finalState;
+        const stoppedByUs = settledRun.stoppedByUs;
         const verdict = deriveVerdict(finalState, !finalState);
         const passLike = verdict === 'PASS';
         steps.push({
           testcaseId: `tc:${tcId}`, status: r.status, ok: passLike,
           executionId: finalState?.executionId ?? execId,
-          verdict, boxStatus: finalState?.status, stopped: stoppedByUs,
+          verdict, boxStatus: finalState?.status, boxResult: finalState?.result, stopped: stoppedByUs,
           detail: finalState
-            ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s${stoppedByUs ? ' (stopped by simqa)' : ''}`
-            : `triggered but no terminal state within ${durSec}s`,
+            ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s`
+              + `${settledRun.lateFinish ? ' (the box finished while the last poll was in flight)' : ''}${stoppedByUs ? ' (stopped by simqa)' : ''}`
+            : `triggered but no terminal state within ${window2}s`,
           durationMs: Date.now() - t0,
         });
         if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) break; }
@@ -862,6 +928,9 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     let runTcId = item.simnovatorTcId;
     /** The name the box actually gave the copy — the UE log is named after it. */
     let createdName = item.name;
+    /** How long the testcase on the box will actually take, by the box's own
+     *  sum. 0 until the copy exists; the poll window is built on it. */
+    let expectedRun = 0;
     if (!token) {
       steps.push({ testcaseId: item.name, status: 0, ok: false, detail: 'simnovator login failed', durationMs: Date.now() - t0 });
       failed += 1; done += 1;
@@ -948,6 +1017,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       }
       runTcId = dup.testCaseId;
       createdName = dup.name;
+      expectedRun = dup.expectedRunSec ?? 0;
       // dup.name may differ from item.name — testcase names are unique on the
       // box, so a re-run of the same row gets "_2", "_3", …
       stepDetails.push(dup.reused
@@ -1483,31 +1553,36 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         );
       }
 
-      // The poll window has to outlast the test, not match it: durSec is the
-      // user-plane session length, and the box spends powerOnTime (session +
-      // ~50s) bringing UEs up around it. Waiting only durSec would stop a 5s
-      // test while it was still attaching.
-      let finalState = await pollExecutionToTerminal(ueOpts.host, token, runTcId, undefined, durSec + POLL_MARGIN_SEC, opts.signal);
-      const execId = finalState?.executionId;
-      let stoppedByUs = false;
-      const naturallyDone = isTerminalStatus(finalState?.status);
-      // 2. If the window expired before the test stopped on its own,
-      //    POST stop and re-read the verdict from lastExecution.
-      if (!naturallyDone && execId && !opts.signal?.aborted) {
-        const settled = await stopAndFinalize(ueOpts.host, token, runTcId, execId, opts.signal, simulatorId);
-        if (settled) finalState = settled;
-        stoppedByUs = true;
+      // The poll window has to outlast the TEST, not the figure the row asked
+      // for. Those are different numbers: a profile whose traffic cannot be
+      // shortened raises the power-on window, and a looped power-cycle profile
+      // multiplies it, so expectedRunSec is the box's own sum for the testcase
+      // that is actually running. Listening for durSec instead is what made a
+      // finished test look unfinished — the runner gave up, stopped an
+      // execution the Simnovator went on to complete, and the suite recorded
+      // ABORTED against a row the box reported COMPLETED.
+      const expectRun = Math.max(durSec, expectedRun || 0);
+      const pollWindow = expectRun + POLL_MARGIN_SEC;
+      if (expectRun > durSec) {
+        stepDetails.push(`waiting up to ${pollWindow}s — this testcase runs for ${expectRun}s, not the ${durSec}s asked for`);
       }
+      // 2. Wait it out, and stop it only if it really has not finished.
+      const settledRun = await settleExecution(
+        ueOpts.host, token, runTcId, undefined, pollWindow, opts.signal, simulatorId);
+      const finalState = settledRun.finalState;
+      const execId = settledRun.execId;
+      const stoppedByUs = settledRun.stoppedByUs;
+      if (settledRun.lateFinish) stepDetails.push('the box finished while the last poll was in flight');
       const verdict = deriveVerdict(finalState, !finalState);
       const passLike = verdict === 'PASS';
       steps.push({
         testcaseId: item.name, status: r.status, ok: passLike,
         boxTestcaseId: runTcId,
         executionId: finalState?.executionId ?? execId,
-        verdict, boxStatus: finalState?.status, stopped: stoppedByUs,
+        verdict, boxStatus: finalState?.status, boxResult: finalState?.result, stopped: stoppedByUs,
         detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}${finalState
           ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s${stoppedByUs ? ' (stopped by simqa)' : ''}`
-          : `triggered but no terminal state within ${durSec}s — stop attempted${stoppedByUs ? '; box never settled' : ''}`}`,
+          : `triggered but no terminal state within ${pollWindow}s — stop attempted${stoppedByUs ? '; box never settled' : ''}`}`,
         durationMs: Date.now() - t0,
       });
       if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) { done += 1; break; } }

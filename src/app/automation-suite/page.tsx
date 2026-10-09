@@ -121,7 +121,7 @@ interface SuiteProgress {
   current?: string;
   statuses: Record<string, 'running' | 'passed' | 'failed' | 'skipped' | 'pending'>;
   /** The box's own status and verdict per row, as each one finishes. */
-  boxes?: Record<string, { status?: string; verdict?: string; stopped?: boolean }>;
+  boxes?: Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean }>;
   finished?: boolean;
 }
 interface SuiteItem {
@@ -609,7 +609,7 @@ export default function AutomationSuitePage() {
   /** What the BOX said about each row last time: its execution status and its
    *  verdict. Shown as-is, so the Status column can be read against the
    *  Simnovator's own screen rather than being SimQA's paraphrase of it. */
-  const [lastBox, setLastBox] = useState<Record<string, Record<string, { status?: string; verdict?: string; stopped?: boolean; boxTestcaseId?: string }>>>({});
+  const [lastBox, setLastBox] = useState<Record<string, Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean; boxTestcaseId?: string }>>>({});
 
   /**
    * Where a row's report lives — the same validation page the dashboard opens,
@@ -738,7 +738,7 @@ export default function AutomationSuitePage() {
     (async () => {
       const out: Record<string, Record<string, boolean>> = {};
       const reasons: Record<string, Record<string, string>> = {};
-      const boxes: Record<string, Record<string, { status?: string; verdict?: string; stopped?: boolean }>> = {};
+      const boxes: Record<string, Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean }>> = {};
       for (const s of suites) {
         try {
           // Dedicated endpoint: /runs returns summaries WITHOUT steps, so the
@@ -794,7 +794,7 @@ export default function AutomationSuitePage() {
       // because SimQA's ok was all the live view carried.
       const lb = progress?.boxes?.[it.name];
       return show(
-        { ok: livePr === 'passed', boxStatus: lb?.status, verdict: lb?.verdict, stopped: lb?.stopped },
+        { ok: livePr === 'passed', boxStatus: lb?.status, boxResult: lb?.result, verdict: lb?.verdict, stopped: lb?.stopped },
         livePr === 'failed' && !lb ? 'Failed during this run — the full reason appears once the run finishes' : undefined,
       );
     }
@@ -1529,13 +1529,13 @@ export default function AutomationSuitePage() {
       // — without this the row sat at "Not Run" after passing. Merged rather
       // than replaced so running one row doesn't blank the others.
       const fresh: Record<string, boolean> = {};
-      const freshBox: Record<string, { status?: string; verdict?: string; stopped?: boolean }> = {};
+      const freshBox: Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean }> = {};
       for (const st of d.result?.steps ?? []) {
         if (!st?.testcaseId) continue;
         fresh[st.testcaseId] = !!st.ok;
         // The box's own status and verdict land with the result, so the two
         // columns fill in straight away instead of after the next status poll.
-        freshBox[st.testcaseId] = { status: st.boxStatus, verdict: st.verdict, stopped: st.stopped };
+        freshBox[st.testcaseId] = { status: st.boxStatus, result: st.boxResult, verdict: st.verdict, stopped: st.stopped };
       }
       setLastStatus(prev => ({ ...prev, [s.id]: { ...(prev[s.id] ?? {}), ...fresh } }));
       setLastBox(prev => ({ ...prev, [s.id]: { ...(prev[s.id] ?? {}), ...freshBox } }));

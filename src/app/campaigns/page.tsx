@@ -32,7 +32,7 @@ interface Progress {
   suiteId: string; suiteName: string; done: number; total: number; current?: string;
   statuses: Record<string, string>;
   /** The box's own status and verdict per row, as each one finishes. */
-  boxes?: Record<string, { status?: string; verdict?: string; stopped?: boolean }>;
+  boxes?: Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean }>;
   finished?: boolean;
 }
 
@@ -79,13 +79,13 @@ export default function CampaignsPage() {
   // request per campaign, re-fetched when a run finishes.
   const [lastStatus, setLastStatus] = useState<Record<string, Record<string, boolean>>>({});
   const [lastDetail, setLastDetail] = useState<Record<string, Record<string, string>>>({});
-  const [lastBox, setLastBox] = useState<Record<string, Record<string, { status?: string; verdict?: string; stopped?: boolean }>>>({});
+  const [lastBox, setLastBox] = useState<Record<string, Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean }>>>({});
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const st: Record<string, Record<string, boolean>> = {};
       const de: Record<string, Record<string, string>> = {};
-      const bx: Record<string, Record<string, { status?: string; verdict?: string; stopped?: boolean }>> = {};
+      const bx: Record<string, Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean }>> = {};
       for (const c of campaigns) {
         try {
           const r = await fetch(`/api/automation/campaigns/${c.id}/status`).then(x => x.json());
@@ -245,7 +245,7 @@ export default function CampaignsPage() {
       // The box's own words where it gave them — the same answer the saved run
       // will show — and SimQA's pass/fail only as the fallback.
       const b = progress?.boxes?.[itemName];
-      const o = { ok: live === 'passed', boxStatus: b?.status, verdict: b?.verdict, stopped: b?.stopped };
+      const o = { ok: live === 'passed', boxStatus: b?.status, boxResult: b?.result, verdict: b?.verdict, stopped: b?.stopped };
       return { st: statusLabel(o), vd: verdictLabel(o), why: undefined };
     }
     if (live === 'skipped') return { st: statusLabel({ neverRun: true }), vd: '', why: undefined };
@@ -253,7 +253,7 @@ export default function CampaignsPage() {
     const prev = lastStatus[c.id]?.[itemName];
     if (prev === undefined) return { st: statusLabel({ neverRun: true }), vd: '', why: undefined };
     const box = lastBox[c.id]?.[itemName];
-    const o = { ok: prev, boxStatus: box?.status, verdict: box?.verdict, stopped: box?.stopped };
+    const o = { ok: prev, boxStatus: box?.status, boxResult: box?.result, verdict: box?.verdict, stopped: box?.stopped };
     return { st: statusLabel(o), vd: verdictLabel(o), why: lastDetail[c.id]?.[itemName] };
   };
 

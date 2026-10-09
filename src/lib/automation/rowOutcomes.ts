@@ -19,8 +19,10 @@ export interface RowOutcomes {
   /** One line saying why, for the cell's tooltip. */
   details: Record<string, string>;
   lastRunAt: Record<string, string>;
-  /** The box's own words: status (COMPLETED, ABORTED, …) and verdict. */
-  box: Record<string, { status?: string; verdict?: string; stopped?: boolean; boxTestcaseId?: string }>;
+  /** The box's own words, raw: status (COMPLETED, ABORTED, …) and result
+   *  (PASS, INCOMPLETE, …). The Status and Verdict columns are these two and
+   *  nothing else, so they are carried through unmapped. */
+  box: Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean; boxTestcaseId?: string }>;
 }
 
 /**
@@ -36,11 +38,19 @@ export interface RowOutcomes {
 function reasonFor(step: SuiteRunStep): string {
   const d = (step.detail ?? '').trim();
 
-  // The box ran it and returned its own verdict — same signal as the GUI.
-  if (step.verdict) {
-    const bits = [`Simnovator testcase verdict: ${step.verdict}`];
-    if (step.boxStatus) bits.push(`box status ${step.boxStatus}`);
+  // The box ran it and said what happened — the same two fields its GUI shows.
+  //
+  // This is where the detail earns its place now that the Status and Verdict
+  // columns are the box's words and nothing else: whether SimQA stopped the
+  // execution, and what it was doing beforehand, is exactly what those columns
+  // no longer say.
+  if (step.boxStatus || step.boxResult || step.verdict) {
+    const bits: string[] = [];
+    if (step.boxStatus) bits.push(`Simnovator status ${step.boxStatus}`);
+    if (step.boxResult) bits.push(`result ${step.boxResult}`);
+    else if (step.verdict) bits.push(`verdict ${step.verdict}`);
     if (step.stopped) bits.push('stopped by SimQA after the duration window');
+    if (d) bits.push(d);
     return bits.join(' · ');
   }
 
@@ -65,7 +75,7 @@ export function rowOutcomes(suiteId: string): RowOutcomes {
       statuses[st.testcaseId] = !!st.ok;
       details[st.testcaseId] = reasonFor(st);
       box[st.testcaseId] = {
-        status: st.boxStatus, verdict: st.verdict, stopped: st.stopped,
+        status: st.boxStatus, result: st.boxResult, verdict: st.verdict, stopped: st.stopped,
         // Which testcase on the box to open a report for.
         boxTestcaseId: st.boxTestcaseId,
       };

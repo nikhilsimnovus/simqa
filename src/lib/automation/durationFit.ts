@@ -362,6 +362,32 @@ export function powerOnOf(td: any): {
   };
 }
 
+/**
+ * How long this definition will actually keep the box busy, by the box's own
+ * sum — the one behind "Total Test Duration should be at least equal to the
+ * total time taken for all power on/off cycles":
+ *
+ *   (powerOnTime + powerOffTime) × noOfPowerOnCycles + attachDelay
+ *
+ * This is NOT the figure the row asked for, and the difference is what made a
+ * finished test look unfinished. A row asking for 100s whose power-on was
+ * grown to 630s to hold its traffic ran for 630s while the runner listened for
+ * 100s + slack, gave up, and stopped an execution the Simnovator went on to
+ * complete — so the box said COMPLETED and the suite said ABORTED. Whatever
+ * the row asked for, the wait has to be built on this.
+ */
+export function expectedRunSeconds(td: any): number {
+  let worst = 0;
+  for (const pc of profilesOf(td?.powerCycleConfig)) {
+    const cycles = Math.max(1, int(pc?.noOfPowerOnCycles, 1));
+    worst = Math.max(worst, (num(pc?.powerOnTime) + num(pc?.powerOffTime)) * cycles + num(pc?.attachDelay));
+  }
+  // A time-based power-cycle profile states its own total and may outlast the
+  // sum above.
+  for (const pc of profilesOf(td?.powerCycleConfig)) worst = Math.max(worst, num(pc?.totalTestDuration));
+  return Math.ceil(worst);
+}
+
 /** The floor the box names when it refuses a session, read back out of the
  *  refusal. Kept as a safety net: the arithmetic above is the box's own, but a
  *  build that changes a constant would say so here first. */

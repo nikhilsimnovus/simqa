@@ -79,7 +79,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       // The box's own status and verdict ride along, so a finished row reads
       // the same live as it will once the run is saved.
       onStep: (step) => markStep(id, step.testcaseId, step.ok, {
-        status: step.boxStatus, verdict: step.verdict, stopped: step.stopped,
+        status: step.boxStatus, result: step.boxResult, verdict: step.verdict, stopped: step.stopped,
       }),
     });
     // Remembered only as the default the next Run dialog opens on.
