@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const {
-  applyDuration, sessionFloorFromError, boxComplaints,
+  applyDuration, sessionFloorFromError, boxComplaints, powerOnOf,
   requiredPowerOn, voiceSessionFloor, pingPackets, MIN_POWER_ON_SEC,
 } = await import('./durationFit.ts');
 
@@ -402,4 +402,49 @@ test('boxComplaints catches what the box would have caught', () => {
     boxComplaints(def({ dataType: 'ping', dataLoop: true, loopCount: 5, interSessionGap: 0, sessionDuration: 30, startDelay: 5, interval: 1, numberOfPackets: 25 })).join(' '),
     /needs an interSessionGap above 0/,
   );
+});
+
+// ── what a test case already holds ───────────────────────────────────────
+
+test('powerOnOf reports the duration a test case already runs for', () => {
+  const td = def({ dataType: 'ping', startDelay: 5, interval: 1, dataLoop: false }, { powerOnTime: 605 });
+  const got = powerOnOf(td);
+  assert.equal(got.powerOnTime, 605);
+  assert.deepEqual(got.powerOnTimes, [605]);
+  assert.deepEqual(got.dataTypes, ['ping']);
+  assert.equal(got.loops, false);
+});
+
+test('powerOnOf takes the longest window, because that is what governs the run', () => {
+  const td: any = {
+    userPlaneConfig: {
+      profiles: [
+        { dataType: 'iperf', subscriberGroup: [0], dataLoop: true },
+        { dataType: 'volte', subscriberGroup: [1] },
+      ],
+    },
+    powerCycleConfig: { profiles: [pc({ powerOnTime: 120 }), pc({ powerOnTime: 900 })] },
+  };
+  const got = powerOnOf(td);
+  assert.equal(got.powerOnTime, 900);
+  assert.deepEqual(got.powerOnTimes, [120, 900]);
+  assert.deepEqual(got.dataTypes, ['iperf', 'volte']);
+  assert.equal(got.loops, true, 'a looping profile anywhere is worth saying');
+});
+
+test('powerOnOf says nothing rather than guessing when a definition names no window', () => {
+  assert.equal(powerOnOf({}).powerOnTime, null);
+  assert.equal(powerOnOf({ powerCycleConfig: { profiles: [{ attachDelay: 0 }] } }).powerOnTime, null);
+  // A zero is not a window either — the lab has testcases carrying one.
+  assert.equal(powerOnOf({ powerCycleConfig: { profiles: [{ powerOnTime: 0 }] } }).powerOnTime, null);
+});
+
+test('what powerOnOf reads is what applyDuration would put back', () => {
+  // Round trip: a 605s test case offered as 605 and left alone comes back 605.
+  const td: any = def({ dataType: 'ping', startDelay: 5, interval: 1, sessionDuration: 600 }, { powerOnTime: 605 });
+  const asked = powerOnOf(td).powerOnTime as number;
+  applyDuration(td, asked);
+  assert.equal(powerOnOf(td).powerOnTime, 605);
+  assert.equal(td.userPlaneConfig.profiles[0].sessionDuration, 600);
+  accepted(td);
 });

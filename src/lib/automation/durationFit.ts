@@ -331,6 +331,37 @@ function profilesOf(section: any): any[] {
   return (section?.profiles ?? []).filter((p: any) => p && typeof p === 'object');
 }
 
+/**
+ * The power-on duration a definition already holds, and enough context to say
+ * what it is made of.
+ *
+ * A test case may carry several power-cycle profiles — one per subscriber
+ * group — with different windows. The one that decides how long the test runs
+ * is the LONGEST, so that is the figure offered; the rest come back too, so a
+ * caller can say when they disagree rather than silently showing one of them.
+ *
+ * Here rather than in the route that serves it, because the suite wizard reads
+ * an uploaded test case the same way in the browser, and one reading of a
+ * definition is better than two that can drift apart.
+ */
+export function powerOnOf(td: any): {
+  powerOnTime: number | null;
+  powerOnTimes: number[];
+  dataTypes: string[];
+  loops: boolean;
+} {
+  const powerOnTimes = profilesOf(td?.powerCycleConfig)
+    .map((p) => num(p?.powerOnTime))
+    .filter((n) => n > 0);
+  const ups = profilesOf(td?.userPlaneConfig);
+  return {
+    powerOnTime: powerOnTimes.length ? Math.max(...powerOnTimes) : null,
+    powerOnTimes,
+    dataTypes: [...new Set(ups.map((p) => type(p)).filter(Boolean))],
+    loops: ups.some((p) => looping(p)),
+  };
+}
+
 /** The floor the box names when it refuses a session, read back out of the
  *  refusal. Kept as a safety net: the arithmetic above is the box's own, but a
  *  build that changes a constant would say so here first. */

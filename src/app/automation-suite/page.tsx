@@ -25,6 +25,9 @@ import { statusLabel, verdictLabel, verdictClass, statusStyle } from '@/lib/auto
 import { definitionFromPack } from '@/lib/automation/importPack';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
 import { validateCfg, dbIncludesOf, ROLE_LABEL, type CfgRole, type CfgVerdict } from '@/lib/cfgValidate';
+// The same reading of a definition the power-on route does, so an uploaded
+// test case and one on the box are understood the same way.
+import { powerOnOf } from '@/lib/automation/durationFit';
 
 interface SystemRow {
   id: string; name: string; host: string; type: string;
@@ -414,6 +417,21 @@ export default function AutomationSuitePage() {
   const [addCfg,   setAddCfg]           = useState<string>('');
   const [addMme,   setAddMme]           = useState<string>('');
   const [addIms,   setAddIms]           = useState<string>('');
+  /** Power-on duration for the row being added, in seconds.
+   *
+   *  Pre-filled with the power-on duration the picked test case ACTUALLY holds,
+   *  so adding a 605s test case gives a 605s row. It used to show the suite's
+   *  20s default, which silently rewrote every test case added to the shortest
+   *  window the box allows. Typing over it is the point — it is the field the
+   *  whole duration fit is driven from. */
+  const [addDur,   setAddDur]           = useState<string>('');
+  /** What the picked test case holds, for the line under that field: the
+   *  figure itself, the other windows when its power-cycle profiles disagree,
+   *  and what kind of traffic it is. */
+  const [addDurSrc, setAddDurSrc] = useState<{
+    powerOnTime: number | null; powerOnTimes: number[]; dataTypes: string[]; loops: boolean; from: string;
+  } | null>(null);
+  const [loadingDur, setLoadingDur] = useState(false);
   /** Subscriber DB for the row. Defaults to the one the picked mme.cfg already
    *  includes, which is what it has always been — the difference is that it can
    *  now be changed, and uploaded. */
@@ -1117,6 +1135,47 @@ export default function AutomationSuitePage() {
    *  Listing as anyone else offered rows the run could not have executed and
    *  hid the ones it could — a test case created minutes earlier as simuser was
    *  simply absent while the picker showed the default login's older set. */
+  /**
+   * What power-on duration the picked test case holds, so the row starts from
+   * it instead of from the suite's default.
+   *
+   * An uploaded test case is read from the file the browser already has — it
+   * does not exist on any box yet, so there is nothing to ask. A test case on
+   * the box costs one request, made when it is picked rather than for all 768
+   * in the listing.
+   */
+  const loadPickedDuration = useCallback(async (value: string) => {
+    setAddDurSrc(null);
+    if (!value) { setAddDur(''); return; }
+
+    if (value.startsWith(UPLOAD_PREFIX)) {
+      const key = value.slice(UPLOAD_PREFIX.length);
+      try {
+        const td = JSON.parse(uploadedTcs[key] ?? '{}');
+        const got = powerOnOf(td);
+        setAddDurSrc({ ...got, from: `${key} (uploaded)` });
+        setAddDur(got.powerOnTime ? String(got.powerOnTime) : '');
+      } catch { setAddDur(''); }
+      return;
+    }
+
+    if (!uesimSystemId) return;
+    setLoadingDur(true);
+    try {
+      const qs = new URLSearchParams({ systemId: uesimSystemId, id: value });
+      if (boxUserId) qs.set('boxUserId', boxUserId);
+      const r = await fetch(`/api/automation/uesim-testcases/power-on?${qs}`).then(x => x.json());
+      if (!r?.ok) { setAddDur(''); return; }
+      setAddDurSrc({
+        powerOnTime: r.powerOnTime ?? null, powerOnTimes: r.powerOnTimes ?? [],
+        dataTypes: r.dataTypes ?? [], loops: !!r.loops, from: r.name ?? 'the test case',
+      });
+      setAddDur(r.powerOnTime ? String(r.powerOnTime) : '');
+    } catch {
+      setAddDur('');
+    } finally { setLoadingDur(false); }
+  }, [uesimSystemId, boxUserId, uploadedTcs]);
+
   const loadUesimTestcases = useCallback(async (sysId: string, userId?: string) => {
     if (!sysId) { setUeTcs([]); setTcListedAs(''); return; }
     setLoadingTc(true);
@@ -1165,6 +1224,12 @@ export default function AutomationSuitePage() {
       const next = defaultRowName(key);
       setAddDisplayName(cur => (!cur.trim() || cur === autoNameRef.current ? next : cur));
       autoNameRef.current = next;
+      // Its own power-on duration, read from the definition in hand rather
+      // than through loadPickedDuration: uploadedTcs has not re-rendered yet,
+      // and the file is right here.
+      const got = powerOnOf(definition);
+      setAddDurSrc({ ...got, from: `${key} (uploaded)` });
+      setAddDur(got.powerOnTime ? String(got.powerOnTime) : '');
       setTcImportMsg({
         ok: true,
         text: `"${key}" is ready to add. It is kept with this suite — the test case is created on the Simnovator, under the display name below, when the suite runs.`,
@@ -1240,6 +1305,7 @@ export default function AutomationSuitePage() {
     setEditingId(''); setName(''); setEditingName(''); setKind('uesim-only');
     setUesim(''); setCbx(''); setUeSystemId(''); setCbxFiles([]); setUploads({}); setCbxLoadError('');
     setUeTcs([]); setTcListedAs(''); tcLoadedKey.current = '';
+    setAddDur(''); setAddDurSrc(null); setAddOts(''); setAddDb('');
     setSelectedCfg(''); setSelectedTcs(new Set());
     setStopOnFail(false); setRemoveCfgAfterRun(true); setCbxFilter(''); setTcFilter('');
     setDefaultDur(MIN_POWER_ON); setPerTcDur({}); setMassDurInput(String(MIN_POWER_ON));
@@ -2858,6 +2924,8 @@ export default function AutomationSuitePage() {
                         const next = defaultRowName(uesimTestcases.find(t => t.id === id)?.name);
                         setAddDisplayName(cur => (!cur.trim() || cur === autoNameRef.current ? next : cur));
                         autoNameRef.current = next;
+                        // And start the duration from what the test case holds.
+                        void loadPickedDuration(id);
                       }}
                       options={[
                         // Uploaded first: they are the ones that are not on the
@@ -2903,6 +2971,42 @@ export default function AutomationSuitePage() {
                         testcase instead of creating a new one
                       </span>
                     )}
+                  </label>
+                  {/* Power-on duration, starting from what the test case holds.
+                      It used to start from the suite's 20s default, so adding a
+                      605s test case quietly turned it into a 20s one. Everything
+                      the run times is derived from this figure — the session,
+                      the call, the loops — so it is the one field worth getting
+                      right before the row exists. */}
+                  <label className="flex flex-col text-xs">
+                    <span className="text-slate-500 mb-1">Power on duration (s)</span>
+                    <input
+                      type="number"
+                      min={MIN_POWER_ON}
+                      value={addDur}
+                      placeholder={loadingDur ? 'reading the test case…' : String(defaultDur || MIN_POWER_ON)}
+                      onChange={e => setAddDur(e.target.value)}
+                      onBlur={e => setAddDur(e.target.value === ''
+                        ? ''
+                        : String(Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON)))}
+                      className="border border-slate-300 rounded-md px-2 py-1 text-xs"
+                    />
+                    {addDurSrc?.powerOnTime ? (
+                      <span className="text-[10px] text-slate-500 mt-1">
+                        {addDurSrc.from} runs for <b>{addDurSrc.powerOnTime}s</b>
+                        {addDurSrc.powerOnTimes.length > 1
+                          ? ` (its power-cycle profiles say ${addDurSrc.powerOnTimes.join(', ')}s — the longest governs)`
+                          : ''}
+                        {addDurSrc.dataTypes.length
+                          ? ` · ${addDurSrc.dataTypes.join(', ')}${addDurSrc.loops ? ', looping' : ''}`
+                          : ''}
+                        . Change it and the session, call and loops are re-derived to fit.
+                      </span>
+                    ) : addTcId && !loadingDur ? (
+                      <span className="text-[10px] text-slate-500 mt-1">
+                        this test case names no power-on duration — the row will use {defaultDur || MIN_POWER_ON}s
+                      </span>
+                    ) : null}
                   </label>
                   {kind === 'uesim+callbox' && (<>
                     <label className="flex flex-col text-xs">
@@ -3079,10 +3183,17 @@ export default function AutomationSuitePage() {
                         // Likewise: only when it differs from what the box is
                         // already on, so an untouched picker changes nothing.
                         otsCfg: kind === 'uesim+callbox' && addOts && addOts !== otsLink ? addOts : undefined,
+                        // The row carries its own window from the moment it is
+                        // added, whether that is the test case's own figure or
+                        // one typed over it. Left unset only when neither the
+                        // test case nor the operator named one, which is when
+                        // falling back to the suite default is the honest thing.
+                        durationSec: addDur.trim() ? Math.max(MIN_POWER_ON, Number(addDur) || MIN_POWER_ON) : undefined,
                       };
                       setItems([...items, newItem]);
                       setAddTcId(''); setAddCfg(''); setAddMme(''); setAddIms(''); setAddDisplayName('');
                       setAddDb(''); dbFollowedMme.current = '';
+                      setAddDur(''); setAddDurSrc(null);
                     }}
                     // All three cfgs are required: a run needs the radio AND the
                     // core, so a row bound to only some of them can't execute.
