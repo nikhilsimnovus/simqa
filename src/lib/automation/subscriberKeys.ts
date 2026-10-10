@@ -1,40 +1,40 @@
-// Which key a subscriber authenticates with, when the definition forgot to say.
+// Subscriber key material the box will not accept where it is.
 //
-// The box's subscriber schema carries four key-material fields — op, opc, top
-// and topc — in one radio group, and a separate required field saying which of
-// them is live:
+// The box keys op, opc, top and topc off the authentication ALGORITHM, and
+// its schema spells out which may carry a value:
 //
-//   algorithmKeyMode: { type: "string", radio: true, enum: ["op", "opc"],
-//                       default: "opc" }
+//   algorithm "milenage" + algorithmKeyMode "op"   -> op required, opc/top/topc  ^$
+//   algorithm "milenage" + algorithmKeyMode "opc"  -> opc required, op/top/topc  ^$
+//   algorithm "tuak"     + algorithmKeyMode "op"   -> top required, the rest     ^$
+//   algorithm "tuak"     + algorithmKeyMode "opc"  -> topc required, the rest    ^$
+//   algorithm "xor"                                -> algorithmKeyMode, op, opc,
+//                                                     top and topc all { not: {} }
 //
-// With it present, the named field holds its value and the others must be
-// empty. With it ABSENT, nothing is selected, so the box requires every one of
-// them to be empty and refuses the definition:
+// xor is the one that bites. It authenticates with the shared key alone and
+// uses no operator key at all, so the schema says those fields must not be
+// there — and a subscriber switched from milenage to xor keeps its old OPc
+// sitting in the file, where it is now meaningless. The API refuses the whole
+// definition over it:
 //
 //   SubsConfig: /opc: does not match pattern '^$' for SA profile 0
 //
-// Which is what happened to AIO_Validation_of_IMEISV_automation. Its saved
-// copy had been edited by hand and the one line that selects the mode was
-// commented out, while the opc it selects was left in place:
+// Which is what stopped AIO_Validation_of_IMEISV_automation from being created
+// at all. Emptying a field the algorithm does not read changes nothing about
+// what the test authenticates with; leaving it there means the test cannot run.
 //
-//       "algorithm": "xor",
-//       // "algorithmKeyMode": "opc",
-//
-// The data still says what was meant — exactly one key field is populated — so
-// the selection is reconstructable rather than a guess, and reconstructing it
-// restores the file the author wrote instead of clearing a key to satisfy the
-// box. When the data does NOT say unambiguously, nothing is touched and the
-// box's own refusal stands.
+// The milenage and tuak cases are left alone except for one thing: a mode that
+// is missing while exactly one key field is populated is reconstructable — the
+// data says which — and those algorithms do require the selector.
 //
 // Pure, imports nothing, so node --test loads it directly.
 
-/** The schema's radio group. Only op and opc are in algorithmKeyMode's enum;
- *  top and topc belong to tuak, which that enum does not cover, so a profile
- *  using those is left alone. */
+/** The operator-key fields, all four of them. */
+const KEY_FIELDS = ['op', 'opc', 'top', 'topc'] as const;
+/** The two algorithmKeyMode selects between — its enum is ["op","opc"]. */
 const MODE_FIELDS = ['op', 'opc'] as const;
-const OTHER_KEY_FIELDS = ['top', 'topc'] as const;
 
 const filled = (v: unknown): boolean => typeof v === 'string' && v.trim() !== '';
+const algorithmOf = (sub: any): string => String(sub?.algorithm ?? '').trim().toLowerCase();
 
 /** Every subscriber list a definition might carry, under either spelling. */
 function subscriberLists(td: any): any[][] {
@@ -47,25 +47,50 @@ function subscriberLists(td: any): any[][] {
 }
 
 /**
- * Put back an `algorithmKeyMode` the definition implies but does not state.
+ * Make the subscriber section's key fields agree with its algorithm.
  *
- * Mutates in place. Returns one note per subscriber that was repaired, so the
- * run log says the definition was not quite what was stored — silently fixing
- * a file and silently failing on it are both ways of leaving the operator
- * guessing.
+ * Mutates in place. Returns one note per subscriber changed, so the run log
+ * says the definition was not quite what was stored — silently fixing a file
+ * and silently failing on it both leave the operator guessing.
+ *
+ * Emptied rather than deleted: the form's schema says these must be absent for
+ * xor, but the API states its rule as the pattern `^$`, and an empty string
+ * satisfies both readings while deleting a field the API lists as required
+ * would not.
  */
-export function restoreKeyMode(td: any): string[] {
+export function alignSubscriberKeys(td: any): string[] {
   const notes: string[] = [];
   for (const subs of subscriberLists(td)) {
     subs.forEach((sub, i) => {
       if (!sub || typeof sub !== 'object') return;
+      const algorithm = algorithmOf(sub);
+
+      if (algorithm === 'xor') {
+        const cleared = KEY_FIELDS.filter((f) => filled(sub[f]));
+        if (!cleared.length) return;
+        for (const f of cleared) sub[f] = '';
+        notes.push(
+          `subscriber ${i}: ${cleared.join(', ')} emptied — xor authenticates with the shared key alone, `
+          + `and the box refuses an operator key there`,
+        );
+        return;
+      }
+
+      // milenage and tuak: the selector is required, and when it is missing
+      // the populated field says what it should have been.
+      if (algorithm !== 'milenage' && algorithm !== 'tuak') return;
       if (filled(sub.algorithmKeyMode)) return;
-      // A tuak profile's key fields are outside this enum: not ours to decide.
-      if (OTHER_KEY_FIELDS.some((f) => filled(sub[f]))) return;
-      const set = MODE_FIELDS.filter((f) => filled(sub[f]));
-      if (set.length !== 1) return;                 // nothing, or ambiguous
-      sub.algorithmKeyMode = set[0];
-      notes.push(`subscriber ${i}: algorithmKeyMode was missing and ${set[0]} holds a value — set it to "${set[0]}", which is what the box requires and its own default`);
+      // tuak selects top/topc THROUGH the same op/opc mode, so look at which
+      // of the four is populated and map it back onto the selector.
+      const set = KEY_FIELDS.filter((f) => filled(sub[f]));
+      if (set.length !== 1) return;                       // nothing, or ambiguous
+      const mode: (typeof MODE_FIELDS)[number] | undefined =
+        set[0] === 'op' || set[0] === 'top' ? 'op'
+        : set[0] === 'opc' || set[0] === 'topc' ? 'opc'
+        : undefined;
+      if (!mode) return;
+      sub.algorithmKeyMode = mode;
+      notes.push(`subscriber ${i}: algorithmKeyMode was missing and ${set[0]} holds a value — set it to "${mode}", which is what ${algorithm} requires`);
     });
   }
   return notes;
