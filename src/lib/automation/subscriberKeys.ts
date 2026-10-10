@@ -53,10 +53,12 @@ function subscriberLists(td: any): any[][] {
  * says the definition was not quite what was stored — silently fixing a file
  * and silently failing on it both leave the operator guessing.
  *
- * Emptied rather than deleted: the form's schema says these must be absent for
- * xor, but the API states its rule as the pattern `^$`, and an empty string
- * satisfies both readings while deleting a field the API lists as required
- * would not.
+ * DELETED, not emptied. The schema says { not: {} }, which means absent, and
+ * the box proved the difference: with a value it answers "/opc: does not
+ * match pattern '^$'", and with an empty string it answers "/opc: does not
+ * match pattern '^[a-fA-F0-9]{32}$'". Neither is satisfiable, because the two
+ * complaints come from different branches — the only state that matches no
+ * pattern at all is the field not being there.
  */
 export function alignSubscriberKeys(td: any): string[] {
   const notes: string[] = [];
@@ -66,12 +68,14 @@ export function alignSubscriberKeys(td: any): string[] {
       const algorithm = algorithmOf(sub);
 
       if (algorithm === 'xor') {
-        const cleared = KEY_FIELDS.filter((f) => filled(sub[f]));
+        // algorithmKeyMode goes with them: the same branch says it must be
+        // absent too, and it selects between fields that are no longer there.
+        const cleared = [...KEY_FIELDS, 'algorithmKeyMode'].filter((f) => f in sub);
         if (!cleared.length) return;
-        for (const f of cleared) sub[f] = '';
+        for (const f of cleared) delete sub[f];
         notes.push(
-          `subscriber ${i}: ${cleared.join(', ')} emptied — xor authenticates with the shared key alone, `
-          + `and the box refuses an operator key there`,
+          `subscriber ${i}: removed ${cleared.join(', ')} — xor authenticates with the shared key alone, `
+          + `and the box's schema says those fields must not be there at all`,
         );
         return;
       }

@@ -13,36 +13,38 @@ const TOPC = OPC + OPC;
 
 // ── xor: no operator key at all ──────────────────────────────────────────
 
-test('an xor subscriber carrying a leftover opc has it emptied', () => {
+test('an xor subscriber carrying a leftover opc has it removed, not emptied', () => {
   // AIO_Validation_of_IMEISV_automation: algorithm xor, opc still set from
-  // when it was milenage, and the box refusing the whole definition over it.
+  // when it was milenage. Emptying it is not enough and the box says so — a
+  // value fails '^$' and an empty string fails the hex pattern, because the
+  // schema's { not: {} } means the field must not be there.
   const td: any = def([{ algorithm: 'xor', opc: OPC, sharedKey: 'aa', asRelease: 16 }]);
   const notes = alignSubscriberKeys(td);
-  assert.equal(td.subsConfig.subs[0].opc, '');
+  assert.equal('opc' in td.subsConfig.subs[0], false);
   assert.equal(td.subsConfig.subs[0].sharedKey, 'aa', 'the shared key is what xor actually uses');
-  assert.match(notes.join(' '), /subscriber 0: opc emptied — xor authenticates with the shared key alone/);
+  assert.equal(td.subsConfig.subs[0].asRelease, 16, 'nothing else is touched');
+  assert.match(notes.join(' '), /subscriber 0: removed opc — xor authenticates with the shared key alone/);
 });
 
-test('every operator key is emptied for xor, and named', () => {
-  const td: any = def([{ algorithm: 'xor', op: OPC, opc: OPC, top: TOPC, topc: TOPC }]);
+test('every operator key goes for xor, the selector with them', () => {
+  const td: any = def([{ algorithm: 'xor', op: OPC, opc: OPC, top: TOPC, topc: TOPC, algorithmKeyMode: 'opc' }]);
   const notes = alignSubscriberKeys(td);
-  assert.deepEqual(
-    ['op', 'opc', 'top', 'topc'].map((f) => td.subsConfig.subs[0][f]),
-    ['', '', '', ''],
-  );
-  assert.match(notes.join(' '), /op, opc, top, topc emptied/);
+  for (const f of ['op', 'opc', 'top', 'topc', 'algorithmKeyMode']) {
+    assert.equal(f in td.subsConfig.subs[0], false, f);
+  }
+  assert.match(notes.join(' '), /removed op, opc, top, topc, algorithmKeyMode/);
 });
 
 test('an xor subscriber that is already clean is left alone', () => {
-  const td: any = def([{ algorithm: 'xor', opc: '', sharedKey: 'aa' }]);
+  const td: any = def([{ algorithm: 'xor', sharedKey: 'aa' }]);
   assert.deepEqual(alignSubscriberKeys(td), []);
   assert.equal('op' in td.subsConfig.subs[0], false, 'no field is added');
 });
 
-test('xor never gains an algorithmKeyMode — the schema forbids it there', () => {
-  const td: any = def([{ algorithm: 'xor', opc: OPC }]);
+test('an empty-string key still counts as present, because the box reads it that way', () => {
+  const td: any = def([{ algorithm: 'xor', opc: '' }]);
   alignSubscriberKeys(td);
-  assert.equal('algorithmKeyMode' in td.subsConfig.subs[0], false);
+  assert.equal('opc' in td.subsConfig.subs[0], false);
 });
 
 // ── milenage and tuak: the selector is required ──────────────────────────
@@ -101,7 +103,7 @@ test('each subscriber is decided on its own', () => {
   ]);
   const notes = alignSubscriberKeys(td);
   assert.equal(notes.length, 2);
-  assert.equal(td.subsConfig.subs[0].opc, '');
+  assert.equal('opc' in td.subsConfig.subs[0], false);
   assert.equal(td.subsConfig.subs[1].algorithmKeyMode, 'opc');
   assert.equal(td.subsConfig.subs[2].opc, undefined);
 });
@@ -109,7 +111,7 @@ test('each subscriber is decided on its own', () => {
 test('the other spellings of the subscriber list are handled too', () => {
   const a: any = { subscriberConfig: { subs: [{ algorithm: 'xor', opc: OPC }] } };
   alignSubscriberKeys(a);
-  assert.equal(a.subscriberConfig.subs[0].opc, '');
+  assert.equal('opc' in a.subscriberConfig.subs[0], false);
   const b: any = { subscriberData: { subsConfig: { subs: [{ algorithm: 'milenage', op: OPC }] } } };
   alignSubscriberKeys(b);
   assert.equal(b.subscriberData.subsConfig.subs[0].algorithmKeyMode, 'op');
