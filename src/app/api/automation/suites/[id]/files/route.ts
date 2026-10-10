@@ -39,6 +39,33 @@ function windowAround(text: string, message: string): { position: number; before
   };
 }
 
+/**
+ * What each subscriber says about its authentication, without saying the
+ * secrets.
+ *
+ * "SubsConfig: /opc: does not match pattern '^$'" is an argument about which
+ * of op/opc/top/topc is selected and which carry a value, and that argument
+ * cannot be settled without seeing those two things. The VALUES are key
+ * material — K, OPc — so a field is reported as set or not, never quoted.
+ */
+function subscriberSummary(definition: any) {
+  const subs = definition?.subsConfig?.subs ?? definition?.subscriberConfig?.subs;
+  if (!Array.isArray(subs)) return undefined;
+  const KEYS = ['op', 'opc', 'top', 'topc', 'sharedKey'];
+  return subs.slice(0, 12).map((s: any, i: number) => ({
+    i,
+    algorithm: s?.algorithm ?? null,
+    algorithmKeyMode: s?.algorithmKeyMode ?? null,
+    cellTypeP: s?.cellTypeP ?? null,
+    ueCount: s?.ueCount ?? null,
+    // Set, empty string, or absent — the three states the box distinguishes.
+    keys: Object.fromEntries(KEYS.map((k) => [
+      k,
+      s?.[k] === undefined ? 'absent' : (typeof s[k] === 'string' && s[k].trim() !== '' ? 'set' : 'empty'),
+    ])),
+  }));
+}
+
 /** Can this saved test.json actually rebuild the row, and what does it hold? */
 function describeTestJson(text: string | undefined) {
   if (text === undefined) return { present: false as const };
@@ -67,6 +94,11 @@ function describeTestJson(text: string | undefined) {
     // were forgiven — that is a hand edit, and worth knowing about.
     ...(repaired ? { repaired } : {}),
     sections,
+    // The subscriber section, in the terms the box refuses it in. Which key
+    // fields carry a value and which mode is selected is the whole of that
+    // argument — and the values themselves are key material, so they are
+    // counted, never served.
+    subscribers: subscriberSummary(definition),
     // The two that the box refuses a create without.
     hasCells: !!definition.cellConfig,
     hasPowerCycle: !!definition.powerCycleConfig,
