@@ -15,6 +15,7 @@ import { diffSections, reconcileCellArrays, type SectionName } from '../testcase
 // The duration arithmetic lives in durationFit.ts so it can be unit-tested;
 // re-exported here because this module is where callers already look for it.
 import { applyDuration, sessionFloorFromError, totalDurationFromError, applyTotalTestDuration, expectedRunSeconds, MIN_POWER_ON_SEC } from './durationFit';
+import { restoreKeyMode } from './subscriberKeys';
 export { applyDuration, sessionFloorFromError, MIN_POWER_ON_SEC } from './durationFit';
 
 
@@ -217,6 +218,10 @@ export async function duplicateTestcase(
   const td: any = JSON.parse(JSON.stringify(definition));
   applyName(td, finalName);
   const notes = typeof durationSec === 'number' ? applyDuration(td, durationSec) : [];
+  // A definition that names a subscriber key but not which one it is cannot be
+  // created at all — the box requires the selector and refuses every key field
+  // without it. The data says which, so put it back rather than fail the row.
+  notes.push(...restoreKeyMode(td));
 
   // Radio cards belong to the simulator, not the testcase: every simulator on
   // a multi-user box owns its own (.95: 0,1 / 2,3 / 4,5) and a cell names the
