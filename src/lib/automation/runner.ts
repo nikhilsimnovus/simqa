@@ -1095,8 +1095,9 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       runTcId = dup.testCaseId;
       createdName = dup.name;
       expectedRun = dup.expectedRunSec ?? 0;
-      // dup.name may differ from item.name — testcase names are unique on the
-      // box, so a re-run of the same row gets "_2", "_3", …
+      // A row owns ONE testcase on the box, named after the row, and every
+      // run executes that same one — reused when it still matches the copy on
+      // the automation server, rebuilt under the same name when it does not.
       stepDetails.push(dup.reused
         ? `testcase: reusing existing "${dup.name}" on ${ueOpts.host}`
         : `testcase: "${dup.name}" (${durSec}s) created on ${ueOpts.host}`);

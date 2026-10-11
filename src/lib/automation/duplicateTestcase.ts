@@ -16,6 +16,7 @@ import { diffSections, reconcileCellArrays, type SectionName } from '../testcase
 // re-exported here because this module is where callers already look for it.
 import { applyDuration, sessionFloorFromError, totalDurationFromError, applyTotalTestDuration, expectedRunSeconds, MIN_POWER_ON_SEC } from './durationFit';
 import { alignSubscriberKeys } from './subscriberKeys';
+import { changedSections } from './sameDefinition';
 export { applyDuration, sessionFloorFromError, MIN_POWER_ON_SEC } from './durationFit';
 
 
@@ -197,11 +198,8 @@ export async function duplicateTestcase(
         const wanted: any = JSON.parse(JSON.stringify(sourceTd));
         applyName(wanted, finalName);
         if (typeof durationSec === 'number') applyDuration(wanted, durationSec);
-        // The box fills in defaults and metadata of its own, so compare only
-        // the sections a definition is built from.
-        const sections = ['cellConfig', 'subsConfig', 'userPlaneConfig', 'powerCycleConfig', 'mobilityConfig'];
-        const same = sections.every((k) => JSON.stringify(onBox?.[k] ?? null) === JSON.stringify(wanted?.[k] ?? null));
-        if (!same) staleDesc = 'the copy on the automation server differs from the one on the box';
+        const changed = changedSections(onBox, wanted);
+        if (changed.length) staleDesc = `${changed.join(', ')} differ${changed.length === 1 ? 's' : ''} from the copy on the automation server`;
       } catch { /* unreadable: fall through and reuse rather than destroy */ }
     }
 
