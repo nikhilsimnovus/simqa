@@ -1002,6 +1002,41 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       // the SELECTED Simnovator under the row's own name, fitted to the row's
       // power-on duration, and executed. An uploaded row already holds its
       // definition and skips all of this.
+      // THE SERVER COPY FIRST.
+      //
+      // A run creates the test case on the Simnovator from
+      // /root/automation_configs/<suite>/<row>/test.json and executes that —
+      // it does not execute whatever is already in the box's catalogue. The
+      // folder is the suite's own record of the row and the only copy that
+      // travels with it, so a box's copy being older, edited or belonging to
+      // a different setup cannot change what runs. (duplicateTestcase still
+      // reuses the testcase on the box when it already matches, so an
+      // unchanged row costs nothing; it rebuilds when it does not.)
+      if (!sourceTd) {
+        const saved = readTestCaseFile(cfgFrom, item.name, 'test.json');
+        if (saved !== undefined) {
+          const where = `${testCaseDir(cfgFrom, item.name)}/test.json`;
+          const pack = definitionFromText(saved);
+          if (pack.definition) {
+            sourceTd = pack.definition;
+            stepDetails.push(`testcase: from the automation server (${where})`);
+            if (pack.repaired) stepDetails.push(`note: that copy has ${pack.repaired} in it — read anyway, but it is not valid JSON`);
+          } else {
+            steps.push({
+              testcaseId: item.name, status: 0, ok: false,
+              detail: `the copy saved at ${where} cannot be used to build this test case: ${pack.error}`,
+              durationMs: Date.now() - t0,
+            });
+            failed += 1; done += 1;
+            if (suite.stopOnFail) break;
+            continue;
+          }
+        }
+      }
+
+      // Only when the server has nothing: the box's own copy, or another
+      // login's. A suite that has never been synced, or a row added and run
+      // before the folder caught up, still runs.
       if (!sourceTd) {
         // A row with no id has nothing to look up — and asking the box for an
         // empty one is a 404 that reads like a missing testcase rather than a
@@ -1022,37 +1057,10 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           if (found) {
             sourceTd = found.td;
             stepDetails.push(`source testcase belongs to ${found.owner} — created it for ${ueOpts.username}`);
-          } else {
-            const saved = readTestCaseFile(cfgFrom, item.name, 'test.json');
-            const where = `${testCaseDir(cfgFrom, item.name)}/test.json`;
-            if (saved !== undefined) {
-              // Read the way an uploaded file is read, not with a bare
-              // JSON.parse. The folder holds a bare definition today, but an
-              // operator dropping the Simnovator's own export in there is the
-              // obvious thing to do — and a bare parse of that yields an object
-              // with no cellConfig, which the box answers with "CellConfig:
-              // Section is required but missing". That is the box describing
-              // our mistake, and it reads as though the testcase were broken.
-              const pack = definitionFromText(saved);
-              if (pack.definition) {
-                sourceTd = pack.definition;
-                stepDetails.push(
-                  item.simnovatorTcId
-                    ? `testcase: not on ${ueOpts.host} any more — recreated from the copy saved at ${where}`
-                    : `testcase: this row names none on a box — created from the copy saved at ${where}`,
-                );
-                if (pack.repaired) stepDetails.push(`note: that copy has ${pack.repaired} in it — read anyway, but it is not valid JSON`);
-              } else {
-                steps.push({
-                  testcaseId: item.name, status: 0, ok: false,
-                  detail: `the copy saved at ${where} cannot be used to rebuild this test case: ${pack.error}`,
-                  durationMs: Date.now() - t0,
-                });
-                failed += 1; done += 1;
-                if (suite.stopOnFail) break;
-                continue;
-              }
-            }
+          } else if (item.simnovatorTcId) {
+            // The box had it once — the row names an id — and nobody has it
+            // now. The folder was already asked, above, and had nothing.
+            stepDetails.push(`testcase: "${item.simnovatorTcId}" is on no login of ${ueOpts.host}, and the automation server has no copy`);
           }
         }
       }

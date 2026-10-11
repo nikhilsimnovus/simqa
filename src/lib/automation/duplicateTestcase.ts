@@ -181,6 +181,30 @@ export async function duplicateTestcase(
       } catch { /* unreadable: leave it alone and just run it */ }
     }
 
+    // And the whole definition, not only how long it runs for.
+    //
+    // What executes has to be the definition the caller brought — the copy on
+    // the automation server — and not whatever happens to be wearing this
+    // name on the box. They drift for every reason there is: the saved copy
+    // edited, a config changed, the box's copy altered by hand between runs.
+    // Comparing the fitted definitions means an unchanged row still reuses
+    // its testcase and costs nothing, while a changed one is rebuilt instead
+    // of quietly running the old test under the new name.
+    if (!staleDesc && sourceTd) {
+      try {
+        const cur: any = await getTestcase(opts, already);
+        const onBox: any = JSON.parse(JSON.stringify(cur?.testDefinition ?? {}));
+        const wanted: any = JSON.parse(JSON.stringify(sourceTd));
+        applyName(wanted, finalName);
+        if (typeof durationSec === 'number') applyDuration(wanted, durationSec);
+        // The box fills in defaults and metadata of its own, so compare only
+        // the sections a definition is built from.
+        const sections = ['cellConfig', 'subsConfig', 'userPlaneConfig', 'powerCycleConfig', 'mobilityConfig'];
+        const same = sections.every((k) => JSON.stringify(onBox?.[k] ?? null) === JSON.stringify(wanted?.[k] ?? null));
+        if (!same) staleDesc = 'the copy on the automation server differs from the one on the box';
+      } catch { /* unreadable: fall through and reuse rather than destroy */ }
+    }
+
     if (!staleDesc) {
       // Reusing means running what is already on the box, so how long THAT
       // takes is what the caller has to wait for — not the row's figure.
