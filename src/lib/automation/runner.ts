@@ -37,6 +37,8 @@ import { preflightRows } from './preflightConfigs';
 // the comments and trailing commas a hand edit leaves in it.
 import { definitionFromText } from './importPack';
 import { expectedRunSeconds } from './durationFit';
+// Checksums, so an unchanged subscriber database is not sent again each run.
+import { createHash } from 'node:crypto';
 import { validateCfg, withDbInclude, ROLE_LABEL, type CfgRole } from '../cfgValidate';
 import { readTestCaseFile, readAllTestCaseFiles, testCaseDir } from './serverConfigs';
 import { syncRowToServer } from './syncServerConfigs';
@@ -1409,18 +1411,30 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             if (pick === 'ots.cfg') {
               throw new Error('ots.cfg cannot be bound to itself — pick the file it should point at');
             }
-            if (!existingOts.has(pick)) {
-              const text = fromServer[pick] ?? uploaded(pick);
-              if (!text) {
-                throw new Error(
-                  `ots.cfg: "${pick}" is not on ${callboxSys.host}, is not in `
-                  + `${testCaseDir(cfgFrom, item.name)}, and is not uploaded with this suite`,
-                );
+            // The folder's copy wins, as it does for every other slot: an
+            // ots.cfg edited in /root/automation_configs has to reach the box
+            // or the edit does nothing. Only when the folder has nothing does
+            // the box's own file stand.
+            const text = fromServer[pick] ?? uploaded(pick);
+            if (!existingOts.has(pick) && !text) {
+              throw new Error(
+                `ots.cfg: "${pick}" is not on ${callboxSys.host}, is not in `
+                + `${testCaseDir(cfgFrom, item.name)}, and is not uploaded with this suite`,
+              );
+            }
+            if (text !== undefined) {
+              const dest = `/root/ots/config/${pick}`;
+              const want = createHash('md5').update(text, 'utf8').digest('hex');
+              const got = await ssh.execCommand(
+                `sudo -n md5sum ${q(dest)} 2>/dev/null || md5sum ${q(dest)} 2>/dev/null || true`);
+              if ((got.stdout ?? '').trim().split(/\s+/)[0] !== want) {
+                const isNew = !existingOts.has(pick);
+                await push(pick, text, '/root/ots/config', 'ots');
+                if (isNew) addedThisRun.add(pick);
+                existingOts.add(pick);
+                relinked = true;
+                stepDetails.push(`cfg-push: ${pick} → /root/ots/config, from ${testCaseDir(cfgFrom, item.name)}`);
               }
-              await push(pick, text, '/root/ots/config', 'ots');
-              existingOts.add(pick);
-              addedThisRun.add(pick);
-              stepDetails.push(`cfg-push: ${pick} → /root/ots/config`);
             }
             const prev = await ssh.execCommand(`readlink /root/ots/config/ots.cfg || true`);
             prevOtsLink = (prev.stdout ?? '').trim().split('/').filter(Boolean).pop() ?? '';
@@ -1447,25 +1461,39 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           }
 
           // Everything else the row's configs depend on: the files the MME
-          // config includes — subscriber DBs and fragments, by their own names
-          // — and the box's ots.cfg. These are RESTORED, not pushed: put back
-          // when the callbox has lost them, left alone when it still has them.
-          // The MME will not start with one of them missing, and there is
-          // rarely just one: a working config here includes five.
+          // config includes — subscriber DBs and fragments, by their own
+          // names. The MME will not start with one of them missing, and there
+          // is rarely just one: a working config here includes five.
+          //
+          // The FOLDER is the authority, as it is for enb/mme/ims above. These
+          // used to be restored only when the callbox had lost them, which
+          // meant a subscriber database edited in /root/automation_configs
+          // never reached the box — the edit simply did nothing, silently,
+          // because a file of that name was already there.
+          //
+          // Compared by checksum first so an unchanged database is not sent
+          // again every run: the lab's are a third of a megabyte each.
+          //
+          // ots.cfg is NOT in here. The folder keeps it under the role name,
+          // and /root/ots/config/ots.cfg is the symlink itself — writing the
+          // folder's copy there would replace the link with a plain file. It
+          // is pushed under the name the row picked, in the ots block above.
           const folder = readAllTestCaseFiles(cfgFrom, item.name);
-          const restored: string[] = [];
+          const sent: string[] = [];
           for (const [name, text] of Object.entries(folder)) {
             // The role files are pushed above; test.json is not a callbox file.
-            if (['enb.cfg', 'mme.cfg', 'ims.cfg', 'ue.cfg', 'test.json'].includes(name)) continue;
-            const dir = name === 'ots.cfg' ? '/root/ots/config' : '/root/mme/config';
-            const there = await ssh.execCommand(`test -s '${dir}/${name}' && echo yes || echo no`);
-            if ((there.stdout ?? '').trim() === 'yes') continue;
-            await push(name, text, dir);
+            if (['enb.cfg', 'mme.cfg', 'ims.cfg', 'ue.cfg', 'test.json', 'ots.cfg'].includes(name)) continue;
+            const dest = `/root/mme/config/${name}`;
+            const want = createHash('md5').update(text, 'utf8').digest('hex');
+            const got = await ssh.execCommand(
+              `sudo -n md5sum ${q(dest)} 2>/dev/null || md5sum ${q(dest)} 2>/dev/null || true`);
+            if ((got.stdout ?? '').trim().split(/\s+/)[0] === want) continue;
+            await push(name, text, '/root/mme/config');
             relinked = true;
-            restored.push(name);
+            sent.push(name);
           }
-          if (restored.length) {
-            stepDetails.push(`cfg-restore: ${restored.join(', ')} — missing on the callbox, put back from ${testCaseDir(cfgFrom, item.name)}`);
+          if (sent.length) {
+            stepDetails.push(`cfg-push: ${sent.join(', ')} → /root/mme/config, from ${testCaseDir(cfgFrom, item.name)}`);
           }
 
           // Nothing moved — the stack is already running the configs this row
