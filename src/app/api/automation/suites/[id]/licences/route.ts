@@ -9,6 +9,17 @@
 // the run pushes — reading the callbox would report whatever is linked there
 // now, which is usually another row's.
 //
+// Grouped by the CONFIG FILE the rows picked, not flattened to a list of
+// tags. A suite's rows do not all run the same config: User_Plane's ten rows
+// use Mohan_ims.cfg for four and demo-ims.cfg for six, and those ask for
+// rnd-mme and mme-oran respectively. Reporting that as "rnd-mme, mme-oran"
+// was true and useless — it could not be reconciled with any one file an
+// operator opened.
+//
+// An EMPTY tag is reported as its own thing rather than dropped. Five of
+// those ten rows have `tag: ""` in their mme.cfg, and filtering falsy values
+// out of the list made them read as sharing the tag the other five had.
+//
 // Read-only. Choosing a different tag is a per-run decision and travels with
 // the run request; nothing is written here.
 
@@ -16,16 +27,18 @@ import { NextResponse } from 'next/server';
 import { getSuite } from '@/lib/automation/store';
 import { readTestCaseFile } from '@/lib/automation/serverConfigs';
 import { licenceTagOf } from '@/lib/automation/licenceTag';
+import type { SuiteItem } from '@/lib/inventory';
 
 export const dynamic = 'force-dynamic';
 
-/** The three configs that carry a licence tag, and the file each is kept as.
- *  Not exported: a route module may only export the handlers and Next's own
- *  config names, and anything else fails the build. */
+/** The three configs that carry a licence tag: the file the folder keeps each
+ *  as, and where the row records which config it picked.
+ *  Not exported — a route module may only export the handlers and Next's own
+ *  config names, and anything else fails the production build. */
 const LICENCE_ROLES = [
-  { role: 'enb', file: 'enb.cfg', label: 'enb.cfg' },
-  { role: 'mme', file: 'mme.cfg', label: 'mme.cfg' },
-  { role: 'ims', file: 'ims.cfg', label: 'ims.cfg' },
+  { role: 'enb', file: 'enb.cfg', label: 'enb.cfg', pick: (r: SuiteItem) => r.callboxCfg },
+  { role: 'mme', file: 'mme.cfg', label: 'mme.cfg', pick: (r: SuiteItem) => r.mmeCfg },
+  { role: 'ims', file: 'ims.cfg', label: 'ims.cfg', pick: (r: SuiteItem) => r.imsCfg },
 ] as const;
 
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
@@ -34,18 +47,29 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   if (!suite) return NextResponse.json({ ok: false, error: `no suite "${id}"` }, { status: 404 });
 
   const rows = suite.items ?? [];
-  const roles = LICENCE_ROLES.map(({ role, file, label }) => {
-    const perRow = rows.map((r) => {
+  const roles = LICENCE_ROLES.map(({ role, file, label, pick }) => {
+    /** One group per (config file, tag) — which is what an operator can check
+     *  against, because a file is the thing they can open. */
+    const groups = new Map<string, { config: string; tag: string | null; rows: string[] }>();
+    for (const r of rows) {
+      const config = pick(r);
+      if (!config) continue;
       const text = readTestCaseFile(r.configSuite ?? suite.name, r.name, file);
-      return { row: r.name, tag: text === undefined ? null : (licenceTagOf(text) ?? null) };
-    });
-    // One tag is the normal case — every row of a suite usually shares a
-    // config. When they genuinely differ, say so rather than picking one:
-    // setting a tag then applies to all of them, which is a bigger action
-    // than it looks if the reader thinks there was only ever one.
-    const tags = [...new Set(perRow.map((p) => p.tag).filter((t): t is string => !!t))];
-    return { role, file, label, tags, rows: perRow.filter((p) => p.tag !== null) };
-  }).filter((r) => r.rows.length > 0);
+      if (text === undefined) continue;             // nothing saved for this row yet
+      // undefined = the config names no licence server at all.
+      // '' = it names one, with an empty tag. Those are different facts.
+      const found = licenceTagOf(text);
+      const tag = found === undefined ? null : found;
+      const key = `${config}\u0000${tag ?? '\u0001none'}`;
+      const g = groups.get(key) ?? { config, tag, rows: [] };
+      g.rows.push(r.name);
+      groups.set(key, g);
+    }
+    return {
+      role, file, label,
+      groups: [...groups.values()].sort((a, b) => b.rows.length - a.rows.length),
+    };
+  }).filter((r) => r.groups.length > 0);
 
   return NextResponse.json({ ok: true, suite: suite.name, roles });
 }
