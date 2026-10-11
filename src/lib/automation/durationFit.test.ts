@@ -302,7 +302,7 @@ test('the lab’s "[1]" subscriber group string is matched like the array it mea
 
 test('a total test duration covers every power-on/off cycle, by the box’s own sum', () => {
   const td: any = def({ dataType: 'iperf', startDelay: 5 }, {
-    totalTestDuration: 100, powerOffTime: 10, noOfPowerOnCycles: 3, attachDelay: 2,
+    loopProfile: 'count', totalTestDuration: 100, powerOffTime: 10, noOfPowerOnCycles: 3, attachDelay: 2,
   });
   applyDuration(td, 200);
   const p = td.powerCycleConfig.profiles[0];
@@ -497,7 +497,7 @@ test('power-off is never grown, and never cut below a few seconds', () => {
 
 test('a declared cycle count is honoured, not re-derived', () => {
   const td: any = def({ dataType: 'iperf', startDelay: 5 }, {
-    powerOnTime: 100, powerOffTime: 10, noOfPowerOnCycles: 4, totalTestDuration: 440,
+    loopProfile: 'count', powerOnTime: 100, powerOffTime: 10, noOfPowerOnCycles: 4, totalTestDuration: 440,
   });
   applyDuration(td, 200);
   const pc = td.powerCycleConfig.profiles[0];
@@ -531,4 +531,81 @@ test('applyTotalTestDuration raises the total and never lowers it', () => {
   assert.equal(td.powerCycleConfig.profiles[0].totalTestDuration, 183);
   applyTotalTestDuration(td, 50);
   assert.equal(td.powerCycleConfig.profiles[0].totalTestDuration, 183);
+});
+
+// ── the traffic loop profile ─────────────────────────────────────────────
+
+test('a count-based loop repeats the NEW window, the declared number of times', () => {
+  const td: any = def({ dataType: 'iperf', startDelay: 5 }, {
+    loopProfile: 'count', powerOnTime: 600, powerOffTime: 20, noOfPowerOnCycles: 3, totalTestDuration: 1860,
+  });
+  const notes = applyDuration(td, 100);
+  const pc = td.powerCycleConfig.profiles[0];
+  assert.equal(pc.powerOnTime, 100);
+  assert.equal(pc.powerOffTime, 5, '20 x 100/600 rounds to 3, held at the floor');
+  assert.equal(pc.noOfPowerOnCycles, 3, 'how many times it loops is the test, not the duration');
+  assert.equal(pc.totalTestDuration, (100 + 5) * 3);
+  assert.match(notes.join(' '), /3 power-on\/off cycles/);
+  accepted(td);
+});
+
+test('a time-based loop keeps the number of times round, on the new window', () => {
+  // 2 cycles authored: 1240 over a 620s cycle.
+  const td: any = def({ dataType: 'iperf', startDelay: 5 }, {
+    loopProfile: 'time', powerOnTime: 600, powerOffTime: 20, totalTestDuration: 1240,
+  });
+  applyDuration(td, 100);
+  const pc = td.powerCycleConfig.profiles[0];
+  assert.equal(pc.powerOnTime, 100);
+  assert.equal(pc.powerOffTime, 5);
+  assert.equal(pc.totalTestDuration, (100 + 5) * 2);
+  accepted(td);
+});
+
+test('a count-based loop missing what it requires is given the box\u2019s defaults', () => {
+  // loopProfile "count" requires powerOffTime and noOfPowerOnCycles; the box
+  // defaults them to 5 and 2.
+  const td: any = def({ dataType: 'iperf', startDelay: 5 }, { loopProfile: 'count', powerOnTime: 600 });
+  delete (td.powerCycleConfig.profiles[0] as any).powerOffTime;
+  const notes = applyDuration(td, 100);
+  const pc = td.powerCycleConfig.profiles[0];
+  assert.equal(pc.powerOffTime, 5);
+  assert.equal(pc.noOfPowerOnCycles, 2);
+  assert.match(notes.join(' '), /a count-based loop requires/);
+  accepted(td);
+});
+
+test('a time-based loop with no total at all is given one', () => {
+  const td: any = def({ dataType: 'iperf', startDelay: 5 }, { loopProfile: 'time', powerOnTime: 600 });
+  delete (td.powerCycleConfig.profiles[0] as any).powerOffTime;
+  const notes = applyDuration(td, 100);
+  const pc = td.powerCycleConfig.profiles[0];
+  assert.equal(pc.powerOffTime, 5);
+  assert.equal(pc.totalTestDuration, 105);
+  assert.match(notes.join(' '), /a time-based loop requires one/);
+  accepted(td);
+});
+
+test('a disabled loop is not given fields it does not need', () => {
+  const td: any = def({ dataType: 'iperf', startDelay: 5 }, { loopProfile: 'disable', powerOnTime: 600 });
+  delete (td.powerCycleConfig.profiles[0] as any).powerOffTime;
+  applyDuration(td, 100);
+  const pc = td.powerCycleConfig.profiles[0];
+  assert.equal(pc.powerOnTime, 100);
+  assert.equal('powerOffTime' in pc, false, 'a disabled loop is not given one');
+  assert.equal('totalTestDuration' in pc, false);
+  accepted(td);
+});
+
+test('a cycle count is honoured even with the loop disabled, because the box honours it', () => {
+  // The box's total-duration check reads noOfPowerOnCycles || 1 and never
+  // looks at loopProfile, so a definition carrying both is still held to the
+  // count. 256UEUE-MIXED-SCEANRIOS-R52-53 on .102 is exactly that shape.
+  const td: any = def({ dataType: 'iperf', startDelay: 5 }, {
+    loopProfile: 'disable', powerOnTime: 600, powerOffTime: 50, noOfPowerOnCycles: 9, totalTestDuration: 5850,
+  });
+  applyDuration(td, 100);
+  const pc = td.powerCycleConfig.profiles[0];
+  assert.equal(pc.totalTestDuration, (100 + 8) * 9);
+  accepted(td);
 });

@@ -155,7 +155,12 @@ export function definitionFromPack(raw: unknown): { name?: string; definition?: 
   }
 
   if (any.cellConfig || any.userPlaneConfig || any.subsConfig) {
-    return { name: undefined, definition: any };
+    // A bare definition still knows its own name — the box keeps it in
+    // settings, under both spellings, and that is what the row should be
+    // named after. Falling through to the FILE name meant a definition saved
+    // as test.json came back as a row called "test_automation".
+    const inSettings = any.settings?.test_name ?? any.settings?.testCaseName;
+    return { name: String(inSettings ?? '').trim() || undefined, definition: any };
   }
 
   // The near miss, named.

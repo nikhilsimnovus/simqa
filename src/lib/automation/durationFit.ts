@@ -78,6 +78,10 @@ const MIN_GAP = 1;
 const MAX_CALL = 3600;
 /** Shortest power-off worth scaling to. The UEs have to actually detach. */
 const MIN_POWER_OFF = 5;
+/** The box’s own defaults for the fields a loop profile makes required:
+ *  powerOffTime 5, noOfPowerOnCycles 2. */
+const DEFAULT_POWER_OFF = 5;
+const DEFAULT_CYCLES = 2;
 
 const num = (v: unknown): number => {
   const n = Number(v ?? 0);
@@ -498,6 +502,49 @@ export function applyDuration(td: any, seconds: number): string[] {
       }
     }
 
+    // ── The traffic loop ──────────────────────────────────────────────
+    //
+    // The box's Traffic section loops the power-on window in one of three
+    // ways, and asks for different fields in each:
+    //
+    //   disable  nothing else
+    //   time     powerOffTime and totalTestDuration are REQUIRED — the test
+    //            cycles until the total is used up
+    //   count    powerOffTime and noOfPowerOnCycles are REQUIRED — the test
+    //            cycles that many times
+    //
+    // All of it follows the power-on duration, which is the figure the row
+    // asked for: a looping test at 100s is a hundred-second window repeated,
+    // not the authored window with a new label. A required field that is
+    // missing is filled with the box's own default rather than left for it to
+    // refuse, since the row cannot run either way and one of those says why.
+    const loop = String(pc.loopProfile ?? 'disable').trim().toLowerCase();
+    if (loop === 'time' || loop === 'count') {
+      if (pc.powerOffTime === undefined || pc.powerOffTime === null) {
+        pc.powerOffTime = DEFAULT_POWER_OFF;
+        notes.push(`power-off set to the box's ${DEFAULT_POWER_OFF}s default — a ${loop}-based loop requires one`);
+      }
+    }
+
+    // How many power-on/off cycles this test does.
+    //
+    // noOfPowerOnCycles when it has one, WHATEVER the loop profile says. The
+    // box's own total-duration check reads `noOfPowerOnCycles || 1` and never
+    // looks at loopProfile, so a definition carrying a count with the loop
+    // disabled is still held to it — 256UEUE-MIXED-SCEANRIOS-R52-53 carries
+    // 362 — and ignoring it here produced a total the box would refuse.
+    if (loop === 'count' && int(pc.noOfPowerOnCycles, 0) < 1) {
+      pc.noOfPowerOnCycles = DEFAULT_CYCLES;
+      notes.push(`number of power-on cycles set to ${DEFAULT_CYCLES} — a count-based loop requires at least one`);
+    }
+    const declared = int(pc.noOfPowerOnCycles, 0);
+    const perCycleWas = wasOn + wasOff;
+    const cycles = declared >= 1 ? declared
+      // A time-based loop states a total rather than a count: how many times
+      // the author meant it to go round is their total over their cycle.
+      : loop === 'time' && perCycleWas > 0 && wasTotal > 0 ? Math.max(1, Math.round(wasTotal / perCycleWas))
+      : 1;
+
     // The total the whole test is allowed to take.
     //
     // The box has TWO rules here and they are not the same. Its form checks
@@ -512,20 +559,18 @@ export function applyDuration(td: any, seconds: number): string[] {
     // carried over untouched and the cycles are rebuilt around the new window.
     // That reproduced the box's 183s minimum for the row above exactly. When
     // it does not, the create retries on the figure the box names — see
-    // powerCycleMinimumFromError.
-    if (pc.totalTestDuration !== undefined && pc.totalTestDuration !== null) {
-      const declared = int(pc.noOfPowerOnCycles, 0);
-      const perCycleWas = wasOn + wasOff;
-      const cycles = declared >= 1 ? declared
-        : perCycleWas > 0 && wasTotal > 0 ? Math.max(1, Math.round(wasTotal / perCycleWas))
-        : 1;
+    // totalDurationFromError.
+    const hasTotal = pc.totalTestDuration !== undefined && pc.totalTestDuration !== null;
+    if (hasTotal || loop === 'time') {
       const rampUp = Math.max(0, wasTotal - perCycleWas * cycles);
       // attachDelay is in the form's rule and may or may not be inside the
       // API's ramp-up; adding it costs a second or two and satisfies both.
       pc.totalTestDuration = (num(pc.powerOnTime) + num(pc.powerOffTime)) * cycles + rampUp + num(pc.attachDelay);
-      if (wasTotal && num(pc.totalTestDuration) !== wasTotal) {
-        notes.push(`total test duration ${wasTotal}s → ${pc.totalTestDuration}s`
-          + ` (${cycles} power-on/off cycle${cycles === 1 ? '' : 's'}${rampUp ? ` plus the box's ${rampUp}s ramp-up` : ''})`);
+      if (num(pc.totalTestDuration) !== wasTotal) {
+        notes.push(wasTotal
+          ? `total test duration ${wasTotal}s → ${pc.totalTestDuration}s`
+            + ` (${cycles} power-on/off cycle${cycles === 1 ? '' : 's'}${rampUp ? ` plus the box's ${rampUp}s ramp-up` : ''})`
+          : `total test duration set to ${pc.totalTestDuration}s — a time-based loop requires one`);
       }
     }
   }

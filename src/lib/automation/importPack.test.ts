@@ -158,3 +158,34 @@ test('a file broken in any other way is still broken', () => {
   // And a ue.cfg is still a ue.cfg, however it is punctuated.
   assert.match(definitionFromText('{ /* x */ "ue_list": [], "cell_groups": [] }').error ?? '', /this is a ue\.cfg/);
 });
+
+// ── the name a row is given ──────────────────────────────────────────────
+
+test('a bare definition is named from its own settings, not the file it came in', () => {
+  // What SimQA itself saves as test.json, and what the box returns as
+  // testDefinition. Falling back to the filename made the row
+  // "test_automation" instead of the test case's own name.
+  const r = definitionFromText(JSON.stringify({
+    cellConfig: { cells: [] },
+    settings: { test_name: 'IMS_PDN', testCaseName: 'IMS_PDN' },
+  }));
+  assert.equal(r.name, 'IMS_PDN');
+});
+
+test('testCaseName is accepted as well as test_name', () => {
+  const r = definitionFromText('{"userPlaneConfig":{},"settings":{"testCaseName":"IMS_PDN"}}');
+  assert.equal(r.name, 'IMS_PDN');
+});
+
+test('a definition that names itself nothing leaves the caller to use the filename', () => {
+  assert.equal(definitionFromText('{"cellConfig":{},"settings":{}}').name, undefined);
+  assert.equal(definitionFromText('{"cellConfig":{}}').name, undefined);
+  assert.equal(definitionFromText('{"cellConfig":{},"settings":{"test_name":"   "}}').name, undefined);
+});
+
+test('an export pack is still named from Test_Name', () => {
+  const r = definitionFromText(JSON.stringify({
+    test_case_details: [{ Test_Name: 'IMS_PDN', Config_File: { config: { cellConfig: {} } } }],
+  }));
+  assert.equal(r.name, 'IMS_PDN');
+});

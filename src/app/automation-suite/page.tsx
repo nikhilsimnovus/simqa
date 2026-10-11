@@ -1226,14 +1226,16 @@ export default function AutomationSuitePage() {
       const got = powerOnOf(definition);
       setAddDurSrc({ ...got, from: `${key} (uploaded)` });
       setAddDur(got.powerOnTime ? String(got.powerOnTime) : '');
-      setTcImportMsg({
-        ok: true,
-        text: `"${key}" is ready to add. It is kept with this suite — the test case is created on the Simnovator, under the display name below, when the suite runs.`
-          // What is kept is the definition that came out of the reader, so a
-          // hand-edited file is stored as valid JSON from here on. Worth
-          // saying, because the file on disk still is not.
-          + (repaired ? ` That file has ${repaired} in it, which JSON does not allow — it was read anyway, and what is kept here is valid.` : ''),
-      });
+      // No success banner. The picker below now reads "<name> — uploaded,
+      // created on the box at run time", the display name is filled in and so
+      // is the power-on duration: the upload has visibly landed, and a
+      // paragraph repeating it is in the way.
+      //
+      // A file that only parsed because comments were forgiven still says so —
+      // that is news, not an acknowledgement.
+      setTcImportMsg(repaired
+        ? { ok: true, text: `"${key}" has ${repaired} in it, which JSON does not allow — it was read anyway, and what is kept here is valid.` }
+        : null);
     } catch (err: any) {
       setTcImportMsg({ ok: false, text: err?.message ?? String(err) });
     } finally {
