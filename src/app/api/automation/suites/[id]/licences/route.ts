@@ -19,8 +19,10 @@ import { licenceTagOf } from '@/lib/automation/licenceTag';
 
 export const dynamic = 'force-dynamic';
 
-/** The three configs that carry a licence tag, and the file each is kept as. */
-export const LICENCE_ROLES = [
+/** The three configs that carry a licence tag, and the file each is kept as.
+ *  Not exported: a route module may only export the handlers and Next's own
+ *  config names, and anything else fails the build. */
+const LICENCE_ROLES = [
   { role: 'enb', file: 'enb.cfg', label: 'enb.cfg' },
   { role: 'mme', file: 'mme.cfg', label: 'mme.cfg' },
   { role: 'ims', file: 'ims.cfg', label: 'ims.cfg' },
