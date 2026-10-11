@@ -232,7 +232,10 @@ export default function AutomationSuitePage() {
 
   // Wizard state ────────────────────────────────────────────────────────
   const [name, setName]               = useState<string>('');
-  const [kind, setKind]               = useState<Kind>('uesim-only');
+  /** Every new suite binds a callbox. 'uesim-only' is still in the type and
+   *  still runs, for any suite saved before that was the only kind, but it is
+   *  no longer something anyone can choose. */
+  const [kind, setKind]               = useState<Kind>('uesim+callbox');
   const [uesimSystemId, setUesim]     = useState<string>('');
   /** Box logins the chosen Simnovator offers, and which one this suite runs as.
    *  Fetched from /api/box-users, which never returns passwords. */
@@ -257,10 +260,6 @@ export default function AutomationSuitePage() {
   // UESIM-only data: testcases pulled from Simnovator REST
   const [uesimTestcases, setUeTcs]    = useState<UesimTestcase[]>([]);
   const [loadingTc, setLoadingTc]     = useState(false);
-  /** Whose catalogue is on screen — the box login the list was pulled as.
-   *  A Simnovator shows each login only its OWN testcases, so the count means
-   *  nothing without the name beside it. */
-  const [tcListedAs, setTcListedAs]   = useState('');
   /** systemId|boxUserId of the catalogue already fetched, so switching tabs or
    *  re-rendering does not re-pull 700 rows. */
   const tcLoadedKey = useRef('');
@@ -1177,14 +1176,13 @@ export default function AutomationSuitePage() {
   }, [uesimSystemId, boxUserId, uploadedTcs]);
 
   const loadUesimTestcases = useCallback(async (sysId: string, userId?: string) => {
-    if (!sysId) { setUeTcs([]); setTcListedAs(''); return; }
+    if (!sysId) { setUeTcs([]); return; }
     setLoadingTc(true);
     try {
       const qs = new URLSearchParams({ systemId: sysId });
       if (userId) qs.set('boxUserId', userId);
       const r = await fetch(`/api/automation/uesim-testcases?${qs}`).then(r => r.json());
       setUeTcs(r?.ok ? (r.testcases ?? []) : []);
-      setTcListedAs(r?.ok ? (r.boxUser ?? '') : '');
       if (!r?.ok) setError(r?.error ?? 'failed to pull testcases');
       setTcNotice(r?.ok && r.truncated
         ? `showing ${r.total} of ${r.serverTotal} testcases — the box's REST list cannot serve rows past ~1000; older testcases are not selectable here`
@@ -1304,9 +1302,9 @@ export default function AutomationSuitePage() {
   }, [uploadedConfigs, selectedCfg]);
 
   const resetWizard = useCallback(() => {
-    setEditingId(''); setName(''); setEditingName(''); setKind('uesim-only');
+    setEditingId(''); setName(''); setEditingName(''); setKind('uesim+callbox');
     setUesim(''); setCbx(''); setUeSystemId(''); setCbxFiles([]); setUploads({}); setCbxLoadError('');
-    setUeTcs([]); setTcListedAs(''); tcLoadedKey.current = '';
+    setUeTcs([]); tcLoadedKey.current = '';
     setAddDur(''); setAddDurSrc(null); setAddOts(''); setAddDb('');
     setSelectedCfg(''); setSelectedTcs(new Set());
     setStopOnFail(false); setRemoveCfgAfterRun(true); setCbxFilter(''); setTcFilter('');
@@ -2275,7 +2273,11 @@ export default function AutomationSuitePage() {
                                               await refresh();
                                             }}
                                             className="mt-0.5 w-full border border-slate-300 rounded px-1 py-0.5 text-[11px]">
-                                            <option value="uesim-only">UESIM only</option>
+                                            {/* Offered only to a suite that
+                                                already is one, so it can be
+                                                converted away rather than
+                                                rendering blank. */}
+                                            {s.kind === 'uesim-only' && <option value="uesim-only">UESIM only (retired)</option>}
                                             <option value="uesim+callbox">UESIM + CALLBOX</option>
                                           </select>
                                         </label>
@@ -2625,8 +2627,12 @@ export default function AutomationSuitePage() {
         {/* Wizard */}
         {showWizard && (
           <section className="bg-surface border border-line rounded-xl p-5 mb-6">
-            <div className="mb-2">
+            {/* Cancel lives up here, beside the title, and not down beside
+                Save: the one button that throws the work away should not sit
+                within a thumb's width of the one that keeps it. */}
+            <div className="mb-2 flex items-start justify-between gap-4">
               <h2 className="text-base font-semibold text-slate-900">{editingId ? 'Edit suite' : 'New suite'}</h2>
+              <button onClick={resetWizard} className="rounded-md border border-slate-300 text-sm px-4 py-1.5">Cancel</button>
             </div>
 
             {/* Tab strip — explicit step counter so the user sees the flow */}
@@ -2658,12 +2664,18 @@ export default function AutomationSuitePage() {
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Suite name</span>
                 <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. NR-SA n78 nightly" className="border border-slate-300 rounded-md px-3 py-2 text-sm" />
               </label>
+              {/* Setup kind is no longer a choice: every suite binds a
+                  callbox. It is still shown, because which systems the next
+                  fields ask for follows from it — and a suite saved before
+                  this, if any is left, says what it is rather than silently
+                  reading as something it is not. */}
               <label className="flex flex-col">
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Setup kind</span>
-                <select value={kind} onChange={e => setKind(e.target.value as Kind)} className="border border-slate-300 rounded-md px-3 py-2 text-sm">
-                  <option value="uesim-only">UESIM only — testcases from Simnovator REST</option>
-                  <option value="uesim+callbox">UESIM + CALLBOX - Bind with gnb.cfg, mme.cfg and Ims.cfg</option>
-                </select>
+                <div className="h-[38px] flex items-center rounded-md border border-line bg-slate-50 px-3 text-sm text-slate-700">
+                  {kind === 'uesim+callbox'
+                    ? 'UESIM + CALLBOX — bind with gnb.cfg, mme.cfg and ims.cfg'
+                    : 'UESIM only — this suite was saved before the callbox binding became the only kind'}
+                </div>
               </label>
             </div>
 
@@ -2719,11 +2731,10 @@ export default function AutomationSuitePage() {
                 lives on the Testcases tab where each row pairs a
                 Simnovator testcase with its own callbox cfg. */}
 
+            {/* Cancel is in the header, where it is out of the way of the
+                buttons that move the work forward. */}
             <div className="flex items-center justify-end gap-2 mt-4">
               {!setupComplete && <span className="text-xs text-slate-500 mr-1">{stepBlockedReason('testcases')}</span>}
-              {/* A way out of the Setup step too — the Testcases step has the
-                  same pair, so leaving never depends on which step you are on. */}
-              <button onClick={resetWizard} className="rounded-md border border-slate-300 text-sm px-4 py-2">Cancel</button>
               <button
                 onClick={() => setTab('testcases')}
                 disabled={!setupComplete}
@@ -2744,22 +2755,6 @@ export default function AutomationSuitePage() {
               {tcNotice && (
                 <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 text-amber-800 text-xs px-3 py-2">
                   ⚠ {tcNotice}
-                </div>
-              )}
-
-              {/* Whose catalogue this is. A Simnovator serves each login only
-                  its own testcases, so "my test case is not in the list" is
-                  nearly always "it belongs to another login" — which is only
-                  answerable if the list says who it is showing. */}
-              {tcListedAs && (
-                <div className="mb-3 text-[11px] text-slate-500">
-                  {loadingTc
-                    ? 'Loading test cases'
-                    : `${uesimTestcases.length} test case${uesimTestcases.length === 1 ? '' : 's'}`} on{' '}
-                  <span className="font-mono">{uesimSystems.find(s => s.id === uesimSystemId)?.host ?? uesimSystemId}</span>, listed as{' '}
-                  <b className="text-slate-700">{tcListedAs}</b> — the login this suite runs as. Test cases created by another
-                  login are not offered here, and would not be executable by this one either. Change <b>Run as user</b> on
-                  the Setup tab to see theirs.
                 </div>
               )}
 
@@ -3234,18 +3229,14 @@ export default function AutomationSuitePage() {
 
             </>)}
 
-            {/* 11. One line: back on the left, save on the right. Cancel is
-                gone — the Saved suites tab leaves without saving, and a second
-                way out beside Save was only ever a way to lose the work. */}
+            {/* Both steps of the journey together on the right: back one step,
+                or finish. Cancel is up in the header, away from Save. */}
             {tab === 'testcases' && (
-              <div className="flex items-center justify-between mt-5 pt-4 border-t border-slate-100">
+              <div className="flex items-center justify-end gap-2 mt-5 pt-4 border-t border-slate-100">
                 <button onClick={() => setTab('setup')} className="rounded-md border border-slate-300 text-sm px-4 py-2">← Back: Setup</button>
-                <div className="flex items-center gap-2">
-                  <button onClick={resetWizard} className="rounded-md border border-slate-300 text-sm px-4 py-2">Cancel</button>
-                  <button onClick={saveSuite} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-sm font-medium px-4 py-2">
-                    {busy ? 'Saving…' : (editingId ? 'Update suite' : 'Save suite')}
-                  </button>
-                </div>
+                <button onClick={saveSuite} disabled={!!busy} className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-sm font-medium px-4 py-2">
+                  {busy ? 'Saving…' : (editingId ? 'Update suite' : 'Save suite')}
+                </button>
               </div>
             )}
           </section>
