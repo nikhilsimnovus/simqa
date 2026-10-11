@@ -12,6 +12,8 @@
 // saved.
 
 import { captureRowConfigs } from '../suiteConfigStore';
+// Which uploads land under which name — pure, and tested on its own.
+import { carriedConfigs } from './carriedConfigs';
 import { ensureSuiteTree, writeTestCaseFiles, automationRoot, dropStaleFile, type ServerFile } from './serverConfigs';
 import { getSystem, uesimApiOptsForSystem, type AutomationSuite, type Inventory, type InventorySystem } from '../inventory';
 
@@ -59,11 +61,31 @@ const AS_SERVER_NAME: Record<string, ServerFile> = {
   'ue.cfg': 'ue.cfg',
 };
 
+/**
+ * Just the files the suite already holds — no box is contacted.
+ *
+ * What a save writes immediately: the configs and the test case the operator
+ * uploaded. Everything else needs the callbox, the UE or the Simnovator, and
+ * waits for the background pass or the run.
+ */
+function writeCarriedFiles(
+  suite: AutomationSuite,
+  row: { name: string; uploadedTestcase?: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string; dbCfg?: string; otsCfg?: string },
+): { dir: string; written: string[]; error?: string } {
+  const files: Record<string, string | undefined> = { ...carriedConfigs(suite, row) };
+  const td = row.uploadedTestcase ? suite.uploadedTestcases?.[row.uploadedTestcase] : undefined;
+  if (td) files['test.json'] = td;
+  return writeTestCaseFiles(suite.name, row.name, files);
+}
+
 /** One row: read the boxes, read the testcase, write the folder. */
 export async function syncRowToServer(
   inv: Inventory,
   suite: AutomationSuite,
-  row: { name: string; simnovatorTcId: string; uploadedTestcase?: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string },
+  row: {
+    name: string; simnovatorTcId: string; uploadedTestcase?: string;
+    callboxCfg?: string; mmeCfg?: string; imsCfg?: string; dbCfg?: string; otsCfg?: string;
+  },
   callbox?: InventorySystem,
   ueSystem?: InventorySystem,
   boxUserId?: string,
@@ -81,6 +103,17 @@ export async function syncRowToServer(
   }
   // …and everything the MME config includes, under its own name.
   for (const [name, text] of Object.entries(includes ?? {})) files[name] = text;
+
+  // The files the suite CARRIES, which no box has yet.
+  //
+  // captureRowConfigs reads the callbox by name, so a config the operator
+  // uploaded rather than picked is invisible to it — and that is exactly the
+  // file the row is going to run. Written here, under the role name, so the
+  // folder holds the row's real configs from the moment the suite is saved
+  // and not only after its first successful run. They win over anything the
+  // box happens to have under the same name: the upload is the row's choice,
+  // and the runner pushes it over the box's copy anyway.
+  for (const [name, text] of Object.entries(carriedConfigs(suite, row))) files[name] = text;
 
   // Earlier versions saved the subscriber DB under the flat name "db", which
   // said nothing about which file it was — and, when the guess behind it was
@@ -114,7 +147,12 @@ export async function syncSuiteToServer(
   const rows = suite.items ?? [];
   ensureSuiteTree(suite.name, rows.map(r => r.name));
   if (opts.structureOnly) {
-    return { root: automationRoot(), rows: rows.map(r => ({ row: r.name, dir: '', written: [] })) };
+    // "Don't touch the boxes" — not "don't write what is already in hand".
+    // An uploaded config and an uploaded test case are local, instant and the
+    // row's actual content, so a save puts them in the folder straight away
+    // rather than leaving the row with nothing to run from until a box has
+    // been reached.
+    return { root: automationRoot(), rows: rows.map(r => ({ row: r.name, ...writeCarriedFiles(suite, r) })) };
   }
 
   const callbox = suite.kind === 'uesim+callbox' && suite.callboxSystemId

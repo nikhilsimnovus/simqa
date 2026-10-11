@@ -294,7 +294,6 @@ export default function AutomationSuitePage() {
   const [otsByCallbox, setOtsByCallbox] = useState<Record<string, string>>({});
   /** Whether that callbox's ots.cfg is a symlink or a file in its own right —
    *  worth saying, because the same name means two different things. */
-  const [otsIsLinkByCallbox, setOtsIsLinkByCallbox] = useState<Record<string, boolean>>({});
   /**
    * Whether each callbox has answered yet.
    *
@@ -326,7 +325,6 @@ export default function AutomationSuitePage() {
         if (mmeR?.ok) setDbByCallbox(prev => ({ ...prev, [id]: mmeR.ueDb ?? {} }));
         if (otsR?.ok) {
           setOtsByCallbox(prev => ({ ...prev, [id]: otsR.otsLink ?? '' }));
-          setOtsIsLinkByCallbox(prev => ({ ...prev, [id]: !!otsR.otsIsLink }));
         }
         setCfgRead(prev => ({ ...prev, [id]: mmeR?.ok || otsR?.ok ? 'ok' : 'error' }));
       } catch {
@@ -372,10 +370,6 @@ export default function AutomationSuitePage() {
   /** What /root/ots/config/ots.cfg points at on the callbox — the file the
    *  stack actually loads. Shown, never picked; it is the box's own wiring. */
   const [otsLink, setOtsLink] = useState<string>('');
-  /** Whether that ots.cfg is a symlink. On .107 it is a plain file and on .106
-   *  a link to ots.default.cfg, and binding a different one means different
-   *  things in those two cases — so the picker says which it is dealing with. */
-  const [otsIsLink, setOtsIsLink] = useState<boolean | undefined>(undefined);
   /** The files in /root/ots/config, so ots.cfg can be picked like the others
    *  instead of only reported. */
   const [otsFiles, setOtsFiles]       = useState<CallboxFile[]>([]);
@@ -1115,7 +1109,6 @@ export default function AutomationSuitePage() {
       // inside the MME config as an `include` line.
       setUeDbByMme(mmeR?.ok ? (mmeR.ueDb ?? {}) : {});
       setOtsLink(otsR?.ok ? (otsR.otsLink ?? '') : '');
-      setOtsIsLink(otsR?.ok ? otsR.otsIsLink : undefined);
       setOtsFiles(otsR?.ok ? (otsR.files ?? []) : []);
       if (!enbR?.ok) setCbxLoadError(enbR?.error ?? 'failed to list callbox configs');
     } finally { if (req === cbxReq.current) setLoadingCbx(false); }
@@ -2450,9 +2443,7 @@ export default function AutomationSuitePage() {
                                       title={it.otsCfg
                                         ? `This row binds /root/ots/config/ots.cfg → ${it.otsCfg} before it runs`
                                         : otsByCallbox[s.callboxSystemId ?? '']
-                                          ? (otsIsLinkByCallbox[s.callboxSystemId ?? '']
-                                              ? `/root/ots/config/ots.cfg → ${otsByCallbox[s.callboxSystemId ?? '']}`
-                                              : '/root/ots/config/ots.cfg — a file on this callbox, not a symlink')
+                                          ? `/root/ots/config/ots.cfg → ${otsByCallbox[s.callboxSystemId ?? '']}`
                                           : undefined}>
                                       {it.otsCfg || otsByCallbox[s.callboxSystemId ?? ''] || NOT_CONFIGURED}
                                     </td>
@@ -3118,14 +3109,14 @@ export default function AutomationSuitePage() {
                         ariaLabel="ots.cfg"
                         noun="config"
                       />
+                      {/* What this row will bind, said only when it differs
+                          from what the callbox is already on. How ots.cfg
+                          happens to exist there — link or plain file — is the
+                          runner's problem, not something to read about here. */}
                       <span className="text-[10px] text-slate-500 mt-1">
                         {addOts && otsLink && addOts !== otsLink
-                          ? (otsIsLink === false
-                            ? `the callbox has ots.cfg as a plain file — it will be kept as ots.cfg.simqa-backup and replaced with a link to ${addOts}`
-                            : `ots.cfg will be re-pointed from ${otsLink} to ${addOts}`)
-                          : otsLink
-                            ? `the callbox is on ${otsLink}${otsIsLink === false ? ' (a plain file, not a link)' : ''}`
-                            : ''}
+                          ? `ots.cfg will point at ${addOts}`
+                          : ''}
                       </span>
                     </label>
                   </>)}
