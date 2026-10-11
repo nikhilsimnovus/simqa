@@ -1955,49 +1955,46 @@ export default function AutomationSuitePage() {
                   <div className="mt-3 rounded-md border border-line bg-slate-50 px-3 py-2">
                     <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Licence</div>
                     <div className="space-y-2">
-                      {licences.map(l => (
-                        <div key={l.role} className="flex items-start gap-2 text-sm">
-                          <span className="font-mono text-[12px] text-slate-600 w-[4.5rem] pt-1">{l.label}</span>
-                          {/* One line per CONFIG FILE, because that is the
-                              thing an operator can open and check. A suite's
-                              rows do not all run the same config, and showing
-                              their tags as one list could not be reconciled
-                              with any single file. */}
-                          <div className="flex-1 min-w-0 space-y-0.5 pt-1">
-                            {l.groups.map((g, n) => (
-                              <div key={n} className="text-[12px] leading-snug">
-                                <span className={cn('text-slate-800', licenceEdits[l.role] && 'line-through text-slate-400')}>
-                                  {g.tag === null
-                                    ? <span className="text-slate-500 italic">names no licence server</span>
-                                    : g.tag === ''
-                                      ? <span className="text-amber-700">empty tag</span>
-                                      : g.tag}
-                                </span>
-                                <span className="text-slate-500"> — <span className="font-mono">{g.config}</span></span>
-                                {l.groups.length > 1 && (
-                                  <span className="text-slate-400"> · {g.rows.length} row{g.rows.length === 1 ? '' : 's'}</span>
-                                )}
-                              </div>
-                            ))}
-                            {l.groups.length > 1 && (
-                              <div className="text-[10px] text-amber-700">
-                                these rows run different configs — a licence set here applies to all of them
-                              </div>
+                      {licences.map(l => {
+                        // One line per config, as it was. A tag is shown only
+                        // when the suite's rows agree on one — and they do
+                        // not always: User_Plane runs demo-ims.cfg on six
+                        // rows and Mohan_ims.cfg on four, asking for mme-oran
+                        // and rnd-mme. Naming either there would be wrong
+                        // about the other six or four, so the line says how
+                        // many there are and the hover says which is which.
+                        const one = l.groups.length === 1 ? l.groups[0] : undefined;
+                        const say = (g: { tag: string | null }) =>
+                          g.tag === null ? 'no licence server' : g.tag === '' ? 'empty tag' : g.tag;
+                        const odd = one && (one.tag === null || one.tag === '');
+                        return (
+                          <label key={l.role} className="flex items-center gap-2 text-sm">
+                            <span className="font-mono text-[12px] text-slate-600 w-[4.5rem]">{l.label}</span>
+                            <span
+                              title={l.groups.map(g => `${say(g)} — ${g.config} · ${g.rows.length} row${g.rows.length === 1 ? '' : 's'}`).join('\n')}
+                              className={cn(
+                                licenceEdits[l.role] ? 'line-through text-slate-400'
+                                  : odd || !one ? 'text-amber-700 cursor-help' : 'text-slate-800 cursor-help',
+                              )}>
+                              {one ? say(one) : `${l.groups.length} different licences`}
+                            </span>
+                            {one && (
+                              <span className="text-[11px] text-slate-400 font-mono truncate">{one.config}</span>
                             )}
-                          </div>
-                          <input
-                            value={licenceEdits[l.role] ?? ''}
-                            onChange={e => setLicenceEdits(prev => {
-                              const next = { ...prev };
-                              const v = e.target.value.trim();
-                              if (v) next[l.role] = v; else delete next[l.role];
-                              return next;
-                            })}
-                            placeholder="run with another licence…"
-                            className="border border-slate-300 rounded-md px-2 py-1 text-xs w-56 shrink-0"
-                          />
-                        </div>
-                      ))}
+                            <input
+                              value={licenceEdits[l.role] ?? ''}
+                              onChange={e => setLicenceEdits(prev => {
+                                const next = { ...prev };
+                                const v = e.target.value.trim();
+                                if (v) next[l.role] = v; else delete next[l.role];
+                                return next;
+                              })}
+                              placeholder="run with another licence…"
+                              className="ml-auto border border-slate-300 rounded-md px-2 py-1 text-xs w-56 shrink-0"
+                            />
+                          </label>
+                        );
+                      })}
                     </div>
                     {Object.keys(licenceEdits).length > 0 && (
                       <p className="mt-1.5 text-[11px] text-slate-500">
