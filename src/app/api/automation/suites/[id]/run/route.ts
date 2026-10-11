@@ -92,13 +92,18 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   // they exist. Best-effort and bounded: a suite whose original boxes are down
   // still runs, and the row that needs a missing file fails naming it rather
   // than linking the callbox at something that is not there.
-  if (onBox && onBox !== suite.uesimSystemId) {
-    const gaps = rowsMissingServerFiles(suite.name, target.items ?? []);
-    if (gaps.length) {
-      try {
-        await syncSuiteToServer(loadInventory(), suite, { boxUserId: suite.boxUserId });
-      } catch { /* the run reports what is still missing, row by row */ }
-    }
+  //
+  // Checked on EVERY run, not only when the target box has changed. A folder
+  // can be short for reasons that have nothing to do with moving setups — a
+  // box that was down when the suite was saved, a row added before the save
+  // wrote uploads, a file captured before the row picked it — and the run is
+  // the moment it matters. Costing one listing per row when the folder is
+  // already complete, and nothing else.
+  const gaps = rowsMissingServerFiles(suite.name, target.items ?? []);
+  if (gaps.length) {
+    try {
+      await syncSuiteToServer(loadInventory(), suite, { boxUserId: suite.boxUserId });
+    } catch { /* the run reports what is still missing, row by row */ }
   }
 
   // Which logins to run for. One pass each, in order — see RunOpts.asUsers.

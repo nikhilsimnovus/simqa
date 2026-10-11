@@ -2158,17 +2158,27 @@ export default function AutomationSuitePage() {
 
                       <div className="px-4 py-3 flex flex-wrap items-center gap-2 border-b border-line">
                         {/* Only the ticked rows. Disabled until something is
-                            ticked, so it can never silently mean "all". */}
+                            ticked, so it can never silently mean "all" — but
+                            NOT because the suite's own box is busy. Run Suite
+                            opens in that case so another Simnovator can be
+                            chosen in the dialog, and this has exactly the same
+                            dialog: greying it out left a ticked selection with
+                            no way to run anywhere while someone else's test
+                            held the box. Whether the box you end up choosing
+                            is free is decided in there. */}
                         <button
                           onClick={() => setConfirmRun({
                             suite: s,
                             rows: (s.items ?? []).filter(i => pickedIn(s.id).has(i.id)),
                           })}
-                          disabled={running === s.id || !!boxBusy || pickedIn(s.id).size === 0}
-                          title={boxBusy ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — use Run Suite above to run on another Simnovator`
-                            : pickedIn(s.id).size === 0 ? 'Tick one or more test cases first' : `Run the ${pickedIn(s.id).size} ticked test case(s)`}
-                          className="rounded-md border border-blue-600 text-blue-700 hover:bg-blue-50 disabled:border-slate-300 disabled:text-slate-400 text-xs font-semibold px-3 py-1.5">
+                          disabled={running === s.id || pickedIn(s.id).size === 0}
+                          title={pickedIn(s.id).size === 0 ? 'Tick one or more test cases first'
+                            : boxBusy ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — open this to run the ticked test cases on another Simnovator`
+                            : `Run the ${pickedIn(s.id).size} ticked test case(s)`}
+                          className={'rounded-md border text-xs font-semibold px-3 py-1.5 disabled:border-slate-300 disabled:text-slate-400 '
+                            + (boxBusy ? 'border-slate-500 text-slate-600 hover:bg-slate-50' : 'border-blue-600 text-blue-700 hover:bg-blue-50')}>
                           ▶ Run Selected{pickedIn(s.id).size > 0 ? ` (${pickedIn(s.id).size})` : ''}
+                          {boxBusy && pickedIn(s.id).size > 0 ? ' on another box…' : ''}
                         </button>
                         {/* Opens the wizard straight on the Testcases step — from
                             the suite list the thing you want is another row, not
@@ -2464,9 +2474,12 @@ export default function AutomationSuitePage() {
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
                                       <button
                                         onClick={() => setConfirmRun({ suite: s, rows: [it] })}
-                                        disabled={running === s.id || !!boxBusy}
-                                        title={boxBusy ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — use Run Suite above to run on another Simnovator` : `Run only "${it.name}"`}
-                                        className="rounded bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300 text-on-accent text-[11px] px-2 py-0.5 mr-1">
+                                        disabled={running === s.id}
+                                        title={boxBusy
+                                          ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — open this to run "${it.name}" on another Simnovator`
+                                          : `Run only "${it.name}"`}
+                                        className={cn('rounded disabled:bg-slate-300 text-on-accent text-[11px] px-2 py-0.5 mr-1',
+                                          boxBusy ? 'bg-slate-500 hover:bg-slate-600' : 'bg-blue-500 hover:bg-blue-600')}>
                                         Run
                                       </button>
                                       <button onClick={() => startEditRow(s, it)} disabled={running === s.id}

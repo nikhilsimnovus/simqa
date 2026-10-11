@@ -265,7 +265,10 @@ export function listTestCaseFiles(suiteName: string, rowName: string): Array<{ n
  */
 export function rowsMissingServerFiles(
   suiteName: string,
-  rows: Array<{ name: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string }>,
+  rows: Array<{
+    name: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string;
+    dbCfg?: string; otsCfg?: string;
+  }>,
 ): Array<{ row: string; missing: string[] }> {
   const out: Array<{ row: string; missing: string[] }> = [];
   for (const row of rows) {
@@ -275,6 +278,11 @@ export function rowsMissingServerFiles(
     if (row.callboxCfg && !have['enb.cfg']) missing.push('enb.cfg');
     if (row.mmeCfg && !have['mme.cfg']) missing.push('mme.cfg');
     if (row.imsCfg && !have['ims.cfg']) missing.push('ims.cfg');
+    // ots is kept under the role name like the three above; the subscriber
+    // database keeps its own, because that is the name the MME config
+    // includes it by and the name it has to exist under on the callbox.
+    if (row.otsCfg && !have['ots.cfg']) missing.push('ots.cfg');
+    if (row.dbCfg && !have[row.dbCfg]) missing.push(row.dbCfg);
     if (missing.length) out.push({ row: row.name, missing });
   }
   return out;
