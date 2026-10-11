@@ -37,6 +37,7 @@ import { preflightRows } from './preflightConfigs';
 // the comments and trailing commas a hand edit leaves in it.
 import { definitionFromText } from './importPack';
 import { expectedRunSeconds } from './durationFit';
+import { withLicenceTag } from './licenceTag';
 // Checksums, so an unchanged subscriber database is not sent again each run.
 import { createHash } from 'node:crypto';
 import { validateCfg, withDbInclude, ROLE_LABEL, type CfgRole } from '../cfgValidate';
@@ -171,6 +172,15 @@ export interface SuiteRunResult {
 }
 
 export interface RunOpts {
+  /**
+   * The licence each config should ask the licence server for, chosen in the
+   * Run dialog and applied as the config is pushed.
+   *
+   * Per RUN, not saved on the suite: which licence is free, and which setup
+   * the run is pointed at, are facts about today rather than about the
+   * playlist. A role left out keeps whatever its config already names.
+   */
+  licenceTags?: { enb?: string; mme?: string; ims?: string };
   /** Box logins to run this suite for, in order. Omitted = just the one the
    *  suite is saved with. Each pass creates or reuses that user's own copies
    *  and executes on their own simulator, so the passes cannot collide. */
@@ -1198,7 +1208,31 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
            * temp file rather than echoed through the shell because a
            * subscriber DB is a third of a megabyte.
            */
-          const push = async (name: string, text: string, where: string, role?: CfgRole) => {
+          const push = async (name: string, textIn: string, where: string, role?: CfgRole) => {
+            // The licence this run asked for, written in on the way past.
+            //
+            // The tag decides which licence the component takes out, and two
+            // setups sharing a licence server are told apart by it — so a
+            // config captured from one box and pushed to another needs a
+            // different one. Applied here, at the single point every config
+            // goes through, so the file on the callbox and the file that was
+            // validated are the same bytes.
+            //
+            // Only the quoted tag changes; a config naming no licence server
+            // is left alone rather than given one, which would mean inventing
+            // a server address.
+            let text = textIn;
+            const wantTag = role && (role === 'enb' || role === 'gnb') ? opts.licenceTags?.enb
+              : role === 'mme' ? opts.licenceTags?.mme
+              : role === 'ims' ? opts.licenceTags?.ims
+              : undefined;
+            if (wantTag) {
+              const lic = withLicenceTag(text, wantTag);
+              if (lic.changed) {
+                text = lic.text;
+                stepDetails.push(`licence: ${name} ${lic.from} → ${wantTag}`);
+              }
+            }
             // Check the bytes before they land on the hardware.
             //
             // The wizard refuses a bad upload at the point it is picked, but a

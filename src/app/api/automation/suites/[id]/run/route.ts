@@ -26,6 +26,25 @@ import { syncSuiteToServer } from '@/lib/automation/syncServerConfigs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 900;
 
+
+/**
+ * The licence tags from a run request, or undefined when none were chosen.
+ *
+ * A tag is a short name like "oran-enb" — the lab’s are rnd-enb, oran-enb,
+ * oru-enb, rnd-mme, mme-oran, oru-mme. Anything that is not one word of that
+ * shape is dropped rather than written into a config and sent to hardware.
+ */
+function licenceTagsFrom(raw: unknown): { enb?: string; mme?: string; ims?: string } | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const out: { enb?: string; mme?: string; ims?: string } = {};
+  for (const role of ['enb', 'mme', 'ims'] as const) {
+    const v = (raw as Record<string, unknown>)[role];
+    if (typeof v !== 'string') continue;
+    const tag = v.trim();
+    if (tag && /^[A-Za-z0-9._-]{1,64}$/.test(tag)) out[role] = tag;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   const suite = getSuite(id);
@@ -143,6 +162,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       asUsers,
       signal: abort.signal,
       submittedBy,
+      // Which licence each config should ask for, chosen in the Run dialog.
+      // A tag is a short name — anything else is a mistake worth refusing
+      // here rather than writing into a config and sending to the hardware.
+      licenceTags: licenceTagsFrom(body.licenceTags),
       collectDiagnostics: !!body.collectDiagnostics,
       perfQaUrl: typeof body.perfQaUrl === 'string' ? body.perfQaUrl : undefined,
       perfQaProfile: typeof body.perfQaProfile === 'string' ? body.perfQaProfile : undefined,

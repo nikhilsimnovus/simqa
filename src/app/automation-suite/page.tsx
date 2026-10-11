@@ -256,6 +256,11 @@ export default function AutomationSuitePage() {
    *  which box the dialog is pointed at. */
   const [confirmRun, setConfirmRun] = useState<{ suite: SuiteRow; rows?: SuiteItem[] } | null>(null);
   const [runTarget, setRunTarget] = useState<{ uesim: string; callbox: string; ue: string }>({ uesim: '', callbox: '', ue: '' });
+  /** What each config currently asks the licence server for, read from the
+   *  copies on the automation server when the Run dialog opens. */
+  const [licences, setLicences] = useState<Array<{ role: string; label: string; tags: string[] }>>([]);
+  /** The licences chosen for THIS run, by role. Empty = leave them alone. */
+  const [licenceEdits, setLicenceEdits] = useState<Record<string, string>>({});
   const [boxUserId, setBoxUserId]     = useState<string>('');
   const [callboxSystemId, setCbx]     = useState<string>('');
   /** The UE system the suite runs against — see AutomationSuite.ueSystemId. */
@@ -852,6 +857,16 @@ export default function AutomationSuitePage() {
     if (!confirmRun) return;
     const s = confirmRun.suite;
     setRunTarget({ uesim: s.uesimSystemId ?? '', callbox: s.callboxSystemId ?? '', ue: s.ueSystemId ?? '' });
+    // What each config asks the licence server for today. Read from the
+    // copies on the automation server, because those are the ones the run
+    // pushes — the callbox's links point at whatever ran last, usually
+    // another row's.
+    setLicences([]);
+    setLicenceEdits({});
+    void fetch(`/api/automation/suites/${s.id}/licences`)
+      .then(r => r.json())
+      .then(j => { if (j?.ok) setLicences(j.roles ?? []); })
+      .catch(() => { /* no licence line rather than a broken dialog */ });
   }, [confirmRun?.suite.id]);
 
   /** Moving to another Simnovator brings its own callbox and UE with it — the
@@ -1518,6 +1533,9 @@ export default function AutomationSuitePage() {
           ...(on?.uesim && on.uesim !== s.uesimSystemId ? { uesimSystemId: on.uesim } : {}),
           ...(on?.callbox && on.callbox !== s.callboxSystemId ? { callboxSystemId: on.callbox } : {}),
           ...(on?.ue && on.ue !== s.ueSystemId ? { ueSystemId: on.ue } : {}),
+          // Only the roles actually changed in the dialog; a config whose
+          // licence was left alone keeps the tag it already names.
+          ...(Object.keys(licenceEdits).length ? { licenceTags: licenceEdits } : {}),
         }),
       });
       const d = await r.json();
@@ -1922,6 +1940,53 @@ export default function AutomationSuitePage() {
                     </label>
                   </div>
                 )}
+                {/* The licence each config asks the licence server for.
+                    A tag is how two setups sharing one licence server are
+                    told apart, so a config captured from one box and run on
+                    another needs a different one — which used to mean editing
+                    the cfg on the callbox before the run. Changed here, it is
+                    written into the config as it is pushed, and the original
+                    on the server is left alone: this is a choice about today's
+                    run, not about the suite. */}
+                {licences.length > 0 && (
+                  <div className="mt-3 rounded-md border border-line bg-slate-50 px-3 py-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Licence</div>
+                    <div className="space-y-1.5">
+                      {licences.map(l => {
+                        const current = l.tags.join(', ') || '—';
+                        return (
+                          <label key={l.role} className="flex items-center gap-2 text-sm">
+                            <span className="font-mono text-[12px] text-slate-600 w-[4.5rem]">{l.label}</span>
+                            <span className={cn('text-slate-800', licenceEdits[l.role] && 'line-through text-slate-400')}>
+                              {current}
+                            </span>
+                            {l.tags.length > 1 && (
+                              <span className="text-[10px] text-amber-700">rows differ — one tag applies to all</span>
+                            )}
+                            <input
+                              value={licenceEdits[l.role] ?? ''}
+                              onChange={e => setLicenceEdits(prev => {
+                                const next = { ...prev };
+                                const v = e.target.value.trim();
+                                if (v) next[l.role] = v; else delete next[l.role];
+                                return next;
+                              })}
+                              placeholder="run with another licence…"
+                              className="ml-auto border border-slate-300 rounded-md px-2 py-1 text-xs w-56"
+                            />
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {Object.keys(licenceEdits).length > 0 && (
+                      <p className="mt-1.5 text-[11px] text-slate-500">
+                        Written into the config as it is pushed to {hostOf(s.callboxSystemId) || 'the callbox'} and
+                        symlinked. The copy on the automation server keeps its own licence.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <p className="mt-2 text-[11px] text-slate-500">
                   Each test case creates or reuses its testcase on {hostOf(s.uesimSystemId)}
                   {s.kind === 'uesim+callbox' && <>, symlinks its gnb/mme/ims cfgs on {hostOf(s.callboxSystemId)} and restarts lte</>}
