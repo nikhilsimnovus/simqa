@@ -114,13 +114,22 @@ export async function GET(req: Request) {
 
   const saved = listAllRuns(limit).map((r) => {
     const rows = (r.steps ?? []).map(rowOf);
+    // Runs recorded before the login was kept on the record still have one —
+    // the suite says which, and resolving it is what the runner did. Shown as
+    // the suite's login rather than left blank, so the column is useful today
+    // and not only for runs from here on. A suite since deleted, or since
+    // pointed at a different login, simply has nothing to offer.
+    const suite = r.boxUser ? undefined : getSuite(r.suiteId);
+    const fallback = suite
+      ? uesimApiOptsForSystem(inv, suite.uesimSystemId ?? '', suite.boxUserId)?.boxUser
+      : undefined;
     return {
       runId: r.runId,
       live: false,
       suiteId: r.suiteId,
       suiteName: r.suiteName,
       uesimHost: r.uesimHost,
-      boxUser: r.boxUser,
+      boxUser: r.boxUser ?? fallback,
       callboxHost: r.callboxHost,
       startedAt: r.startedAt,
       finishedAt: r.finishedAt,
