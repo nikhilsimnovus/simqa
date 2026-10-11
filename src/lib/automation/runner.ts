@@ -159,6 +159,10 @@ export interface SuiteRunResult {
   suiteName: string;
   kind: 'uesim-only' | 'uesim+callbox';
   uesimHost?: string;
+  /** The Simnovator LOGIN the run executed as. A box serves each login only
+   *  its own testcases and its own simulator, so the host alone does not say
+   *  where a result came from. */
+  boxUser?: string;
   callboxHost?: string;
   total: number;
   passed: number;
@@ -508,7 +512,7 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
   return {
     startedAt, finishedAt: new Date().toISOString(),
     suiteId: suite.id, suiteName: suite.name, kind: 'uesim-only',
-    uesimHost: ueOpts.host,
+    uesimHost: ueOpts.host, boxUser: ueOpts.boxUser,
     total: suite.testcaseIds.length, passed, failed, steps,
     buildVersion,
   } as SuiteRunResult & { buildVersion?: string };
@@ -762,7 +766,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   return {
     startedAt, finishedAt: new Date().toISOString(),
     suiteId: suite.id, suiteName: suite.name, kind: 'uesim+callbox',
-    uesimHost: ueOpts.host,
+    uesimHost: ueOpts.host, boxUser: ueOpts.boxUser,
     callboxHost: sys.host,
     total, passed, failed, steps,
     buildVersion,
@@ -1807,7 +1811,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     startedAt, finishedAt: new Date().toISOString(),
     suiteId: suite.id, suiteName: suite.name,
     kind: suite.kind ?? 'uesim-only',
-    uesimHost: ueOpts.host,
+    uesimHost: ueOpts.host, boxUser: ueOpts.boxUser,
     callboxHost: callboxSys?.host,
     total, passed, failed, steps: rawSteps,
     buildVersion,

@@ -111,7 +111,23 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   const suite = getSuite(id);
   if (!suite) return NextResponse.json({ ok: false, error: `no suite "${id}"` }, { status: 404 });
 
-  const only = new URL(req.url).searchParams.get('row');
+  const q = new URL(req.url).searchParams;
+  const only = q.get('row');
+
+  // One file's contents, for the run detail's Configs pane. A config is not a
+  // secret — the whole point of the folder is that operators work in it — but
+  // it is only served one at a time, by name, and only for a row of this
+  // suite, so this cannot be turned into a reader for the filesystem.
+  const wantFile = q.get('file');
+  if (wantFile && only) {
+    const row = (suite.items ?? []).find((r) => r.name === only);
+    if (!row) return NextResponse.json({ ok: false, error: `no row "${only}" in this suite` }, { status: 404 });
+    const text = readTestCaseFile(row.configSuite ?? suite.name, row.name, wantFile);
+    if (text === undefined) {
+      return NextResponse.json({ ok: false, error: `${wantFile} is not saved for this row` }, { status: 404 });
+    }
+    return NextResponse.json({ ok: true, row: row.name, file: wantFile, bytes: text.length, text });
+  }
   const rows = (suite.items ?? []).filter((r) => !only || r.name === only);
 
   return NextResponse.json({

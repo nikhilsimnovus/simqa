@@ -108,3 +108,27 @@ export function patchRun(runId: string, patch: Partial<RunRecord>): boolean {
   fs.writeFileSync(path.join(ROOT(), `${runId}.json`), JSON.stringify(merged, null, 2));
   return true;
 }
+
+/**
+ * Every run, newest first, across every suite.
+ *
+ * The index is keyed by suite because "this suite's history" is the common
+ * question; this is the other one — the Automation Suite's History tab, which
+ * is a log of everything that has executed rather than of one playlist. Run
+ * ids are timestamp-prefixed, so sorting them sorts by time without reading
+ * a single file.
+ */
+export function listAllRuns(limit = 100): RunRecord[] {
+  const idx = readIndex();
+  const ids = Object.values(idx.bySuite).flat();
+  // Newest first by id, then take the page, then read — so a lab with
+  // thousands of runs reads the hundred being shown and no more.
+  ids.sort((a, b) => b.localeCompare(a));
+  const out: RunRecord[] = [];
+  for (const id of ids) {
+    if (out.length >= limit) break;
+    const r = getRun(id);
+    if (r) out.push(r);
+  }
+  return out;
+}

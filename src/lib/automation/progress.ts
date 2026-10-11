@@ -204,3 +204,27 @@ export function getProgress(suiteId: string): SuiteProgress | null {
   }
   return saved;
 }
+
+/**
+ * Every run that is in flight right now, across every suite.
+ *
+ * The History table shows a run while it is still going — an operator wants
+ * to watch the thing they just started, not wait for it to be filed — and a
+ * live run has no record in the run store yet, because that is written when
+ * it finishes. This is where it comes from until then.
+ *
+ * Read through getProgress so an entry left behind by a process that is gone
+ * is reported as interrupted rather than as still running.
+ */
+export function liveRuns(): SuiteProgress[] {
+  const ids = new Set<string>([
+    ...store().live.keys(),
+    ...Object.keys(readFile()),
+  ]);
+  const out: SuiteProgress[] = [];
+  for (const id of ids) {
+    const p = getProgress(id);
+    if (p && !p.finished) out.push(p);
+  }
+  return out.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+}

@@ -24,6 +24,7 @@ import { useColumnWidths, ResizeHandle, ColGroup } from '@/components/resizableC
 import { statusLabel, verdictLabel, verdictClass, statusStyle } from '@/lib/automation/outcome';
 import { definitionFromText } from '@/lib/automation/importPack';
 import { BackToRunHistory } from '@/components/BackToRunHistory';
+import { SuiteHistory } from './SuiteHistory';
 import { validateCfg, dbIncludesOf, ROLE_LABEL, type CfgRole, type CfgVerdict } from '@/lib/cfgValidate';
 // The same reading of a definition the power-on route does, so an uploaded
 // test case and one on the box are understood the same way.
@@ -235,6 +236,9 @@ export default function AutomationSuitePage() {
   /** Every new suite binds a callbox. 'uesim-only' is still in the type and
    *  still runs, for any suite saved before that was the only kind, but it is
    *  no longer something anyone can choose. */
+  /** Which of the three tabs is showing. The wizard has its own flag already,
+   *  so this only has to tell History from Saved Suites. */
+  const [showHistory, setShowHistory] = useState(false);
   const [kind, setKind]               = useState<Kind>('uesim+callbox');
   const [uesimSystemId, setUesim]     = useState<string>('');
   /** Box logins the chosen Simnovator offers, and which one this suite runs as.
@@ -1956,22 +1960,35 @@ export default function AutomationSuitePage() {
             tracked which is active, so it drives the tabs directly rather than
             adding a second source of truth that could disagree with it. */}
         <div className="flex items-center gap-1 border-b border-line mb-4">
+          {/* History first: what has already happened is what an operator
+              arrives wanting, and the Job Tracker puts its own history in the
+              same place for the same reason. */}
           <button
             type="button"
-            onClick={resetWizard}
+            onClick={() => { resetWizard(); setShowHistory(true); }}
             className={
               'relative px-4 h-9 text-sm font-medium transition-colors -mb-px border-b-2 ' +
-              (!showWizard ? 'border-primary-600 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800')
+              (showHistory ? 'border-primary-600 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800')
+            }
+          >
+            History
+          </button>
+          <button
+            type="button"
+            onClick={() => { resetWizard(); setShowHistory(false); }}
+            className={
+              'relative px-4 h-9 text-sm font-medium transition-colors -mb-px border-b-2 ' +
+              (!showWizard && !showHistory ? 'border-primary-600 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800')
             }
           >
             Saved Suites
-            <span className={'ml-1 text-[13px] tabular-nums ' + (!showWizard ? 'text-slate-500' : 'text-slate-400')}>
+            <span className={'ml-1 text-[13px] tabular-nums ' + (!showWizard && !showHistory ? 'text-slate-500' : 'text-slate-400')}>
               ({suites.length})
             </span>
           </button>
           <button
             type="button"
-            onClick={() => { if (!showWizard) openNew(); }}
+            onClick={() => { setShowHistory(false); if (!showWizard) openNew(); }}
             className={
               'relative px-4 h-9 text-sm font-medium transition-colors -mb-px border-b-2 ' +
               (showWizard ? 'border-primary-600 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800')
@@ -1981,8 +1998,11 @@ export default function AutomationSuitePage() {
           </button>
         </div>
 
+        {/* History — every run, newest first, live while one is going. */}
+        {showHistory && !showWizard && <SuiteHistory />}
+
         {/* Suite list */}
-        {!showWizard && (
+        {!showWizard && !showHistory && (
         <section className="bg-surface border border-line rounded-xl p-5 mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-slate-900">Saved Suites ({suites.length})</h2>
