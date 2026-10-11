@@ -178,7 +178,7 @@ export async function duplicateTestcase(
         const before = powerOnTimesOf(probe);
         applyDuration(probe, durationSec);
         const after = powerOnTimesOf(probe);
-        if (String(before) !== String(after)) staleDesc = `${before.join('/')}s → ${after.join('/')}s`;
+        if (String(before) !== String(after)) staleDesc = `power-on ${before.join('/')}s → ${after.join('/')}s`;
       } catch { /* unreadable: leave it alone and just run it */ }
     }
 
@@ -218,12 +218,16 @@ export async function duplicateTestcase(
     if (!gone.ok) {
       return {
         testCaseId: already, name: finalName, reused: true,
-        warning: `"${finalName}" on the box is out of date (power-on ${staleDesc}) and could not be `
+        warning: `"${finalName}" on the box is out of date (${staleDesc}) and could not be `
           + `deleted for rebuild: ${gone.text.slice(0, 160)} — it ran with its old duration`,
       };
     }
-    rebuiltNote = `rebuilt "${finalName}" at the row's duration (power-on ${staleDesc}) — `
-      + `the box cannot re-cut a finished testcase, so the old one was replaced`;
+    // The reason says which of the two it is — a duration the row changed, or
+    // sections that no longer match the automation server's copy. Prefixing
+    // every one with "power-on" read as nonsense for the second:
+    // "rebuilt X at the row's duration (power-on cellConfig differs …)".
+    rebuiltNote = `rebuilt "${finalName}": ${staleDesc} — the box cannot re-cut a finished `
+      + `testcase, so the old one was replaced`;
   }
 
   let definition = sourceTd;
