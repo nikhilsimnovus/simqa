@@ -40,13 +40,25 @@ const base = (host: string) => `http://${host}/v2`;
 function windowFor(startedAt?: string, finishedAt?: string): { startTime: number; endTime: number } {
   const now = Math.floor(Date.now() / 1000);
   const start = startedAt ? Math.floor(Date.parse(startedAt) / 1000) : NaN;
-  const end = finishedAt ? Math.floor(Date.parse(finishedAt) / 1000) : NaN;
+
+  // Deliberately generous, measured rather than guessed.
+  //
+  // A window tight around the run returns NOTHING for a finished execution:
+  // asking .95 for LTE_3CC_UDP_1UEs_automation over the last 24 hours gave
+  // `{"cells":null}` while the same request over 30 days gave rows stamped
+  // utc 1791540440 — samples whose timestamps do not line up with the run's
+  // wall-clock as SimQA records it. Whether that is clock skew between the
+  // boxes or a different stamping base, a tight window silently answers
+  // "no statistics" for an execution that has plenty.
+  //
+  // Nothing is lost by being wide: the execution id is in the PATH, so the
+  // box is only ever reading this execution's samples. The window is a filter
+  // on them, not a way of choosing which execution to look at.
   return {
-    // A minute either side, so a sample taken just before the first poll or
-    // just after the last is still inside the window.
-    startTime: Number.isFinite(start) ? start - 60 : now - 24 * 3600,
-    endTime: Number.isFinite(end) ? end + 60 : now + 60,
+    startTime: Number.isFinite(start) ? start - 7 * 24 * 3600 : now - 30 * 24 * 3600,
+    endTime: now + 3600,          // ahead of now, for a box whose clock leads
   };
+  void finishedAt;                // the end of the run is not the end of the window
 }
 
 async function call(
@@ -97,9 +109,13 @@ export async function readStatistics(
 ): Promise<ReadResult> {
   const eid = encodeURIComponent(executionId);
   if (kind === 'ue-summary') {
-    // POST with a body, not a GET with a query string.
+    // POST with a body, not a GET with a query string — and the body needs
+    // `offset` and `limit` as well as the window. Without them the box
+    // answers 400 "startTime and endTime are required", which names the two
+    // fields that ARE present and says nothing about the two that are not.
     const w = windowFor(when.startedAt, when.finishedAt);
-    return call(opts, 'POST', `${base(opts.host)}/testcases/executions/${eid}/statistics/ue-summary`, w);
+    return call(opts, 'POST', `${base(opts.host)}/testcases/executions/${eid}/statistics/ue-summary`,
+      { ...w, offset: 1, limit: 500 });
   }
   const { startTime, endTime } = windowFor(when.startedAt, when.finishedAt);
   return call(opts, 'GET',

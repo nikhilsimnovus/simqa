@@ -46,3 +46,27 @@ test('an unreadable shape is shown rather than dropped', () => {
   assert.deepEqual(logLines({ odd: 1 }), ['{"odd":1}']);
   assert.deepEqual(logLines([{ odd: 1 }]), ['{"odd":1}']);
 });
+
+test("the Simnovator's protocol log is decoded, not stringified", () => {
+  // Verbatim shape from 192.168.1.95.
+  const rec = {
+    cellId: 1, direction: 'DL', executionId: '01a12082', index: 1, layer: 'RRC',
+    logData: ['BCCH-BCH: Master Information Block\n{\n  message {\n    dl-Bandwidth n100\n  }\n}'],
+  };
+  const lines = logLines([rec]);
+  assert.equal(lines[0], '── RRC · DL · cell 1');
+  assert.equal(lines[1], 'BCCH-BCH: Master Information Block');
+  assert.ok(lines.includes('    dl-Bandwidth n100'), 'the decode keeps its own lines');
+  // The point: no escaped JSON anywhere.
+  assert.ok(!lines.some((l) => l.includes('\n')), 'a line still holds escaped newlines');
+});
+
+test('several protocol records run together in order', () => {
+  const mk = (cell: number, text: string) => ({ cellId: cell, direction: 'UL', layer: 'MAC', logData: [text] });
+  const lines = logLines([mk(1, 'first'), mk(2, 'second')]);
+  assert.deepEqual(lines, ['── MAC · UL · cell 1', 'first', '── MAC · UL · cell 2', 'second']);
+});
+
+test('a protocol record missing its header fields still yields its text', () => {
+  assert.deepEqual(logLines([{ logData: ['bare line'] }]), ['bare line']);
+});

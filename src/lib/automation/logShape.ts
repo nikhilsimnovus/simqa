@@ -19,18 +19,39 @@ export function logLines(data: unknown): string[] {
   if (data === undefined || data === null) return [];
   if (typeof data === 'string') return data.split(/\r?\n/);
   if (Array.isArray(data)) {
-    return data.map((x) => {
-      if (typeof x === 'string') return x;
+    return data.flatMap((x) => {
+      if (typeof x === 'string') return [x];
       if (x && typeof x === 'object') {
         const o = x as Record<string, unknown>;
+
+        // The Simnovator's own protocol log. Measured on .95:
+        //
+        //   {"cellId":1,"direction":"DL","executionId":"…","index":1,
+        //    "layer":"RRC","logData":["BCCH-BCH: Master Information Block\n{…"]}
+        //
+        // logData is an array of multi-line messages, and the record around
+        // it says which layer and direction they belong to. Flattening the
+        // whole record to JSON — which is what a generic reader does — buries
+        // a readable RRC decode inside an escaped string.
+        if (Array.isArray(o.logData)) {
+          const head = [o.layer, o.direction, o.cellId !== undefined ? `cell ${o.cellId}` : undefined]
+            .filter((v) => v !== undefined && v !== '')
+            .join(' · ');
+          const body = (o.logData as unknown[])
+            .map((m) => (typeof m === 'string' ? m : JSON.stringify(m)))
+            .join('\n')
+            .split(/\r?\n/);
+          return head ? [`── ${head}`, ...body] : body;
+        }
+
         const msg = o.message ?? o.msg ?? o.line ?? o.text;
         if (typeof msg === 'string') {
           const at = o.timestamp ?? o.time ?? o.ts;
           const lvl = o.level ?? o.severity;
-          return [at, lvl, msg].filter(Boolean).join(' ');
+          return [[at, lvl, msg].filter(Boolean).join(' ')];
         }
       }
-      return JSON.stringify(x);
+      return [JSON.stringify(x)];
     });
   }
   if (typeof data === 'object') {
