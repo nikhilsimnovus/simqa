@@ -55,12 +55,37 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
   const [runId, setRunId] = useState('');
   const [run, setRun] = useState<Run | null>(null);
   const [err, setErr] = useState('');
+  /**
+   * The test case the History's Preview was clicked on, from `?tc=`.
+   *
+   * The run id already pins WHICH execution — so a test case that has been
+   * run five times, or edited between runs, opens on the one that was
+   * clicked rather than on the latest. This picks the row within it: it is
+   * highlighted and scrolled to, which is what matters in a run of ten.
+   */
+  const [focus, setFocus] = useState<string | null>(null);
   /** Which row's configs are open, and what the server holds for it. */
   const [openRow, setOpenRow] = useState<string | null>(null);
   const [files, setFiles] = useState<Record<string, Array<{ name: string; bytes: number }>>>({});
   const [shown, setShown] = useState<{ row: string; file: string; text: string } | null>(null);
 
   useEffect(() => { void params.then(p => setRunId(p.runId)); }, [params]);
+
+  // Read on mount rather than with useSearchParams, which would put this
+  // whole page behind a Suspense boundary for one optional string.
+  useEffect(() => {
+    try {
+      const tc = new URLSearchParams(window.location.search).get('tc');
+      if (tc) setFocus(tc);
+    } catch { /* no focus is fine — the whole run is still shown */ }
+  }, []);
+
+  // Scroll the clicked test case into view once the run has painted.
+  useEffect(() => {
+    if (!focus || !run) return;
+    const el = document.getElementById(`tc-${encodeURIComponent(focus)}`);
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [focus, run]);
 
   useEffect(() => {
     if (!runId) return;
@@ -194,7 +219,13 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                   const vd = verdictLabel(o);
                   const open = openRow === st.testcaseId;
                   return (
-                    <tr key={`${st.testcaseId}-${i}`} className="align-top">
+                    <tr key={`${st.testcaseId}-${i}`}
+                      id={`tc-${encodeURIComponent(st.testcaseId)}`}
+                      className={cn(
+                        'align-top',
+                        // The row the History's Preview was clicked on.
+                        focus === st.testcaseId && 'bg-primary-50/70 ring-1 ring-inset ring-primary-300',
+                      )}>
                       <td className="px-4 py-2.5">
                         <div className="text-slate-900">{st.testcaseId}</div>
                         {/* The Result: every step the run took for this row,

@@ -176,6 +176,20 @@ export interface SuiteRunResult {
   passed: number;
   failed: number;
   steps: SuiteRunStep[];
+  /**
+   * The rows this run was ASKED to execute, in suite order.
+   *
+   * `steps` only holds what actually ran, which is not the same thing: a
+   * stopOnFail run that fails on row 1 of seven records one step, and the
+   * other six — real rows of that execution, which simply never got their
+   * turn — were invisible in the history. Keeping the request separately is
+   * also what tells "Run Suite" from "Run Selected" after the fact: the
+   * former asks for every row, the latter for the ones that were ticked.
+   *
+   * Absent on runs recorded before this existed, where the honest answer is
+   * that we do not know what was asked for.
+   */
+  requested?: string[];
 }
 
 export interface RunOpts {
@@ -913,6 +927,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
     uesimHost: ueOpts.host, boxUser: ueOpts.boxUser,
     callboxHost: sys.host,
     total, passed, failed, steps,
+    requested: tcs.map(String),
     buildVersion,
   };
 }
@@ -2154,6 +2169,9 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     uesimHost: ueOpts.host, boxUser: ueOpts.boxUser,
     callboxHost: callboxSys?.host,
     total, passed, failed, steps: rawSteps,
+    // What this run was asked for, so the history can show a row that never
+    // got its turn as well as the ones that ran. See SuiteRunResult.
+    requested: items.map((i) => i.name),
     buildVersion,
   };
 }

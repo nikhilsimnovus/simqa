@@ -72,6 +72,45 @@ function rowOf(st: SuiteRunStep): HistoryRow {
   };
 }
 
+/**
+ * Every test case that was part of a run, in the order it was asked for.
+ *
+ * `steps` holds only what actually ran. A stopOnFail run that fails on row 1
+ * of seven records one step — and the other six were part of that execution
+ * too, they simply never got their turn. Listing the request and filling in
+ * what happened is the difference between "this run did one thing" and "this
+ * run was stopped after one of seven".
+ *
+ * A run recorded before `requested` existed has only its steps, which is the
+ * honest answer: what was asked for was not written down.
+ */
+function rowsOf(r: { steps?: SuiteRunStep[]; requested?: string[] }): HistoryRow[] {
+  const steps = r.steps ?? [];
+  if (!r.requested?.length) return steps.map(rowOf);
+
+  // By name, and in step order within a name: a suite may legitimately hold
+  // the same test case twice (User_Plane runs RTSP Upload and Download off
+  // one source), and each occurrence gets its own result.
+  const byName = new Map<string, SuiteRunStep[]>();
+  for (const st of steps) {
+    const list = byName.get(st.testcaseId) ?? [];
+    list.push(st);
+    byName.set(st.testcaseId, list);
+  }
+
+  const rows: HistoryRow[] = [];
+  for (const name of r.requested) {
+    const got = byName.get(name);
+    const st = got?.shift();
+    rows.push(st ? rowOf(st) : { name, status: 'Not Executed', verdict: '' });
+  }
+  // Anything that ran without having been asked for — a step the runner adds
+  // for itself, like licence-restore. Kept rather than dropped: it is part of
+  // what happened, and silently hiding steps is how a history starts lying.
+  for (const [, left] of byName) for (const st of left) rows.push(rowOf(st));
+  return rows;
+}
+
 export async function GET(req: Request) {
   const limit = Math.min(500, Math.max(1, Number(new URL(req.url).searchParams.get('limit') ?? 100)));
 
@@ -113,7 +152,7 @@ export async function GET(req: Request) {
   });
 
   const saved = listAllRuns(limit).map((r) => {
-    const rows = (r.steps ?? []).map(rowOf);
+    const rows = rowsOf(r);
     // Runs recorded before the login was kept on the record still have one —
     // the suite says which, and resolving it is what the runner did. Shown as
     // the suite's login rather than left blank, so the column is useful today
