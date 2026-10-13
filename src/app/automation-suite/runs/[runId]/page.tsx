@@ -205,6 +205,9 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
   const [box, setBox] = useState<{ systemId: string; boxUserId: string | null } | null>(null);
   /** The Simnovator's own account of each execution, by test case name. */
   const [boxResults, setBoxResults] = useState<Record<string, BoxResultState>>({});
+  /** Whether a row's files are this run's own copies, or the live folder
+   *  because the run predates per-run snapshots. */
+  const [filesLive, setFilesLive] = useState<Record<string, boolean>>({});
   /** What the server holds for each row, once its Configs panel is opened. */
   /** Which test case's section viewer is open, and which section. */
   const [panel, setPanel] = useState<{ row: string; kind: 'configs' | 'stats' | 'logs' } | null>(null);
@@ -298,10 +301,14 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
     if (!run) return;
     if (files[row]) return;
     try {
+      // This RUN's own copies, not the folder as it stands today. The folder
+      // goes on changing: the next run rewrites it and operators edit it in
+      // between, so it answers what the row deploys NOW.
       const r = await fetch(
-        `/api/automation/suites/${encodeURIComponent(run.suiteId)}/files?row=${encodeURIComponent(row)}`,
+        `/api/automation/runs/${encodeURIComponent(run.runId)}/files?tc=${encodeURIComponent(row)}`,
         { cache: 'no-store' }).then(x => x.json());
-      setFiles(prev => ({ ...prev, [row]: r?.ok ? (r.rows?.[0]?.files ?? []) : [] }));
+      setFiles(prev => ({ ...prev, [row]: r?.ok ? (r.files ?? []) : [] }));
+      setFilesLive(prev => ({ ...prev, [row]: !!r?.live }));
     } catch { setFiles(prev => ({ ...prev, [row]: [] })); }
   }, [run, files]);
 
@@ -310,7 +317,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
     setShown({ row, file, text: 'reading…' });
     try {
       const r = await fetch(
-        `/api/automation/suites/${encodeURIComponent(run.suiteId)}/files?row=${encodeURIComponent(row)}&file=${encodeURIComponent(file)}`,
+        `/api/automation/runs/${encodeURIComponent(run.runId)}/files?tc=${encodeURIComponent(row)}&file=${encodeURIComponent(file)}`,
         { cache: 'no-store' }).then(x => x.json());
       setShown({ row, file, text: r?.ok ? r.text : (r?.error ?? 'could not be read') });
     } catch (e: unknown) {
@@ -628,8 +635,14 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                             </button>
                           ))}
                     </div>
+                    {/* Which copies these are. A run from before per-run
+                        snapshots existed can only show the folder as it
+                        stands, and saying so is the difference between a
+                        record and a guess. */}
                     <p className="mt-3 text-[11px] text-slate-500">
-                      Pick a file to read it in full.
+                      {filesLive[panel.row]
+                        ? 'These are the files in /root/automation_configs now — this run predates per-run copies, so they may have changed since it ran.'
+                        : 'The files this run deployed, kept with it. Pick one to read it in full.'}
                     </p>
                   </div>
                 ) : (

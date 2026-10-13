@@ -25,7 +25,7 @@ import { sudoLink } from '../labCfgLink';
 import { bringUpDecision, callboxUsage } from '../callboxUsage';
 import { findDefinition } from '../testcaseForUser';
 import { describeOthers, describeCfg } from '../callboxShare';
-import { saveRun, newRunId, type RunRecord } from './runStore';
+import { saveRun, newRunId, saveRunConfigs, type RunRecord } from './runStore';
 import { triggerPerfQaCollection, DEFAULT_PERFQA_URL } from './diagnostics';
 import { duplicateTestcase } from './duplicateTestcase';
 // Which statuses mean "the box is done with it". Case-insensitive, because the
@@ -199,6 +199,9 @@ export interface SuiteRunResult {
    * execution ran with.
    */
   licences?: { enb?: string; mme?: string; ims?: string };
+  /** The configs each row deployed, kept with the run that deployed them.
+   *  Stripped from the saved record once written to disk — see saveRun. */
+  configSnapshots?: Record<string, Record<string, string>>;
   total: number;
   passed: number;
   failed: number;
@@ -1030,6 +1033,10 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
    * run pushes the same three roles and the first is as true as the last.
    */
   const licencesUsed: { enb?: string; mme?: string; ims?: string } = {};
+
+  /** Each row's deployed configs, as they were when it ran. The run has no
+   *  id until it finishes, so they are held here and written with it. */
+  const configSnapshots: Record<string, Record<string, string>> = {};
 
   // Cache of files currently on the callbox so we don't re-ls per item.
   let existing = new Set<string>();
@@ -1932,6 +1939,11 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       } else if (sync.error) {
         stepDetails.push(`server-configs: not updated — ${sync.error}`);
       }
+      // The copy that belongs to THIS run. Taken here, just after the
+      // folder has been brought up to date and while it still holds what
+      // this row deployed — the next run rewrites it.
+      const snap = readAllTestCaseFiles(cfgFrom, item.name);
+      if (Object.keys(snap).length) configSnapshots[item.name] = snap;
     } catch { /* the folder is a mirror; a run never fails over it */ }
 
     // ── Phase 3b: keep the configuration this row is about to run with.
@@ -2212,6 +2224,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     callboxHost: callboxSys?.host,
     ueHost: ueSys?.host,
     licences: Object.values(licencesUsed).some(Boolean) ? licencesUsed : undefined,
+    configSnapshots: Object.keys(configSnapshots).length ? configSnapshots : undefined,
     total, passed, failed, steps: rawSteps,
     // What this run was asked for, so the history can show a row that never
     // got its turn as well as the ones that ran. See SuiteRunResult.
@@ -2274,9 +2287,27 @@ export async function runSuite(suite: AutomationSuite, opts: RunOpts = {}): Prom
   }
 
   // Persist the run + return the full record (with runId).
+  const runId = newRunId();
+
+  // The configs this run deployed, filed beside it.
+  //
+  // Written to their own directory rather than into the record, which would
+  // put several hundred kilobytes of cfg text inside a JSON file that the
+  // history reads on every page load. Stripped from the record for the same
+  // reason. Best-effort: a run's result does not depend on keeping a copy of
+  // its inputs.
+  const { configSnapshots, ...rest } = summary as typeof summary & {
+    configSnapshots?: Record<string, Record<string, string>>;
+  };
+  if (configSnapshots) {
+    for (const [row, files] of Object.entries(configSnapshots)) {
+      saveRunConfigs(runId, row, files);
+    }
+  }
+
   const rec: RunRecord = {
-    ...summary,
-    runId: newRunId(),
+    ...rest,
+    runId,
     buildVersion: (summary as any).buildVersion,
     submittedBy: opts.submittedBy,
     diagnostics,

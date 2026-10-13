@@ -132,3 +132,67 @@ export function listAllRuns(limit = 100): RunRecord[] {
   }
   return out;
 }
+
+// ── Per-run config snapshots ────────────────────────────────────────────
+//
+// data/automation-runs/<runId>.configs/<test case>/<file>
+//
+// A run deploys the files that are in /root/automation_configs at the time,
+// and those files go on changing afterwards — the next run rewrites them, and
+// an operator edits them in between. So reading that folder to show what a
+// run from three weeks ago used answers a different question: what the row
+// deploys TODAY.
+//
+// Copied per row as the run passes through it, which is the only moment the
+// answer is knowable. Runs recorded before this existed have no snapshot, and
+// the detail page falls back to the live folder saying so — guessing would be
+// worse than admitting the files may have moved on.
+
+/** Where one run's snapshot lives. */
+const SNAP = (runId: string) => path.join(ROOT(), `${runId}.configs`);
+
+/** Keep a row's deployed configs with the run that deployed them. */
+export function saveRunConfigs(
+  runId: string, testcase: string, files: Record<string, string>,
+): { written: string[]; error?: string } {
+  const written: string[] = [];
+  try {
+    const dir = path.join(SNAP(runId), safeName(testcase));
+    fs.mkdirSync(dir, { recursive: true });
+    for (const [name, text] of Object.entries(files)) {
+      if (typeof text !== 'string') continue;
+      fs.writeFileSync(path.join(dir, safeName(name)), text);
+      written.push(name);
+    }
+  } catch (e: any) {
+    // A snapshot is a convenience; never fail a run over it.
+    return { written, error: e?.message ?? String(e) };
+  }
+  return { written };
+}
+
+/** What was kept for one row of one run. */
+export function listRunConfigs(runId: string, testcase: string): Array<{ name: string; bytes: number }> {
+  try {
+    const dir = path.join(SNAP(runId), safeName(testcase));
+    return fs.readdirSync(dir)
+      .map((name) => {
+        try { return { name, bytes: fs.statSync(path.join(dir, name)).size }; }
+        catch { return { name, bytes: 0 }; }
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch { return []; }
+}
+
+/** One snapshotted file, or undefined when this run kept none. */
+export function readRunConfig(runId: string, testcase: string, file: string): string | undefined {
+  try {
+    return fs.readFileSync(path.join(SNAP(runId), safeName(testcase), safeName(file)), 'utf8');
+  } catch { return undefined; }
+}
+
+/** Names come from suite rows and config files, so they are kept to one path
+ *  segment and cannot climb out of the snapshot directory. */
+function safeName(s: string): string {
+  return String(s).replace(/[/\\]/g, '_').replace(/^\.+/, '_').slice(0, 180) || '_';
+}
