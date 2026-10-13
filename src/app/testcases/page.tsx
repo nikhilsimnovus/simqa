@@ -8,12 +8,24 @@ import { Card, CardBody, CardHeader, Input, Badge, Button } from '@/components/u
 import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { useColumnWidths, ResizeHandle, ColGroup } from '@/components/resizableColumns';
 import { formatDuration, windowOf, endFromDuration } from '@/lib/timeFormat';
+import { cn } from '@/lib/cn';
+// The Simnovator's own status vocabulary, shared with the Automation Suite so
+// the two pages cannot drift apart.
+import { statusLabel, statusStyle, type StatusLabel } from '@/lib/automation/outcome';
 
 /** The table's columns, and the width each one starts at. Drag any column's
  *  right-hand edge to resize it, spreadsheet-style. */
-const TC_COLUMNS: Array<{ label: string; key: 'name' | 'result' | 'executed' | 'created' | null }> = [
+const TC_COLUMNS: Array<{ label: string; key: 'name' | 'status' | 'result' | 'executed' | 'created' | null }> = [
   { label: 'Test Case', key: 'name' },
-  { label: 'Result',    key: 'result' },
+  // The Simnovator reports TWO things about an execution and they answer
+  // different questions: `status` is whether it finished (Completed, Aborted,
+  // In Progress) and `result` is what it came to (PASS, FAIL, Incomplete).
+  // One column headed "Result" showed only the second, so a testcase the box
+  // ABORTED and one that ran to the end and failed its checks both read
+  // "INCOMPLETE"/"FAIL" with nothing to tell them apart — and the box's own
+  // list shows both. Now so does this.
+  { label: 'Status',    key: 'status' },
+  { label: 'Verdict',   key: 'result' },
   // The order the catalogue arrives in, and the one the box cannot sort by
   // itself — so it is shown, not just applied silently.
   { label: 'Created',   key: 'created' },
@@ -21,7 +33,7 @@ const TC_COLUMNS: Array<{ label: string; key: 'name' | 'result' | 'executed' | '
   { label: 'Action',    key: null },
 ];
 // Execution holds two lines now — how long it ran, and the window under it.
-const TC_COL_WIDTHS = [400, 130, 150, 230, 120];
+const TC_COL_WIDTHS = [360, 130, 130, 150, 230, 110];
 
 interface Tc {
   id: string;
@@ -86,7 +98,7 @@ export default function TestcasesPage() {
   // Id of the testcase the selected box is executing right now, if any.
   const [runningId, setRunningId] = useState<string | null>(null);
   // Column sort. null key = the box's own order.
-  const [sortKey, setSortKey] = useState<'name' | 'result' | 'executed' | 'created' | null>(null);
+  const [sortKey, setSortKey] = useState<'name' | 'status' | 'result' | 'executed' | 'created' | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [executed, setExecuted] = useState<'any' | '1d' | '7d' | '30d' | 'never'>('any');
   // Render in pages so 842 rows don't all hit the DOM at once; grows as you
@@ -295,9 +307,22 @@ export default function TestcasesPage() {
     return `${results.size} selected`;
   }, [results]);
 
-  /** Text shown in the Result column — what sorting should follow. */
+  /** Text shown in the Verdict column — what sorting should follow. */
   const resultText = useCallback((tc: Tc) => (
     tc.id === runningId ? 'IN PROGRESS' : (tc.metadata?.lastExecution?.result ?? '')
+  ), [runningId]);
+
+  /** Text shown in the Status column. The box's own word for whether the
+   *  execution finished, through the same map the rest of the app uses so
+   *  this list and the Simnovator's read alike. */
+  const statusText = useCallback((tc: Tc) => (
+    tc.id === runningId
+      ? 'In Progress'
+      : statusLabel({
+          boxStatus: tc.metadata?.lastExecution?.status,
+          boxResult: tc.metadata?.lastExecution?.result,
+          neverRun: !tc.metadata?.lastExecution,
+        })
   ), [runningId]);
 
   const sorted = useMemo(() => {
@@ -321,17 +346,20 @@ export default function TestcasesPage() {
         };
         return ((at(a) - at(b)) || String(b.name ?? '').localeCompare(String(a.name ?? ''))) * dir;
       }
-      const av = sortKey === 'name' ? (a.name ?? '') : resultText(a);
-      const bv = sortKey === 'name' ? (b.name ?? '') : resultText(b);
+      const text = (tc: Tc) => (sortKey === 'name' ? (tc.name ?? '')
+        : sortKey === 'status' ? statusText(tc)
+        : resultText(tc));
+      const av = text(a);
+      const bv = text(b);
       return av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' }) * dir;
     });
-  }, [filtered, sortKey, sortDir, resultText]);
+  }, [filtered, sortKey, sortDir, resultText, statusText]);
 
   /** Click a header: first click sorts ascending, clicking again flips it.
    *  Both setters are called at the top level — nesting setSortDir inside the
    *  setSortKey updater made the flip cancel itself out, because React invokes
    *  updaters twice in development. */
-  const toggleSort = useCallback((key: 'name' | 'result' | 'executed' | 'created') => {
+  const toggleSort = useCallback((key: 'name' | 'status' | 'result' | 'executed' | 'created') => {
     if (sortKey === key) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     } else {
@@ -440,7 +468,9 @@ export default function TestcasesPage() {
                   verdicts at once. */}
               <div className="relative" ref={resultMenuRef}>
                 <label className="flex items-center gap-1.5">
-                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Result</span>
+                  {/* It filters the verdict (PASS / FAIL / Incomplete …), so
+                      it is named after the column it filters. */}
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Verdict</span>
                   <button
                     type="button"
                     onClick={() => setResultOpen((o) => !o)}
@@ -562,6 +592,17 @@ export default function TestcasesPage() {
                               {tc.name || tc.id}
                             </Link>
                           </td>
+                          {/* Status then Verdict, the box's own pair. The
+                              Simnovator's raw word is the hover, so the
+                              mapping can be checked against its own screen. */}
+                          <td className={tdCls}>
+                            <StatusCell
+                              status={last?.status}
+                              result={last?.result}
+                              neverRun={!last}
+                              inProgress={tc.id === runningId}
+                            />
+                          </td>
                           <td className={tdCls}><ResultBadge value={last?.result} inProgress={tc.id === runningId} /></td>
                           {/* When it was made. The list arrives newest-first
                               by this, because the box has no created_on sort
@@ -631,6 +672,32 @@ function createdDate(iso: string): string {
 function createdTime(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/**
+ * The Simnovator's execution STATUS — did it finish, not what it came to.
+ *
+ * Drawn plainly rather than as a badge: the Verdict beside it is the thing an
+ * eye should land on, and two badges per row compete for that.
+ */
+function StatusCell(
+  { status, result, neverRun, inProgress }:
+  { status?: string; result?: string; neverRun?: boolean; inProgress?: boolean },
+) {
+  const label = inProgress
+    ? 'In Progress'
+    : statusLabel({ boxStatus: status, boxResult: result, neverRun });
+  const { dot, cls } = statusStyle(label as StatusLabel);
+  return (
+    <span
+      className={cn('inline-flex items-center gap-1 text-sm whitespace-nowrap', cls)}
+      // The box's own spelling, so the mapping can be checked against the
+      // Simnovator's own list without taking this page's word for it.
+      title={status ? `the Simnovator says: ${status}` : 'this test case has never been executed'}
+    >
+      {dot} {label}
+    </span>
+  );
 }
 
 function ResultBadge({ value, inProgress }: { value?: string; inProgress?: boolean }) {
