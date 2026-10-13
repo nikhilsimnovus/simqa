@@ -448,8 +448,11 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           <BoxUsersCard host={primary.host} users={boxUsers} systemId={primary.id} selectedUser={selectedUser} range={selectedRange} />
         ) : null}
 
-        {/* The bottom row takes whatever is left and never more: no items-start,
-            so both columns are exactly as tall as the space available. */}
+        {/* The bottom row takes whatever is left and never more. Recent Runs
+            grows into it, because a longer list of runs is worth reading;
+            Resource Status and Summary do not, because three lines of role and
+            IP and two counters stretched to that height are three lines of
+            role and IP with a hole under them. */}
         <section className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-3 gap-3">
           {/* ── Recent runs ─────────────────────────────────────────────── */}
           <Card className="flex min-h-0 flex-col lg:col-span-2">
@@ -542,13 +545,21 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           {/* The focused station and every lab machine bound to it, each with
               its live state. Scoped by ?box=, so picking a different tile above
               re-points this whole card. */}
-          <Card className="flex min-h-0 flex-1 flex-col">
-            <CardHeader className="shrink-0">
+          {/* Sized to its three rows, not to the row's height.
+              It used to be flex-1, which stretched it to match Recent Runs
+              beside it — and a topology binds a UE, a callbox and an app
+              server, so three short lines of role, IP and state sat at the top
+              of a card several times taller than they were. Now the card ends
+              where its content does and the space goes to Summary below it.
+              The cap keeps a setup with many machines scrolling inside the
+              card rather than pushing Summary out of view. */}
+          <Card className="flex min-h-0 shrink-0 flex-col">
+            <CardHeader className="shrink-0 py-2.5">
               <CardTitle>Resource Status</CardTitle>
             </CardHeader>
-            <CardBody className="min-h-0 flex-1 overflow-y-auto p-0">
+            <CardBody className="min-h-0 max-h-72 overflow-y-auto p-0">
               {members.length === 0 ? (
-                <div className="p-5 text-sm text-slate-500">
+                <div className="px-4 py-3 text-sm text-slate-500">
                   No topology setup binds this box to a UE, callbox and app server.
                   Open Systems Management, edit a topology setup, and set its{' '}
                   <span className="font-medium text-slate-700">Simnovator</span> to{' '}
@@ -559,9 +570,9 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                 <table className="min-w-full text-sm">
                   <thead className="bg-slate-50 text-slate-600">
                     <tr>
-                      <th className="text-left px-5 py-2 font-medium">System</th>
-                      <th className="text-left px-5 py-2 font-medium">IP</th>
-                      <th className="text-right px-5 py-2 font-medium">Status</th>
+                      <th className="text-left px-4 py-1.5 font-medium">System</th>
+                      <th className="text-left px-4 py-1.5 font-medium">IP</th>
+                      <th className="text-right px-4 py-1.5 font-medium">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -570,15 +581,15 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                         machine's job in the setup. */}
                     {members.map((m) => (
                       <tr key={`${m.role}:${m.host}`}>
-                        <td className="px-5 py-2.5">
+                        <td className="px-4 py-1.5">
                           {/* Role only. Systems no longer carry a name of their own —
                               System Management generates one from type + IP
                               ("UESIM-34"), which would just repeat the role and
                               the IP beside it. */}
                           <div className="font-medium text-slate-900">{m.role}</div>
                         </td>
-                        <td className="px-5 py-2.5 font-mono text-xs text-slate-600">{m.host}</td>
-                        <td className="px-5 py-2.5 text-right">
+                        <td className="px-4 py-1.5 font-mono text-xs text-slate-600">{m.host}</td>
+                        <td className="px-4 py-1.5 text-right">
                           <Badge tone={m.online ? 'success' : 'danger'}>{m.label}</Badge>
                         </td>
                       </tr>
