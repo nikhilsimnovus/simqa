@@ -307,6 +307,19 @@ export interface AutomationSuite {
   /** Per-testcase duration overrides (seconds). Falls back to
    *  defaultDurationSec when an entry is absent. */
   testcaseDurations?: Record<string, number>;
+  /**
+   * The ENB and MME licences this suite last ran with, keyed per callbox
+   * (`callbox:<host>` — see licenceChoice.ts).
+   *
+   * Remembered so the Run dialog can offer them again instead of asking for
+   * them every time, and keyed per callbox because the licence belongs to the
+   * box: a suite built against .106 and executed against .107 must not be
+   * handed the tag of the box it is no longer running on.
+   *
+   * Only the two values an operator enters are stored. The ims.cfg tag is
+   * derived from the MME one, so it cannot drift out of step with it.
+   */
+  licenceTags?: Record<string, { enb?: string; mme?: string; updatedAt?: string }>;
   /** When true, after each item's testcase completes the runner removes
    *  the deployed cfg from /root/enb/config (keeping the callbox tidy).
    *  Default true. Set false for debugging — leaves the cfg in place so

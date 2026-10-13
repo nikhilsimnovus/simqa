@@ -19,7 +19,7 @@
 // Sequential in both modes (the Simnovator box has a system-wide
 // execution mutex anyway; sequential SFTP keeps callbox load sane).
 
-import { loadInventory, getSystem, uesimApiOptsForSystem, type AutomationSuite, type SuiteItem } from '../inventory';
+import { loadInventory, getSystem, uesimApiOptsForSystem, type AutomationSuite, type SuiteItem, type InventorySystem } from '../inventory';
 import { withSsh, readCommand } from '../configFidelity/ssh';
 import { sudoLink } from '../labCfgLink';
 import { bringUpDecision, callboxUsage } from '../callboxUsage';
@@ -37,7 +37,9 @@ import { preflightRows } from './preflightConfigs';
 // the comments and trailing commas a hand edit leaves in it.
 import { definitionFromText } from './importPack';
 import { expectedRunSeconds } from './durationFit';
-import { withLicenceTag } from './licenceTag';
+import { withLicenceTag, licenceTagOf } from './licenceTag';
+// Which config gets which of the two entered licences.
+import { tagForRole } from './licenceChoice';
 // The box answers a refused trigger with HTTP 200 and a body that says so.
 import { readTriggerAnswer, refusalDetail, type TriggerAnswer } from './triggerAnswer';
 // A cell runs on a radio card, and the simulator has to own it.
@@ -413,6 +415,48 @@ async function login(host: string, username: string, password: string): Promise<
   if (!r.ok) throw new Error(`login ${r.status}`);
   const j: any = await r.json();
   return j.access_token ?? j.token;
+}
+
+/**
+ * Put back every callbox config whose licence tag this run rewrote.
+ *
+ * `backups` maps the file's path on the callbox to the copy taken before the
+ * tag was changed. Each is moved back — `mv`, so the backup is consumed and a
+ * later run cannot mistake it for an untouched original.
+ *
+ * Best-effort per file, and never throws: a failed restore is reported, but a
+ * run's verdict is about the test, and raising here would replace a real
+ * result with a housekeeping error. A backup that survives is picked up by the
+ * next run's `cp -n`, which refuses to overwrite it.
+ */
+async function restoreLicences(
+  callboxSys: InventorySystem | undefined,
+  backups: Map<string, string>,
+  note: (msg: string) => void,
+): Promise<void> {
+  if (!callboxSys || backups.size === 0) return;
+  const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+  const restored: string[] = [];
+  const stuck: string[] = [];
+  try {
+    await withSsh(callboxSys, async (ssh) => {
+      for (const [dest, bk] of backups) {
+        const r = await ssh.execCommand(
+          `test -e ${q(bk)} && (sudo -n mv -f ${q(bk)} ${q(dest)} 2>/dev/null || mv -f ${q(bk)} ${q(dest)})`);
+        const name = dest.split('/').pop() ?? dest;
+        if (r.code === 0) restored.push(name); else stuck.push(name);
+      }
+    });
+  } catch (e: any) {
+    note(`licence-restore: could not reach the callbox to put ${[...backups.keys()].length} config(s) back `
+      + `(${String(e?.message ?? e).slice(0, 120)}) — the backups are still there as *.simqa-licence-backup`);
+    return;
+  }
+  if (restored.length) note(`licence-restore: ${restored.join(', ')} back to the licence the callbox had`);
+  if (stuck.length) {
+    note(`licence-restore: could NOT put ${stuck.join(', ')} back — the original is still on the callbox `
+      + 'as the matching *.simqa-licence-backup file');
+  }
 }
 
 /**
@@ -917,6 +961,24 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
   const total = items.length;
   let done = 0;
 
+  /**
+   * Callbox configs whose licence tag this run rewrote, and where their
+   * original bytes are kept.
+   *
+   * Run-level, not per-row, and restored in a `finally` — because the licence
+   * has to go back whether the run finished, failed, or was stopped halfway.
+   *
+   * This is deliberately separate from the symlink restore and the
+   * added-this-run cleanup below, which cannot cover it: both of those keep a
+   * config that was ALREADY on the callbox, on the correct grounds that the
+   * box still depends on it. A licence rewritten into such a file therefore
+   * used to stay on the callbox for good — a suite run once with oran-enb left
+   * every later run, and every other operator, on oran-enb.
+   *
+   * Maps the file's path on the callbox to its backup path.
+   */
+  const licenceBackups = new Map<string, string>();
+
   // Cache of files currently on the callbox so we don't re-ls per item.
   let existing = new Set<string>();
   let existingCore = new Set<string>();
@@ -972,6 +1034,10 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
   const simQ = simulatorId ? `?simulatorId=${encodeURIComponent(simulatorId)}` : '';
   const defaultDur = suite.defaultDurationSec ?? 10;
 
+  // try/finally only so the licence restore below cannot be skipped — by a
+  // throw from any row, or by the run being stopped. Nothing is caught here;
+  // the row loop keeps handling its own failures exactly as before.
+  try {
   for (const item of items) {
     if (opts.signal?.aborted) break;
     opts.onProgress?.(done, total, item.name);
@@ -1345,15 +1411,39 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             // is left alone rather than given one, which would mean inventing
             // a server address.
             let text = textIn;
-            const wantTag = role && (role === 'enb' || role === 'gnb') ? opts.licenceTags?.enb
-              : role === 'mme' ? opts.licenceTags?.mme
-              : role === 'ims' ? opts.licenceTags?.ims
-              : undefined;
+            const wantTag = tagForRole(opts.licenceTags, role);
             if (wantTag) {
               const lic = withLicenceTag(text, wantTag);
               if (lic.changed) {
                 text = lic.text;
-                stepDetails.push(`licence: ${name} ${lic.from} → ${wantTag}`);
+                stepDetails.push(`licence: ${name} ${lic.from || '(empty)'} → ${wantTag}`);
+                // Keep the callbox's own copy before the licence goes in, so
+                // it can be put back when the run is over. Only once per file
+                // per run: a later row pushing the same config must not
+                // "back up" a copy this run already rewrote, or the restore
+                // would put our licence back instead of theirs.
+                const dest = `${where}/${name}`;
+                if (!licenceBackups.has(dest)) {
+                  // A file the callbox does not have yet needs no backup —
+                  // cleanup removes it afterwards, licence and all.
+                  const had = await ssh.execCommand(`test -e ${q(dest)} && echo yes || echo no`);
+                  if ((had.stdout ?? '').trim() === 'yes') {
+                    const bk = `${dest}.simqa-licence-backup`;
+                    // -n so a backup left behind by an interrupted run wins:
+                    // it is closer to the operator's original than ours is.
+                    await ssh.execCommand(
+                      `sudo -n cp -n -p ${q(dest)} ${q(bk)} 2>/dev/null || cp -n -p ${q(dest)} ${q(bk)}`);
+                    const there = await ssh.execCommand(`test -e ${q(bk)} && echo yes || echo no`);
+                    if ((there.stdout ?? '').trim() !== 'yes') {
+                      // Changing a licence we cannot put back would leave the
+                      // callbox on our tag for good. Refuse instead.
+                      throw new Error(
+                        `could not back up ${dest} before changing its licence to "${wantTag}" — `
+                        + 'refusing, because the original could not then be restored');
+                    }
+                    licenceBackups.set(dest, bk);
+                  }
+                }
               }
             }
             // Check the bytes before they land on the hardware.
@@ -1386,6 +1476,33 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             await ssh.execCommand(`rm -f ${q(tmp)}`);
             if (r.code !== 0) throw new Error(`could not write ${dest}: ${(r.stdout || r.stderr || '').trim().slice(0, 120)}`);
           };
+
+          /**
+           * Put the chosen licence into a config this row did NOT push.
+           *
+           * A config already on the callbox, with no copy in the row's folder
+           * and nothing uploaded, is linked where it lies — nothing is
+           * written, so `push` never sees it and the licence chosen in the Run
+           * dialog would quietly not apply. Which is the worst outcome of the
+           * three: the run looks right and uses the wrong licence.
+           *
+           * So read the callbox's own copy, and if its tag is not the one
+           * asked for, push it back with the tag changed. That goes through
+           * `push`, so it is backed up and restored like any other.
+           */
+          const ensureLicence = async (name: string, where: string, role: CfgRole) => {
+            const wantTag = tagForRole(opts.licenceTags, role);
+            if (!wantTag) return;
+            const dest = `${where}/${name}`;
+            const got = await ssh.execCommand(`sudo -n cat ${q(dest)} 2>/dev/null || cat ${q(dest)}`);
+            if (got.code !== 0 || !got.stdout) {
+              stepDetails.push(`licence: could not read ${name} on the callbox — left as it is`);
+              return;
+            }
+            if (licenceTagOf(got.stdout) === wantTag) return;     // already right
+            await push(name, got.stdout, where, role);
+          };
+
           const serverEnb = fromServer[cfg];
           if (serverEnb) {
             target = `/root/enb/config/${cfg}`;
@@ -1399,8 +1516,11 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             stepDetails.push(`cfg-source: ${testCaseDir(cfgFrom, item.name)}/enb.cfg → ${cfg}`);
           } else if (existing.has(cfg)) {
             // Already on the callbox — link at it directly, nothing to copy.
+            // Except the licence: if one was chosen, it has to go in, or the
+            // run would use whatever tag this box happened to be left on.
             target = `/root/enb/config/${cfg}`;
             stepDetails.push(`cfg-source: existing "${cfg}"`);
+            await ensureLicence(cfg, '/root/enb/config', 'enb');
           } else if (blob) {
             const buf = Buffer.from(blob, 'base64');
             target = `/root/enb/config/${cfg}`;
@@ -1539,6 +1659,11 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
                 + `${testCaseDir(cfgFrom, item.name)} — run this suite once on the setup it was built on, `
                 + `or upload the file, before running it here`,
               );
+            }
+            // Linked where it lies, so nothing was written — but the licence
+            // still has to be the one that was chosen.
+            if (!justUploaded) {
+              await ensureLicence(pick, '/root/mme/config', linkName === 'mme.cfg' ? 'mme' : 'ims');
             }
 
             const prev = await ssh.execCommand(`readlink /root/mme/config/${linkName} || true`);
@@ -1956,6 +2081,19 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     }
     done += 1;
   }
+  } finally {
+    // The licence goes back, whatever happened: a clean finish, a row that
+    // threw, or a stopped run.
+    //
+    // Unlike the file cleanup above, this is NOT skipped while another
+    // operator is executing on the callbox. The file whose licence this run
+    // rewrote is the one they are running on, and the bytes they expect are
+    // the ones in the backup.
+    await restoreLicences(callboxSys, licenceBackups, (m) => rawSteps.push({
+      testcaseId: 'licence-restore', status: 0, ok: true, detail: m, durationMs: 0,
+    }));
+  }
+
   opts.onProgress?.(total, total);
   const buildVersion = token ? await fetchBuildVersion(ueOpts.host, token) : undefined;
 

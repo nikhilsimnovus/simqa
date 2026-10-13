@@ -27,7 +27,8 @@ import { NextResponse } from 'next/server';
 import { getSuite } from '@/lib/automation/store';
 import { readTestCaseFile } from '@/lib/automation/serverConfigs';
 import { licenceTagOf } from '@/lib/automation/licenceTag';
-import type { SuiteItem } from '@/lib/inventory';
+import { licenceKeyFor } from '@/lib/automation/licenceChoice';
+import { loadInventory, getSystem, type SuiteItem } from '@/lib/inventory';
 
 export const dynamic = 'force-dynamic';
 
@@ -71,5 +72,15 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     };
   }).filter((r) => r.groups.length > 0);
 
-  return NextResponse.json({ ok: true, suite: suite.name, roles });
+  // What this suite last ran with on this callbox, so the Run dialog can
+  // offer it again instead of asking for it every time. Keyed per callbox —
+  // the licence belongs to the box, not to the suite.
+  const callboxHost = getSystem(loadInventory(), suite.callboxSystemId ?? '')?.host;
+  const saved = suite.licenceTags?.[licenceKeyFor(callboxHost)];
+
+  return NextResponse.json({
+    ok: true, suite: suite.name, roles,
+    callboxHost,
+    saved: saved ? { enb: saved.enb, mme: saved.mme, updatedAt: saved.updatedAt } : null,
+  });
 }

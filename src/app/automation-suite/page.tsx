@@ -262,8 +262,12 @@ export default function AutomationSuitePage() {
     role: string; label: string;
     groups: Array<{ config: string; tag: string | null; rows: string[] }>;
   }>>([]);
-  /** The licences chosen for THIS run, by role. Empty = leave them alone. */
+  /** The licences chosen for THIS run, by role. Empty = leave them alone.
+   *  Pre-filled from what this suite last ran with on this callbox. */
   const [licenceEdits, setLicenceEdits] = useState<Record<string, string>>({});
+  /** What the last run against this callbox used, so the fields can be
+   *  pre-filled and the line can say where the values came from. */
+  const [licenceSaved, setLicenceSaved] = useState<{ enb?: string; mme?: string; updatedAt?: string } | null>(null);
   const [boxUserId, setBoxUserId]     = useState<string>('');
   const [callboxSystemId, setCbx]     = useState<string>('');
   /** The UE system the suite runs against — see AutomationSuite.ueSystemId. */
@@ -877,9 +881,24 @@ export default function AutomationSuitePage() {
     // another row's.
     setLicences([]);
     setLicenceEdits({});
+    setLicenceSaved(null);
     void fetch(`/api/automation/suites/${s.id}/licences`)
       .then(r => r.json())
-      .then(j => { if (j?.ok) setLicences(j.roles ?? []); })
+      .then(j => {
+        if (!j?.ok) return;
+        setLicences(j.roles ?? []);
+        // The ENB and MME licences this suite last ran with on this callbox.
+        // Pre-filled so a second run is just Run — change either one and the
+        // change is remembered from then on.
+        const saved = j.saved ?? null;
+        setLicenceSaved(saved);
+        if (saved) {
+          const pre: Record<string, string> = {};
+          if (saved.enb) pre.enb = saved.enb;
+          if (saved.mme) pre.mme = saved.mme;
+          if (Object.keys(pre).length) setLicenceEdits(pre);
+        }
+      })
       .catch(() => { /* no licence line rather than a broken dialog */ });
   }, [confirmRun?.suite.id]);
 
@@ -1999,25 +2018,47 @@ export default function AutomationSuitePage() {
                             {one && (
                               <span className="text-[11px] text-slate-400 font-mono truncate">{one.config}</span>
                             )}
-                            <input
-                              value={licenceEdits[l.role] ?? ''}
-                              onChange={e => setLicenceEdits(prev => {
-                                const next = { ...prev };
-                                const v = e.target.value.trim();
-                                if (v) next[l.role] = v; else delete next[l.role];
-                                return next;
-                              })}
-                              placeholder="run with another licence…"
-                              className="ml-auto border border-slate-300 rounded-md px-2 py-1 text-xs w-56 shrink-0"
-                            />
+                            {/* Two values are entered, ENB and MME, and the
+                                MME one covers ims.cfg as well — on the real
+                                boxes those two share the core licence
+                                (Mohan_mme.cfg and Mohan_ims.cfg both ask for
+                                rnd-mme). One field for ims would be a third
+                                thing to keep in step for no gain. */}
+                            {l.role === 'ims' ? (
+                              <span className="ml-auto text-[11px] text-slate-500 w-56 shrink-0">
+                                {licenceEdits.mme
+                                  ? <>takes the MME licence <span className="font-mono">{licenceEdits.mme}</span></>
+                                  : 'takes the MME licence'}
+                              </span>
+                            ) : (
+                              <input
+                                value={licenceEdits[l.role] ?? ''}
+                                onChange={e => setLicenceEdits(prev => {
+                                  const next = { ...prev };
+                                  const v = e.target.value.trim();
+                                  if (v) next[l.role] = v; else delete next[l.role];
+                                  return next;
+                                })}
+                                placeholder={`${l.role.toUpperCase()} licence…`}
+                                className="ml-auto border border-slate-300 rounded-md px-2 py-1 text-xs w-56 shrink-0"
+                              />
+                            )}
                           </label>
                         );
                       })}
                     </div>
+                    {licenceSaved?.updatedAt && (
+                      <p className="mt-1.5 text-[11px] text-slate-500">
+                        Filled in from the last run on {hostOf(s.callboxSystemId) || 'this callbox'}
+                        {' '}({new Date(licenceSaved.updatedAt).toLocaleString()}). Change either one and the
+                        change is remembered for next time.
+                      </p>
+                    )}
                     {Object.keys(licenceEdits).length > 0 && (
                       <p className="mt-1.5 text-[11px] text-slate-500">
-                        Written into the config as it is pushed to {hostOf(s.callboxSystemId) || 'the callbox'} and
-                        symlinked. The copy on the automation server keeps its own licence.
+                        Written into the configs as they are pushed to {hostOf(s.callboxSystemId) || 'the callbox'} and
+                        symlinked, then <b>put back</b> when the run ends — the callbox keeps the licence its
+                        operators set. The copy on the automation server keeps its own licence.
                       </p>
                     )}
                   </div>

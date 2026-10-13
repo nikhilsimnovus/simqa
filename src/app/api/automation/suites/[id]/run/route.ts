@@ -14,7 +14,10 @@
 //                            (eNB restart is left to the operator.)
 
 import { NextResponse } from 'next/server';
-import { getSuite } from '@/lib/automation/store';
+import { getSuite, updateSuite } from '@/lib/automation/store';
+import {
+  enteredLicences, effectiveLicences, licencesToSave, licenceKeyFor,
+} from '@/lib/automation/licenceChoice';
 import { runSuite } from '@/lib/automation/runner';
 import { startProgress, markRunning, markStep, finishProgress } from '@/lib/automation/progress';
 import { userFromRequest } from '@/lib/identity';
@@ -27,24 +30,12 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 900;
 
 
-/**
- * The licence tags from a run request, or undefined when none were chosen.
- *
- * A tag is a short name like "oran-enb" — the lab’s are rnd-enb, oran-enb,
- * oru-enb, rnd-mme, mme-oran, oru-mme. Anything that is not one word of that
- * shape is dropped rather than written into a config and sent to hardware.
- */
-function licenceTagsFrom(raw: unknown): { enb?: string; mme?: string; ims?: string } | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const out: { enb?: string; mme?: string; ims?: string } = {};
-  for (const role of ['enb', 'mme', 'ims'] as const) {
-    const v = (raw as Record<string, unknown>)[role];
-    if (typeof v !== 'string') continue;
-    const tag = v.trim();
-    if (tag && /^[A-Za-z0-9._-]{1,64}$/.test(tag)) out[role] = tag;
-  }
-  return Object.keys(out).length ? out : undefined;
-}
+// Which licence this run writes, and remembering it for the next one.
+//
+// The ENB and MME values come from the Run dialog, which pre-fills them with
+// whatever the last run against THIS callbox used. Pressing Run without
+// touching them reuses those; changing one is remembered from then on. See
+// licenceChoice.ts for the merge rule and for why MME covers ims.cfg too.
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   const suite = getSuite(id);
@@ -157,15 +148,34 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     });
   }
 
+  // The licences: what was entered, over what this callbox last ran with.
+  //
+  // Keyed by the callbox this run is actually targeting, which is not
+  // necessarily the one the suite was built against — body.callboxSystemId
+  // may have redirected it.
+  const licenceKey = licenceKeyFor(getSystem(inv, target.callboxSystemId ?? '')?.host);
+  const savedLicences = suite.licenceTags?.[licenceKey];
+  const entered = enteredLicences(body.licenceTags);
+  const licenceTags = effectiveLicences(savedLicences, entered);
+  // Remember a changed choice before the run, not after: a run that is
+  // interrupted or crashes still used these licences, and the next dialog
+  // should say so.
+  const toSave = licencesToSave(savedLicences, entered, new Date().toISOString());
+  if (toSave) {
+    try {
+      updateSuite(id, { licenceTags: { ...(suite.licenceTags ?? {}), [licenceKey]: toSave } });
+    } catch { /* remembering is a convenience — never fail a run over it */ }
+  }
+
   try {
     const result = await runSuite(target, {
       asUsers,
       signal: abort.signal,
       submittedBy,
-      // Which licence each config should ask for, chosen in the Run dialog.
-      // A tag is a short name — anything else is a mistake worth refusing
-      // here rather than writing into a config and sending to the hardware.
-      licenceTags: licenceTagsFrom(body.licenceTags),
+      // Which licence each config should ask for. Written into the copies
+      // pushed to the callbox, and put back afterwards — the callbox keeps
+      // the licence its operators set.
+      licenceTags: Object.keys(licenceTags).length ? licenceTags : undefined,
       collectDiagnostics: !!body.collectDiagnostics,
       perfQaUrl: typeof body.perfQaUrl === 'string' ? body.perfQaUrl : undefined,
       perfQaProfile: typeof body.perfQaProfile === 'string' ? body.perfQaProfile : undefined,
