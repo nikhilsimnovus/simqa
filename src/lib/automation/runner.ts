@@ -38,6 +38,7 @@ import { preflightRows } from './preflightConfigs';
 import { definitionFromText } from './importPack';
 import { expectedRunSeconds } from './durationFit';
 import { withLicenceTag } from './licenceTag';
+import { isOurExecution, mayReport } from './ownExecution';
 // Checksums, so an unchanged subscriber database is not sent again each run.
 import { createHash } from 'node:crypto';
 import { validateCfg, withDbInclude, ROLE_LABEL, type CfgRole } from '../cfgValidate';
@@ -243,22 +244,39 @@ async function fetchLastExecution(host: string, token: string, tcId: string): Pr
 /** Poll a testcase's lastExecution.status until we see a terminal state
  *  or hit the per-testcase duration budget (seconds). Returns the
  *  final state captured, or null if the box never reported. */
-async function pollExecutionToTerminal(host: string, token: string, tcId: string, triggerExecId: string | undefined, maxWaitSec: number, signal?: AbortSignal): Promise<ExecutionState | null> {
+async function pollExecutionToTerminal(
+  host: string, token: string, tcId: string,
+  triggerExecId: string | undefined, maxWaitSec: number, signal?: AbortSignal,
+  /** The execution lastExecution held BEFORE this run triggered. Anything
+   *  still wearing that id is the previous run's, not ours. */
+  priorExecId?: string,
+): Promise<ExecutionState | null> {
   const deadline = Date.now() + Math.max(5, maxWaitSec) * 1000;
   let last: ExecutionState | null = null;
   while (Date.now() < deadline && !signal?.aborted) {
     const s = await fetchLastExecution(host, token, tcId);
     if (s) {
       last = s;
-      // Wait until the box has SEEN our trigger (its lastExecution.id
-      // matches the one our POST returned). If our POST didn't return
-      // an id, we fall back to "any terminal status will do".
-      const ours = !triggerExecId || s.executionId === triggerExecId;
-      if (ours && isTerminalStatus(s.status)) return s;
+      // Whose execution is this?
+      //
+      // "Any terminal status will do" was a false pass waiting to happen, and
+      // it happened: NSA_3cell_Mobility_UDP_1UEs_automation was reported
+      // COMPLETED/PASS twice on 13 Oct from the execution it ran on 9 Oct —
+      // same executionId, same 105s duration, and the testcase's
+      // lastModifiedOn never moved. The box takes tens of seconds to start an
+      // execution and this polls 1.5s after triggering, so the first read is
+      // the PREVIOUS run's record, already terminal.
+      //
+      // So: the id our POST returned when we have it, and otherwise anything
+      // that is not the id that was already there. A run whose execution never
+      // appears now times out and says so, which is the honest answer — far
+      // better than inheriting a verdict from four days ago.
+      if (isOurExecution(s, triggerExecId, priorExecId) && isTerminalStatus(s.status)) return s;
     }
     await new Promise(r => setTimeout(r, 2000));
   }
-  return last;
+  // Never hand back the previous run's record as this run's outcome.
+  return mayReport(last, triggerExecId, priorExecId) ? last : null;
 }
 
 /**
@@ -302,13 +320,18 @@ async function settleExecution(
   host: string, token: string, tcId: string,
   triggerExecId: string | undefined, windowSec: number,
   signal?: AbortSignal, simulatorId?: string,
+  /** What lastExecution held before this run triggered — see
+   *  pollExecutionToTerminal. */
+  priorExecId?: string,
 ): Promise<{ finalState: ExecutionState | null; stoppedByUs: boolean; execId?: string; lateFinish: boolean }> {
-  let finalState = await pollExecutionToTerminal(host, token, tcId, triggerExecId, windowSec, signal);
+  let finalState = await pollExecutionToTerminal(host, token, tcId, triggerExecId, windowSec, signal, priorExecId);
   let naturallyDone = isTerminalStatus(finalState?.status);
   let lateFinish = false;
   if (!naturallyDone && !signal?.aborted) {
     const late = await fetchLastExecution(host, token, tcId);
-    if (late && isTerminalStatus(late.status)) {
+    // The last look has the same rule: a terminal record belonging to the
+    // previous run is not this run finishing in the final gap.
+    if (isOurExecution(late, triggerExecId, priorExecId) && isTerminalStatus(late?.status)) {
       finalState = late;
       naturallyDone = true;
       lateFinish = true;
@@ -461,7 +484,11 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
       // the HTTP connection open for the WHOLE testDuration (minutes).
       // Fire-and-forget: kick the trigger, give it 3s to register, then
       // proceed to polling. The poll loop reads metadata.lastExecution
-      // for the real verdict, so the trigger response body is unneeded.
+      // for the real verdict, so the trigger response body is unneeded —
+      // which is exactly why the id already there has to be noted first: a
+      // terminal record left by the PREVIOUS run is otherwise indistinguish-
+      // able from this one finishing.
+      const priorExec = (await fetchLastExecution(ueOpts.host, token, tcId))?.executionId;
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), 3000);
       let r: { ok: boolean; status: number };
@@ -497,7 +524,7 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
       // testcase's business, not the row's figure.
       const window1 = Math.max(durSec, await fetchExpectedRun(ueOpts.host, token, tcId)) + POLL_MARGIN_SEC;
       const { finalState, stoppedByUs, execId, lateFinish } =
-        await settleExecution(ueOpts.host, token, tcId, undefined, window1, opts.signal, simulatorId);
+        await settleExecution(ueOpts.host, token, tcId, undefined, window1, opts.signal, simulatorId, priorExec);
       const verdict = deriveVerdict(finalState, !finalState);
       const passLike = verdict === 'PASS';
       steps.push({
@@ -723,6 +750,10 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
       opts.onProgress?.(done, totalProg, `tc:${tcId}`);
       const t0 = Date.now();
       const durSec = suite.testcaseDurations?.[tcId] ?? defaultDur;
+      // This path reads the trigger's own execution id, so it normally knows
+      // which execution is its own. Noted anyway for the case where the box
+      // returns no id and the match falls back to "not the one already there".
+      const priorExec2 = (await fetchLastExecution(ueOpts.host, token, tcId))?.executionId;
       try {
         const r = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(tcId)}/executions${simQ}`, {
           method: 'POST', headers: H, body: '{}',
@@ -745,7 +776,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
         // Trigger worked — now wait for the testcase's own run to finish, not
         // for the row's figure to elapse.
         const window2 = Math.max(durSec, await fetchExpectedRun(ueOpts.host, token, tcId)) + POLL_MARGIN_SEC;
-        const settledRun = await settleExecution(ueOpts.host, token, tcId, execId, window2, opts.signal, simulatorId);
+        const settledRun = await settleExecution(ueOpts.host, token, tcId, execId, window2, opts.signal, simulatorId, priorExec2);
         const finalState = settledRun.finalState;
         const stoppedByUs = settledRun.stoppedByUs;
         const verdict = deriveVerdict(finalState, !finalState);
@@ -1619,6 +1650,14 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     }
 
     const triggerBody = JSON.stringify(simulatorId ? { simulatorId } : {});
+    // What lastExecution says BEFORE we trigger.
+    //
+    // The row owns one testcase and runs it again and again, so the record
+    // sitting there is this row's own previous execution — terminal, and
+    // indistinguishable from a finished run unless its id is remembered.
+    // NSA_3cell_Mobility_UDP_1UEs_automation was reported PASS twice on
+    // 13 October from the execution it ran on 9 October because of this.
+    const priorExec = (await fetchLastExecution(ueOpts.host, token, runTcId))?.executionId;
     try {
       // See runUesimOnly above for why this is fire-and-forget + abort.
       const ac = new AbortController();
@@ -1712,7 +1751,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       }
       // 2. Wait it out, and stop it only if it really has not finished.
       const settledRun = await settleExecution(
-        ueOpts.host, token, runTcId, undefined, pollWindow, opts.signal, simulatorId);
+        ueOpts.host, token, runTcId, undefined, pollWindow, opts.signal, simulatorId, priorExec);
       const finalState = settledRun.finalState;
       const execId = settledRun.execId;
       const stoppedByUs = settledRun.stoppedByUs;
