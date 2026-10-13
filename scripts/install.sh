@@ -64,29 +64,72 @@ fi
 PREREQS_APT="curl ca-certificates tar gzip git python3 build-essential openssh-client sshpass"
 PREREQS_RPM="curl ca-certificates tar gzip git python3 gcc gcc-c++ make openssh-clients sshpass"
 
-case "${PKG}" in
-  apt)
-    log "apt-get update + installing prereqs"
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${PREREQS_APT}
-    # NodeSource Node.js 20.x — Next.js 15 needs ≥18.18.
-    if ! command -v node >/dev/null 2>&1 || ! node -e "process.exit(parseInt(process.versions.node) >= 18 ? 0 : 1)" 2>/dev/null; then
-      log "Installing Node.js 20.x via NodeSource"
-      curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs
-    else
-      log "Node $(node -v) already installed — skipping"
-    fi
-    ;;
-  dnf|yum)
-    ${PKG} install -y -q ${PREREQS_RPM}
-    if ! command -v node >/dev/null 2>&1 || ! node -e "process.exit(parseInt(process.versions.node) >= 18 ? 0 : 1)" 2>/dev/null; then
-      log "Installing Node.js 20.x via NodeSource (rpm)"
-      curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - >/dev/null
-      ${PKG} install -y -q nodejs
-    fi
-    ;;
-esac
+# The commands those packages exist to provide. Checked directly, because the
+# package manager is the means and these are the end.
+PREREQ_CMDS="curl tar gzip git python3 cc make ssh sshpass"
+
+have_node_18() {
+  command -v node >/dev/null 2>&1 \
+    && node -e "process.exit(parseInt(process.versions.node) >= 18 ? 0 : 1)" 2>/dev/null
+}
+
+missing_prereqs() {
+  local missing=""
+  for c in ${PREREQ_CMDS}; do
+    command -v "${c}" >/dev/null 2>&1 || missing="${missing} ${c}"
+  done
+  have_node_18 || missing="${missing} node>=18"
+  printf '%s' "${missing# }"
+}
+
+# An UPDATE must not be held hostage by the package manager.
+#
+# This script is re-run by /api/update on every deploy, and `set -e` made its
+# first act — `apt-get update` — able to abort the whole thing. On 13 October
+# that is exactly what happened on the automation server: apt failed, the
+# update died before npm and the build, and the old service kept serving while
+# the deploy reported nothing useful. Nothing needed installing; the host had
+# every prereq already.
+#
+# So: skip the package step entirely when the tools are all there, and treat a
+# package-manager failure as a warning when they are not, failing only if
+# something is STILL missing afterwards. A fresh install behaves exactly as
+# before — nothing is present, so nothing is skipped.
+PREREQS_MISSING="$(missing_prereqs)"
+if [[ -z "${PREREQS_MISSING}" ]]; then
+  log "prereqs already present (${PREREQ_CMDS// /, }, node $(node -v)) — skipping package install"
+else
+  log "missing prereqs:${PREREQS_MISSING// /, } — installing via ${PKG}"
+  case "${PKG}" in
+    apt)
+      log "apt-get update + installing prereqs"
+      DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+        || warn "apt-get update failed — carrying on with the cached lists"
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${PREREQS_APT} \
+        || warn "apt-get install failed — checking what is actually missing below"
+      # NodeSource Node.js 20.x — Next.js 15 needs ≥18.18.
+      if ! have_node_18; then
+        log "Installing Node.js 20.x via NodeSource"
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null \
+          || warn "NodeSource setup failed"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs \
+          || warn "nodejs install failed"
+      else
+        log "Node $(node -v) already installed — skipping"
+      fi
+      ;;
+    dnf|yum)
+      ${PKG} install -y -q ${PREREQS_RPM} || warn "${PKG} install failed — checking what is actually missing below"
+      if ! have_node_18; then
+        log "Installing Node.js 20.x via NodeSource (rpm)"
+        curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - >/dev/null || warn "NodeSource setup failed"
+        ${PKG} install -y -q nodejs || warn "nodejs install failed"
+      fi
+      ;;
+  esac
+  STILL_MISSING="$(missing_prereqs)"
+  [[ -z "${STILL_MISSING}" ]] || fail "still missing after install:${STILL_MISSING// /, }"
+fi
 
 command -v node >/dev/null 2>&1 || fail "node still not on PATH after install"
 command -v npm  >/dev/null 2>&1 || fail "npm still not on PATH after install"
