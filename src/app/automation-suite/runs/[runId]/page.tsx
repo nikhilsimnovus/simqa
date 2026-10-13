@@ -14,6 +14,9 @@ import Link from 'next/link';
 import { cn } from '@/lib/cn';
 import { statusStyle, verdictClass, statusLabel, verdictLabel, type StatusLabel, type VerdictLabel } from '@/lib/automation/outcome';
 import { elapsed } from '../../SuiteHistory';
+// The box's own account of an execution: its status, its result, and the
+// checks behind them.
+import { boxExecutionsOf, type BoxExecution } from '@/lib/boxExecutions';
 
 interface Step {
   testcaseId: string;
@@ -48,6 +51,85 @@ interface Run {
 /** The files a row is deployed from, in the order they matter. */
 const CONFIG_ORDER = ['test.json', 'ue.cfg', 'enb.cfg', 'mme.cfg', 'ims.cfg', 'ots.cfg'];
 
+/** What the box said about one execution, or why it could not be asked. */
+type BoxResultState =
+  | { state: 'loading' }
+  | { state: 'error'; error: string }
+  | { state: 'ok'; exec: BoxExecution };
+
+/**
+ * The Simnovator's own account of an execution: the two words it reports, and
+ * the checks it measured them from.
+ *
+ * Every number here is the box's. Nothing is recomputed — a verdict SimQA
+ * worked out for itself is a different claim, and this panel exists precisely
+ * so the box's can be read without one.
+ */
+function BoxValidation({ state }: { state?: BoxResultState }) {
+  if (!state || state.state === 'loading') {
+    return <div className="mt-1 text-[11px] text-slate-400">Asking the Simnovator…</div>;
+  }
+  if (state.state === 'error') {
+    return <div className="mt-1 text-[11px] text-amber-700">{state.error}</div>;
+  }
+
+  const { exec } = state;
+  return (
+    <div className="mt-1.5 space-y-1.5">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+        <span className="text-slate-500">
+          Status <span className="font-mono text-slate-800">{exec.status ?? '–'}</span>
+        </span>
+        <span className="text-slate-500">
+          Verdict <span className="font-mono text-slate-800">{exec.result ?? '–'}</span>
+        </span>
+        {exec.simulatorName
+          ? <span className="text-slate-500">on <span className="font-mono text-slate-700">{exec.simulatorName}</span></span>
+          : null}
+        {exec.durationSec !== undefined
+          ? <span className="text-slate-500">took <span className="font-mono text-slate-700">{exec.durationSec}s</span></span>
+          : null}
+      </div>
+
+      {/* A run still in flight has no measurements, and "no failures" must not
+          read as "passed" — see BoxExecution.running. */}
+      {exec.running
+        ? <div className="text-[11px] text-amber-700">Still executing on the box — no measurements yet.</div>
+        : exec.parseError
+          ? <div className="text-[11px] text-amber-700">{exec.parseError}</div>
+          : exec.checks.length === 0
+            ? <div className="text-[11px] text-slate-400">The box recorded no checks for this execution.</div>
+            : (
+              <table className="w-full text-[11px]">
+                <thead className="text-slate-500">
+                  <tr>
+                    <th className="text-left font-medium py-0.5 pr-3">Check</th>
+                    <th className="text-left font-medium py-0.5 pr-3">Condition</th>
+                    <th className="text-right font-medium py-0.5 pr-3">Needed</th>
+                    <th className="text-right font-medium py-0.5 pr-3">Got</th>
+                    <th className="text-right font-medium py-0.5">Verdict</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {exec.checks.map((c, n) => (
+                    <tr key={`${c.group}-${c.name}-${n}`}>
+                      <td className="py-0.5 pr-3 text-slate-700 break-words">{c.name}</td>
+                      <td className="py-0.5 pr-3 font-mono text-slate-500 break-all">{c.condition || '–'}</td>
+                      <td className="py-0.5 pr-3 text-right font-mono text-slate-600">{c.demand ?? '–'}</td>
+                      <td className="py-0.5 pr-3 text-right font-mono text-slate-800">{c.achieved ?? '–'}</td>
+                      <td className={cn('py-0.5 text-right font-medium',
+                        c.verdict ? 'text-emerald-700' : 'text-red-700')}>
+                        {c.verdict ? 'PASS' : 'FAIL'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+    </div>
+  );
+}
+
 const stamp = (iso?: string) =>
   iso ? new Date(iso).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '–';
 
@@ -64,6 +146,12 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
    * highlighted and scrolled to, which is what matters in a run of ten.
    */
   const [focus, setFocus] = useState<string | null>(null);
+  /** Where the run executed, as ids the testcase route can resolve credentials
+   *  from. Null when neither the suite nor the recorded host still names a
+   *  registered system. */
+  const [box, setBox] = useState<{ systemId: string; boxUserId: string | null } | null>(null);
+  /** The Simnovator's own account of each execution, by test case name. */
+  const [boxResults, setBoxResults] = useState<Record<string, BoxResultState>>({});
   /** Which row's configs are open, and what the server holds for it. */
   const [openRow, setOpenRow] = useState<string | null>(null);
   const [files, setFiles] = useState<Record<string, Array<{ name: string; bytes: number }>>>({});
@@ -80,6 +168,58 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
     } catch { /* no focus is fine — the whole run is still shown */ }
   }, []);
 
+  /**
+   * Ask the Simnovator what it made of one execution.
+   *
+   * By executionId, not "the latest": a row's test case may have run many
+   * times, and this page is about the run it is opened on. An execution the
+   * box no longer lists says so rather than falling back to a newer one.
+   *
+   * Loaded when the Validation disclosure is opened, so a run of ten rows
+   * costs one box call rather than ten.
+   */
+  const loadBoxResult = useCallback(async (st: Step) => {
+    if (!st.executionId || !st.boxTestcaseId) return;
+    if (boxResults[st.testcaseId]) return;                      // already asked
+    if (!box?.systemId) {
+      setBoxResults(p => ({
+        ...p,
+        [st.testcaseId]: {
+          state: 'error',
+          error: 'The Simnovator this ran on is no longer registered, so its own record cannot be read.',
+        },
+      }));
+      return;
+    }
+    setBoxResults(p => ({ ...p, [st.testcaseId]: { state: 'loading' } }));
+    try {
+      const qs = new URLSearchParams({ systemId: box.systemId });
+      if (box.boxUserId) qs.set('boxUserId', box.boxUserId);
+      // That route answers with the testcase spread at the top level and no
+      // `ok` flag — a failure is an `error` field. Reading it as ok/not-ok
+      // would have made every successful call look like a failure.
+      const r = await fetch(`/api/testcases/${encodeURIComponent(st.boxTestcaseId)}?${qs}`,
+        { cache: 'no-store' }).then(x => x.json());
+      if (r?.error) throw new Error(String(r.error));
+      const exec = boxExecutionsOf(r?.metadata)
+        .find(x => x.executionId === st.executionId);
+      setBoxResults(p => ({
+        ...p,
+        [st.testcaseId]: exec
+          ? { state: 'ok', exec }
+          : {
+              state: 'error',
+              error: `The box no longer lists execution ${String(st.executionId).slice(0, 8)} for this test case.`,
+            },
+      }));
+    } catch (e: unknown) {
+      setBoxResults(p => ({
+        ...p,
+        [st.testcaseId]: { state: 'error', error: (e as Error)?.message ?? String(e) },
+      }));
+    }
+  }, [box, boxResults]);
+
   // Scroll the clicked test case into view once the run has painted.
   useEffect(() => {
     if (!focus || !run) return;
@@ -94,6 +234,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
         const r = await fetch(`/api/automation/runs/${encodeURIComponent(runId)}`, { cache: 'no-store' }).then(x => x.json());
         if (!r?.ok) throw new Error(r?.error ?? 'that run is not on file');
         setRun(r.run);
+        setBox(r.box ?? null);
       } catch (e: unknown) { setErr((e as Error)?.message ?? String(e)); }
     })();
   }, [runId]);
@@ -228,13 +369,38 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                       )}>
                       <td className="px-4 py-2.5">
                         <div className="text-slate-900">{st.testcaseId}</div>
-                        {/* The Result: every step the run took for this row,
-                            in its own words. Called logs once, which it never
-                            was — these are what SimQA did, not what the box
-                            printed. */}
+
+                        {/* Validation: the Simnovator's own account of this
+                            execution — its status, its verdict, and the checks
+                            it measured them from (Avg_DL_BLER<=5%,
+                            rrc_measurement_report>=1, …). Fetched from the box
+                            on demand, because this is the question this page
+                            exists to answer and it is the box's answer that
+                            counts.
+
+                            It replaces what used to sit here: SimQA's own list
+                            of steps, labelled "Result". That was never a
+                            result — it is what SimQA did, which matters when a
+                            row goes wrong and is beside the point when asking
+                            what the test came to. It is still available, one
+                            disclosure further in. */}
+                        {st.executionId && st.boxTestcaseId && (
+                          <details className="mt-1"
+                            onToggle={(e) => {
+                              if ((e.currentTarget as HTMLDetailsElement).open) void loadBoxResult(st);
+                            }}>
+                            <summary className="text-[11px] text-primary-700 cursor-pointer hover:underline">
+                              Validation
+                            </summary>
+                            <BoxValidation state={boxResults[st.testcaseId]} />
+                          </details>
+                        )}
+
                         {st.detail && (
                           <details className="mt-1">
-                            <summary className="text-[11px] text-primary-700 cursor-pointer hover:underline">Result</summary>
+                            <summary className="text-[11px] text-slate-500 cursor-pointer hover:underline">
+                              What SimQA did
+                            </summary>
                             <ul className="mt-1 space-y-0.5">
                               {String(st.detail).split(' · ').map((bit, n) => (
                                 <li key={n} className="text-[11px] text-slate-600 font-mono break-all">{bit}</li>
