@@ -40,6 +40,19 @@ export interface TestCampaign {
   lastBoxUserId?: string;
   lastCallboxSystemId?: string;
   lastUeSystemId?: string;
+  /**
+   * The ENB and MME licences this campaign last ran with, keyed per callbox
+   * (`callbox:<host>` — see licenceChoice.ts).
+   *
+   * Same shape and same rule as AutomationSuite.licenceTags, and keyed per
+   * callbox for the same reason: a campaign is never bound to a setup, so one
+   * remembered pair would follow it onto a box whose licence server knows
+   * nothing about that tag.
+   *
+   * Only the two values an operator enters are stored; the ims.cfg tag is
+   * derived from the MME one and so cannot drift out of step with it.
+   */
+  licenceTags?: Record<string, { enb?: string; mme?: string; updatedAt?: string }>;
 }
 
 const STORE_DIR = () => path.join(process.cwd(), 'data');

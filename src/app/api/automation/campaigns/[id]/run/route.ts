@@ -12,6 +12,11 @@
 
 import { NextResponse } from 'next/server';
 import { getCampaign, updateCampaign } from '@/lib/automation/campaignStore';
+// A campaign runs on whatever box is picked, so its licences are remembered
+// per callbox exactly as a suite's are.
+import {
+  enteredLicences, effectiveLicences, licencesToSave, licenceKeyFor,
+} from '@/lib/automation/licenceChoice';
 import { runCampaign } from '@/lib/automation/campaignRunner';
 import { startProgress, markRunning, markStep, finishProgress } from '@/lib/automation/progress';
 import { userFromRequest } from '@/lib/identity';
@@ -71,10 +76,30 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     });
   }
 
+  // The licences: what was entered, over what this callbox last ran with.
+  // Keyed by the callbox chosen in THIS dialog, not by the one the campaign
+  // happened to run on last — picking a different box must not hand it the
+  // previous box's tag.
+  const licenceKey = licenceKeyFor(getSystem(inv, target.callboxSystemId ?? '')?.host);
+  const savedLicences = campaign.licenceTags?.[licenceKey];
+  const entered = enteredLicences(body.licenceTags);
+  const licenceTags = effectiveLicences(savedLicences, entered);
+  // Remembered before the run, not after: a campaign that is interrupted still
+  // used these licences, and the next dialog should say so.
+  const toSave = licencesToSave(savedLicences, entered, new Date().toISOString());
+  if (toSave) {
+    try {
+      updateCampaign(id, { licenceTags: { ...(campaign.licenceTags ?? {}), [licenceKey]: toSave } });
+    } catch { /* remembering is a convenience — never fail a run over it */ }
+  }
+
   try {
     const result = await runCampaign({ ...campaign, items: rows }, target, {
       signal: abort.signal,
       submittedBy,
+      // Written into the configs pushed to the callbox, and put back when the
+      // run ends — the callbox keeps the licence its operators set.
+      licenceTags: Object.keys(licenceTags).length ? licenceTags : undefined,
       onProgress: (done, _total, current) => markRunning(id, done, current),
       // The box's own status and verdict ride along, so a finished row reads
       // the same live as it will once the run is saved.

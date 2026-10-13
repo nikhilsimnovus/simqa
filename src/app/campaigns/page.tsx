@@ -16,7 +16,7 @@
 // That is the point of a campaign: the suites were built on whatever setups
 // their authors had, and the campaign runs wherever you say.
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { statusLabel, verdictLabel, verdictClass, statusStyle } from '@/lib/automation/outcome';
 
 interface SuiteItemRow { id: string; name: string; simnovatorTcId: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string; durationSec?: number }
@@ -25,6 +25,8 @@ interface CampaignRow {
   id: string; name: string; createdBy?: string; createdAt: string;
   items: Array<SuiteItemRow & { sourceSuiteId: string; sourceSuiteName: string }>;
   lastUesimSystemId?: string; lastBoxUserId?: string; lastCallboxSystemId?: string; lastUeSystemId?: string;
+  /** ENB and MME licences this campaign last ran with, per callbox. */
+  licenceTags?: Record<string, { enb?: string; mme?: string; updatedAt?: string }>;
 }
 interface SystemRow { id: string; type: string; host: string; name?: string }
 interface BoxUser { id: string; username: string }
@@ -55,6 +57,9 @@ export default function CampaignsPage() {
   const [runSimnovator, setRunSimnovator] = useState('');
   const [runUser, setRunUser] = useState('');
   const [runCallbox, setRunCallbox] = useState('');
+  /** The ENB and MME licences for this run. Pre-filled with whatever the
+   *  chosen callbox last ran with, and remembered when changed. */
+  const [licenceEdits, setLicenceEdits] = useState<{ enb?: string; mme?: string }>({});
   const [runUe, setRunUe] = useState('');
   const [boxUsers, setBoxUsers] = useState<BoxUser[]>([]);
   const [running, setRunning] = useState('');
@@ -186,7 +191,30 @@ export default function CampaignsPage() {
     setRunSimnovator(c.lastUesimSystemId ?? '');
     setRunCallbox(c.lastCallboxSystemId ?? '');
     setRunUe(c.lastUeSystemId ?? '');
+    setLicenceEdits({});
   };
+
+  /** What this campaign last ran with on the callbox currently selected. */
+  const savedLicence = useMemo(() => {
+    if (!runFor) return undefined;
+    const host = callboxes.find(s => s.id === runCallbox)?.host;
+    return runFor.licenceTags?.[`callbox:${host ?? ''}`];
+  }, [runFor, runCallbox, callboxes]);
+
+  // Pre-fill from that pair, and re-fill when the callbox is changed — the
+  // licence belongs to the box, so switching box must not carry the previous
+  // box's tag across. An edit the operator has already made is kept.
+  const licenceSource = useRef<string>('');
+  useEffect(() => {
+    if (!runFor) return;
+    const key = `${runFor.id}|${runCallbox}`;
+    if (licenceSource.current === key) return;
+    licenceSource.current = key;
+    setLicenceEdits({
+      ...(savedLicence?.enb ? { enb: savedLicence.enb } : {}),
+      ...(savedLicence?.mme ? { mme: savedLicence.mme } : {}),
+    });
+  }, [runFor, runCallbox, savedLicence]);
 
   const execute = async () => {
     if (!runFor || !runSimnovator) return;
@@ -200,6 +228,8 @@ export default function CampaignsPage() {
           boxUserId: runUser || undefined,
           callboxSystemId: runCallbox || undefined,
           ueSystemId: runUe || undefined,
+          // Entered beats remembered; the route merges and saves the result.
+          ...(licenceEdits.enb || licenceEdits.mme ? { licenceTags: licenceEdits } : {}),
         }),
       });
       const d = await r.json();
@@ -471,6 +501,62 @@ export default function CampaignsPage() {
                   {ueBoxes.map(s => <option key={s.id} value={s.id}>{s.host}</option>)}
                 </select>
               </label>
+
+              {/* ── Licence ──────────────────────────────────────────────
+                  Two values, ENB and MME, the same as a suite's Run dialog.
+                  The MME one is written into mme.cfg AND ims.cfg, which share
+                  the core licence on the real boxes, so ims has no field of
+                  its own.
+
+                  Pre-filled with what this campaign last ran with ON THIS
+                  CALLBOX, and re-filled when the callbox is changed: the
+                  licence belongs to the box, and a campaign is never bound to
+                  a setup. Blank leaves every config's own tag alone.
+
+                  Only shown with a callbox selected — there is nothing to
+                  licence on a UESIM-only run. */}
+              {runCallbox && (
+                <div className="mt-3 rounded-md border border-line bg-slate-50 px-3 py-2">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+                    Licence
+                  </div>
+                  <div className="space-y-2">
+                    {([
+                      { role: 'enb' as const, label: 'enb.cfg' },
+                      { role: 'mme' as const, label: 'mme.cfg + ims.cfg' },
+                    ]).map(f => (
+                      <label key={f.role} className="flex items-center gap-3 text-sm">
+                        <span className="font-mono text-[12px] text-slate-600 w-[8.5rem] shrink-0">{f.label}</span>
+                        {/* flex-1 + min-w-0 so the field takes what is left of
+                            the panel and can never reach past its edge. */}
+                        <input
+                          value={licenceEdits[f.role] ?? ''}
+                          onChange={e => setLicenceEdits(prev => {
+                            const next = { ...prev };
+                            const v = e.target.value.trim();
+                            if (v) next[f.role] = v; else delete next[f.role];
+                            return next;
+                          })}
+                          placeholder={`${f.role.toUpperCase()} licence…`}
+                          className="flex-1 min-w-0 border border-slate-300 rounded-md px-2 py-1 text-xs"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  {savedLicence?.updatedAt ? (
+                    <p className="mt-1.5 text-[11px] text-slate-500">
+                      Filled in from the last run on this callbox
+                      {' '}({new Date(savedLicence.updatedAt).toLocaleString()}). Change either one and the
+                      change is remembered for next time.
+                    </p>
+                  ) : (
+                    <p className="mt-1.5 text-[11px] text-slate-500">
+                      Leave blank to keep each config&apos;s own licence. What you enter is written into the
+                      configs pushed to the callbox and <b>put back</b> when the run ends.
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="mt-4 flex justify-end gap-2">
                 <button onClick={() => setRunFor(null)}
