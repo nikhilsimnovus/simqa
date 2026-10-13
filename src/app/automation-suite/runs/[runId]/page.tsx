@@ -17,6 +17,7 @@ import { elapsed } from '../../SuiteHistory';
 // The box's own account of an execution: its status, its result, and the
 // checks behind them.
 import { boxExecutionsOf, type BoxExecution } from '@/lib/boxExecutions';
+import { ExecutionPanel } from './ExecutionPanel';
 
 interface Step {
   testcaseId: string;
@@ -204,8 +205,9 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
   const [box, setBox] = useState<{ systemId: string; boxUserId: string | null } | null>(null);
   /** The Simnovator's own account of each execution, by test case name. */
   const [boxResults, setBoxResults] = useState<Record<string, BoxResultState>>({});
-  /** Which row's configs are open, and what the server holds for it. */
-  const [openRow, setOpenRow] = useState<string | null>(null);
+  /** What the server holds for each row, once its Configs panel is opened. */
+  /** Which test case's section viewer is open, and which section. */
+  const [panel, setPanel] = useState<{ row: string; kind: 'configs' | 'stats' | 'logs' } | null>(null);
   const [files, setFiles] = useState<Record<string, Array<{ name: string; bytes: number }>>>({});
   const [shown, setShown] = useState<{ row: string; file: string; text: string } | null>(null);
 
@@ -466,7 +468,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                   <th className="text-left px-4 py-2 font-medium whitespace-nowrap">Status</th>
                   <th className="text-left px-4 py-2 font-medium whitespace-nowrap">Verdict</th>
                   <th className="text-left px-4 py-2 font-medium whitespace-nowrap">Took</th>
-                  <th className="text-left px-4 py-2 font-medium whitespace-nowrap">Configs</th>
+                  <th className="text-left px-4 py-2 font-medium whitespace-nowrap">Sections</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -475,7 +477,6 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                   const label = statusLabel(o);
                   const sty = statusStyle(label as StatusLabel);
                   const vd = verdictLabel(o);
-                  const open = openRow === st.testcaseId;
                   return (
                     <tr key={`${st.testcaseId}-${i}`}
                       id={`tc-${encodeURIComponent(st.testcaseId)}`}
@@ -547,30 +548,32 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                         {st.durationMs ? `${Math.round(st.durationMs / 1000)}s` : '–'}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap">
-                        <button type="button"
-                          onClick={() => { const next = open ? null : st.testcaseId; setOpenRow(next); if (next) void loadFiles(next); }}
-                          className="text-xs text-primary-700 hover:underline">
-                          {open ? 'Hide' : 'Show'}
-                        </button>
-                        {open && (
-                          <div className="mt-1.5 flex flex-wrap gap-1.5 max-w-sm">
-                            {(files[st.testcaseId] ?? []).length === 0
-                              ? <span className="text-[11px] text-slate-400">nothing saved for this row</span>
-                              : [...(files[st.testcaseId] ?? [])]
-                                .sort((a, b) => {
-                                  const ai = CONFIG_ORDER.indexOf(a.name); const bi = CONFIG_ORDER.indexOf(b.name);
-                                  return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.name.localeCompare(b.name);
-                                })
-                                .map(f => (
-                                  <button key={f.name} type="button"
-                                    onClick={() => void showFile(st.testcaseId, f.name)}
-                                    title={`${f.bytes} bytes`}
-                                    className="rounded border border-line px-1.5 py-0.5 text-[10px] font-mono text-slate-700 hover:bg-slate-100">
-                                    {f.name}
-                                  </button>
-                                ))}
-                          </div>
-                        )}
+                        {/* Three ways in to the same execution: the files it
+                            deployed, what the Simnovator measured, and what it
+                            logged. Each opens a viewer rather than expanding
+                            the row — a stats table or 2,400 log lines inside a
+                            table cell is unreadable. */}
+                        <div className="flex flex-wrap gap-1.5">
+                          <button type="button"
+                            onClick={() => { setPanel({ row: st.testcaseId, kind: 'configs' }); void loadFiles(st.testcaseId); }}
+                            className="rounded border border-line px-1.5 py-0.5 text-[11px] text-primary-700 hover:bg-slate-100">
+                            Configs
+                          </button>
+                          <button type="button"
+                            disabled={!st.executionId}
+                            title={st.executionId ? undefined : 'this run produced no execution for this test case'}
+                            onClick={() => setPanel({ row: st.testcaseId, kind: 'stats' })}
+                            className="rounded border border-line px-1.5 py-0.5 text-[11px] text-primary-700 hover:bg-slate-100 disabled:text-slate-300 disabled:hover:bg-transparent">
+                            Statistics
+                          </button>
+                          <button type="button"
+                            disabled={!st.executionId}
+                            title={st.executionId ? undefined : 'this run produced no execution for this test case'}
+                            onClick={() => setPanel({ row: st.testcaseId, kind: 'logs' })}
+                            className="rounded border border-line px-1.5 py-0.5 text-[11px] text-primary-700 hover:bg-slate-100 disabled:text-slate-300 disabled:hover:bg-transparent">
+                            Logs
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -579,6 +582,68 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
             </table>
           </div>
         </section>
+
+        {/* ── The section viewer ──────────────────────────────────────
+            Configs, Statistics or Logs for one test case. A panel rather than
+            an expanded row: a statistics table or 2,400 log lines do not fit
+            inside a table cell, and the file list never really did either. */}
+        {panel && (() => {
+          const st = rows.find(r => r.testcaseId === panel.row);
+          const running = statusLabel({
+            boxStatus: st?.boxStatus, boxResult: st?.boxResult, verdict: st?.verdict, stopped: st?.stopped,
+          }) === 'In Progress';
+          const title = panel.kind === 'configs' ? 'Configs'
+            : panel.kind === 'stats' ? 'Statistics' : 'Logs';
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4"
+              onClick={() => setPanel(null)}>
+              <div className="bg-surface rounded-xl shadow-xl border border-line max-w-5xl w-full max-h-[85vh] flex flex-col"
+                onClick={e => e.stopPropagation()}>
+                <div className="flex items-baseline justify-between gap-4 px-5 py-3 border-b border-line shrink-0">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    {title}
+                    <span className="ml-2 font-normal text-slate-500 font-mono text-xs">{panel.row}</span>
+                  </h3>
+                  <button onClick={() => setPanel(null)} className="text-sm text-slate-500 hover:text-slate-800">Close</button>
+                </div>
+
+                {panel.kind === 'configs' ? (
+                  <div className="flex-1 overflow-auto px-5 py-4">
+                    {/* What /root/automation_configs holds for this row — the
+                        files the run deployed. */}
+                    <div className="flex flex-wrap gap-1.5">
+                      {(files[panel.row] ?? []).length === 0
+                        ? <span className="text-xs text-slate-400">nothing saved for this row</span>
+                        : [...(files[panel.row] ?? [])]
+                          .sort((a, b) => {
+                            const ai = CONFIG_ORDER.indexOf(a.name); const bi = CONFIG_ORDER.indexOf(b.name);
+                            return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.name.localeCompare(b.name);
+                          })
+                          .map(f => (
+                            <button key={f.name} type="button"
+                              onClick={() => void showFile(panel.row, f.name)}
+                              title={`${f.bytes} bytes`}
+                              className="rounded border border-line px-2 py-1 text-[11px] font-mono text-slate-700 hover:bg-slate-100">
+                              {f.name}
+                            </button>
+                          ))}
+                    </div>
+                    <p className="mt-3 text-[11px] text-slate-500">
+                      Pick a file to read it in full.
+                    </p>
+                  </div>
+                ) : (
+                  <ExecutionPanel
+                    runId={run.runId}
+                    testcase={panel.row}
+                    section={panel.kind === 'stats' ? 'stats' : 'logs'}
+                    live={running}
+                  />
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* The config being read. The files are what /root/automation_configs
             holds for the row — which is what was deployed. */}
