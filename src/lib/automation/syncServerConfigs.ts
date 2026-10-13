@@ -14,6 +14,8 @@
 import { captureRowConfigs } from '../suiteConfigStore';
 // Which uploads land under which name — pure, and tested on its own.
 import { carriedConfigs } from './carriedConfigs';
+// The folder keeps its own licence -- see keepLicenceTags in syncRowToServer.
+import { withLicenceTag } from './licenceTag';
 import { ensureSuiteTree, writeTestCaseFiles, automationRoot, dropStaleFile, type ServerFile } from './serverConfigs';
 import { getSystem, uesimApiOptsForSystem, type AutomationSuite, type Inventory, type InventorySystem } from '../inventory';
 
@@ -89,6 +91,18 @@ export async function syncRowToServer(
   callbox?: InventorySystem,
   ueSystem?: InventorySystem,
   boxUserId?: string,
+  /**
+   * Licence tags the folder must KEEP, by role, whatever the callbox now says.
+   *
+   * This sync reads the callbox after bring-up, which is after the run has
+   * written its chosen licence into the configs there — so without this it
+   * records that licence as the row's own. It did: one run of User_Plane with
+   * ENB oran-enb left all ten rows' saved enb.cfg asking for oran-enb, nine of
+   * which had said rnd-enb. The folder is the lasting copy and the Run dialog
+   * promises it keeps its own licence, so the run's temporary choice must not
+   * reach it.
+   */
+  keepLicenceTags?: { enb?: string; mme?: string; ims?: string },
 ): Promise<{ row: string; dir: string; written: string[]; error?: string }> {
   const files: Record<string, string | undefined> = {};
 
@@ -128,6 +142,21 @@ export async function syncRowToServer(
   const uploaded = row.uploadedTestcase ? suite.uploadedTestcases?.[row.uploadedTestcase] : undefined;
   const td = uploaded ?? await testDefinitionJson(inv, suite, row.simnovatorTcId, boxUserId);
   if (td) files['test.json'] = td;
+
+  // Put the folder's own licence back over whatever the callbox was carrying.
+  // See keepLicenceTags above.
+  if (keepLicenceTags) {
+    for (const [file, tag] of [
+      ['enb.cfg', keepLicenceTags.enb],
+      ['mme.cfg', keepLicenceTags.mme],
+      ['ims.cfg', keepLicenceTags.ims],
+    ] as const) {
+      if (!tag) continue;                       // nothing was overridden for this role
+      const text = files[file];
+      if (typeof text !== 'string') continue;
+      files[file] = withLicenceTag(text, tag).text;
+    }
+  }
 
   return { row: row.name, ...writeTestCaseFiles(suite.name, row.name, files) };
 }

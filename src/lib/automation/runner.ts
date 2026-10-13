@@ -1094,6 +1094,9 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     /** Files this run actually created on the callbox — the only ones cleanup
      *  may take away again. */
     const addedThisRun = new Set<string>();
+    /** What licence this row's SAVED configs ask for, read before the run
+     *  changed anything. Phase 3a pins these back into the folder. */
+    let folderLicence: { enb?: string; mme?: string; ims?: string } = {};
 
     // ── Phase 0: create the row's testcase on the Simnovator first, under the
     // display name and with the row's duration baked in — so the case exists in
@@ -1375,6 +1378,15 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         // includes by the name it is included as, so that is what to look for.
         ...(item.dbCfg ? { [item.dbCfg]: readTestCaseFile(cfgFrom, item.name, item.dbCfg) } : {}),
       };
+      // The licence each of this row's saved configs asks for, read BEFORE the
+      // run touches anything. Phase 3a pins these back into the folder so the
+      // licence chosen for today's run is not recorded as the row's own.
+      folderLicence = {
+        enb: licenceTagOf(fromServer[cfg] ?? ''),
+        mme: item.mmeCfg ? licenceTagOf(fromServer[item.mmeCfg] ?? '') : undefined,
+        ims: item.imsCfg ? licenceTagOf(fromServer[item.imsCfg] ?? '') : undefined,
+      };
+
       /** A file the suite carries as an upload, as text. */
       const uploaded = (nm?: string) => (nm && suite.uploadedConfigs?.[nm]
         ? Buffer.from(suite.uploadedConfigs[nm], 'base64').toString('utf8')
@@ -1417,31 +1429,56 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               if (lic.changed) {
                 text = lic.text;
                 stepDetails.push(`licence: ${name} ${lic.from || '(empty)'} → ${wantTag}`);
-                // Keep the callbox's own copy before the licence goes in, so
-                // it can be put back when the run is over. Only once per file
-                // per run: a later row pushing the same config must not
-                // "back up" a copy this run already rewrote, or the restore
-                // would put our licence back instead of theirs.
-                const dest = `${where}/${name}`;
-                if (!licenceBackups.has(dest)) {
-                  // A file the callbox does not have yet needs no backup —
-                  // cleanup removes it afterwards, licence and all.
-                  const had = await ssh.execCommand(`test -e ${q(dest)} && echo yes || echo no`);
-                  if ((had.stdout ?? '').trim() === 'yes') {
-                    const bk = `${dest}.simqa-licence-backup`;
-                    // -n so a backup left behind by an interrupted run wins:
-                    // it is closer to the operator's original than ours is.
-                    await ssh.execCommand(
-                      `sudo -n cp -n -p ${q(dest)} ${q(bk)} 2>/dev/null || cp -n -p ${q(dest)} ${q(bk)}`);
-                    const there = await ssh.execCommand(`test -e ${q(bk)} && echo yes || echo no`);
-                    if ((there.stdout ?? '').trim() !== 'yes') {
-                      // Changing a licence we cannot put back would leave the
-                      // callbox on our tag for good. Refuse instead.
-                      throw new Error(
-                        `could not back up ${dest} before changing its licence to "${wantTag}" — `
-                        + 'refusing, because the original could not then be restored');
-                    }
-                    licenceBackups.set(dest, bk);
+              }
+            }
+
+            const dest = `${where}/${name}`;
+
+            // Keep the callbox's own copy if its licence is about to change.
+            //
+            // The comparison is between the tag the FILE ON THE CALLBOX has
+            // and the tag in the bytes about to be written -- not between the
+            // bytes we started with and the bytes we end up with. Those are
+            // different questions, and only the first one is about the
+            // callbox. SA-1cell.cfg caught this: the row's copy on the
+            // automation server already asked for oran-enb, so applying
+            // oran-enb "changed nothing", while the file on the callbox said
+            // rnd-enb and was overwritten anyway -- permanently, because
+            // cleanup keeps a config the box already had.
+            //
+            // Backed up once per file per run: a later row pushing the same
+            // config must not back up a copy this run already rewrote, or the
+            // restore would put OUR licence back instead of the operator's.
+            if (role && !licenceBackups.has(dest)) {
+              const cur = await ssh.execCommand(`sudo -n cat ${q(dest)} 2>/dev/null || cat ${q(dest)} 2>/dev/null`);
+              // No readable copy there = nothing to preserve. A file the
+              // callbox does not have yet is removed by cleanup afterwards,
+              // licence and all.
+              if (cur.code === 0 && cur.stdout) {
+                const had = licenceTagOf(cur.stdout);
+                const willHave = licenceTagOf(text);
+                if (had !== willHave) {
+                  const bk = `${dest}.simqa-licence-backup`;
+                  // -n so a backup left behind by an interrupted run wins:
+                  // it is closer to the operator's original than ours is.
+                  await ssh.execCommand(
+                    `sudo -n cp -n -p ${q(dest)} ${q(bk)} 2>/dev/null || cp -n -p ${q(dest)} ${q(bk)}`);
+                  const there = await ssh.execCommand(`test -e ${q(bk)} && echo yes || echo no`);
+                  if ((there.stdout ?? '').trim() !== 'yes') {
+                    // Changing a licence we cannot put back would leave the
+                    // callbox on our tag for good. Refuse instead.
+                    throw new Error(
+                      `could not back up ${dest} before changing its licence from `
+                      + `"${had ?? 'none'}" to "${willHave ?? 'none'}" — refusing, because the `
+                      + 'original could not then be restored');
+                  }
+                  licenceBackups.set(dest, bk);
+                  if (!wantTag) {
+                    // Worth saying: this one moved because the row's own copy
+                    // asks for a different licence, not because anybody chose
+                    // one in the dialog.
+                    stepDetails.push(
+                      `licence: ${name} ${had || '(empty)'} → ${willHave || '(empty)'} (from the row's own copy)`);
                   }
                 }
               }
@@ -1470,7 +1507,6 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               ws.on('error', reject);
               ws.end(Buffer.from(text, 'utf8'));
             });
-            const dest = `${where}/${name}`;
             const r = await ssh.execCommand(
               `sudo -n install -m 0644 ${q(tmp)} ${q(dest)} 2>&1 || install -m 0644 ${q(tmp)} ${q(dest)} 2>&1`);
             await ssh.execCommand(`rm -f ${q(tmp)}`);
@@ -1819,7 +1855,21 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     // files an execution reads are the current ones. Runs AFTER bring-up, when
     // the callbox is serving what this row asked for, and before the trigger.
     try {
-      const sync = await syncRowToServer(inv, suite, item, callboxSys, ueSys, suite.boxUserId);
+      // The licence this run chose must not be recorded as the row's own.
+      //
+      // This sync reads the callbox, which is now serving configs with that
+      // licence in them. `fromServer` holds the folder's copies as they were
+      // BEFORE the run touched anything, so their tags are what the folder
+      // should keep. Only roles the run actually overrode are pinned; without
+      // an override the sync records the callbox faithfully, as it should.
+      const keepLicenceTags = opts.licenceTags
+        ? {
+            enb: opts.licenceTags.enb ? folderLicence.enb : undefined,
+            mme: opts.licenceTags.mme ? folderLicence.mme : undefined,
+            ims: opts.licenceTags.ims ? folderLicence.ims : undefined,
+          }
+        : undefined;
+      const sync = await syncRowToServer(inv, suite, item, callboxSys, ueSys, suite.boxUserId, keepLicenceTags);
       if (sync.written.length) {
         stepDetails.push(`server-configs: ${sync.written.join(', ')} → ${sync.dir}`);
       } else if (sync.error) {

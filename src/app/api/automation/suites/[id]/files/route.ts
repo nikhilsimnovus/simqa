@@ -18,11 +18,18 @@
 
 import { NextResponse } from 'next/server';
 import { getSuite } from '@/lib/automation/store';
-import { listTestCaseFiles, readTestCaseFile, testCaseDir, automationRoot } from '@/lib/automation/serverConfigs';
+import { listTestCaseFiles, readTestCaseFile, writeTestCaseFiles, testCaseDir, automationRoot } from '@/lib/automation/serverConfigs';
+// Only the quoted tag changes — see licenceTag.ts.
+import { withLicenceTag } from '@/lib/automation/licenceTag';
+import { cleanTag } from '@/lib/automation/licenceChoice';
 import { definitionFromText } from '@/lib/automation/importPack';
 import { powerOnOf } from '@/lib/automation/durationFit';
 
 export const dynamic = 'force-dynamic';
+
+/** The configs that carry a licence tag. Not exported: a route module may
+ *  export only its handlers and Next's own config names. */
+const LICENCE_FILES = ['enb.cfg', 'mme.cfg', 'ims.cfg'];
 
 /** The text either side of the character the JSON parser gave up at, which it
  *  names in its own message. Returns undefined when the message carries no
@@ -145,5 +152,62 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       files: listTestCaseFiles(r.configSuite ?? suite.name, r.name),
       testJson: describeTestJson(readTestCaseFile(r.configSuite ?? suite.name, r.name, 'test.json')),
     })),
+  });
+}
+
+/**
+ * POST /api/automation/suites/[id]/files
+ * body: { row, file, tag }
+ *
+ * Set the licence tag in one of a row's saved configs, in place.
+ *
+ * Only the quoted tag changes — every other byte of the file is left exactly
+ * as it is, so this cannot be used to rewrite a config, only to say which
+ * licence it asks for. And only enb.cfg, mme.cfg and ims.cfg carry one.
+ *
+ * Here because the folder is the lasting copy: when a run has written the
+ * wrong licence into it, or a setup's licences are renamed, the alternative is
+ * editing files on the server by hand.
+ */
+export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params;
+  const suite = getSuite(id);
+  if (!suite) return NextResponse.json({ ok: false, error: `no suite "${id}"` }, { status: 404 });
+
+  let body: any = {};
+  try { body = await req.json(); } catch { /* reported below */ }
+
+  const rowName = typeof body.row === 'string' ? body.row : '';
+  const file = typeof body.file === 'string' ? body.file : '';
+  const tag = cleanTag(body.tag);
+  if (!rowName || !file) return NextResponse.json({ ok: false, error: 'row and file are required' }, { status: 400 });
+  if (!tag) return NextResponse.json({ ok: false, error: 'tag must be one word, like "rnd-enb"' }, { status: 400 });
+  if (!LICENCE_FILES.includes(file)) {
+    return NextResponse.json(
+      { ok: false, error: `only ${LICENCE_FILES.join(', ')} carry a licence tag` }, { status: 400 });
+  }
+
+  const row = (suite.items ?? []).find((r) => r.name === rowName);
+  if (!row) return NextResponse.json({ ok: false, error: `no row "${rowName}" in this suite` }, { status: 404 });
+
+  const suiteFolder = row.configSuite ?? suite.name;
+  const text = readTestCaseFile(suiteFolder, row.name, file);
+  if (text === undefined) {
+    return NextResponse.json({ ok: false, error: `${file} is not saved for this row` }, { status: 404 });
+  }
+
+  const next = withLicenceTag(text, tag);
+  if (!next.changed) {
+    return NextResponse.json({
+      ok: true, row: row.name, file, tag,
+      changed: false,
+      note: next.from === undefined
+        ? `${file} names no licence server, so there is nowhere to put a tag`
+        : `${file} already asks for "${tag}"`,
+    });
+  }
+  const w = writeTestCaseFiles(suiteFolder, row.name, { [file]: next.text });
+  return NextResponse.json({
+    ok: true, row: row.name, file, from: next.from, tag, changed: true, dir: w.dir, written: w.written,
   });
 }
