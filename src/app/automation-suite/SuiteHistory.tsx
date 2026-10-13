@@ -106,7 +106,15 @@ const COLUMNS = [
 const DEFAULT_WIDTHS = [0.21, 0.33, 0.13, 0.11, 0.12, 0.10];
 const WIDTHS_KEY = 'simqa.automation.history.columnWidths.v1';
 
-export function SuiteHistory() {
+export function SuiteHistory({ suiteId, suiteName, onShowAll }: {
+  /** Show only this suite's runs. Set when the page was opened from Run
+   *  History's Preview, which is about one suite and not the whole lab. */
+  suiteId?: string;
+  /** Its name, for the banner — known before the runs have loaded. */
+  suiteName?: string;
+  /** Clear the filter. Absent = no way out is offered, so the caller owns it. */
+  onShowAll?: () => void;
+} = {}) {
   const [runs, setRuns] = useState<HistoryRun[] | null>(null);
   const [err, setErr] = useState('');
   const [refreshing, setRefreshing] = useState(false);
@@ -184,28 +192,61 @@ export function SuiteHistory() {
     document.body.style.userSelect = 'none';
   };
 
+  // One suite's runs, when the page was opened for one suite.
+  const all = runs ?? [];
+  const shown = suiteId ? all.filter(r => r.suiteId === suiteId) : all;
+  const hidden = all.length - shown.length;
+
   if (runs === null) {
     return <div className="px-5 py-8 text-center text-sm text-slate-500">Reading the run history…</div>;
   }
-  if (!runs.length) {
+  if (!shown.length) {
     return (
       <div className="px-5 py-10 text-center">
-        <div className="text-sm text-slate-600">Nothing has run yet.</div>
-        <div className="text-xs text-slate-400 mt-1">
-          Every suite, selection and single test case you run appears here, with what the Simnovator made of it.
+        <div className="text-sm text-slate-600">
+          {suiteId ? `${suiteName ?? 'That suite'} has not been run yet.` : 'Nothing has run yet.'}
         </div>
+        <div className="text-xs text-slate-400 mt-1">
+          {suiteId && hidden > 0
+            ? `${hidden} run${hidden === 1 ? '' : 's'} of other suites ${hidden === 1 ? 'is' : 'are'} hidden.`
+            : 'Every suite, selection and single test case you run appears here, with what the Simnovator made of it.'}
+        </div>
+        {suiteId && onShowAll ? (
+          <button onClick={onShowAll} className="mt-2 text-xs text-primary-700 hover:underline">
+            Show all runs
+          </button>
+        ) : null}
       </div>
     );
   }
 
   const pct = asPercents(widths);
-  const cases = runs.reduce((t, r) => t + Math.max(1, r.rows.length), 0);
+  const cases = shown.reduce((t, r) => t + Math.max(1, r.rows.length), 0);
 
   return (
     <div className="bg-surface border border-line rounded-xl overflow-hidden">
       <div className="flex items-center justify-between px-5 py-2.5 border-b border-line">
         <span className="text-xs text-slate-500">
-          {runs.length} run{runs.length === 1 ? '' : 's'} · {cases} test case{cases === 1 ? '' : 's'}
+          {/* Say plainly that this is one suite's history, and offer the way
+              out — a filtered table that does not admit it is filtered reads
+              as a table missing rows. */}
+          {suiteId ? (
+            <>
+              <span className="font-medium text-slate-700">{suiteName ?? shown[0]?.suiteName ?? 'this suite'}</span>
+              {' · '}
+            </>
+          ) : null}
+          {shown.length} run{shown.length === 1 ? '' : 's'} · {cases} test case{cases === 1 ? '' : 's'}
+          {suiteId && hidden > 0 ? (
+            <>
+              {' · '}
+              {onShowAll
+                ? <button onClick={onShowAll} className="text-primary-700 hover:underline">
+                    show all {hidden} other run{hidden === 1 ? '' : 's'}
+                  </button>
+                : <span>{hidden} other run{hidden === 1 ? '' : 's'} hidden</span>}
+            </>
+          ) : null}
           {anyLive ? <span className="text-amber-700"> · live updating</span> : null}
         </span>
         <div className="flex items-center gap-3">
@@ -261,7 +302,7 @@ export function SuiteHistory() {
         </thead>
 
         <tbody>
-          {runs.map((run, i) => {
+          {shown.map((run, i) => {
             const key = run.runId ?? `live-${run.suiteId}-${i}`;
             // A group always has at least one line, so a run that executed
             // nothing is still visible as the run it was.

@@ -2272,6 +2272,11 @@ export async function runSuite(suite: AutomationSuite, opts: RunOpts = {}): Prom
       detailPath: `data/automation-runs/${suite.id}/${rec.runId}.json`,
       meta: {
         suiteId: suite.id,
+        // WHICH run this row is. Without it /runs could only offer the suite,
+        // and its Preview landed on the suite list with nothing selected —
+        // the one thing it was not meant to do is make you go looking for the
+        // run you just clicked.
+        runId: rec.runId,
         suiteName: suite.name,
         kind: rec.kind,
         callboxHost: rec.callboxHost,

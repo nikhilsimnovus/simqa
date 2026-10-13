@@ -239,6 +239,9 @@ export default function AutomationSuitePage() {
   /** Which of the three tabs is showing. The wizard has its own flag already,
    *  so this only has to tell History from Saved Suites. */
   const [showHistory, setShowHistory] = useState(false);
+  /** Show History for ONE suite, when the page was opened from Run History's
+   *  Preview. Cleared by "show all runs", and by picking the tab by hand. */
+  const [historySuiteId, setHistorySuiteId] = useState<string>('');
   const [kind, setKind]               = useState<Kind>('uesim+callbox');
   const [uesimSystemId, setUesim]     = useState<string>('');
   /** Box logins the chosen Simnovator offers, and which one this suite runs as.
@@ -295,6 +298,23 @@ export default function AutomationSuitePage() {
   /** Logins per Simnovator, for the saved list — each suite shows the one it
    *  was saved with, which the wizard's own list cannot answer. */
   const [usersBySystem, setUsersBySystem] = useState<Record<string, Array<{ id: string; username: string }>>>({});
+  /**
+   * Opened from Run History's Preview: `?tab=history&suite=<id>`.
+   *
+   * Read once, on mount. Run History is about one run of one suite, so
+   * landing on the full list of saved suites — which is what this page did
+   * when it ignored the query entirely — left the operator to go and find the
+   * thing they had just clicked.
+   */
+  useEffect(() => {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      if (q.get('tab') === 'history') setShowHistory(true);
+      const suite = q.get('suite');
+      if (suite) { setHistorySuiteId(suite); setShowHistory(true); }
+    } catch { /* no query is the ordinary case */ }
+  }, []);
+
   useEffect(() => {
     const ids = Array.from(new Set(suites.map(x => x.uesimSystemId).filter(Boolean))) as string[];
     let cancelled = false;
@@ -2109,7 +2129,9 @@ export default function AutomationSuitePage() {
               same place for the same reason. */}
           <button
             type="button"
-            onClick={() => { resetWizard(); setShowHistory(true); }}
+            // Picking the tab by hand means the whole history: the one-suite
+            // view only ever arrives from a Preview link.
+            onClick={() => { resetWizard(); setShowHistory(true); setHistorySuiteId(''); }}
             className={
               'relative px-4 h-9 text-sm font-medium transition-colors -mb-px border-b-2 ' +
               (showHistory ? 'border-primary-600 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800')
@@ -2143,7 +2165,13 @@ export default function AutomationSuitePage() {
         </div>
 
         {/* History — every run, newest first, live while one is going. */}
-        {showHistory && !showWizard && <SuiteHistory />}
+        {showHistory && !showWizard && (
+          <SuiteHistory
+            suiteId={historySuiteId || undefined}
+            suiteName={suites.find(x => x.id === historySuiteId)?.name}
+            onShowAll={() => setHistorySuiteId('')}
+          />
+        )}
 
         {/* Suite list */}
         {!showWizard && !showHistory && (

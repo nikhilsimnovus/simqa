@@ -190,7 +190,19 @@ function openHref(e: HistoryEntry, systemId?: string): string {
   switch (e.surface) {
     case 'api-tests':        return q('/api-tests');
     case 'ui-tests':         return q('/ui-tests');
-    case 'automation-suite': return q(e.meta?.suiteId ? `/automation-suite?suite=${encodeURIComponent(e.meta.suiteId)}` : '/automation-suite');
+    // Straight to the run that was clicked: its own page, with the test
+    // cases, their Simnovator status and verdict, the Validation behind each
+    // one and the configs it ran with.
+    //
+    // It used to go to /automation-suite?suite=<id>, which the suite page
+    // ignored — so Preview landed on the full list of saved suites and left
+    // you to find the run yourself. Rows written before meta.runId existed
+    // have no run to open, and fall back to that suite's own History.
+    case 'automation-suite':
+      if (e.meta?.runId) return q(`/automation-suite/runs/${encodeURIComponent(String(e.meta.runId))}`);
+      return q(e.meta?.suiteId
+        ? `/automation-suite?tab=history&suite=${encodeURIComponent(String(e.meta.suiteId))}`
+        : '/automation-suite?tab=history');
     case 'config-fidelity':  return q('/config-fidelity');
     case 'end-to-end': {
       if (!e.meta?.testcaseId) return q('/testcases');
