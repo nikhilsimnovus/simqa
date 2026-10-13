@@ -198,11 +198,20 @@ function openHref(e: HistoryEntry, systemId?: string): string {
     // ignored — so Preview landed on the full list of saved suites and left
     // you to find the run yourself. Rows written before meta.runId existed
     // have no run to open, and fall back to that suite's own History.
-    case 'automation-suite':
-      if (e.meta?.runId) return q(`/automation-suite/runs/${encodeURIComponent(String(e.meta.runId))}`);
+    case 'automation-suite': {
+      // meta.runId is only on rows written since it was added — but every row
+      // has always recorded where its run is filed:
+      //   data/automation-runs/<suiteId>/<runId>.json
+      // so the id can be read off that instead of waiting for new runs to
+      // accumulate. All 58 rows on the server predate meta.runId and would
+      // otherwise have fallen back for good.
+      const filed = String(e.detailPath ?? '').match(/\/(run-[A-Za-z0-9-]+)\.json$/);
+      const auto = e.meta?.runId ?? filed?.[1];
+      if (auto) return q(`/automation-suite/runs/${encodeURIComponent(String(auto))}`);
       return q(e.meta?.suiteId
         ? `/automation-suite?tab=history&suite=${encodeURIComponent(String(e.meta.suiteId))}`
         : '/automation-suite?tab=history');
+    }
     case 'config-fidelity':  return q('/config-fidelity');
     case 'end-to-end': {
       if (!e.meta?.testcaseId) return q('/testcases');
