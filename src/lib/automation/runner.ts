@@ -38,6 +38,10 @@ import { preflightRows } from './preflightConfigs';
 import { definitionFromText } from './importPack';
 import { expectedRunSeconds } from './durationFit';
 import { withLicenceTag } from './licenceTag';
+// The box answers a refused trigger with HTTP 200 and a body that says so.
+import { readTriggerAnswer, refusalDetail, type TriggerAnswer } from './triggerAnswer';
+// A cell runs on a radio card, and the simulator has to own it.
+import { cardsOf, fitCards, applyCardFit } from './rfCards';
 import { isOurExecution, mayReport } from './ownExecution';
 // Checksums, so an unchanged subscriber database is not sent again each run.
 import { createHash } from 'node:crypto';
@@ -411,11 +415,64 @@ async function login(host: string, username: string, password: string): Promise<
   return j.access_token ?? j.token;
 }
 
+/**
+ * Start a test case and wait for the box to say what it did.
+ *
+ * This used to abort after 3 seconds and treat the AbortError as a 202,
+ * because a start answers slowly and the box runs the test whether or not
+ * anyone is still listening. The cost of that shortcut was never seeing the
+ * answer: a refusal — HTTP 200 with `{"status":"Failure"}` — was recorded as
+ * a successful trigger, and the row then sat out its entire poll window
+ * before reporting a timeout for an execution that had never started.
+ *
+ * ~20s is what a real start takes to answer; the window below is generous
+ * enough to cover a slow one and still bounded, and the run sleeps longer
+ * than that before its attach check anyway. If it does time out, that is
+ * reported as started-but-unconfirmed, because the box may well be running
+ * the test — the poll then decides, as before.
+ */
+async function postTrigger(
+  host: string,
+  headers: Record<string, string>,
+  tcId: string,
+  body: string,
+): Promise<{ status: number; answer: TriggerAnswer }> {
+  try {
+    const resp = await fetch(`http://${host}/v2/testcases/${encodeURIComponent(tcId)}/executions`, {
+      method: 'POST', headers, body, signal: AbortSignal.timeout(TRIGGER_ANSWER_TIMEOUT_MS),
+    });
+    const text = await resp.text().catch(() => '');
+    return { status: resp.status, answer: readTriggerAnswer(resp.status, text) };
+  } catch (e: any) {
+    // A timeout is not a refusal: the box holds the connection while it brings
+    // the test up, so assume it started and let the poll find out.
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+      return { status: 202, answer: { started: true, assumed: true } };
+    }
+    throw e;
+  }
+}
+
+/** How long to wait for the trigger's answer. A start answered in 20.3s on
+ *  192.168.1.95; a refusal comes back at once. */
+const TRIGGER_ANSWER_TIMEOUT_MS = 90_000;
+
 /** Fetch the first available simulator's id. The box's POST
  *  /v2/testcases/{id}/executions now rejects with 500 "No default
  *  simulator found" when no ?simulatorId=… is passed (regression
  *  introduced ~4.0.0_260605); pin every trigger to the first sim. */
 async function fetchFirstSimulatorId(host: string, token: string): Promise<string | undefined> {
+  return (await fetchSimulator(host, token))?.id;
+}
+
+/** The simulator a trigger will name, with the radio cards it owns.
+ *
+ *  The cards matter before a test case is built, not after: the box refuses to
+ *  start one whose cells name a card this simulator does not own, and it
+ *  refuses to save one that puts two cells on the same card. See rfCards.ts. */
+async function fetchSimulator(
+  host: string, token: string,
+): Promise<{ id: string; name?: string; cards: number[] } | undefined> {
   try {
     const r = await fetch(`http://${host}/v2/simulators`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -423,8 +480,27 @@ async function fetchFirstSimulatorId(host: string, token: string): Promise<strin
     });
     if (!r.ok) return undefined;
     const j: any = await r.json();
-    const sims = j?.items ?? j?.data ?? [];
-    return sims[0]?.id ? String(sims[0].id) : undefined;
+    const sims: any[] = j?.items ?? j?.data ?? [];
+    const read = (s: any) => ({
+      id: String(s.id),
+      name: s.name ? String(s.name) : undefined,
+      cards: (s?.nodes?.rfCards ?? [])
+        .map((c: unknown) => Number(c))
+        .filter((c: number) => Number.isFinite(c)) as number[],
+      free: String(s.availability ?? '').toUpperCase() !== 'BUSY',
+    });
+    // Most logins can use exactly one simulator and the choice is moot. An
+    // admin token sees several, and taking whichever came back first meant
+    // taking one that may be busy, or one with fewer radio cards than the
+    // suite's cells need — so prefer free, then the most cards. (A box with
+    // six cards splits them across its simulators; a 3-cell test case needs
+    // one simulator owning three.)
+    const best = sims
+      .filter((s) => s?.id)
+      .map(read)
+      .sort((a, b) => Number(b.free) - Number(a.free) || b.cards.length - a.cards.length)[0];
+    if (!best) return undefined;
+    return { id: best.id, name: best.name, cards: best.cards };
   } catch { return undefined; }
 }
 
@@ -480,36 +556,20 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
     const durSec = suite.testcaseDurations?.[tcId] ?? defaultDur;
     try {
       // The box's POST .../executions needs `{simulatorId}` in the BODY
-      // (returns 500 "No default simulator found" without it), and holds
-      // the HTTP connection open for the WHOLE testDuration (minutes).
-      // Fire-and-forget: kick the trigger, give it 3s to register, then
-      // proceed to polling. The poll loop reads metadata.lastExecution
-      // for the real verdict, so the trigger response body is unneeded —
-      // which is exactly why the id already there has to be noted first: a
-      // terminal record left by the PREVIOUS run is otherwise indistinguish-
-      // able from this one finishing.
+      // (returns 500 "No default simulator found" without it) and takes
+      // ~20s to answer a start. Its answer is worth that wait: it says
+      // whether the test actually started, and names the execution.
+      //
+      // The id already on record is noted first all the same — a trigger
+      // that answers unreadably leaves ownership to be decided by
+      // elimination, and a terminal record left by the PREVIOUS run is
+      // otherwise indistinguishable from this one finishing.
       const priorExec = (await fetchLastExecution(ueOpts.host, token, tcId))?.executionId;
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 3000);
-      let r: { ok: boolean; status: number };
-      try {
-        const resp = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(tcId)}/executions`, {
-          method: 'POST', headers: H, body: triggerBody, signal: ac.signal,
-        });
-        r = { ok: resp.ok, status: resp.status };
-      } catch (e: any) {
-        // AbortError is expected (we cut the connection after 3s) — treat
-        // it as kickoff-OK. Any other error (network, DNS) is a real fail.
-        if (e?.name === 'AbortError') r = { ok: true, status: 202 };
-        else throw e;
-      } finally {
-        clearTimeout(timer);
-      }
-      const triggerOk = r.ok || r.status === 200 || r.status === 201 || r.status === 202;
-      if (!triggerOk) {
+      const r = await postTrigger(ueOpts.host, H, tcId, triggerBody);
+      if (!r.answer.started) {
         steps.push({
           testcaseId: tcId, status: r.status, ok: false,
-          detail: `trigger ${r.status} — likely missing simulatorId in body`,
+          detail: refusalDetail(r.answer, r.status),
           durationMs: Date.now() - t0,
         });
         failed += 1;
@@ -518,13 +578,11 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
       }
       // Give the box a tick to register the execution before the first poll.
       await new Promise(res => setTimeout(res, 1500));
-      // execId is read from lastExecution by the poller since we abort
-      // the trigger fetch before getting its body.
       // This path runs the testcase as it stands, so how long it takes is the
       // testcase's business, not the row's figure.
       const window1 = Math.max(durSec, await fetchExpectedRun(ueOpts.host, token, tcId)) + POLL_MARGIN_SEC;
       const { finalState, stoppedByUs, execId, lateFinish } =
-        await settleExecution(ueOpts.host, token, tcId, undefined, window1, opts.signal, simulatorId, priorExec);
+        await settleExecution(ueOpts.host, token, tcId, r.answer.executionId, window1, opts.signal, simulatorId, priorExec);
       const verdict = deriveVerdict(finalState, !finalState);
       const passLike = verdict === 'PASS';
       steps.push({
@@ -758,14 +816,15 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
         const r = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(tcId)}/executions${simQ}`, {
           method: 'POST', headers: H, body: '{}',
         });
-        const j: any = await r.json().catch(() => ({}));
-        const triggerOk = r.ok || r.status === 200 || r.status === 201;
-        const execId: string | undefined = j?.executionId ?? j?.id;
-        if (!triggerOk) {
+        // The status line says 200 whether it started or refused, so the
+        // body decides. See triggerAnswer.ts.
+        const answer = readTriggerAnswer(r.status, await r.text().catch(() => ''));
+        const execId = answer.executionId;
+        if (!answer.started) {
           steps.push({
             testcaseId: `tc:${tcId}`, status: r.status, ok: false,
             executionId: execId,
-            detail: typeof j === 'object' ? JSON.stringify(j).slice(0, 200) : 'no body',
+            detail: refusalDetail(answer, r.status),
             durationMs: Date.now() - t0,
           });
           failed += 1;
@@ -908,7 +967,8 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
 
   const token = await login(ueOpts.host, ueOpts.username, ueOpts.password).catch(() => '');
   const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  const simulatorId = token ? await fetchFirstSimulatorId(ueOpts.host, token) : undefined;
+  const sim = token ? await fetchSimulator(ueOpts.host, token) : undefined;
+  const simulatorId = sim?.id;
   const simQ = simulatorId ? `?simulatorId=${encodeURIComponent(simulatorId)}` : '';
   const defaultDur = suite.defaultDurationSec ?? 10;
 
@@ -1128,6 +1188,38 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         if (suite.stopOnFail) break;
         continue;
       }
+      // The radio cards, before anything is built.
+      //
+      // A definition saved in /root/automation_configs was captured wherever
+      // it came from, and names the cards THAT simulator owned. The box
+      // refuses to start one naming a card this simulator does not own —
+      // HTTP 200, {"status":"Failure","message":"The test uses sdr4, which is
+      // not assigned to this simulator"} — so the cards are remapped onto the
+      // ones it does own. That is what lets a row carry its test case between
+      // logins and boxes at all.
+      //
+      // When there are more cells than cards it cannot be fixed by
+      // remapping: two cells may not share a card, so the test case simply
+      // cannot run on this simulator, and saying that is far better than
+      // building it, triggering it and timing out 280 seconds later.
+      if (sourceTd) {
+        const fit = fitCards(cardsOf(sourceTd), sim?.cards ?? [], sim?.name ?? ueOpts.username);
+        if (!fit.ok) {
+          steps.push({
+            testcaseId: item.name, status: 0, ok: false,
+            detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}${fit.reason}`,
+            durationMs: Date.now() - t0,
+          });
+          failed += 1; done += 1;
+          if (suite.stopOnFail) break;
+          continue;
+        }
+        if (fit.remap.length) {
+          applyCardFit(sourceTd, fit);
+          stepDetails.push(fit.note!);
+        }
+      }
+
       const dup = await duplicateTestcase(ueOpts, item.simnovatorTcId, item.name, durSec, sourceTd);
       if (dup.error || !dup.testCaseId) {
         steps.push({
@@ -1659,30 +1751,14 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     // 13 October from the execution it ran on 9 October because of this.
     const priorExec = (await fetchLastExecution(ueOpts.host, token, runTcId))?.executionId;
     try {
-      // See runUesimOnly above for why this is fire-and-forget + abort.
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 3000);
-      let r: { ok: boolean; status: number };
-      try {
-        const resp = await fetch(`http://${ueOpts.host}/v2/testcases/${encodeURIComponent(runTcId)}/executions`, {
-          method: 'POST', headers: H, body: triggerBody, signal: ac.signal,
-        });
-        r = { ok: resp.ok, status: resp.status };
-      } catch (e: any) {
-        if (e?.name === 'AbortError') r = { ok: true, status: 202 };
-        else throw e;
-      } finally {
-        clearTimeout(timer);
-      }
-      const triggerOk = r.ok || r.status === 200 || r.status === 201 || r.status === 202;
-      if (!triggerOk) {
+      // Wait for the box to say what it did. See triggerAnswer.ts: the HTTP
+      // status is 200 either way, a start takes ~20s to answer and carries
+      // the execution id, and a refusal comes back at once with the reason.
+      const r = await postTrigger(ueOpts.host, H, runTcId, triggerBody);
+      if (!r.answer.started) {
         steps.push({
           testcaseId: item.name, status: r.status, ok: false,
-          // 409 is the box's one-testcase-at-a-time mutex, not a bad request —
-          // calling it a missing simulatorId sent us chasing the wrong bug once.
-          detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}trigger ${r.status} — ${r.status === 409
-            ? 'a test case is already running on the simulator'
-            : 'rejected by the box (check simulatorId in the trigger body)'}`,
+          detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}${refusalDetail(r.answer, r.status)}`,
           durationMs: Date.now() - t0,
         });
         failed += 1;
@@ -1690,9 +1766,12 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         done += 1;
         continue;
       }
-      // 1. Give the box ~1.5s to register the trigger then poll for
-      //    terminal state up to durationSec. execId is read from the
-      //    polled lastExecution (we aborted the trigger response).
+      // The id the box minted for THIS start, when it gave one. It is the
+      // only unambiguous way to tell our execution from the row's previous
+      // one — see ownExecution.ts.
+      const triggerExecId = r.answer.executionId;
+      // 1. Give the box a moment to register the trigger, then poll for
+      //    terminal state up to durationSec.
       await new Promise(res => setTimeout(res, 1500));
 
       // Attach gate: once the UEs have had time to power on, check the UE
@@ -1751,7 +1830,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       }
       // 2. Wait it out, and stop it only if it really has not finished.
       const settledRun = await settleExecution(
-        ueOpts.host, token, runTcId, undefined, pollWindow, opts.signal, simulatorId, priorExec);
+        ueOpts.host, token, runTcId, triggerExecId, pollWindow, opts.signal, simulatorId, priorExec);
       const finalState = settledRun.finalState;
       const execId = settledRun.execId;
       const stoppedByUs = settledRun.stoppedByUs;

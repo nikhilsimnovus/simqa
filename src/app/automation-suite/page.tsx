@@ -436,6 +436,17 @@ export default function AutomationSuitePage() {
   const [addDurSrc, setAddDurSrc] = useState<{
     powerOnTime: number | null; powerOnTimes: number[]; dataTypes: string[]; loops: boolean; from: string;
   } | null>(null);
+  /** Whether this login's simulator owns a radio card for every cell.
+   *
+   *  A box splits its cards between its simulators — .95 gives two of its six
+   *  to each of three — and two cells may not share one. So a 3-cell test case
+   *  needs a simulator owning three cards, and the box refuses to start it
+   *  otherwise. Said here, when the test case is picked, rather than after a
+   *  run has been queued behind it. */
+  const [addCards, setAddCards] = useState<{
+    cells: number; cards: number[]; simulator?: { name?: string; cards: number[] };
+    ok: boolean; reason?: string; note?: string;
+  } | null>(null);
   const [loadingDur, setLoadingDur] = useState(false);
   /** Subscriber DB for the row. Defaults to the one the picked mme.cfg already
    *  includes, which is what it has always been — the difference is that it can
@@ -1160,6 +1171,7 @@ export default function AutomationSuitePage() {
    */
   const loadPickedDuration = useCallback(async (value: string) => {
     setAddDurSrc(null);
+    setAddCards(null);
     if (!value) { setAddDur(''); return; }
 
     if (value.startsWith(UPLOAD_PREFIX)) {
@@ -1184,6 +1196,12 @@ export default function AutomationSuitePage() {
         powerOnTime: r.powerOnTime ?? null, powerOnTimes: r.powerOnTimes ?? [],
         dataTypes: r.dataTypes ?? [], loops: !!r.loops, from: r.name ?? 'the test case',
       });
+      if (r.cardFit) {
+        setAddCards({
+          cells: r.cells ?? 0, cards: r.cards ?? [], simulator: r.simulator,
+          ok: !!r.cardFit.ok, reason: r.cardFit.reason, note: r.cardFit.note,
+        });
+      }
       setAddDur(r.powerOnTime ? String(r.powerOnTime) : '');
     } catch {
       setAddDur('');
@@ -3112,6 +3130,14 @@ export default function AutomationSuitePage() {
                       <span className="text-[10px] text-slate-500 mt-1">
                         this test case names no power-on duration — the row will use {defaultDur || MIN_POWER_ON}s
                       </span>
+                    ) : null}
+                    {addCards && !addCards.ok ? (
+                      <span className="text-[10px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1 mt-1">
+                        {addCards.reason}. The Simnovator refuses to start it, so this row cannot run
+                        as this login until its radio cards are reassigned.
+                      </span>
+                    ) : addCards?.note ? (
+                      <span className="text-[10px] text-amber-700 mt-1">{addCards.note} — its cells were built for other cards.</span>
                     ) : null}
                   </label>
                   {kind === 'uesim+callbox' && (<>
