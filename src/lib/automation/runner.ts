@@ -138,6 +138,18 @@ export interface SuiteRunStep {
   status: number;
   ok: boolean;
   executionId?: string;
+  /**
+   * `'note'` for a step that is not a test case: run-level bookkeeping the
+   * record should keep, like putting the callbox's licence back.
+   *
+   * It belongs in the record — it is part of what the run did, and a run that
+   * quietly stopped reporting its own housekeeping would be harder to trust,
+   * not easier. But the History's table is a table of TEST CASES, and
+   * "licence-restore / Not Executed" sitting among them reads as a test case
+   * that did not run. So the table leaves notes out and the run detail shows
+   * them.
+   */
+  kind?: 'note';
   /** Final verdict pulled from the box AFTER the test stops. Populated
    *  for tc rows that reached a terminal state (whether by the test
    *  finishing naturally or by us stopping it after the duration
@@ -2155,7 +2167,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     // rewrote is the one they are running on, and the bytes they expect are
     // the ones in the backup.
     await restoreLicences(callboxSys, licenceBackups, (m) => rawSteps.push({
-      testcaseId: 'licence-restore', status: 0, ok: true, detail: m, durationMs: 0,
+      testcaseId: 'licence-restore', kind: 'note', status: 0, ok: true, detail: m, durationMs: 0,
     }));
   }
 

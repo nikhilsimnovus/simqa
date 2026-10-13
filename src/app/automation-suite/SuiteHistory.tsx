@@ -316,8 +316,14 @@ export function SuiteHistory() {
                     {row.verdict || '–'}
                   </td>
 
+                  {/* A row that never executed has no execution time. The
+                      runner does record how long it spent before giving up —
+                      347s of waiting on one refused trigger — but printing
+                      that under "Executed Time" claims the test ran for 347
+                      seconds, which it did not. The run detail has the real
+                      story. */}
                   <td className="px-3 py-2.5 border-r border-slate-200 whitespace-nowrap text-slate-700">
-                    {took(row.durationMs)}
+                    {row.status === 'Not Executed' ? '–' : took(row.durationMs)}
                   </td>
 
                   <td className="px-3 py-2.5 whitespace-nowrap">

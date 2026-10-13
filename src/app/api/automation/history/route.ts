@@ -85,7 +85,12 @@ function rowOf(st: SuiteRunStep): HistoryRow {
  * honest answer: what was asked for was not written down.
  */
 function rowsOf(r: { steps?: SuiteRunStep[]; requested?: string[] }): HistoryRow[] {
-  const steps = r.steps ?? [];
+  // Run-level bookkeeping is not a test case. It stays in the record and
+  // shows on the run detail; a table of test cases that listed
+  // "licence-restore / Not Executed" among them would be describing a test
+  // case that does not exist. Older records have no `kind`, so the one note
+  // that predates it is named directly.
+  const steps = (r.steps ?? []).filter((st) => st.kind !== 'note' && st.testcaseId !== 'licence-restore');
   if (!r.requested?.length) return steps.map(rowOf);
 
   // By name, and in step order within a name: a suite may legitimately hold
