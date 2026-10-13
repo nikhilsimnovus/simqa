@@ -34,6 +34,9 @@ export interface HistoryRow {
   verdict: string;
   durationMs?: number;
   executionId?: string;
+  /** The box's own spelling, for the hover. */
+  boxStatus?: string;
+  boxResult?: string;
 }
 export interface HistoryRun {
   runId: string | null;
@@ -305,14 +308,26 @@ export function SuiteHistory() {
                       : null}
                   </td>
 
+                  {/* These two are the Simnovator's own words, run through
+                      the box's own label maps — the only difference is
+                      capitalisation. The hover shows the raw pair off the
+                      execution record so it can be checked against the
+                      Simnovator without taking our word for it. A row the run
+                      never executed has no execution to quote, and says that
+                      rather than borrowing the box's older verdict for the
+                      same test case. */}
                   <td className={cn('px-3 py-2.5 border-r border-slate-200 whitespace-nowrap truncate', st.cls)}
-                    title={row.status}>
+                    title={row.boxStatus
+                      ? `the Simnovator says: ${row.boxStatus}`
+                      : row.executionId ? row.status : 'this run produced no execution for this test case'}>
                     {st.dot} {row.status}
                   </td>
 
                   <td className={cn('px-3 py-2.5 border-r border-slate-200 whitespace-nowrap truncate',
                     verdictClass(row.verdict as VerdictLabel))}
-                    title={row.verdict || undefined}>
+                    title={row.boxResult
+                      ? `the Simnovator says: ${row.boxResult}`
+                      : row.executionId ? (row.verdict || undefined) : 'this run produced no execution for this test case'}>
                     {row.verdict || '–'}
                   </td>
 

@@ -243,8 +243,23 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                           </details>
                         )}
                       </td>
-                      <td className={cn('px-4 py-2.5 whitespace-nowrap', sty.cls)}>{sty.dot} {label}</td>
-                      <td className={cn('px-4 py-2.5 whitespace-nowrap', verdictClass(vd as VerdictLabel))}>{vd || '–'}</td>
+                      {/* The Simnovator's own words. The label maps only
+                          change the capitalisation, so the raw pair off the
+                          execution record is printed underneath — this page is
+                          where someone comes to check a result against the
+                          box, and quoting it verbatim is the point. */}
+                      <td className={cn('px-4 py-2.5 whitespace-nowrap', sty.cls)}>
+                        {sty.dot} {label}
+                        {st.boxStatus && st.boxStatus.toUpperCase() !== label.toUpperCase().replace(/ /g, '_')
+                          ? <div className="text-[10px] font-mono text-slate-400">{st.boxStatus}</div>
+                          : null}
+                      </td>
+                      <td className={cn('px-4 py-2.5 whitespace-nowrap', verdictClass(vd as VerdictLabel))}>
+                        {vd || '–'}
+                        {st.boxResult && st.boxResult.toUpperCase() !== vd.toUpperCase().replace(/ /g, '_')
+                          ? <div className="text-[10px] font-mono text-slate-400">{st.boxResult}</div>
+                          : null}
+                      </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-xs text-slate-600">
                         {st.durationMs ? `${Math.round(st.durationMs / 1000)}s` : '–'}
                       </td>

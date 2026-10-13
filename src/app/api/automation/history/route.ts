@@ -33,6 +33,14 @@ interface HistoryRow {
   boxTestcaseId?: string;
   executionId?: string;
   detail?: string;
+  /** The box's OWN spelling of the two, straight off the execution record
+   *  (COMPLETED, ABORTED, PASS, INCOMPLETE). `status` and `verdict` above are
+   *  these run through the box's own label maps, so the only difference is
+   *  capitalisation — carried so the table can show the raw pair and an
+   *  operator can check it against the Simnovator without taking our word for
+   *  it. */
+  boxStatus?: string;
+  boxResult?: string;
 }
 
 /** How a whole run turned out, in one word, from the rows it ran. */
@@ -69,6 +77,8 @@ function rowOf(st: SuiteRunStep): HistoryRow {
     boxTestcaseId: st.boxTestcaseId,
     executionId: st.executionId,
     detail: st.detail,
+    boxStatus: st.boxStatus,
+    boxResult: st.boxResult,
   };
 }
 
