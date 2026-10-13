@@ -2000,47 +2000,51 @@ export default function AutomationSuitePage() {
                           value is written into mme.cfg AND ims.cfg; see
                           licenceChoice.ts. */}
                       {licences.filter(l => l.role !== 'ims').map(l => {
-                        // One line per config, as it was. A tag is shown only
-                        // when the suite's rows agree on one — and they do
-                        // not always: User_Plane runs demo-ims.cfg on six
-                        // rows and Mohan_ims.cfg on four, asking for mme-oran
-                        // and rnd-mme. Naming either there would be wrong
-                        // about the other six or four, so the line says how
-                        // many there are and the hover says which is which.
+                        // What the configs ask for TODAY, said in the
+                        // placeholder rather than in a column of its own.
+                        //
+                        // It used to sit between the label and the field as
+                        // its own cell, and when a suite's rows disagreed it
+                        // read "5 different licences" — which is true,
+                        // unhelpful, and cost the field the width it needed:
+                        // a fixed w-56 input after three other cells pushed
+                        // the box outside the panel.
+                        //
+                        // Rows disagree often enough to matter (User_Plane
+                        // runs demo-ims.cfg on six rows and Mohan_ims.cfg on
+                        // four, asking for mme-oran and rnd-mme), so when they
+                        // do the placeholder just invites a value and the
+                        // hover on the label still lists every config and tag.
                         const one = l.groups.length === 1 ? l.groups[0] : undefined;
                         const say = (g: { tag: string | null }) =>
                           g.tag === null ? 'no licence server' : g.tag === '' ? 'empty tag' : g.tag;
-                        const odd = one && (one.tag === null || one.tag === '');
+                        const hint = one
+                          ? `currently ${say(one)}`
+                          : `${l.role.toUpperCase()} licence…`;
                         return (
-                          <label key={l.role} className="flex items-center gap-2 text-sm">
+                          <label key={l.role} className="flex items-center gap-3 text-sm">
                             {/* The MME field writes mme.cfg and ims.cfg, so it
                                 says so here rather than earning ims.cfg a row
                                 of its own. */}
-                            <span className="font-mono text-[12px] text-slate-600 w-[8.5rem] shrink-0">
-                              {l.role === 'mme' ? 'mme.cfg + ims.cfg' : l.label}
-                            </span>
                             <span
                               title={l.groups.map(g => `${say(g)} — ${g.config} · ${g.rows.length} row${g.rows.length === 1 ? '' : 's'}`).join('\n')}
-                              className={cn(
-                                licenceEdits[l.role] ? 'line-through text-slate-400'
-                                  : odd || !one ? 'text-amber-700 cursor-help' : 'text-slate-800 cursor-help',
-                              )}>
-                              {one ? say(one) : `${l.groups.length} different licences`}
+                              className="font-mono text-[12px] text-slate-600 w-[8.5rem] shrink-0 cursor-help">
+                              {l.role === 'mme' ? 'mme.cfg + ims.cfg' : l.label}
                             </span>
-                            {one && (
-                              <span className="text-[11px] text-slate-400 font-mono truncate">{one.config}</span>
-                            )}
+                            {/* flex-1 + min-w-0, not a fixed width: the field
+                                takes what is left of the panel and can never
+                                reach past its edge. */}
                             <input
-                                value={licenceEdits[l.role] ?? ''}
-                                onChange={e => setLicenceEdits(prev => {
-                                  const next = { ...prev };
-                                  const v = e.target.value.trim();
-                                  if (v) next[l.role] = v; else delete next[l.role];
-                                  return next;
-                                })}
-                                placeholder={`${l.role.toUpperCase()} licence…`}
-                                className="ml-auto border border-slate-300 rounded-md px-2 py-1 text-xs w-56 shrink-0"
-                              />
+                              value={licenceEdits[l.role] ?? ''}
+                              onChange={e => setLicenceEdits(prev => {
+                                const next = { ...prev };
+                                const v = e.target.value.trim();
+                                if (v) next[l.role] = v; else delete next[l.role];
+                                return next;
+                              })}
+                              placeholder={hint}
+                              className="flex-1 min-w-0 border border-slate-300 rounded-md px-2 py-1 text-xs"
+                            />
                           </label>
                         );
                       })}
