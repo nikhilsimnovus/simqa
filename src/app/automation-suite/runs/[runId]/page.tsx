@@ -45,6 +45,9 @@ interface Run {
   failed: number;
   buildVersion?: string;
   submittedBy?: string;
+  /** The UE simulator this run used, and the licences it executed with. */
+  ueHost?: string;
+  licences?: { enb?: string; mme?: string; ims?: string };
   steps: Step[];
 }
 
@@ -132,6 +135,55 @@ function BoxValidation({ state }: { state?: BoxResultState }) {
 
 const stamp = (iso?: string) =>
   iso ? new Date(iso).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '–';
+
+/** Just the version. The box reports "4.1.0-rc.1 (Build 2026-10-07-5914)" and
+ *  the build stamp is noise next to the number anyone quotes. */
+function bareVersion(v?: string): string | undefined {
+  if (!v) return undefined;
+  const m = String(v).trim().match(/^[^\s(]+/);
+  return m ? m[0] : String(v).trim();
+}
+
+/**
+ * How the run as a whole turned out, from the rows themselves.
+ *
+ * Counted rather than asserted: a run record carries `passed`/`failed` from
+ * the runner's own tally, which is SimQA's pass/fail and not the box's two
+ * words. These counts are the box's — the same ones each row shows — so the
+ * summary cannot disagree with the table under it.
+ *
+ * The verdict is the worst thing any row came to. PASS only when they all
+ * did, because a run with one failure is not a run that passed.
+ */
+function overallOf(rows: Step[]): {
+  completed: number; incomplete: number; running: number; notRun: number;
+  status: string; verdict: string;
+} {
+  let completed = 0, incomplete = 0, running = 0, notRun = 0;
+  const verdicts: string[] = [];
+  for (const st of rows) {
+    const o = { boxStatus: st.boxStatus, boxResult: st.boxResult, verdict: st.verdict, stopped: st.stopped };
+    const label = statusLabel(o);
+    if (label === 'In Progress' || label === 'Starting' || label === 'Stopping') running++;
+    else if (label === 'Completed') completed++;
+    else if (label === 'Not Executed') notRun++;
+    else incomplete++;                       // Aborted, Stopped, anything else
+    const vd = verdictLabel(o);
+    if (vd) verdicts.push(vd);
+  }
+  const status = running > 0 ? 'In Progress'
+    : rows.length === 0 ? 'Not Executed'
+    : notRun === rows.length ? 'Not Executed'
+    : incomplete > 0 ? 'Incomplete'
+    : 'Completed';
+  const verdict = running > 0 ? ''
+    : verdicts.includes('FAIL') ? 'FAIL'
+    : verdicts.includes('Error') ? 'Error'
+    : verdicts.includes('Incomplete') ? 'Incomplete'
+    : verdicts.length && verdicts.every(v => v === 'PASS') ? 'PASS'
+    : (verdicts[0] ?? '');
+  return { completed, incomplete, running, notRun, status, verdict };
+}
 
 export default function RunDetailPage({ params }: { params: Promise<{ runId: string }> }) {
   const [runId, setRunId] = useState('');
@@ -282,18 +334,45 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
     <div className="min-h-screen bg-slate-50">
       <div className="max-w-6xl mx-auto px-6 py-8">
         <Link href="/automation-suite" className="text-sm text-primary-700 hover:underline">← Automation Suites</Link>
+        {/* The suite's name, plainly. It used to be a link to the suite list,
+            which answered a question nobody asks from here, and the run id sat
+            under it — an internal key with nothing to say to an operator. */}
         <h1 className="mt-2 text-2xl font-bold text-slate-900">{run.suiteName}</h1>
-        <p className="text-xs text-slate-500 font-mono">{run.runId}</p>
 
         {/* ── Details ─────────────────────────────────────────────── */}
+        {/* ── Overall ─────────────────────────────────────────────────
+            Counted from the rows, so it cannot disagree with the table under
+            it. While the run is going these move; when it ends they settle. */}
+        {(() => {
+          const o = overallOf(rows);
+          const sty = statusStyle(o.status as StatusLabel);
+          return (
+            <section className="mt-4 bg-surface border border-line rounded-xl px-5 py-3.5">
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                <span className={cn('text-base font-semibold', sty.cls)}>{sty.dot} {o.status}</span>
+                <span className={cn('text-base font-semibold', verdictClass(o.verdict as VerdictLabel))}>
+                  {o.verdict || '–'}
+                </span>
+                <span className="text-sm text-slate-500">
+                  {rows.length} test case{rows.length === 1 ? '' : 's'}
+                </span>
+                <span className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                  <span className="text-emerald-700">{o.completed} completed</span>
+                  <span className="text-amber-700">{o.incomplete} incomplete</span>
+                  {o.running > 0 ? <span className="text-sky-700">{o.running} in progress</span> : null}
+                  {o.notRun > 0 ? <span className="text-slate-500">{o.notRun} not executed</span> : null}
+                </span>
+              </div>
+            </section>
+          );
+        })()}
+
         <section className="mt-5 bg-surface border border-line rounded-xl p-5">
           <h2 className="text-sm font-semibold text-slate-900 mb-3">Details</h2>
           <dl className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3 text-sm">
             <div>
               <dt className="text-slate-500 text-xs">Suite</dt>
-              <dd className="text-slate-900">
-                <Link href="/automation-suite" className="hover:underline">{run.suiteName}</Link>
-              </dd>
+              <dd className="text-slate-900">{run.suiteName}</dd>
             </div>
             <div>
               <dt className="text-slate-500 text-xs">Simnovator</dt>
@@ -303,19 +382,32 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
               <dt className="text-slate-500 text-xs">User</dt>
               <dd className="text-slate-900">{run.boxUser ?? '–'}</dd>
             </div>
+            {/* Duration, start and end as three facts, not one line. "11m 04s
+                at 3:21 PM" hid when it ended, which is the one an operator
+                correlating against a box log actually needs. */}
             <div>
-              <dt className="text-slate-500 text-xs">Execution time</dt>
+              <dt className="text-slate-500 text-xs">Duration</dt>
+              <dd className="text-slate-900">{elapsed(run.startedAt, run.finishedAt)}</dd>
+            </div>
+            <div>
+              <dt className="text-slate-500 text-xs">Started</dt>
+              <dd className="text-slate-900">{stamp(run.startedAt)}</dd>
+            </div>
+            <div>
+              <dt className="text-slate-500 text-xs">Ended</dt>
               <dd className="text-slate-900">
-                {elapsed(run.startedAt, run.finishedAt)}
-                <span className="ml-1.5 text-xs text-slate-500">{stamp(run.startedAt)}</span>
+                {run.finishedAt ? stamp(run.finishedAt) : <span className="text-amber-700">still running</span>}
               </dd>
             </div>
             {/* The build the Simnovator was on, read from it when the run
-                started. Here rather than in a panel of its own: it is a fact
-                about this execution, like the host and the login. */}
+                started. Just the version: the box writes it as
+                "4.1.0-rc.1 (Build 2026-10-07-5914)" and the build stamp is
+                noise next to the number anyone quotes. */}
             <div>
               <dt className="text-slate-500 text-xs">Build</dt>
-              <dd className="text-slate-900">{run.buildVersion ?? '–'}</dd>
+              <dd className="text-slate-900" title={run.buildVersion ?? undefined}>
+                {bareVersion(run.buildVersion) ?? '–'}
+              </dd>
             </div>
             {run.callboxHost && (
               <div>
@@ -323,6 +415,31 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                 <dd className="font-mono text-slate-900">{run.callboxHost}</dd>
               </div>
             )}
+            {/* The UE simulator this run used — where ue.cfg was generated and
+                the attach check read. Absent on runs recorded before it was
+                kept, which is honest: the suite may have been re-pointed
+                since, so guessing from it now would be a different machine. */}
+            <div>
+              <dt className="text-slate-500 text-xs">UE simulator</dt>
+              <dd className="font-mono text-slate-900">{run.ueHost ?? '–'}</dd>
+            </div>
+            {/* What it executed WITH, recorded at run time. Reading the
+                configs now would say what they ask for today, which is a
+                different question. */}
+            <div className="col-span-2 md:col-span-3">
+              <dt className="text-slate-500 text-xs">Licences</dt>
+              <dd className="text-slate-900 flex flex-wrap gap-x-5 gap-y-1">
+                {run.licences && Object.values(run.licences).some(Boolean)
+                  ? ([['enb.cfg', run.licences.enb], ['mme.cfg', run.licences.mme], ['ims.cfg', run.licences.ims]] as const)
+                      .map(([file, tag]) => (
+                        <span key={file} className="text-sm">
+                          <span className="text-slate-500 text-xs font-mono">{file}</span>{' '}
+                          <span className="font-mono">{tag || '(none)'}</span>
+                        </span>
+                      ))
+                  : <span className="text-slate-400 text-sm">not recorded for this run</span>}
+              </dd>
+            </div>
             {run.submittedBy && (
               <div>
                 <dt className="text-slate-500 text-xs">Started by</dt>

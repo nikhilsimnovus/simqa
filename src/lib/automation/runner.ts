@@ -184,6 +184,21 @@ export interface SuiteRunResult {
    *  where a result came from. */
   boxUser?: string;
   callboxHost?: string;
+  /** The UE simulator this run used — the machine ue.cfg was generated on and
+   *  the attach check read. Recorded because a suite can be pointed at a
+   *  different UE between runs, so "which UE" is a fact about the execution
+   *  and not about the suite as it stands today. */
+  ueHost?: string;
+  /**
+   * The licences this run actually executed with, by config role.
+   *
+   * What the Run dialog chose, or — where it chose nothing — the tag the
+   * config already carried. Recorded per run because the configs on the
+   * automation server go on changing afterwards: reading them later tells you
+   * what they ask for NOW, which is a different question from what this
+   * execution ran with.
+   */
+  licences?: { enb?: string; mme?: string; ims?: string };
   total: number;
   passed: number;
   failed: number;
@@ -1006,6 +1021,16 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
    */
   const licenceBackups = new Map<string, string>();
 
+  /**
+   * The licence each config role actually went to the callbox carrying.
+   *
+   * Read off the bytes that were written, not from the choice that was made:
+   * a role the Run dialog left alone keeps whatever its config already asked
+   * for, and that is what executed. First write wins, because every row of a
+   * run pushes the same three roles and the first is as true as the last.
+   */
+  const licencesUsed: { enb?: string; mme?: string; ims?: string } = {};
+
   // Cache of files currently on the callbox so we don't re-ls per item.
   let existing = new Set<string>();
   let existingCore = new Set<string>();
@@ -1460,6 +1485,11 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             }
 
             const dest = `${where}/${name}`;
+
+            // What this role is executing with, for the run record.
+            if (role === 'enb' || role === 'gnb') licencesUsed.enb ??= licenceTagOf(text);
+            else if (role === 'mme') licencesUsed.mme ??= licenceTagOf(text);
+            else if (role === 'ims') licencesUsed.ims ??= licenceTagOf(text);
 
             // Keep the callbox's own copy if its licence is about to change.
             //
@@ -2180,6 +2210,8 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     kind: suite.kind ?? 'uesim-only',
     uesimHost: ueOpts.host, boxUser: ueOpts.boxUser,
     callboxHost: callboxSys?.host,
+    ueHost: ueSys?.host,
+    licences: Object.values(licencesUsed).some(Boolean) ? licencesUsed : undefined,
     total, passed, failed, steps: rawSteps,
     // What this run was asked for, so the history can show a row that never
     // got its turn as well as the ones that ran. See SuiteRunResult.
