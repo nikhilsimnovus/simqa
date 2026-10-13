@@ -1992,7 +1992,14 @@ export default function AutomationSuitePage() {
                   <div className="mt-3 rounded-md border border-line bg-slate-50 px-3 py-2">
                     <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Licence</div>
                     <div className="space-y-2">
-                      {licences.map(l => {
+                      {/* Two values, ENB and MME. ims.cfg is not listed: it
+                          always takes the MME licence — the real configs agree
+                          (Mohan_mme.cfg and Mohan_ims.cfg both ask for
+                          rnd-mme) — so a line for it would be a third thing to
+                          read and keep in step that can never differ. The MME
+                          value is written into mme.cfg AND ims.cfg; see
+                          licenceChoice.ts. */}
+                      {licences.filter(l => l.role !== 'ims').map(l => {
                         // One line per config, as it was. A tag is shown only
                         // when the suite's rows agree on one — and they do
                         // not always: User_Plane runs demo-ims.cfg on six
@@ -2006,7 +2013,12 @@ export default function AutomationSuitePage() {
                         const odd = one && (one.tag === null || one.tag === '');
                         return (
                           <label key={l.role} className="flex items-center gap-2 text-sm">
-                            <span className="font-mono text-[12px] text-slate-600 w-[4.5rem]">{l.label}</span>
+                            {/* The MME field writes mme.cfg and ims.cfg, so it
+                                says so here rather than earning ims.cfg a row
+                                of its own. */}
+                            <span className="font-mono text-[12px] text-slate-600 w-[8.5rem] shrink-0">
+                              {l.role === 'mme' ? 'mme.cfg + ims.cfg' : l.label}
+                            </span>
                             <span
                               title={l.groups.map(g => `${say(g)} — ${g.config} · ${g.rows.length} row${g.rows.length === 1 ? '' : 's'}`).join('\n')}
                               className={cn(
@@ -2018,20 +2030,7 @@ export default function AutomationSuitePage() {
                             {one && (
                               <span className="text-[11px] text-slate-400 font-mono truncate">{one.config}</span>
                             )}
-                            {/* Two values are entered, ENB and MME, and the
-                                MME one covers ims.cfg as well — on the real
-                                boxes those two share the core licence
-                                (Mohan_mme.cfg and Mohan_ims.cfg both ask for
-                                rnd-mme). One field for ims would be a third
-                                thing to keep in step for no gain. */}
-                            {l.role === 'ims' ? (
-                              <span className="ml-auto text-[11px] text-slate-500 w-56 shrink-0">
-                                {licenceEdits.mme
-                                  ? <>takes the MME licence <span className="font-mono">{licenceEdits.mme}</span></>
-                                  : 'takes the MME licence'}
-                              </span>
-                            ) : (
-                              <input
+                            <input
                                 value={licenceEdits[l.role] ?? ''}
                                 onChange={e => setLicenceEdits(prev => {
                                   const next = { ...prev };
@@ -2042,7 +2041,6 @@ export default function AutomationSuitePage() {
                                 placeholder={`${l.role.toUpperCase()} licence…`}
                                 className="ml-auto border border-slate-300 rounded-md px-2 py-1 text-xs w-56 shrink-0"
                               />
-                            )}
                           </label>
                         );
                       })}
