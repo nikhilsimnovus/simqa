@@ -18,6 +18,7 @@ import { elapsed } from '../../SuiteHistory';
 // checks behind them.
 import { boxExecutionsOf, type BoxExecution } from '@/lib/boxExecutions';
 import { ExecutionPanel } from './ExecutionPanel';
+import { failureReason, reasonIsOnTheBox } from '@/lib/automation/failureReason';
 
 interface Step {
   testcaseId: string;
@@ -494,6 +495,19 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                       )}>
                       <td className="px-4 py-2.5">
                         <div className="text-slate-900">{st.testcaseId}</div>
+
+                        {/* The reason, beside the row — the same one line the
+                            History shows, so the two pages agree. */}
+                        {(() => {
+                          const why = failureReason(st.detail, label);
+                          if (!why) return null;
+                          return (
+                            <div className={cn('mt-0.5 text-[11px] leading-snug',
+                              reasonIsOnTheBox(why) ? 'text-amber-700' : 'text-slate-500')}>
+                              {why}
+                            </div>
+                          );
+                        })()}
 
                         {/* Validation: the Simnovator's own account of this
                             execution — its status, its verdict, and the checks

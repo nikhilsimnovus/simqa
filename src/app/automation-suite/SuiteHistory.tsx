@@ -27,6 +27,7 @@ import { statusStyle, verdictClass, type StatusLabel, type VerdictLabel } from '
 import {
   evenWidths, resizeColumns, normaliseWidths, asPercents,
 } from '@/lib/automation/columnWidths';
+import { failureReason, reasonIsOnTheBox } from '@/lib/automation/failureReason';
 
 export interface HistoryRow {
   name: string;
@@ -37,6 +38,8 @@ export interface HistoryRow {
   /** The box's own spelling, for the hover. */
   boxStatus?: string;
   boxResult?: string;
+  /** Everything the run did for this row — the reason is the last of it. */
+  detail?: string;
 }
 export interface HistoryRun {
   runId: string | null;
@@ -347,6 +350,23 @@ export function SuiteHistory({ suiteId, suiteName, onShowAll }: {
                     {run.live && run.current === row.name
                       ? <span className="text-[11px] text-amber-700">executing now</span>
                       : null}
+                    {/* Why it did not run, beside the row it happened to.
+                        The reason was always recorded — it sat at the end of
+                        the step detail, behind six lines of config work that
+                        succeeded, one page away. A row that failed is exactly
+                        the row whose reason you want without hunting. */}
+                    {(() => {
+                      const why = failureReason(row.detail, row.status);
+                      if (!why) return null;
+                      return (
+                        <span
+                          className={cn('mt-1 block text-[11px] leading-snug break-words',
+                            reasonIsOnTheBox(why) ? 'text-amber-700' : 'text-slate-500')}
+                          title={row.detail}>
+                          {why}
+                        </span>
+                      );
+                    })()}
                   </td>
 
                   {/* These two are the Simnovator's own words, run through
