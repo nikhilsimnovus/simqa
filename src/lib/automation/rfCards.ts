@@ -79,12 +79,22 @@ export function fitCards(
   const who = simName ? `simulator "${simName}"` : 'that simulator';
 
   if (distinct.length > owned.length) {
+    // Say what to do about it. "Cannot run on it" is true and leaves an
+    // operator with nowhere to go — and the usual next thought, that the test
+    // case must be missing from the box, sends them looking in the wrong
+    // place entirely. The fix is on the Simnovator: a simulator's rfCards are
+    // assigned to it, and a box's cards are split between its simulators, so
+    // a third card for this one has to come from another.
+    const short = distinct.length - owned.length;
     return {
       ok: false,
       remap: [],
       reason: `${wanted.length} cells need ${distinct.length} different RF cards`
         + ` (${distinct.join(', ')}) and ${who} owns ${owned.length} (${owned.join(', ')});`
-        + ' two cells cannot share a card, so this test case cannot run on it',
+        + ' two cells cannot share a card. Nothing is missing from the automation server —'
+        + ` this test case needs ${short} more RF card${short === 1 ? '' : 's'} assigned to`
+        + ` ${simName ? `"${simName}"` : 'this simulator'} on the Simnovator, or a simulator that already has`
+        + ` ${distinct.length}`,
     };
   }
 

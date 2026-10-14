@@ -18,6 +18,10 @@ test('3 cells cannot run on a simulator owning 2 cards', () => {
   assert.match(fit.reason!, /3 cells need 3 different RF cards \(0, 2, 4\)/);
   assert.match(fit.reason!, /simulator "simuser" owns 2 \(0, 1\)/);
   assert.match(fit.reason!, /two cells cannot share a card/);
+  // It has to say what to DO, and rule out the wrong suspicion: an operator
+  // whose test case will not run assumes it is missing from the box.
+  assert.match(fit.reason!, /Nothing is missing from the automation server/);
+  assert.match(fit.reason!, /needs 1 more RF card assigned to "simuser"/);
 });
 
 test('cards the simulator already owns are left alone', () => {
