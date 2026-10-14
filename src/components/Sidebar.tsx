@@ -17,21 +17,26 @@ import { SimQaLogo } from '@/components/SimQaLogo';
 // ─── Navigation model ─────────────────────────────────────────────────────
 //
 // Five sections, each collapsible. Order is intentional:
-//   1. Plan     — what you're testing today (the catalogue + the trigger)
-//   2. Verify   — automated verification surfaces (API/UI/cfg/build/perf)
-//   3. Configure— inventory, tools, backups (admin-flavour but high-traffic)
-//   4. History  — past runs + project info
-//   5. Advanced — distributed-lab features, collapsed by default
+//   1. Test Management — what you're testing today (the catalogue + the trigger)
+//   2. Quality Checks   — automated verification surfaces (API/UI/cfg/build/perf)
+//   3. Lab Settings     — inventory, tools, backups (admin-flavour but high-traffic)
+//   4. Help             — past runs + project info
+//   5. Advanced         — distributed-lab features, collapsed by default
 //
 // A whole-sidebar icons-only mode collapses to a 64px strip with tooltips.
 
 type NavItem = { href: string; label: string; icon: any };
+/** `id` is the key a section's collapsed state is stored under
+ *  (simqa-sidebar-sections-collapsed), so it is deliberately NOT the title:
+ *  renaming a section would otherwise silently re-expand it for everyone who
+ *  had collapsed it. The ids read plan/verify/configure/history for that
+ *  reason alone. */
 type NavSection = { id: string; title: string; items: NavItem[]; defaultCollapsed?: boolean };
 
 const SECTIONS: NavSection[] = [
   {
     id: 'plan',
-    title: 'Plan',
+    title: 'Test Management',
     items: [
       { href: '/',                  label: 'Dashboard',         icon: LayoutDashboard },
       { href: '/job-tracker',       label: 'Job Tracker',       icon: ClipboardList },
@@ -44,7 +49,7 @@ const SECTIONS: NavSection[] = [
   },
   {
     id: 'verify',
-    title: 'Verify',
+    title: 'Quality Checks',
     items: [
       { href: '/api-tests',       label: 'API Tests',       icon: Beaker },
       { href: '/api-validation',  label: 'API Validation (New)', icon: BadgeCheck },
@@ -56,7 +61,7 @@ const SECTIONS: NavSection[] = [
   },
   {
     id: 'configure',
-    title: 'Configure',
+    title: 'Lab Settings',
     items: [
       { href: '/inventory', label: 'Systems Management', icon: Server },
       { href: '/tools',     label: 'Tools',        icon: Wrench },
@@ -65,7 +70,7 @@ const SECTIONS: NavSection[] = [
   },
   {
     id: 'history',
-    title: 'History & Help',
+    title: 'Help',
     items: [
       { href: '/runs',     label: 'Run History',      icon: History },
       { href: '/about',    label: 'About SimQA', icon: Info },
