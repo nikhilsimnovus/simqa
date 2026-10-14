@@ -49,6 +49,10 @@ export interface UiElement {
    *  a toast bar — so its presence depends on what the box is doing, not on
    *  the build. Absence is reported, never asserted as a fault. */
   transient?: boolean;
+  /** True when the control sits inside a row of data — a table row, a list
+   *  item — so whether it exists depends on what the box holds, not on the
+   *  build. Absence is reported, never asserted as a fault. */
+  dataDependent?: boolean;
   /** Set when the element is present but not usable for a check, with why. */
   note?: string;
 }
@@ -161,6 +165,7 @@ export interface GeneratedCheck {
     clickChain?: string[];
     /** The control belongs to a floating, state-dependent panel. */
     transient?: boolean;
+    dataDependent?: boolean;
     options?: string[];
     columns?: string[];
     rowCount?: number;

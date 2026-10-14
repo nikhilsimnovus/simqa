@@ -97,6 +97,19 @@ function missing(c: GeneratedCheck, what: string): { status: CheckStatus; actual
       reason: 'this control is part of a floating panel that only appears in some states — it was on screen when the UI was read',
     };
   }
+  // A control inside a row of data is gone when the row is. My Tests shows a
+  // status chip per test case and a tag button per row: read the UI while a
+  // test has failed and "test-failed" is recorded as a control of that page,
+  // check it later when nothing has failed and it is honestly absent. That is
+  // the box's data changing, not the build losing a feature, and calling it a
+  // failure buries the real ones.
+  if (c.target?.dataDependent) {
+    return {
+      status: 'skip',
+      actual: what,
+      reason: 'this control belongs to a row of data — it was there when the UI was read, and the rows have changed since',
+    };
+  }
   return { status: 'fail', actual: what };
 }
 

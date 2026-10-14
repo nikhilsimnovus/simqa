@@ -56,6 +56,7 @@ interface RawEl {
   selector: string;
   disabled?: boolean;
   transient?: boolean;
+  dataDependent?: boolean;
   required?: boolean;
   options?: string[];
   columns?: string[];
@@ -207,6 +208,30 @@ const PAGE_SCRIPT = `(() => {
           }
           return false;
         })(),
+        // Lives inside a row of data, so its existence depends on what the
+        // box happens to hold — not on the build.
+        //
+        // The same lesson as the floating-panel rule above, one level along.
+        // My Tests shows a
+        // status chip per test case and a tag button per row; read the UI
+        // while a test has failed and "test-failed" is recorded as a control
+        // of that page, then check it later when nothing has failed and it is
+        // honestly gone. That is data, not a product defect, and asserting it
+        // produced seven of the first ten failures in a run against .95.
+        //
+        // Detected structurally — a table row, a list item, a grid row — so
+        // it holds for any build and any page, with nothing named here.
+        dataDependent: (function () {
+          let n = el;
+          for (let i = 0; n && i < 10; i++) {
+            const tag = n.tagName;
+            if (tag === 'TR' || tag === 'LI') return true;
+            const role = n.getAttribute && n.getAttribute('role');
+            if (role === 'row' || role === 'listitem' || role === 'gridcell' || role === 'cell') return true;
+            n = n.parentElement;
+          }
+          return false;
+        })(),
       };
       Object.assign(e, extra || {});
       out.push(e);
@@ -348,6 +373,7 @@ function toElements(raw: RawEl[]): UiElement[] {
       risk: riskOf(label, r.kind),
       disabled: r.disabled || undefined,
       transient: r.transient || undefined,
+      dataDependent: r.dataDependent || undefined,
       required: r.required || undefined,
       options: r.options,
       columns: r.columns,

@@ -118,7 +118,7 @@ function elementChecks(node: UiNode, el: UiElement, opts: PlanOptions): Generate
   const base = node.reach.via === 'url'
     ? { url: node.reach.url }
     : { selector: node.reach.selector, clickFromUrl: node.reach.fromUrl, clickChain: node.reach.chain };
-  const base2 = { ...base, transient: el.transient };
+  const base2 = { ...base, transient: el.transient, dataDependent: el.dataDependent };
   const at = (idSuffix: string, rest: Omit<GeneratedCheck, 'section' | 'page' | 'nodeId' | 'id' | 'element' | 'elementKind'>) =>
     mk(node, { idSuffix: `${el.key}::${idSuffix}`, element: el.label || el.key, elementKind: el.kind, ...rest });
 
