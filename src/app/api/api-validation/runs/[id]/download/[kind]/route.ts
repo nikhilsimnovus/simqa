@@ -1,10 +1,21 @@
 // GET /api/api-validation/runs/<id>/download/<html|json>
 //
-// The saved report, served from disk — so a run from last week downloads
-// exactly as one from a minute ago, and a restart loses nothing.
+// The saved run, served from disk — so a run from last week downloads exactly
+// as one from a minute ago, and a restart loses nothing.
+//
+// The HTML is RE-RENDERED from results.json rather than served as it was
+// written. The results are the record; the report is a view of them, and
+// pinning the view to the day it ran means every improvement to the report
+// only ever reaches runs you have not done yet. The row colours and the
+// expected → actual column landed that way: correct for new runs, invisible
+// on every report already on the server.
+//
+// Falls back to the stored HTML when results.json cannot be read or rendered,
+// so a run saved before this — or one whose results are damaged — still opens.
 
 import { NextResponse } from 'next/server';
 import { readRunFile } from '@/lib/apiValidation/store';
+import { renderHtml } from '@/lib/apiValidation/report';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +29,19 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   } catch {
     text = null;
   }
+
+  if (kind === 'html') {
+    try {
+      const raw = readRunFile(id, 'results.json');
+      if (raw) {
+        const fresh = renderHtml(JSON.parse(raw));
+        if (fresh) text = fresh;
+      }
+    } catch {
+      // Keep whatever was stored; a report that opens beats one that 500s.
+    }
+  }
+
   if (text === null) return NextResponse.json({ error: 'report not found' }, { status: 404 });
   return new NextResponse(text, {
     headers: {
