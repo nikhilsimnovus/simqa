@@ -59,12 +59,26 @@ function codes(e: Entry): string {
   return `<span class="codes">${esc(bits.join(' · '))}</span>`;
 }
 
+/**
+ * Headers, folded away until asked for.
+ *
+ * They were open by default and pushed the response body off the screen — a
+ * Bearer token alone is several hundred characters, and a response carries a
+ * dozen headers nobody reads unless something is wrong. The thing a reader
+ * came for is the status and the body; the headers are for when those are not
+ * enough.
+ *
+ * The count is in the summary so folding them away hides nothing: you can see
+ * there are twelve without opening them.
+ */
 function headersTable(h: Json): string {
   const rows = Object.entries(h ?? {});
   if (!rows.length) return '';
-  return `<h4>Headers</h4><table class="hdrs">${
-    rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')
-  }</table>`;
+  return `<details class="hdrs-wrap"><summary><b>Headers</b> <span class="muted">${rows.length}</span></summary>
+      <table class="hdrs">${
+        rows.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('')
+      }</table>
+    </details>`;
 }
 
 function entryHtml(e: Entry): string {
@@ -228,7 +242,15 @@ export function renderReport(data: Json): string {
   @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } .codes { margin-left: 0; } }
   h4 { margin: 12px 0 6px; font-size: 13px; }
   pre { background: var(--code-bg); border-radius: 6px; padding: 8px 10px; margin: 0; max-height: 420px; overflow: auto; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
-  .hdrs { font-size: 12px; } .hdrs td { padding: 2px 6px; font-family: ui-monospace, monospace; word-break: break-all; }
+  /* Header NAMES do not wrap. They were breaking one character per line —
+     "access-control-expose-headers" became a vertical column of letters —
+     because the cell had no width of its own and break-all applied to both
+     sides. The name takes what it needs; only the value breaks. */
+  .hdrs-wrap > summary { cursor: pointer; font-size: 13px; margin: 12px 0 4px; }
+  .hdrs { font-size: 12px; table-layout: auto; }
+  .hdrs th, .hdrs td { padding: 1px 8px 1px 0; font-family: ui-monospace, monospace; border: 0; vertical-align: top; line-height: 1.35; }
+  .hdrs th { white-space: nowrap; word-break: normal; width: 1%; text-align: left; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted); }
+  .hdrs td { word-break: break-all; }
   .doc span { display: inline-block; font: 12px ui-monospace, monospace; padding: 1px 6px; margin: 2px; border-radius: 4px; background: var(--code-bg); }
   .doc span.hit { outline: 2px solid var(--accent); }
   .muted { color: var(--muted); }

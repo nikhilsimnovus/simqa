@@ -109,3 +109,23 @@ test('it is one self-contained file', () => {
   assert.ok(!/<link[^>]+stylesheet/.test(html), 'an external stylesheet would break the styling offline');
   assert.match(html, /^<!doctype html>/i);
 });
+
+test('headers are folded away, and their names do not wrap', () => {
+  const html = renderReport(sample());
+  // Collapsed by default: a Bearer token alone is hundreds of characters, and
+  // open headers pushed the response body off the screen.
+  assert.match(html, /<details class="hdrs-wrap"><summary><b>Headers<\/b>/);
+  assert.ok(!/<h4>Headers<\/h4>/.test(html), 'headers should no longer be a bare always-open block');
+
+  // The count is in the summary, so folding them hides nothing.
+  assert.match(html, /<b>Headers<\/b> <span class="muted">\d+<\/span>/);
+
+  // The NAME cell must not break: "access-control-expose-headers" was being
+  // wrapped one character per line into a vertical column of letters.
+  assert.match(html, /\.hdrs th\s*\{[^}]*white-space:\s*nowrap/);
+  assert.match(html, /\.hdrs th\s*\{[^}]*word-break:\s*normal/);
+  // Only the value breaks.
+  assert.match(html, /\.hdrs td\s*\{[^}]*word-break:\s*break-all/);
+  // Names are th cells now, so the rule above actually selects them.
+  assert.match(html, /<tr><th>Accept<\/th><td>/);
+});
