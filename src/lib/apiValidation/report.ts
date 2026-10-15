@@ -147,6 +147,31 @@ const VERDICT_CLASS: Record<string, string> = { PASS: 'pass', FAIL: 'fail', SKIP
 
 /** One self-contained HTML file: no scripts fetched, no fonts, no styles from
  *  elsewhere, so it opens the same on any machine and prints to PDF. */
+/**
+ * What was expected, what came back, and how long it took — as one group at
+ * the right edge of the row.
+ *
+ *   expected 400 → 400 · 4 ms
+ *
+ * The expectation is the half that was missing. A row reading just "400" tells
+ * you what the box said and nothing about whether that was the right answer,
+ * which is the only thing a reader of a validation report wants to know.
+ *
+ * An operation can document several acceptable codes, so they are joined
+ * rather than reduced to one. A case that never got a reply shows an em dash
+ * on the right of the arrow, not a blank.
+ */
+function codesHtml(e: Entry): string {
+  const want = (e.expect ?? []).filter(Boolean);
+  const got = e.status !== null && e.status !== undefined ? String(e.status) : '—';
+  if (!want.length && e.status === null && e.ms === null) return '';
+  const parts: string[] = [];
+  if (want.length) parts.push(`expected ${esc(want.join('/'))} → `);
+  parts.push(`<span class="got">${esc(got)}</span>`);
+  if (e.ms !== null && e.ms !== undefined) parts.push(` · ${esc(e.ms)} ms`);
+  return `<span class="codes">${parts.join('')}</span>`;
+}
+
 export function renderHtml(data: Json): string {
   const m = data.meta;
   const s = data.summary;
@@ -172,8 +197,7 @@ export function renderHtml(data: Json): string {
     <span class="path">${esc(e.path)}</span>
     <span class="case">${esc(e.case)}</span>
     ${e.as ? `<span class="as">as ${esc(e.as)}</span>` : ''}
-    ${e.status !== null ? `<span class="code">${esc(e.status)}</span>` : ''}
-    ${e.ms !== null ? `<span class="ms">${esc(e.ms)} ms</span>` : ''}
+    ${codesHtml(e)}
     ${e.issues.length ? `<span class="badge bad">${e.issues.length} issue(s)</span>` : ''}
     ${e.warnings.length ? `<span class="badge warn">${e.warnings.length} warning(s)</span>` : ''}
   </summary>
@@ -232,7 +256,13 @@ export function renderHtml(data: Json): string {
   .chip.fail { border-color: #fecaca; background: #fef2f2; color: var(--bad); }
   .chip.skip { border-color: #e5e7eb; background: #f9fafb; color: var(--skip); }
   .chip.warn { border-color: #fde68a; background: #fffbeb; color: var(--warn); }
-  .entry { border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; background: #fff; }
+  .entry { border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; background: #fff; border-left: 4px solid var(--skip); }
+  /* Light enough to read black text on, strong enough to scan a page of rows
+     by colour alone. */
+  .entry.ok   { background: #e3f5ea; border-left-color: var(--ok); }
+  .entry.bad  { background: #fdecea; border-left-color: var(--bad); }
+  .entry.skip { background: #eef1f4; border-left-color: var(--skip); }
+  .entry.warn { background: #fff3dc; border-left-color: var(--warn); }
   .entry > summary { cursor: pointer; padding: 8px 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .entry.fail { border-color: #fecaca; }
   .v { font-weight: 700; font-size: 11px; padding: 1px 7px; border-radius: 4px; }
@@ -244,7 +274,12 @@ export function renderHtml(data: Json): string {
   .path { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
   .case { color: var(--muted); font-size: 12px; }
   .as { font-size: 11px; color: #1d4ed8; background: #eff6ff; border-radius: 4px; padding: 1px 6px; }
-  .code, .ms { font-size: 12px; color: var(--muted); margin-left: auto; }
+  /* One group, pushed to the right edge. The status and the timing used to
+     be two spans that EACH set margin-left:auto, so the first took the free
+     space and the second sat wherever the first left it — the ragged middle
+     column in every report. */
+  .codes { margin-left: auto; white-space: nowrap; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: var(--muted); }
+  .codes .got { font-weight: 700; color: var(--ink); }
   .badge { font-size: 11px; border-radius: 4px; padding: 1px 6px; }
   .badge.bad { color: var(--bad); background: #fef2f2; }
   .badge.warn { color: var(--warn); background: #fffbeb; }

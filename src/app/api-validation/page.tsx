@@ -18,7 +18,7 @@ import { Card, CardBody, CardHeader, CardTitle, Button, Badge, Input } from '@/c
 import {
   Play, Square, Loader2, ChevronRight, ChevronDown, Download, FileJson, FileText,
   ShieldAlert, ShieldCheck, Search, RefreshCw, Upload, History, AlertTriangle, CheckCircle2,
-  XCircle, MinusCircle, Rocket, KeyRound,
+  XCircle, MinusCircle, Rocket, KeyRound, Trash2,
 } from 'lucide-react';
 
 type Json = any;
@@ -108,6 +108,9 @@ export default function ApiValidationPage() {
   const [docBusy, setDocBusy] = useState(false);
   const [docMsg, setDocMsg] = useState<string | null>(null);
   const [recent, setRecent] = useState<Json[]>([]);
+  /** The report currently being deleted, so its row can say so and the
+   *  button cannot be pressed twice. */
+  const [deleting, setDeleting] = useState<string>('');
   const [docOpen, setDocOpen] = useState(false);
 
   const pollRef = useRef<number | null>(null);
@@ -130,6 +133,25 @@ export default function ApiValidationPage() {
   const refreshDoc = useCallback(async () => {
     try { setDoc(await fetch('/api/api-validation/document').then(r => r.json())); } catch { /* panel stays as it was */ }
   }, []);
+  /** Delete one saved report. Asks first: the run directory goes with it —
+   *  report, results JSON and all — and nothing brings it back. */
+  const deleteReport = useCallback(async (id: string) => {
+    if (!window.confirm(
+      `Delete report ${id}?\n\nIts HTML report and results JSON are removed from the server. This cannot be undone.`,
+    )) return;
+    setDeleting(id);
+    try {
+      const r = await fetch(`/api/api-validation/runs/${encodeURIComponent(id)}`, { method: 'DELETE' })
+        .then(x => x.json());
+      if (!r?.ok) throw new Error(r?.error ?? 'the report could not be deleted');
+      setRecent(prev => prev.filter(x => String((x as { id?: unknown }).id) !== id));
+    } catch (e: unknown) {
+      window.alert((e as Error)?.message ?? String(e));
+    } finally {
+      setDeleting('');
+    }
+  }, []);
+
   const refreshRecent = useCallback(async () => {
     try {
       const j = await fetch('/api/api-validation/reports?limit=12').then(r => r.json());
@@ -534,6 +556,18 @@ export default function ApiValidationPage() {
               <Input value={filter} onChange={e => setFilter(e.target.value)} placeholder="filter APIs"
                 className="pl-7 text-sm w-48" />
             </div>
+            {/* Open and close every section at once. The per-section
+                chevrons stay — this is for the moment you want to read the
+                whole document, or get it out of the way again. Separate from
+                All/None, which select operations rather than reveal them. */}
+            <Button size="sm" variant="secondary"
+              onClick={() => setOpenSections(new Set((spec?.sections ?? []).map(s => s.name)))}>
+              Expand all
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => setOpenSections(new Set())}>
+              Collapse all
+            </Button>
+            <span className="w-px self-stretch bg-line" aria-hidden />
             <Button size="sm" variant="secondary" onClick={() => setSelected(new Set(allOps.map(o => o.id)))}>All</Button>
             <Button size="sm" variant="secondary" onClick={() => setSelected(new Set())}>None</Button>
           </CardHeader>
@@ -784,12 +818,27 @@ export default function ApiValidationPage() {
                         <span className="text-amber-700"> {r.counts?.SKIP ?? 0}S</span>
                       </td>
                       <td className="py-1 pr-2">{r.passRate ?? 0}%</td>
+                      {/* Actions in one right-aligned group so Delete sits in
+                          the same column on every row, whatever the id above
+                          it is. There is no undo, hence the confirm. */}
                       <td className="py-1 pr-2">
-                        <a href={`/api/api-validation/runs/${r.id}/download/html`} target="_blank" rel="noreferrer"
-                          className="text-primary-700 hover:underline">open</a>
-                        {' · '}
-                        <a href={`/api/api-validation/runs/${r.id}/download/json`} target="_blank" rel="noreferrer"
-                          className="text-primary-700 hover:underline">json</a>
+                        <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+                          <a href={`/api/api-validation/runs/${r.id}/download/html`} target="_blank" rel="noreferrer"
+                            className="text-primary-700 hover:underline">open</a>
+                          <span className="text-slate-300">·</span>
+                          <a href={`/api/api-validation/runs/${r.id}/download/json`} target="_blank" rel="noreferrer"
+                            className="text-primary-700 hover:underline">json</a>
+                          <span className="text-slate-300">·</span>
+                          <button
+                            type="button"
+                            disabled={deleting === String(r.id)}
+                            onClick={() => void deleteReport(String(r.id))}
+                            title={`Delete report ${r.id}`}
+                            className="inline-flex items-center gap-1 text-red-700 hover:underline disabled:text-slate-400 disabled:no-underline">
+                            <Trash2 className="h-3.5 w-3.5" />
+                            {deleting === String(r.id) ? 'deleting…' : 'delete'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

@@ -117,3 +117,24 @@ export function readRunFile(runId: string, file: 'results.json' | 'report.html')
     return null;
   }
 }
+
+/**
+ * Remove one saved report, and everything that run wrote.
+ *
+ * The id is validated by runDir, which refuses anything outside
+ * [A-Za-z0-9._-] — so a crafted id cannot walk out of the reports directory
+ * and delete something else.
+ *
+ * Returns false when there was nothing there, which the caller reports as a
+ * 404 rather than pretending to have deleted something.
+ */
+export function deleteRun(runId: string): boolean {
+  const dir = runDir(runId);
+  try {
+    if (!fs.existsSync(dir)) return false;
+    fs.rmSync(dir, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
