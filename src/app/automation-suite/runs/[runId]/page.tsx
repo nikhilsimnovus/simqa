@@ -17,7 +17,6 @@ import { elapsed } from '../../SuiteHistory';
 // The box's own account of an execution: its status, its result, and the
 // checks behind them.
 import { boxExecutionsOf, type BoxExecution } from '@/lib/boxExecutions';
-import { ExecutionPanel } from './ExecutionPanel';
 import { failureReason, reasonIsOnTheBox } from '@/lib/automation/failureReason';
 
 interface Step {
@@ -211,7 +210,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
   const [filesLive, setFilesLive] = useState<Record<string, boolean>>({});
   /** What the server holds for each row, once its Configs panel is opened. */
   /** Which test case's section viewer is open, and which section. */
-  const [panel, setPanel] = useState<{ row: string; kind: 'configs' | 'stats' | 'logs' } | null>(null);
+  const [panel, setPanel] = useState<{ row: string; kind: 'configs' } | null>(null);
   const [files, setFiles] = useState<Record<string, Array<{ name: string; bytes: number }>>>({});
   const [shown, setShown] = useState<{ row: string; file: string; text: string } | null>(null);
 
@@ -535,18 +534,6 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                           </details>
                         )}
 
-                        {st.detail && (
-                          <details className="mt-1">
-                            <summary className="text-[11px] text-slate-500 cursor-pointer hover:underline">
-                              What SimQA did
-                            </summary>
-                            <ul className="mt-1 space-y-0.5">
-                              {String(st.detail).split(' · ').map((bit, n) => (
-                                <li key={n} className="text-[11px] text-slate-600 font-mono break-all">{bit}</li>
-                              ))}
-                            </ul>
-                          </details>
-                        )}
                       </td>
                       {/* The Simnovator's own words. The label maps only
                           change the capitalisation, so the raw pair off the
@@ -569,32 +556,16 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                         {st.durationMs ? `${Math.round(st.durationMs / 1000)}s` : '–'}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap">
-                        {/* Three ways in to the same execution: the files it
-                            deployed, what the Simnovator measured, and what it
-                            logged. Each opens a viewer rather than expanding
-                            the row — a stats table or 2,400 log lines inside a
-                            table cell is unreadable. */}
-                        <div className="flex flex-wrap gap-1.5">
-                          <button type="button"
-                            onClick={() => { setPanel({ row: st.testcaseId, kind: 'configs' }); void loadFiles(st.testcaseId); }}
-                            className="rounded border border-line px-1.5 py-0.5 text-[11px] text-primary-700 hover:bg-slate-100">
-                            Configs
-                          </button>
-                          <button type="button"
-                            disabled={!st.executionId}
-                            title={st.executionId ? undefined : 'this run produced no execution for this test case'}
-                            onClick={() => setPanel({ row: st.testcaseId, kind: 'stats' })}
-                            className="rounded border border-line px-1.5 py-0.5 text-[11px] text-primary-700 hover:bg-slate-100 disabled:text-slate-300 disabled:hover:bg-transparent">
-                            Statistics
-                          </button>
-                          <button type="button"
-                            disabled={!st.executionId}
-                            title={st.executionId ? undefined : 'this run produced no execution for this test case'}
-                            onClick={() => setPanel({ row: st.testcaseId, kind: 'logs' })}
-                            className="rounded border border-line px-1.5 py-0.5 text-[11px] text-primary-700 hover:bg-slate-100 disabled:text-slate-300 disabled:hover:bg-transparent">
-                            Logs
-                          </button>
-                        </div>
+                        {/* The files this run deployed. Statistics and Logs
+                            lived here too and were taken out: the Simnovator
+                            shows both for an execution already, and the
+                            Validation line above carries what its verdict was
+                            measured from. */}
+                        <button type="button"
+                          onClick={() => { setPanel({ row: st.testcaseId, kind: 'configs' }); void loadFiles(st.testcaseId); }}
+                          className="rounded border border-line px-1.5 py-0.5 text-[11px] text-primary-700 hover:bg-slate-100">
+                          Configs
+                        </button>
                       </td>
                     </tr>
                   );
@@ -609,12 +580,6 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
             an expanded row: a statistics table or 2,400 log lines do not fit
             inside a table cell, and the file list never really did either. */}
         {panel && (() => {
-          const st = rows.find(r => r.testcaseId === panel.row);
-          const running = statusLabel({
-            boxStatus: st?.boxStatus, boxResult: st?.boxResult, verdict: st?.verdict, stopped: st?.stopped,
-          }) === 'In Progress';
-          const title = panel.kind === 'configs' ? 'Configs'
-            : panel.kind === 'stats' ? 'Statistics' : 'Logs';
           return (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4"
               onClick={() => setPanel(null)}>
@@ -622,14 +587,13 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                 onClick={e => e.stopPropagation()}>
                 <div className="flex items-baseline justify-between gap-4 px-5 py-3 border-b border-line shrink-0">
                   <h3 className="text-sm font-semibold text-slate-900">
-                    {title}
+                    Configs
                     <span className="ml-2 font-normal text-slate-500 font-mono text-xs">{panel.row}</span>
                   </h3>
                   <button onClick={() => setPanel(null)} className="text-sm text-slate-500 hover:text-slate-800">Close</button>
                 </div>
 
-                {panel.kind === 'configs' ? (
-                  <div className="flex-1 overflow-auto px-5 py-4">
+                <div className="flex-1 overflow-auto px-5 py-4">
                     {/* What /root/automation_configs holds for this row — the
                         files the run deployed. */}
                     <div className="flex flex-wrap gap-1.5">
@@ -658,15 +622,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                         ? 'These are the files in /root/automation_configs now — this run predates per-run copies, so they may have changed since it ran.'
                         : 'The files this run deployed, kept with it. Pick one to read it in full.'}
                     </p>
-                  </div>
-                ) : (
-                  <ExecutionPanel
-                    runId={run.runId}
-                    testcase={panel.row}
-                    section={panel.kind === 'stats' ? 'stats' : 'logs'}
-                    live={running}
-                  />
-                )}
+                </div>
               </div>
             </div>
           );
