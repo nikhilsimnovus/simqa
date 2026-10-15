@@ -10,6 +10,8 @@ import {
   PanelLeftClose, PanelLeftOpen, RefreshCw, Globe, ClipboardList, Star, ListChecks,
   UserRound, LogOut, BadgeCheck
 } from 'lucide-react';
+import { useConfirm } from './ConfirmDialog';
+import { Toast, type ToastMessage } from './Toast';
 import { cn } from '@/lib/cn';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { SimQaLogo } from '@/components/SimQaLogo';
@@ -186,6 +188,10 @@ interface SidebarProps {
 }
 
 export function Sidebar({ user }: SidebarProps = {}) {
+  // The update is destructive enough to ask about, and its failure worth
+  // reading — both in the app rather than in the browser chrome.
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const [toast, setToast] = useState<ToastMessage | null>(null);
   const pathname = usePathname() || '/';
 
   // ── Rail (icons-only) mode + per-section collapsed state ─────────────
@@ -217,10 +223,11 @@ export function Sidebar({ user }: SidebarProps = {}) {
 
   const runUpdate = useCallback(async () => {
     if (updateBusy) return;
-    if (!window.confirm(
-      'Fetch the latest simqa from GitHub and re-install?\n\n' +
-      'The service will restart. This usually takes 30–60 seconds (npm ci + next build).',
-    )) return;
+    if (!(await confirm({
+      title: 'Fetch the latest simqa from GitHub and re-install?',
+      message: 'The service will restart. This usually takes 30–60 seconds (npm ci + next build).',
+      confirmLabel: 'Update now',
+    }))) return;
     setUpdateBusy(true);
     setUpdateLabel('Updating…');
     let stillUp = true;
@@ -233,7 +240,11 @@ export function Sidebar({ user }: SidebarProps = {}) {
         stillUp = false;
         setUpdateLabel('Update failed');
         const tail = j?.log ? '\n\nLast log lines:\n' + String(j.log).split('\n').slice(-15).join('\n') : '';
-        window.alert('Update failed.' + tail);
+        setToast({
+          kind: 'error',
+          title: 'Update failed',
+          message: tail.trim() || 'The server did not say why.',
+        });
       }
     } catch {
       // Most common case — the service restarted before our response came
@@ -311,6 +322,9 @@ export function Sidebar({ user }: SidebarProps = {}) {
   );
 
   return (
+    <>
+    {confirmDialog}
+    <Toast toast={toast} onClose={() => setToast(null)} />
     <aside
       className={cn(
         'hidden md:flex shrink-0 flex-col border-r border-line bg-surface transition-[width] duration-150 ease-out',
@@ -392,6 +406,7 @@ export function Sidebar({ user }: SidebarProps = {}) {
         </div>
       </div>
     </aside>
+    </>
   );
 }
 

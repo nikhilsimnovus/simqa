@@ -9,6 +9,7 @@ import {
   Filter, Download, AlertTriangle, Circle, Square, Play, RotateCcw,
   Eye, Globe, ShieldCheck, Activity, Search,
 } from 'lucide-react';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 // A category used to be one of sixteen fixed names. It is now any string,
 // because the categories that matter are the ones the selected setup actually
@@ -139,6 +140,8 @@ function metaFor(c: Category): { label: string; color: string } {
 type StatusFilter = 'all' | 'failed' | 'passed' | 'pending';
 
 export default function UiTestsPage() {
+  // Confirmations the app draws itself, centred — see ConfirmDialog.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null);
   const [enabled, setEnabled] = useState<Set<Category>>(new Set(DEFAULT_CATEGORIES));
   const [headless, setHeadless] = useState(true);
@@ -546,7 +549,7 @@ export default function UiTestsPage() {
   }
 
   async function deleteBaselineFn(id: string) {
-    if (!window.confirm(`Delete baseline "${id}"?`)) return;
+    if (!(await confirm({ title: `Delete baseline "${id}"?`, confirmLabel: 'Delete baseline', tone: 'danger' }))) return;
     await fetch(`/api/ui-tests/baselines/${encodeURIComponent(id)}`, { method: 'DELETE' });
     await refreshBaselines();
     if (activeBaseline === id) setActiveBaseline('');
@@ -688,6 +691,7 @@ export default function UiTestsPage() {
     // picker + results scroll. A bare fragment let the whole column scroll and
     // dragged the sticky Header away with it.
     <div className="flex-1 min-h-0 flex flex-col">
+      {confirmDialog}
       <Header
         title="UI Tests"
         left={<BackToRunHistory />}

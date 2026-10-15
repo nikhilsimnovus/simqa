@@ -18,6 +18,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { statusLabel, verdictLabel, verdictClass, statusStyle } from '@/lib/automation/outcome';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 interface SuiteItemRow { id: string; name: string; simnovatorTcId: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string; durationSec?: number }
 interface SuiteRow { id: string; name: string; kind?: string; uesimSystemId?: string; callboxSystemId?: string; ueSystemId?: string; boxUserId?: string; items?: SuiteItemRow[] }
@@ -39,6 +40,8 @@ interface Progress {
 }
 
 export default function CampaignsPage() {
+  // Confirmations the app draws itself, centred — see ConfirmDialog.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [suites, setSuites] = useState<SuiteRow[]>([]);
   const [systems, setSystems] = useState<SystemRow[]>([]);
@@ -240,7 +243,11 @@ export default function CampaignsPage() {
   };
 
   const stop = async (c: CampaignRow) => {
-    if (!window.confirm(`Stop "${c.name}"?\n\nThe running test case is stopped and the remaining ones are skipped.`)) return;
+    if (!(await confirm({
+      title: `Stop "${c.name}"?`,
+      message: 'The running test case is stopped and the remaining ones are skipped.',
+      confirmLabel: 'Stop the run', tone: 'danger',
+    }))) return;
     try {
       await fetch(`/api/automation/campaigns/${c.id}/stop`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -250,7 +257,11 @@ export default function CampaignsPage() {
   };
 
   const remove = async (c: CampaignRow) => {
-    if (!window.confirm(`Delete campaign "${c.name}"?\n\nThe suites its test cases came from are not touched.`)) return;
+    if (!(await confirm({
+      title: `Delete campaign "${c.name}"?`,
+      message: 'The suites its test cases came from are not touched.',
+      confirmLabel: 'Delete campaign', tone: 'danger',
+    }))) return;
     setBusy('delete');
     try {
       await fetch(`/api/automation/campaigns/${c.id}`, { method: 'DELETE' });
@@ -289,6 +300,7 @@ export default function CampaignsPage() {
 
   return (
     <div className="min-h-screen bg-slate-50">
+      {confirmDialog}
       <div className="max-w-7xl mx-auto px-6 py-8">
         <header className="mb-6">
           <h1 className="text-2xl font-bold text-slate-900">Test Campaigns</h1>

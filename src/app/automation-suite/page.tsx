@@ -29,6 +29,7 @@ import { validateCfg, dbIncludesOf, ROLE_LABEL, type CfgRole, type CfgVerdict } 
 // The same reading of a definition the power-on route does, so an uploaded
 // test case and one on the box are understood the same way.
 import { powerOnOf } from '@/lib/automation/durationFit';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 interface SystemRow {
   id: string; name: string; host: string; type: string;
@@ -218,6 +219,8 @@ interface CompareSummary {
 type Kind = 'uesim-only' | 'uesim+callbox';
 
 export default function AutomationSuitePage() {
+  // Confirmations the app draws itself, centred — see ConfirmDialog.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [systems, setSystems] = useState<SystemRow[]>([]);
   const [suites, setSuites]   = useState<SuiteRow[]>([]);
   const [busy, setBusy]       = useState<string>('');
@@ -959,7 +962,11 @@ export default function AutomationSuitePage() {
    *  have not started. Stopping only the box execution would just let the next
    *  row begin. */
   const stopRun = useCallback(async (s: SuiteRow) => {
-    if (!window.confirm(`Stop "${s.name}"?\n\nThe running test case is stopped and the remaining ones are skipped.`)) return;
+    if (!(await confirm({
+      title: `Stop "${s.name}"?`,
+      message: 'The running test case is stopped and the remaining ones are skipped.',
+      confirmLabel: 'Stop the run', tone: 'danger',
+    }))) return;
     setError('');
     try {
       const r = await fetch(`/api/automation/suites/${s.id}/stop`, { method: 'POST' });
@@ -1630,7 +1637,7 @@ export default function AutomationSuitePage() {
     const msg = remaining.length === 0
       ? `"${it.name}" is the only testcase in "${s.name}". Delete the whole suite?`
       : `Remove "${it.name}" from suite "${s.name}"?`;
-    if (!window.confirm(msg)) return;
+    if (!(await confirm({ title: msg, confirmLabel: 'Delete', tone: 'danger' }))) return;
     setBusy('delete'); setError('');
     try {
       const r = remaining.length === 0
@@ -1646,7 +1653,11 @@ export default function AutomationSuitePage() {
   };
 
   const deleteSuite = async (s: SuiteRow) => {
-    if (!window.confirm(`Delete suite "${s.name}"?`)) return;
+    if (!(await confirm({
+      title: `Delete suite "${s.name}"?`,
+      message: 'The suite and its rows are removed. Test cases on the Simnovator are not touched.',
+      confirmLabel: 'Delete suite', tone: 'danger',
+    }))) return;
     setBusy('delete'); setError('');
     try {
       const r = await fetch(`/api/automation/suites/${s.id}`, { method: 'DELETE' });
@@ -1776,6 +1787,7 @@ export default function AutomationSuitePage() {
 
   return (
     <div className="min-h-screen bg-slate-50">
+      {confirmDialog}
       <div className="max-w-7xl mx-auto px-6 py-8">
         <header className="mb-6">
           <div className="mb-1"><BackToRunHistory /></div>

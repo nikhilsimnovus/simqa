@@ -21,6 +21,7 @@ import { Card, CardBody, CardHeader, CardTitle, Button, Input, Field, Badge } fr
 import { SearchableSelect } from '@/components/SearchableSelect';
 import { Play, Plus, Trash2, Loader2, Pencil } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 type CfgSel = { enb?: string; mme?: string; mme2?: string; ims?: string };
 interface Scenario {
@@ -115,6 +116,8 @@ const SELECT_CLS =
   'focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/25';
 
 export default function ScenariosPage() {
+  // Confirmations the app draws itself, centred — see ConfirmDialog.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [systems, setSystems] = useState<SystemRow[]>([]);
   const [topologies, setTopologies] = useState<TopologyRow[]>([]);
@@ -187,7 +190,11 @@ export default function ScenariosPage() {
   }
 
   async function remove(s: Scenario) {
-    if (!window.confirm(`Delete scenario "${s.name}"? The testcase itself is not affected.`)) return;
+    if (!(await confirm({
+      title: `Delete scenario "${s.name}"?`,
+      message: 'The testcase itself is not affected.',
+      confirmLabel: 'Delete scenario', tone: 'danger',
+    }))) return;
     await fetch(`/api/scenarios/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
     await reload();
   }
@@ -209,6 +216,7 @@ export default function ScenariosPage() {
 
   return (
     <>
+      {confirmDialog}
       <Header
         title="Scenarios"
         subtitle="Saved one-click runs — a name, a testcase, and the box it last ran on"

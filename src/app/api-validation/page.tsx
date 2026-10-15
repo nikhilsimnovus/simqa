@@ -20,6 +20,11 @@ import {
   ShieldAlert, ShieldCheck, Search, RefreshCw, Upload, History, AlertTriangle, CheckCircle2,
   XCircle, MinusCircle, Rocket, KeyRound, Trash2,
 } from 'lucide-react';
+// Confirmations the app draws itself, and outcomes in the corner — rather
+// than the browser's own dialogs, which ignore the theme and announce the
+// host name above the message.
+import { useConfirm } from '@/components/ConfirmDialog';
+import { Toast, type ToastMessage } from '@/components/Toast';
 
 type Json = any;
 
@@ -111,6 +116,8 @@ export default function ApiValidationPage() {
   /** The report currently being deleted, so its row can say so and the
    *  button cannot be pressed twice. */
   const [deleting, setDeleting] = useState<string>('');
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [docOpen, setDocOpen] = useState(false);
 
   const pollRef = useRef<number | null>(null);
@@ -136,21 +143,26 @@ export default function ApiValidationPage() {
   /** Delete one saved report. Asks first: the run directory goes with it —
    *  report, results JSON and all — and nothing brings it back. */
   const deleteReport = useCallback(async (id: string) => {
-    if (!window.confirm(
-      `Delete report ${id}?\n\nIts HTML report and results JSON are removed from the server. This cannot be undone.`,
-    )) return;
+    const ok = await confirm({
+      title: `Delete report ${id}?`,
+      message: 'Its HTML report and results JSON are removed from the server. This cannot be undone.',
+      confirmLabel: 'Delete report',
+      tone: 'danger',
+    });
+    if (!ok) return;
     setDeleting(id);
     try {
       const r = await fetch(`/api/api-validation/runs/${encodeURIComponent(id)}`, { method: 'DELETE' })
         .then(x => x.json());
       if (!r?.ok) throw new Error(r?.error ?? 'the report could not be deleted');
       setRecent(prev => prev.filter(x => String((x as { id?: unknown }).id) !== id));
+      setToast({ kind: 'success', title: 'Report deleted', message: id });
     } catch (e: unknown) {
-      window.alert((e as Error)?.message ?? String(e));
+      setToast({ kind: 'error', title: 'The report was not deleted', message: (e as Error)?.message ?? String(e) });
     } finally {
       setDeleting('');
     }
-  }, []);
+  }, [confirm]);
 
   const refreshRecent = useCallback(async () => {
     try {
@@ -372,6 +384,9 @@ export default function ApiValidationPage() {
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
+      {/* Centred over the page, and the outcome in the corner. */}
+      {confirmDialog}
+      <Toast toast={toast} onClose={() => setToast(null)} />
       <Header
         title="API Validation"
         subtitle="Calls the APIs you select on a Simnovator and checks every request and response against the API document"

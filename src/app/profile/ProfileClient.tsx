@@ -19,6 +19,7 @@ import { Header } from '@/components/Header';
 import { AuthField } from '@/components/AuthField';
 import { Toast, type ToastMessage } from '@/components/Toast';
 import { passwordMeetsPolicy } from '@/components/PasswordRules';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 interface Me {
   username: string;
@@ -57,6 +58,8 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 export function ProfileClient() {
+  // Confirmations the app draws itself, centred — see ConfirmDialog.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [me, setMe] = useState<Me | null>(null);
   const [loadErr, setLoadErr] = useState('');
   const [toast, setToast] = useState<ToastMessage | null>(null);
@@ -130,7 +133,11 @@ export function ProfileClient() {
   }, [menu]);
 
   async function signOutEverywhere() {
-    if (!window.confirm('Sign out everywhere?\n\nEvery browser signed in as you, including this one, will be signed out.')) return;
+    if (!(await confirm({
+      title: 'Sign out everywhere?',
+      message: 'Every browser signed in as you, including this one, will be signed out.',
+      confirmLabel: 'Sign out everywhere', tone: 'danger',
+    }))) return;
     await fetch('/api/auth/logout', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ everywhere: true }),
@@ -143,6 +150,7 @@ export function ProfileClient() {
 
   return (
     <>
+      {confirmDialog}
       <Header
         title="Profile"
         subtitle="Manage your profile information"
