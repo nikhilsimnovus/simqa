@@ -686,6 +686,11 @@ export default function ApiValidationPage() {
                     className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-slate-300 text-sm hover:bg-slate-50">
                     <FileText className="h-4 w-4" />Open report
                   </a>
+                  <a href={`/api/api-validation/runs/${runId}/download/html?download=1`}
+                    title="Save the HTML report"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-slate-300 text-sm hover:bg-slate-50">
+                    <Download className="h-4 w-4" />Download report
+                  </a>
                   <a href={`/api/api-validation/runs/${runId}/download/json`} target="_blank" rel="noreferrer"
                     className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-slate-300 text-sm hover:bg-slate-50">
                     <FileJson className="h-4 w-4" />Results JSON
@@ -840,6 +845,15 @@ export default function ApiValidationPage() {
                         <div className="flex items-center justify-end gap-2 whitespace-nowrap">
                           <a href={`/api/api-validation/runs/${r.id}/download/html`} target="_blank" rel="noreferrer"
                             className="text-primary-700 hover:underline">open</a>
+                          <span className="text-slate-300">·</span>
+                          {/* The same rendered file, saved rather than opened —
+                              styles and filtering are inside it, so a saved
+                              copy works offline and mails as one attachment. */}
+                          <a href={`/api/api-validation/runs/${r.id}/download/html?download=1`}
+                            title="Save the HTML report"
+                            className="inline-flex items-center gap-1 text-primary-700 hover:underline">
+                            <Download className="h-3.5 w-3.5" />download
+                          </a>
                           <span className="text-slate-300">·</span>
                           <a href={`/api/api-validation/runs/${r.id}/download/json`} target="_blank" rel="noreferrer"
                             className="text-primary-700 hover:underline">json</a>

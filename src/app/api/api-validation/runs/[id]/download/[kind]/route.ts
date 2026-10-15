@@ -19,8 +19,9 @@ import { renderHtml } from '@/lib/apiValidation/report';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string; kind: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string; kind: string }> }) {
   const { id, kind } = await params;
+  const q = new URL(req.url).searchParams;
   const file = kind === 'html' ? 'report.html' : kind === 'json' ? 'results.json' : null;
   if (!file) return NextResponse.json({ error: 'report not found' }, { status: 404 });
   let text: string | null = null;
@@ -43,10 +44,19 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   }
 
   if (text === null) return NextResponse.json({ error: 'report not found' }, { status: 404 });
+
+  // ?download=1 saves the file instead of opening it in the tab.
+  //
+  // The bytes are identical either way — the same rendered report, one file
+  // with its styles and filtering inside it, so a saved copy works offline and
+  // mails as a single attachment. Only the disposition differs.
+  const save = ['1', 'true', 'yes'].includes((q.get('download') ?? '').toLowerCase());
+
   return new NextResponse(text, {
     headers: {
       'Content-Type': file.endsWith('.html') ? 'text/html; charset=utf-8' : 'application/json',
-      'Content-Disposition': `inline; filename="simqa-api-validation-${id}.${kind}"`,
+      'Content-Disposition':
+        `${save ? 'attachment' : 'inline'}; filename="simqa-api-report-${id}.${kind}"`,
       'Cache-Control': 'no-store',
     },
   });
