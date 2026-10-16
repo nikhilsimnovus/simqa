@@ -72,6 +72,13 @@ export function rowOutcomes(suiteId: string): RowOutcomes {
   for (const run of runs) {
     for (const st of run?.steps ?? []) {
       if (!st?.testcaseId || st.testcaseId in statuses) continue;
+      // Run-level bookkeeping is not a row. Putting the callbox licence back
+      // is recorded as a step so the run's own account is complete, but it is
+      // not a test case and has no business in a map of per-row outcomes —
+      // it showed up as "licence-restore · Not Executed" alongside the
+      // twenty real rows. Older records predate the flag, so the one name
+      // that existed before it is matched directly.
+      if (st.kind === 'note' || st.testcaseId === 'licence-restore') continue;
       statuses[st.testcaseId] = !!st.ok;
       details[st.testcaseId] = reasonFor(st);
       box[st.testcaseId] = {
