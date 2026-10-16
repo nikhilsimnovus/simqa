@@ -857,6 +857,18 @@ export default function AutomationSuitePage() {
     // A row the run never reached: with stopOnFail, or after a Stop.
     if (livePr === 'skipped') return show({ neverRun: true });
 
+    // Queued in the run that is going on right now.
+    //
+    // It used to fall through to the LAST run's outcome, so starting a suite
+    // left rows showing Completed / PASS from an earlier run — an hour-old
+    // verdict sitting under a progress bar, against a test case that had not
+    // been touched yet this time. The moment a run claims a row, the previous
+    // answer stops being about it: it waits, then it is In Progress, then it
+    // is whatever the Simnovator says.
+    if (livePr !== undefined) {
+      return show({ neverRun: true }, 'queued in the run that is going now — it has not executed yet');
+    }
+
     const prev = lastStatus[s.id]?.[it.name];
     if (prev === undefined) return show({ neverRun: true });
     return show({ ok: prev, boxStatus: box?.status, verdict: box?.verdict, stopped: box?.stopped }, reason);
