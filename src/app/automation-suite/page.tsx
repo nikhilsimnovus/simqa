@@ -857,16 +857,26 @@ export default function AutomationSuitePage() {
     // A row the run never reached: with stopOnFail, or after a Stop.
     if (livePr === 'skipped') return show({ neverRun: true });
 
-    // Queued in the run that is going on right now.
+    // Queued in the run that is going on right now: SAY NOTHING.
     //
-    // It used to fall through to the LAST run's outcome, so starting a suite
-    // left rows showing Completed / PASS from an earlier run — an hour-old
-    // verdict sitting under a progress bar, against a test case that had not
-    // been touched yet this time. The moment a run claims a row, the previous
-    // answer stops being about it: it waits, then it is In Progress, then it
-    // is whatever the Simnovator says.
+    // Two wrong answers were tried here. It used to fall through to the LAST
+    // run's outcome, so starting a suite left rows showing Completed / PASS
+    // from an hour ago under a live progress bar. Then it said "Not
+    // Executed" — which is better, but still a claim, and the very words a
+    // row gets when a run FINISHED without reaching it. A row waiting its
+    // turn has not been judged at all.
+    //
+    // So: an em dash until the box has something to say about it. It waits,
+    // then it is In Progress, then it is whatever the Simnovator reports.
     if (livePr !== undefined) {
-      return show({ neverRun: true }, 'queued in the run that is going now — it has not executed yet');
+      return {
+        label: '—',
+        dot: '',
+        cls: 'text-slate-400',
+        title: 'waiting its turn in the run that is going now — it has not started yet',
+        verdict: '–',
+        verdictCls: 'text-slate-400',
+      };
     }
 
     const prev = lastStatus[s.id]?.[it.name];
