@@ -12,14 +12,18 @@ import { exportTestcases, testcaseExportFilename } from '@/lib/testcaseBackup';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
-  const systemId = new URL(req.url).searchParams.get('systemId')?.trim();
+  const q = new URL(req.url).searchParams;
+  const systemId = q.get('systemId')?.trim();
+  // WHICH login. Without it the export is the default account's catalogue and
+  // silently none of the others' — see ExportOptions.boxUserId.
+  const boxUserId = q.get('boxUserId')?.trim() || undefined;
   if (!systemId) {
     return NextResponse.json({ ok: false, error: 'systemId required' }, { status: 400 });
   }
   const inv = loadInventory();
   try {
-    const exp = await exportTestcases(inv, systemId);
-    const filename = testcaseExportFilename(systemId);
+    const exp = await exportTestcases(inv, systemId, { boxUserId });
+    const filename = testcaseExportFilename(systemId, new Date(), exp.manifest.boxUser);
     const body = JSON.stringify(exp, null, 2);
     return new Response(body, {
       status: 200,

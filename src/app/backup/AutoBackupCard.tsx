@@ -19,7 +19,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, CardBody, CardHeader, CardTitle, Button } from '@/components/ui';
 import {
   HardDriveDownload, RefreshCw, Loader2, AlertTriangle, CheckCircle2, Clock, Server, FolderOpen, Download,
-  FileArchive, Search, ChevronUp, ChevronDown, ChevronsUpDown,
+  FileArchive, Search, ChevronUp, ChevronDown, ChevronsUpDown, Users,
 } from 'lucide-react';
 
 type Category = 'UE_config' | 'enb_config' | 'mme_config' | 'Testcases';
@@ -85,6 +85,10 @@ export function AutoBackupCard() {
   const [downloading, setDownloading] = useState<{ done: number; total: number; what: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  /** Which box login's testcases to show. A Simnovator scopes its catalogue
+   *  per account, so one system's Testcases folder holds several people's
+   *  work; the backup files carry the login as a "<user>--" prefix. */
+  const [boxUser, setBoxUser] = useState('');
   // Newest first by default: the question this list is usually asked is what
   // moved recently, which is also the order the server returns.
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'lastChanged', dir: 'desc' });
@@ -136,6 +140,8 @@ export function AutoBackupCard() {
   }, []);
 
   useEffect(() => { loadFiles(ip, type.category); }, [ip, type.category, loadFiles]);
+  // A different system or category has different people in it.
+  useEffect(() => { setBoxUser(''); }, [ip, type.category]);
 
   async function runNow() {
     setBusy(true); setErr(null);
@@ -211,12 +217,25 @@ export function AutoBackupCard() {
   // Search and sort are applied here rather than server-side: the whole list is
   // already in the browser (the largest is ~900 rows), so filtering locally is
   // instant and costs no request per keystroke.
+  // The logins this system actually has files for, taken from the files
+  // themselves rather than from the inventory: what matters here is what was
+  // backed up, not what could have been.
+  const users = useMemo(() => {
+    const found = new Set<string>();
+    for (const f of files ?? []) {
+      const m = f.name.match(/^([^-]+(?:-[^-]+)*?)--/);
+      if (m) found.add(m[1]);
+    }
+    return [...found].sort();
+  }, [files]);
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const rows = q ? (files ?? []).filter((f) => f.name.toLowerCase().includes(q)) : (files ?? []);
+    let rows = q ? (files ?? []).filter((f) => f.name.toLowerCase().includes(q)) : (files ?? []);
+    if (boxUser) rows = rows.filter((f) => f.name.startsWith(boxUser + '--'));
     const cmp = COMPARE[sort.key];
     return [...rows].sort((a, b) => (sort.dir === 'asc' ? cmp(a, b) : cmp(b, a)));
-  }, [files, query, sort]);
+  }, [files, query, sort, boxUser]);
 
   const troubled = (status?.systems ?? []).filter((s) => s.state === 'retrying' || s.state === 'failed');
   // 'Select all' means all VISIBLE rows. Selecting rows a search has hidden
@@ -332,6 +351,34 @@ export function AutoBackupCard() {
               </select>
             )}
           </div>
+
+          {/* ── User ───────────────────────────────────────────────────
+              A Simnovator scopes its catalogue per account: on .95 sruthi,
+              simuser, mohan and admin each hold their own testcases and none
+              can see another's. So "the system's testcases" is four sets of
+              files, and this says which you are looking at.
+
+              Only shown when the backup actually holds more than one login's
+              work — a setup with a single account has nothing to choose. */}
+          {users.length > 1 ? (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-700 flex items-center gap-1.5">
+                <Users className="h-3.5 w-3.5" /> User
+              </label>
+              <select
+                value={boxUser}
+                onChange={(e) => setBoxUser(e.target.value)}
+                className="w-full md:w-[200px] border border-slate-300 rounded-md px-3 py-2 text-sm bg-surface text-slate-700"
+              >
+                <option value="">All users ({files?.length ?? 0})</option>
+                {users.map((u) => (
+                  <option key={u} value={u}>
+                    {u} ({(files ?? []).filter((f) => f.name.startsWith(`${u}--`)).length})
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
 
         </div>
 

@@ -26,6 +26,11 @@ export interface TestcaseExport {
       host: string;
       name: string;
     };
+    /** The box login this export was taken as. A Simnovator scopes its
+     *  catalogue per account, so an export is always of ONE account —
+     *  recorded here so a restore cannot put one operator's testcases under
+     *  another's, and so a file on disk says whose it is. */
+    boxUser?: string;
     /** Number of testcases pulled. May differ from server's claimed total if
      *  pagination stops early (e.g., the server returns fewer items than
      *  requested before reaching the claimed total). */
@@ -45,6 +50,16 @@ interface ExportOptions {
   maxPages?: number;
   /** Optional progress callback — fired after each page is fetched. */
   onProgress?: (info: { pulled: number; serverTotal: number; page: number }) => void;
+  /**
+   * Which of the setup's box logins to export.
+   *
+   * A Simnovator scopes its catalogue per account — on .95 sruthi holds 61
+   * testcases, simuser 168 and admin 369, and none can see another's — so
+   * without this an export captures the default login and silently none of
+   * the rest. Absent = the setup's default, which is what every caller
+   * written before this meant.
+   */
+  boxUserId?: string;
 }
 
 export async function exportTestcases(
@@ -52,7 +67,10 @@ export async function exportTestcases(
   systemId: string,
   opts: ExportOptions = {},
 ): Promise<TestcaseExport> {
-  const target = uesimApiOptsForSystem(inv, systemId);
+  // WHICH login. A Simnovator scopes its catalogue per account, so an
+  // export without one silently captures the default login's testcases and
+  // none of the others' — on .95 that is 61 of 598.
+  const target = uesimApiOptsForSystem(inv, systemId, opts.boxUserId);
   if (!target) throw new Error(`system "${systemId}" not found or not UESIM-capable`);
 
   const pageSize = opts.pageSize ?? 50;
@@ -131,6 +149,7 @@ export async function exportTestcases(
       version: 1,
       exportedAt: new Date().toISOString(),
       source: { systemId: target.systemId, host: target.host, name: target.name },
+      boxUser: target.boxUser,
       pulled: all.length,
       serverTotal,
     },
@@ -138,9 +157,7 @@ export async function exportTestcases(
   };
 }
 
-/** Suggested filename for the download (includes system id + timestamp). */
-export function testcaseExportFilename(systemId: string, now = new Date()): string {
-  const stamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const safeId = systemId.replace(/[^A-Za-z0-9_.\-]/g, '_');
-  return `testcases-${safeId}-${stamp}.json`;
-}
+// The download filename and the stored-file naming live in their own
+// module: they are the part worth testing, and this file reaches the
+// network, which node --test cannot load.
+export { testcaseExportFilename, userPrefix, userOfFile } from './testcaseBackupName';

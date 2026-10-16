@@ -21,10 +21,12 @@
 
 import { withSsh } from '../configFidelity/ssh';
 import {
-  loadInventory, getSystem, uesimApiOptsForSystem, isUesimLike,
+  loadInventory, getSystem, uesimApiOptsForSystem, isUesimLike, listBoxUsers,
   type Inventory, type InventorySystem, type SystemType,
 } from '../inventory';
 import { listTestcases, exportTestcaseConfig } from '../uesimClient';
+// One definition of how a per-login backup file is named.
+import { userPrefix } from '../testcaseBackupName';
 import {
   upsertFile, touchSeen, storedHash, hasStoredBytes,
   type BackupCategory, type Manifest, type UpsertOutcome,
@@ -285,16 +287,57 @@ function safeStem(s: string): string {
  * Duplicate ids inside a single page are real product behaviour too (491 unique
  * of 500 on .95), hence the id map rather than a plain array.
  */
+/**
+ * Every login's testcases, not just the default one's.
+ *
+ * A Simnovator scopes its catalogue per account: on .95 sruthi holds 61
+ * testcases, simuser 168 and admin 369, and none of them can see another's.
+ * This backed up whichever login the setup happened to call default, so three
+ * catalogues out of four were never saved — and nothing said so, because a
+ * backup that pulls 61 of 61 testcases it can see looks complete.
+ *
+ * So: one pass per configured login, with the login's name on every file it
+ * produced. The name is part of the filename rather than a folder because the
+ * store keeps one flat directory per category and refuses a path separator.
+ */
 export async function collectTestcases(
   sys: InventorySystem,
   inv: Inventory,
   manifest: Manifest,
   now: string,
 ): Promise<CollectResult> {
+  const logins = listBoxUsers(sys);
+  if (logins.length <= 1) return collectTestcasesAs(sys, inv, manifest, now, logins[0]?.id, logins.length > 1);
+
+  const all = empty();
+  for (const u of logins) {
+    const one = await collectTestcasesAs(sys, inv, manifest, now, u.id, true);
+    all.added += one.added;
+    all.updated += one.updated;
+    all.unchanged += one.unchanged;
+    all.notes.push(...one.notes);
+  }
+  all.notes.push(`${sys.name}: backed up ${logins.length} logins (${logins.map((u) => u.username).join(', ')})`);
+  return all;
+}
+
+async function collectTestcasesAs(
+  sys: InventorySystem,
+  inv: Inventory,
+  manifest: Manifest,
+  now: string,
+  boxUserId: string | undefined,
+  /** Put the login's name on each file — only needed when there is more than
+   *  one, so a single-login setup keeps the filenames it already has. */
+  perUser: boolean,
+): Promise<CollectResult> {
   const res = empty();
-  const target = uesimApiOptsForSystem(inv, sys.id);
+  const target = uesimApiOptsForSystem(inv, sys.id, boxUserId);
   if (!target) { res.notes.push(`${sys.name} is not UESIM-capable — no testcases to back up`); return res; }
   const opts = { host: target.host, username: target.username, password: target.password };
+  /** Prefixes this login's files so two accounts' identically-named test
+   *  cases cannot overwrite one another. */
+  const prefix = perUser ? userPrefix(safeStem(target.boxUser || target.username)) : '';
 
   const pageSize = 50;
   const maxPages = 200;
@@ -325,7 +368,7 @@ export async function collectTestcases(
   }
   const fileNameOf = new Map<string, string>();
   for (const [stem, ids] of byStem) {
-    for (const id of ids) fileNameOf.set(id, ids.length > 1 ? `${stem}-${safeStem(id)}.json` : `${stem}.json`);
+    for (const id of ids) fileNameOf.set(id, ids.length > 1 ? `${prefix}${stem}-${safeStem(id)}.json` : `${prefix}${stem}.json`);
   }
 
   // A format change has to reach files that are already stored, and those are
