@@ -21,6 +21,14 @@ import {
   HardDriveDownload, RefreshCw, Loader2, AlertTriangle, CheckCircle2, Clock, Server, FolderOpen, Download,
   FileArchive, Search, ChevronUp, ChevronDown, ChevronsUpDown, Users,
 } from 'lucide-react';
+// One definition of how a per-login backup file is named, shared with the
+// collector that writes them.
+import { userPrefix, userOfFile } from '@/lib/testcaseBackupName';
+
+/** Picker value for files that carry no login. Not a valid username — a login
+ *  is [A-Za-z0-9_.-] by the time it reaches a filename — so it cannot collide
+ *  with a real one. */
+const LEGACY = '::legacy';
 
 type Category = 'UE_config' | 'enb_config' | 'mme_config' | 'Testcases';
 
@@ -223,16 +231,26 @@ export function AutoBackupCard() {
   const users = useMemo(() => {
     const found = new Set<string>();
     for (const f of files ?? []) {
-      const m = f.name.match(/^([^-]+(?:-[^-]+)*?)--/);
-      if (m) found.add(m[1]);
+      const u = userOfFile(f.name);
+      if (u) found.add(u);
     }
     return [...found].sort();
   }, [files]);
 
+  /** Files saved before backups were taken per login. They belong to whichever
+   *  account was the setup default at the time, and nothing in the name says
+   *  which — so they get their own entry rather than being reachable only by
+   *  picking "All users" and not noticing they are there. */
+  const legacyCount = useMemo(
+    () => (files ?? []).filter((f) => !userOfFile(f.name)).length,
+    [files],
+  );
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     let rows = q ? (files ?? []).filter((f) => f.name.toLowerCase().includes(q)) : (files ?? []);
-    if (boxUser) rows = rows.filter((f) => f.name.startsWith(boxUser + '--'));
+    if (boxUser === LEGACY) rows = rows.filter((f) => !userOfFile(f.name));
+    else if (boxUser) rows = rows.filter((f) => f.name.startsWith(userPrefix(boxUser)));
     const cmp = COMPARE[sort.key];
     return [...rows].sort((a, b) => (sort.dir === 'asc' ? cmp(a, b) : cmp(b, a)));
   }, [files, query, sort, boxUser]);
@@ -360,7 +378,7 @@ export function AutoBackupCard() {
 
               Only shown when the backup actually holds more than one login's
               work — a setup with a single account has nothing to choose. */}
-          {users.length > 1 ? (
+          {users.length + (legacyCount > 0 ? 1 : 0) > 1 ? (
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-slate-700 flex items-center gap-1.5">
                 <Users className="h-3.5 w-3.5" /> User
@@ -373,9 +391,12 @@ export function AutoBackupCard() {
                 <option value="">All users ({files?.length ?? 0})</option>
                 {users.map((u) => (
                   <option key={u} value={u}>
-                    {u} ({(files ?? []).filter((f) => f.name.startsWith(`${u}--`)).length})
+                    {u} ({(files ?? []).filter((f) => f.name.startsWith(userPrefix(u))).length})
                   </option>
                 ))}
+                {legacyCount > 0 ? (
+                  <option value={LEGACY}>before per-user backups ({legacyCount})</option>
+                ) : null}
               </select>
             </div>
           ) : null}
