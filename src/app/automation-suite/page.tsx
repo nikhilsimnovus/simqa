@@ -717,6 +717,7 @@ export default function AutomationSuitePage() {
   useEffect(() => {
     if (!running) { setProgress(null); sawProgress.current = false; return; }
     let cancelled = false;
+    const startedPolling = Date.now();
     const tick = async () => {
       try {
         const r = await fetch(`/api/automation/suites/${running}/progress`).then(r => r.json());
@@ -725,7 +726,19 @@ export default function AutomationSuitePage() {
         // The run ended — possibly in another tab, or before this page loaded.
         // Drop out of the running state and re-read the saved statuses, so a
         // page that only watched the run still ends up correct.
-        if (r?.ok && !r.running && sawProgress.current) {
+        // Leave the running state when the server says nothing is running.
+        //
+        // This used to require having SEEN a progress record first, which is
+        // the one way a row could sit at "In Progress" for ever: a page that
+        // loses the run's POST — a reload, a dropped connection — and then
+        // starts polling after the record has been dropped (it is kept only
+        // 60s past the end) never saw one, so it never exited, while the run
+        // had finished and its result was saved.
+        //
+        // The grace period keeps the original intent: do not give up in the
+        // first seconds, when the run may not have registered yet.
+        const settled = sawProgress.current || Date.now() - startedPolling > 20_000;
+        if (r?.ok && !r.running && settled) {
           setRunning('');
           setStatusNonce(n => n + 1);
           // Its process is gone: a deploy or a crash took the run with it, so
