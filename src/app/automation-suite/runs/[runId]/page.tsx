@@ -211,7 +211,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
   /** What the server holds for each row, once its Configs panel is opened. */
   /** Which test case's section viewer is open, and which section. */
   const [panel, setPanel] = useState<{ row: string; kind: 'configs' } | null>(null);
-  const [files, setFiles] = useState<Record<string, Array<{ name: string; bytes: number }>>>({});
+  const [files, setFiles] = useState<Record<string, Array<{ name: string; bytes: number; linkTo?: string }>>>({});
   const [shown, setShown] = useState<{ row: string; file: string; text: string } | null>(null);
 
   useEffect(() => { void params.then(p => setRunId(p.runId)); }, [params]);
@@ -607,9 +607,15 @@ export default function RunDetailPage({ params }: { params: Promise<{ runId: str
                           .map(f => (
                             <button key={f.name} type="button"
                               onClick={() => void showFile(panel.row, f.name)}
-                              title={`${f.bytes} bytes`}
+                              title={f.linkTo ? `${f.name} → ${f.linkTo} · ${f.bytes} bytes` : `${f.bytes} bytes`}
                               className="rounded border border-line px-2 py-1 text-[11px] font-mono text-slate-700 hover:bg-slate-100">
                               {f.name}
+                              {/* enb.cfg -> SA-1Cell.cfg_June2026. The role
+                                  name is a link at the config the row actually
+                                  picked, the same way /root/enb/config reads on
+                                  the callbox — so the chip names the file
+                                  instead of hiding it behind a role. */}
+                              {f.linkTo && <span className="text-slate-400"> → {f.linkTo}</span>}
                             </button>
                           ))}
                     </div>

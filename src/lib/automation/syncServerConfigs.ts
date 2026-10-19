@@ -16,12 +16,25 @@ import { captureRowConfigs } from '../suiteConfigStore';
 import { carriedConfigs } from './carriedConfigs';
 // The folder keeps its own licence -- see keepLicenceTags in syncRowToServer.
 import { withLicenceTag } from './licenceTag';
-import { ensureSuiteTree, writeTestCaseFiles, automationRoot, dropStaleFile, type ServerFile } from './serverConfigs';
+import { ensureSuiteTree, writeTestCaseFiles, linkRoleToFile, automationRoot, dropStaleFile, type ServerFile } from './serverConfigs';
+// Which name each file keeps, and which role names become links — pure, and
+// tested on its own.
+import { planFolderLayout, LINKED_ROLES } from './folderLayout';
+// Rewriting the MME config's `include` line when the row picked its own
+// subscriber database.
+import { withDbInclude } from '../cfgValidate';
 import { getSystem, uesimApiOptsForSystem, type AutomationSuite, type Inventory, type InventorySystem } from '../inventory';
 
 export interface SyncResult {
   root: string;
-  rows: Array<{ row: string; dir: string; written: string[]; error?: string }>;
+  rows: Array<{
+    row: string; dir: string; written: string[]; error?: string;
+    /** "enb.cfg -> SA-1Cell.cfg_June2026", one per role name pointed at the
+     *  config the row actually picked. */
+    links?: string[];
+    /** A name that could not be kept, or an include that was rewritten. */
+    notes?: string[];
+  }>;
 }
 
 /** The testcase definition as the box holds it, read through whoever owns it. */
@@ -63,6 +76,72 @@ const AS_SERVER_NAME: Record<string, ServerFile> = {
   'ue.cfg': 'ue.cfg',
 };
 
+/** Which file each linked slot picked. The folder keeps the real config under
+ *  this name and makes the role name a link at it. */
+type Picks = { callboxCfg?: string; mmeCfg?: string; imsCfg?: string; otsCfg?: string };
+const picksOf = (row: Picks): Record<string, string | undefined> => ({
+  'enb.cfg': row.callboxCfg, 'mme.cfg': row.mmeCfg, 'ims.cfg': row.imsCfg, 'ots.cfg': row.otsCfg,
+});
+
+export interface RowWrite { dir: string; written: string[]; links: string[]; notes: string[]; error?: string }
+
+/**
+ * Write one row's folder: real files under their own names, role names as
+ * links at them.
+ *
+ * `files` arrives the way every caller here has always gathered it — the four
+ * slots under their role names, everything else (test.json, the subscriber
+ * database, the MME's other includes) under its own. This splits the two,
+ * lets the planner decide the names, writes, and then points each role name
+ * at its file.
+ *
+ * The MME config is rewritten first when the row picked its own database: the
+ * saved copy is what a run on another setup is rebuilt from, so a folder whose
+ * mme.cfg still includes the database the operator replaced would quietly run
+ * the wrong subscribers. Only the include line changes; every other byte of
+ * the config is left exactly as it was.
+ */
+export function writeRowFolder(
+  suiteName: string,
+  rowName: string,
+  row: Picks & { dbCfg?: string },
+  files: Record<string, string | undefined>,
+): RowWrite {
+  const roleText: Record<string, string | undefined> = {};
+  const extra: Record<string, string | undefined> = {};
+  for (const [name, text] of Object.entries(files)) {
+    if (text === undefined) continue;
+    if ((LINKED_ROLES as readonly string[]).includes(name)) roleText[name] = text;
+    else extra[name] = text;
+  }
+
+  const notes: string[] = [];
+  // The database the row chose, reflected in the config that includes it.
+  if (row.dbCfg && typeof roleText['mme.cfg'] === 'string') {
+    const bound = withDbInclude(roleText['mme.cfg'], row.dbCfg);
+    if (bound.changed) {
+      roleText['mme.cfg'] = bound.text;
+      notes.push(bound.replaced.length
+        ? `mme.cfg now includes ${row.dbCfg} instead of ${bound.replaced.join(', ')}`
+        : `mme.cfg now includes ${row.dbCfg}`);
+    }
+  }
+
+  const plan = planFolderLayout(roleText, picksOf(row), extra);
+  notes.push(...plan.notes);
+
+  const w = writeTestCaseFiles(suiteName, rowName, plan.files);
+  const links: string[] = [];
+  // After the write: a link must never be made before the file it points at.
+  for (const [role, target] of Object.entries(plan.links)) {
+    const r = linkRoleToFile(suiteName, rowName, role, target);
+    if (r.how === 'symlink' || r.how === 'copy') links.push(`${role} -> ${target}`);
+    if (r.how === 'copy') notes.push(`${role} is a copy of ${target} — this filesystem does not allow symlinks`);
+    if (r.how === 'failed') notes.push(`${role} could not be pointed at ${target}: ${r.error ?? 'unknown'}`);
+  }
+  return { dir: w.dir, written: w.written, links, notes, ...(w.error ? { error: w.error } : {}) };
+}
+
 /**
  * Just the files the suite already holds — no box is contacted.
  *
@@ -73,11 +152,11 @@ const AS_SERVER_NAME: Record<string, ServerFile> = {
 function writeCarriedFiles(
   suite: AutomationSuite,
   row: { name: string; uploadedTestcase?: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string; dbCfg?: string; otsCfg?: string },
-): { dir: string; written: string[]; error?: string } {
+): RowWrite {
   const files: Record<string, string | undefined> = { ...carriedConfigs(suite, row) };
   const td = row.uploadedTestcase ? suite.uploadedTestcases?.[row.uploadedTestcase] : undefined;
   if (td) files['test.json'] = td;
-  return writeTestCaseFiles(suite.name, row.name, files);
+  return writeRowFolder(suite.name, row.name, row, files);
 }
 
 /** One row: read the boxes, read the testcase, write the folder. */
@@ -103,7 +182,7 @@ export async function syncRowToServer(
    * reach it.
    */
   keepLicenceTags?: { enb?: string; mme?: string; ims?: string },
-): Promise<{ row: string; dir: string; written: string[]; error?: string }> {
+): Promise<SyncResult['rows'][number]> {
   const files: Record<string, string | undefined> = {};
 
   // By the row's own names: the callbox's enb.cfg/mme.cfg/ims.cfg links point
@@ -158,7 +237,7 @@ export async function syncRowToServer(
     }
   }
 
-  return { row: row.name, ...writeTestCaseFiles(suite.name, row.name, files) };
+  return { row: row.name, ...writeRowFolder(suite.name, row.name, row, files) };
 }
 
 /**

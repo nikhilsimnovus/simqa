@@ -137,6 +137,63 @@ export function writeTestCaseFiles(
   return { dir, written };
 }
 
+/**
+ * Point a role name at the file the row actually picked.
+ *
+ *   enb.cfg -> SA-1Cell.cfg_June2026
+ *
+ * Relative, with a bare basename, which is how /root/enb/config reads on the
+ * callbox and how operators write it by hand. Whatever sits at the role name
+ * already — an older plain copy, a link at something else — is replaced, so
+ * this is also what repairs a folder written by an earlier version.
+ *
+ * Symlinks are not universally available: Windows needs a privilege most
+ * accounts lack, and a config folder can sit on a filesystem that has none.
+ * A copy is made instead, which is exactly the old behaviour, and the caller
+ * is told which happened rather than being left to guess from the folder.
+ */
+export function linkRoleToFile(
+  suiteName: string,
+  rowName: string,
+  role: string,
+  realName: string,
+): { role: string; target: string; how: 'symlink' | 'copy' | 'same' | 'missing' | 'failed'; error?: string } {
+  const out = (how: 'symlink' | 'copy' | 'same' | 'missing' | 'failed', error?: string) =>
+    ({ role, target: realName, how, ...(error ? { error } : {}) });
+  // Both are names, not paths — the pick comes from a config file and from an
+  // upload, and neither is trusted to stay inside the folder.
+  if (role !== path.basename(role) || realName !== path.basename(realName)) return out('failed', 'not a filename');
+  if (role.startsWith('.') || realName.startsWith('.')) return out('failed', 'not a filename');
+  if (role === realName) return out('same');
+
+  const dir = testCaseDir(suiteName, rowName);
+  if (!insideRoot(dir)) return out('failed', 'outside the configs root');
+  const linkPath = path.join(dir, role);
+  const realPath = path.join(dir, realName);
+  // Nothing to point at. A dangling link reads as "saved" and fails at run
+  // time with the core refusing to start, which is the worst of both.
+  if (!fs.existsSync(realPath)) return out('missing');
+
+  try {
+    fs.rmSync(linkPath, { force: true });
+  } catch (e: any) {
+    return out('failed', e?.message ?? String(e));
+  }
+  try {
+    fs.symlinkSync(realName, linkPath);
+    return out('symlink');
+  } catch {
+    // No symlink here. Fall back to the copy the folder used to hold, so the
+    // row is still runnable from it.
+    try {
+      fs.copyFileSync(realPath, linkPath);
+      return out('copy');
+    } catch (e: any) {
+      return out('failed', e?.message ?? String(e));
+    }
+  }
+}
+
 /** Remove one file from a test case folder — a name an older version wrote
  *  that nothing uses any more. Guarded like every other delete here. */
 export function dropStaleFile(suiteName: string, rowName: string, file: string): boolean {
@@ -157,8 +214,11 @@ export function readAllTestCaseFiles(suiteName: string, rowName: string): Record
   const dir = testCaseDir(suiteName, rowName);
   try {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isFile() || entry.name.startsWith('.')) continue;
-      try { out[entry.name] = fs.readFileSync(path.join(dir, entry.name), 'utf8'); } catch { /* skip */ }
+      // isFile() is false for a symlink, and the role names are links now —
+      // enb.cfg -> SA-1Cell.cfg_June2026. Read through them: what the folder
+      // holds under a name is that name's content, however it got there.
+      if (entry.name.startsWith('.') || (!entry.isFile() && !entry.isSymbolicLink())) continue;
+      try { out[entry.name] = fs.readFileSync(path.join(dir, entry.name), 'utf8'); } catch { /* a dangling link, or unreadable */ }
     }
   } catch { /* nothing captured yet */ }
   return out;
@@ -238,14 +298,24 @@ export function renameSuiteTree(from: string, to: string): boolean {
 }
 
 /** What a test case folder holds right now, for the UI and for verification. */
-export function listTestCaseFiles(suiteName: string, rowName: string): Array<{ name: string; bytes: number; modified: string }> {
+export function listTestCaseFiles(
+  suiteName: string, rowName: string,
+): Array<{ name: string; bytes: number; modified: string; linkTo?: string }> {
   const dir = testCaseDir(suiteName, rowName);
-  const out: Array<{ name: string; bytes: number; modified: string }> = [];
+  const out: Array<{ name: string; bytes: number; modified: string; linkTo?: string }> = [];
   try {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isFile() || entry.name.startsWith('.')) continue;
-      const st = fs.statSync(path.join(dir, entry.name));
-      out.push({ name: entry.name, bytes: st.size, modified: new Date(st.mtimeMs).toISOString() });
+      if (entry.name.startsWith('.') || (!entry.isFile() && !entry.isSymbolicLink())) continue;
+      const full = path.join(dir, entry.name);
+      // statSync follows the link, so a role name reports the size of the
+      // config it points at rather than the length of the path.
+      let st: import('node:fs').Stats;
+      try { st = fs.statSync(full); } catch { continue; }   // dangling — not a file this row has
+      // Said out loud, because "enb.cfg -> SA-1Cell.cfg_June2026" is the
+      // whole answer to which config this row runs.
+      let linkTo: string | undefined;
+      if (entry.isSymbolicLink()) { try { linkTo = fs.readlinkSync(full); } catch { /* unreadable link */ } }
+      out.push({ name: entry.name, bytes: st.size, modified: new Date(st.mtimeMs).toISOString(), ...(linkTo ? { linkTo } : {}) });
     }
   } catch { /* nothing captured yet */ }
   return out;
