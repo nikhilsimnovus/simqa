@@ -643,6 +643,21 @@ export default function AutomationSuitePage() {
   /** Live progress of the suite currently running, polled while a run is in
    *  flight. The run itself is one long POST that says nothing until it ends. */
   const [progress, setProgress] = useState<SuiteProgress | null>(null);
+
+  /**
+   * Is this suite executing right now?
+   *
+   * `running` only knows about a run THIS tab started. A run started from
+   * another tab, by another operator, or before this page was opened is
+   * visible only through the polled progress record — and while one is going,
+   * editing the suite, deleting it, or starting it again all reach hardware
+   * that is already busy. So both are asked, and every control that changes a
+   * suite is frozen until the whole run finishes.
+   */
+  const suiteIsRunning = useCallback(
+    (id: string) => running === id || progress?.suiteId === id,
+    [running, progress],
+  );
   /** Status of each row from the LAST saved run, keyed suiteId → name → passed?
    *  Used to colour the table when nothing is running. */
   const [lastStatus, setLastStatus] = useState<Record<string, Record<string, boolean>>>({});
@@ -2330,7 +2345,7 @@ export default function AutomationSuitePage() {
                             · {userOf(s)}
                           </span>
                         </button>
-                        {running === s.id || (boxBusy && progress?.suiteId === s.id) ? (
+                        {suiteIsRunning(s.id) ? (
                           <button onClick={e => { e.stopPropagation(); stopRun(s); }}
                             title="Stop the running test case and skip the rest"
                             className="rounded-md bg-red-600 hover:bg-red-700 text-on-accent text-xs font-semibold px-3 py-1.5">
@@ -2410,7 +2425,7 @@ export default function AutomationSuitePage() {
                             suite: s,
                             rows: (s.items ?? []).filter(i => pickedIn(s.id).has(i.id)),
                           })}
-                          disabled={running === s.id || pickedIn(s.id).size === 0}
+                          disabled={suiteIsRunning(s.id) || pickedIn(s.id).size === 0}
                           title={pickedIn(s.id).size === 0 ? 'Tick one or more test cases first'
                             : boxBusy ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — open this to run the ticked test cases on another Simnovator`
                             : `Run the ${pickedIn(s.id).size} ticked test case(s)`}
@@ -2422,10 +2437,19 @@ export default function AutomationSuitePage() {
                         {/* Opens the wizard straight on the Testcases step — from
                             the suite list the thing you want is another row, not
                             the systems you already picked. */}
+                        {/* Frozen while the suite is executing. Adding a row
+                            mid-run, or deleting the suite out from under it,
+                            changes what a run already in flight is working
+                            through — and the run's own record then describes
+                            a suite that no longer looks like that. */}
                         <button onClick={() => openEdit(s, 'testcases')}
-                          className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-3 py-1.5">+ Add Test Case</button>
+                          disabled={suiteIsRunning(s.id)}
+                          title={suiteIsRunning(s.id) ? 'This suite is running — wait for it to finish' : undefined}
+                          className="rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent text-xs px-3 py-1.5">+ Add Test Case</button>
                         <button onClick={() => deleteSuite(s)}
-                          className="ml-auto rounded-md border border-red-300 text-red-600 hover:bg-red-50 text-xs px-3 py-1.5">Delete Suite</button>
+                          disabled={suiteIsRunning(s.id)}
+                          title={suiteIsRunning(s.id) ? 'This suite is running — wait for it to finish' : undefined}
+                          className="ml-auto rounded-md border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:hover:bg-transparent text-xs px-3 py-1.5">Delete Suite</button>
                       </div>
 
                       <div className="px-4 py-3">
@@ -2439,7 +2463,9 @@ export default function AutomationSuitePage() {
                               Add test cases to this suite to enable sequential execution.
                             </p>
                             <button type="button" onClick={() => openEdit(s, 'testcases')}
-                              className="mt-2 rounded-md border border-slate-300 hover:bg-slate-50 text-[11px] px-2.5 py-1">
+                              disabled={suiteIsRunning(s.id)}
+                              title={suiteIsRunning(s.id) ? 'This suite is running — wait for it to finish' : undefined}
+                              className="mt-2 rounded-md border border-slate-300 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent text-[11px] px-2.5 py-1">
                               + Add Test Case
                             </button>
                           </div>
@@ -2713,7 +2739,7 @@ export default function AutomationSuitePage() {
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
                                       <button
                                         onClick={() => setConfirmRun({ suite: s, rows: [it] })}
-                                        disabled={running === s.id}
+                                        disabled={suiteIsRunning(s.id)}
                                         title={boxBusy
                                           ? `${boxBusy.testCaseName} is running on ${boxBusy.host} — open this to run "${it.name}" on another Simnovator`
                                           : `Run only "${it.name}"`}
@@ -2721,13 +2747,13 @@ export default function AutomationSuitePage() {
                                           boxBusy ? 'bg-slate-500 hover:bg-slate-600' : 'bg-blue-500 hover:bg-blue-600')}>
                                         Run
                                       </button>
-                                      <button onClick={() => startEditRow(s, it)} disabled={running === s.id}
+                                      <button onClick={() => startEditRow(s, it)} disabled={suiteIsRunning(s.id)}
                                         className="rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-40 text-[11px] px-2 py-0.5 mr-1">
                                         Edit
                                       </button>
                                       <button
                                         onClick={() => deleteItem(s, it)}
-                                        disabled={running === s.id}
+                                        disabled={suiteIsRunning(s.id)}
                                         className="rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 text-[11px] px-2 py-0.5">
                                         Delete
                                       </button>
