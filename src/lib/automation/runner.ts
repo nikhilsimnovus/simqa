@@ -1939,6 +1939,15 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       } else if (sync.error) {
         stepDetails.push(`server-configs: not updated — ${sync.error}`);
       }
+      // Said out loud: a file edited in the folder is the one this row runs,
+      // and it was deliberately NOT refreshed from the box. Silence here
+      // would read as "the sync did nothing", which is the opposite.
+      if (sync.handEdited?.length) {
+        stepDetails.push(
+          `server-configs: kept your edited ${sync.handEdited.join(', ')} — `
+          + `delete the file in ${sync.dir} to let SimQA write it again`,
+        );
+      }
       // The copy that belongs to THIS run. Taken here, just after the
       // folder has been brought up to date and while it still holds what
       // this row deployed — the next run rewrites it.

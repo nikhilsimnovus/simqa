@@ -297,6 +297,42 @@ export function renameSuiteTree(from: string, to: string): boolean {
   }
 }
 
+/**
+ * The hash of what SimQA last wrote into this row's folder, file by file.
+ *
+ * Kept in a dot-file so it is invisible to every reader here — they all skip
+ * names starting with "." — and so an operator working in the folder does not
+ * trip over it. It exists so a config edited by hand can be told apart from
+ * one SimQA put there, which is the whole of the rule in handEdits.ts.
+ */
+const MANIFEST = '.simqa-written.json';
+
+export function readWrittenManifest(suiteName: string, rowName: string): Record<string, string> {
+  try {
+    const raw = fs.readFileSync(path.join(testCaseDir(suiteName, rowName), MANIFEST), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    // Only string→string survives: a hand-mangled manifest must degrade to
+    // "nothing recorded", which is the old overwrite-everything behaviour,
+    // rather than throwing in the middle of a save.
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter(([, v]) => typeof v === 'string'),
+    ) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+export function writeWrittenManifest(suiteName: string, rowName: string, manifest: Record<string, string>): void {
+  try {
+    const dir = testCaseDir(suiteName, rowName);
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = path.join(dir, `${MANIFEST}.tmp`);
+    fs.writeFileSync(tmp, JSON.stringify(manifest, null, 2), 'utf8');
+    fs.renameSync(tmp, path.join(dir, MANIFEST));
+  } catch { /* losing the manifest costs protection, never a save */ }
+}
+
 /** What a test case folder holds right now, for the UI and for verification. */
 export function listTestCaseFiles(
   suiteName: string, rowName: string,

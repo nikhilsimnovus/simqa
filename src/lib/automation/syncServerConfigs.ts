@@ -16,7 +16,13 @@ import { captureRowConfigs } from '../suiteConfigStore';
 import { carriedConfigs } from './carriedConfigs';
 // The folder keeps its own licence -- see keepLicenceTags in syncRowToServer.
 import { withLicenceTag } from './licenceTag';
-import { ensureSuiteTree, writeTestCaseFiles, linkRoleToFile, automationRoot, dropStaleFile, type ServerFile } from './serverConfigs';
+import { createHash } from 'node:crypto';
+import {
+  ensureSuiteTree, writeTestCaseFiles, linkRoleToFile, automationRoot, dropStaleFile,
+  readAllTestCaseFiles, readWrittenManifest, writeWrittenManifest, type ServerFile,
+} from './serverConfigs';
+// A file edited in the folder outranks a re-sync — pure, and tested on its own.
+import { keepHandEdits, nextManifest } from './handEdits';
 // Which name each file keeps, and which role names become links — pure, and
 // tested on its own.
 import { planFolderLayout, LINKED_ROLES } from './folderLayout';
@@ -34,6 +40,8 @@ export interface SyncResult {
     links?: string[];
     /** A name that could not be kept, or an include that was rewritten. */
     notes?: string[];
+    /** Files the sync left alone because they were edited in the folder. */
+    handEdited?: string[];
   }>;
 }
 
@@ -83,7 +91,17 @@ const picksOf = (row: Picks): Record<string, string | undefined> => ({
   'enb.cfg': row.callboxCfg, 'mme.cfg': row.mmeCfg, 'ims.cfg': row.imsCfg, 'ots.cfg': row.otsCfg,
 });
 
-export interface RowWrite { dir: string; written: string[]; links: string[]; notes: string[]; error?: string }
+export interface RowWrite {
+  dir: string; written: string[]; links: string[]; notes: string[];
+  /** Files left exactly as they are because someone edited them in the
+   *  folder. These are what the row will run with. */
+  handEdited?: string[];
+  error?: string;
+}
+
+/** Short and stable; this only has to tell "the same bytes" from "not the
+ *  same bytes", and a manifest of full hashes is a file operators read. */
+const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16);
 
 /**
  * Write one row's folder: real files under their own names, role names as
@@ -130,16 +148,38 @@ export function writeRowFolder(
   const plan = planFolderLayout(roleText, picksOf(row), extra);
   notes.push(...plan.notes);
 
-  const w = writeTestCaseFiles(suiteName, rowName, plan.files);
+  // Anything edited in the folder since SimQA wrote it belongs to whoever
+  // edited it. Without this the folder is a cache pretending to be a source:
+  // the run re-syncs first, so a test.json fixed in vi was replaced by the
+  // Simnovator's copy before it ever ran.
+  const before = readAllTestCaseFiles(suiteName, rowName);
+  const manifest = readWrittenManifest(suiteName, rowName);
+  const keep = keepHandEdits(plan.files, before, manifest, sha);
+  notes.push(...keep.notes);
+
+  const w = writeTestCaseFiles(suiteName, rowName, keep.files);
   const links: string[] = [];
   // After the write: a link must never be made before the file it points at.
   for (const [role, target] of Object.entries(plan.links)) {
+    // A role name someone replaced with their own file is theirs too —
+    // turning it back into a link would throw that edit away just as surely
+    // as overwriting it.
+    if (keep.kept.includes(role)) continue;
     const r = linkRoleToFile(suiteName, rowName, role, target);
     if (r.how === 'symlink' || r.how === 'copy') links.push(`${role} -> ${target}`);
     if (r.how === 'copy') notes.push(`${role} is a copy of ${target} — this filesystem does not allow symlinks`);
     if (r.how === 'failed') notes.push(`${role} could not be pointed at ${target}: ${r.error ?? 'unknown'}`);
   }
-  return { dir: w.dir, written: w.written, links, notes, ...(w.error ? { error: w.error } : {}) };
+  // Recorded AFTER the write, against the folder as it now stands, so a file
+  // that was kept keeps its old hash and stays the operator's next time.
+  writeWrittenManifest(suiteName, rowName,
+    nextManifest(manifest, keep.files, Object.keys(readAllTestCaseFiles(suiteName, rowName)), sha));
+
+  return {
+    dir: w.dir, written: w.written, links, notes,
+    ...(keep.kept.length ? { handEdited: keep.kept } : {}),
+    ...(w.error ? { error: w.error } : {}),
+  };
 }
 
 /**
