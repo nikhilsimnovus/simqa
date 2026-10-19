@@ -260,6 +260,41 @@ export async function duplicateTestcase(
       return { testCaseId: already, name: finalName, reused: true, expectedRunSec };
     }
 
+    // Out of date, and we hold the definition it should match: EDIT it.
+    //
+    // This used to delete the testcase and build a new one under the same
+    // name — a new id, anything referring to the old one broken, and a
+    // testcase left deleted outright if a later create step failed. The box
+    // does have an update API (the Simnovator's own GUI uses
+    // PUT v2/tests/<id>/<section>), so bring the box's copy into line with
+    // the automation server's instead: only the sections that differ are
+    // written, the id and the name stay, and nothing is deleted.
+    //
+    // Deleting is kept only for the case this cannot cover — no source
+    // definition in hand, so there is nothing to diff against.
+    if (sourceTd) {
+      const wanted: any = JSON.parse(JSON.stringify(sourceTd));
+      applyName(wanted, finalName);
+      if (typeof durationSec === 'number') applyDuration(wanted, durationSec);
+      const upd = await updateTestcaseInPlace(opts, already, wanted);
+      if (upd.failedStep) {
+        return {
+          testCaseId: already, name: finalName, reused: true,
+          warning: `"${finalName}" on the box is out of date (${staleDesc}) and could not be `
+            + `updated at ${upd.failedStep}: ${(upd.error ?? '').slice(0, 160)} — it ran as it was`,
+        };
+      }
+      return {
+        testCaseId: already, name: finalName, reused: true,
+        expectedRunSec: expectedRunSeconds(wanted) || undefined,
+        warning: [
+          `updated "${finalName}" in place: ${staleDesc}`
+          + `${upd.updated.length ? ` — rewrote ${upd.updated.join(', ')}` : ''}`,
+          upd.warning,
+        ].filter(Boolean).join('; '),
+      };
+    }
+
     const gone = await del(opts, token, `/testcases/${encodeURIComponent(already)}`);
     if (!gone.ok) {
       return {

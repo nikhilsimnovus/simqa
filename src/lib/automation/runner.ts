@@ -51,7 +51,6 @@ import { isOurExecution, mayReport } from './ownExecution';
 import { createHash } from 'node:crypto';
 import { validateCfg, withDbInclude, ROLE_LABEL, type CfgRole } from '../cfgValidate';
 import { readTestCaseFile, readAllTestCaseFiles, testCaseDir } from './serverConfigs';
-import { syncRowToServer } from './syncServerConfigs';
 
 /** How long to give the box before asking whether any UE attached. The UEs are
  *  powered on over the first ~30-40s (attachRate-dependent), so checking sooner
@@ -1155,10 +1154,6 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     /** Files this run actually created on the callbox — the only ones cleanup
      *  may take away again. */
     const addedThisRun = new Set<string>();
-    /** What licence this row's SAVED configs ask for, read before the run
-     *  changed anything. Phase 3a pins these back into the folder. */
-    let folderLicence: { enb?: string; mme?: string; ims?: string } = {};
-
     // ── Phase 0: create the row's testcase on the Simnovator first, under the
     // display name and with the row's duration baked in — so the case exists in
     // the box's catalogue before the callbox is touched. If the box rejects it
@@ -1439,15 +1434,6 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         // includes by the name it is included as, so that is what to look for.
         ...(item.dbCfg ? { [item.dbCfg]: readTestCaseFile(cfgFrom, item.name, item.dbCfg) } : {}),
       };
-      // The licence each of this row's saved configs asks for, read BEFORE the
-      // run touches anything. Phase 3a pins these back into the folder so the
-      // licence chosen for today's run is not recorded as the row's own.
-      folderLicence = {
-        enb: licenceTagOf(fromServer[cfg] ?? ''),
-        mme: item.mmeCfg ? licenceTagOf(fromServer[item.mmeCfg] ?? '') : undefined,
-        ims: item.imsCfg ? licenceTagOf(fromServer[item.imsCfg] ?? '') : undefined,
-      };
-
       /** A file the suite carries as an upload, as text. */
       const uploaded = (nm?: string) => (nm && suite.uploadedConfigs?.[nm]
         ? Buffer.from(suite.uploadedConfigs[nm], 'base64').toString('utf8')
@@ -1903,45 +1889,21 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       }
     }
 
-    // ── Phase 3a: refresh this row's folder on the Automation Server, so the
-    // files an execution reads are the current ones. Runs AFTER bring-up, when
-    // the callbox is serving what this row asked for, and before the trigger.
+    // ── Phase 3a: keep this run's copy of the row's folder.
+    //
+    // This used to re-sync the folder FROM the boxes at this point — reading
+    // the callbox, now serving what the row just deployed, and the Simnovator
+    // for the test case. It needed a whole mechanism to stop the licence this
+    // run chose being recorded as the row's own, and it meant the folder was
+    // partly written by the hardware it is supposed to be the source for.
+    //
+    // Nothing is read from a box here any more. The folder already holds what
+    // this row ran: it is where every file came from. All that is left is to
+    // take the copy belonging to this run, before a later run rewrites it.
     try {
-      // The licence this run chose must not be recorded as the row's own.
-      //
-      // This sync reads the callbox, which is now serving configs with that
-      // licence in them. `fromServer` holds the folder's copies as they were
-      // BEFORE the run touched anything, so their tags are what the folder
-      // should keep. Only roles the run actually overrode are pinned; without
-      // an override the sync records the callbox faithfully, as it should.
-      const keepLicenceTags = opts.licenceTags
-        ? {
-            enb: opts.licenceTags.enb ? folderLicence.enb : undefined,
-            mme: opts.licenceTags.mme ? folderLicence.mme : undefined,
-            ims: opts.licenceTags.ims ? folderLicence.ims : undefined,
-          }
-        : undefined;
-      const sync = await syncRowToServer(inv, suite, item, callboxSys, ueSys, suite.boxUserId, keepLicenceTags);
-      if (sync.written.length) {
-        stepDetails.push(`server-configs: ${sync.written.join(', ')} → ${sync.dir}`);
-      } else if (sync.error) {
-        stepDetails.push(`server-configs: not updated — ${sync.error}`);
-      }
-      // Said out loud: a file edited in the folder is the one this row runs,
-      // and it was deliberately NOT refreshed from the box. Silence here
-      // would read as "the sync did nothing", which is the opposite.
-      if (sync.handEdited?.length) {
-        stepDetails.push(
-          `server-configs: kept your edited ${sync.handEdited.join(', ')} — `
-          + `delete the file in ${sync.dir} to let SimQA write it again`,
-        );
-      }
-      // The copy that belongs to THIS run. Taken here, just after the
-      // folder has been brought up to date and while it still holds what
-      // this row deployed — the next run rewrites it.
       const snap = readAllTestCaseFiles(cfgFrom, item.name);
       if (Object.keys(snap).length) configSnapshots[item.name] = snap;
-    } catch { /* the folder is a mirror; a run never fails over it */ }
+    } catch { /* keeping a copy never decides a run */ }
 
     // ── Phase 3b: keep the configuration this row is about to run with.
     //

@@ -23,7 +23,6 @@ import { startProgress, markRunning, markStep, finishProgress } from '@/lib/auto
 import { userFromRequest } from '@/lib/identity';
 import { recordSystemUse } from '@/lib/systemUsage';
 import { loadInventory, getSystem } from '@/lib/inventory';
-import { rowsMissingServerFiles } from '@/lib/automation/serverConfigs';
 import { syncSuiteToServer } from '@/lib/automation/syncServerConfigs';
 
 export const dynamic = 'force-dynamic';
@@ -97,24 +96,24 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   // callbox gets enb/mme/ims (and whatever the MME includes) pushed under the
   // names the row picked.
   //
-  // So the folder has to be complete first. When it is not, the files are
-  // fetched from the setup the suite WAS built on, which is the only place
-  // they exist. Best-effort and bounded: a suite whose original boxes are down
-  // still runs, and the row that needs a missing file fails naming it rather
-  // than linking the callbox at something that is not there.
+  // A run never reads a box to fill that folder.
   //
-  // Checked on EVERY run, not only when the target box has changed. A folder
-  // can be short for reasons that have nothing to do with moving setups — a
-  // box that was down when the suite was saved, a row added before the save
-  // wrote uploads, a file captured before the row picked it — and the run is
-  // the moment it matters. Costing one listing per row when the folder is
-  // already complete, and nothing else.
-  const gaps = rowsMissingServerFiles(suite.name, target.items ?? []);
-  if (gaps.length) {
-    try {
-      await syncSuiteToServer(loadInventory(), suite, { boxUserId: suite.boxUserId });
-    } catch { /* the run reports what is still missing, row by row */ }
-  }
+  // It used to: a short folder triggered a full sync that fetched the test
+  // case from the Simnovator and the cfgs off the callbox. That is the one
+  // path this is meant to close — it let a run execute a definition or a
+  // config that came from a box rather than from here, which is the opposite
+  // of the folder being the record of what the row runs.
+  //
+  // What still happens is local only: the suite's own uploads and uploaded
+  // test cases are written into the folder, because those ARE the row's
+  // files and are already in hand. A row whose folder is still short fails
+  // naming the file, rather than quietly running the callbox's copy.
+  //
+  // To fill a folder FROM the boxes — building a suite from configs that
+  // live on a callbox — use Sync on the suite, which is a deliberate act.
+  try {
+    await syncSuiteToServer(loadInventory(), suite, { structureOnly: true });
+  } catch { /* the run reports what is still missing, row by row */ }
 
   // Which logins to run for. One pass each, in order — see RunOpts.asUsers.
   // Absent or empty means the login the suite is saved with.
