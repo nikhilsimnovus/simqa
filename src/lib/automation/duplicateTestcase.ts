@@ -17,6 +17,8 @@ import { diffSections, reconcileCellArrays, type SectionName } from '../testcase
 import { applyDuration, sessionFloorFromError, totalDurationFromError, applyTotalTestDuration, expectedRunSeconds, MIN_POWER_ON_SEC } from './durationFit';
 import { alignSubscriberKeys } from './subscriberKeys';
 import { changedSections } from './sameDefinition';
+// Which of the box's settings a definition's names actually mean.
+import { resolveSettingName, resolutionNote, type BoxSetting } from './settingNames';
 export { applyDuration, sessionFloorFromError, MIN_POWER_ON_SEC } from './durationFit';
 
 
@@ -66,11 +68,55 @@ async function testcasesByName(opts: ApiOpts): Promise<Map<string, string>> {
   return byName;
 }
 
-/** Profiles to try when a source testcase names a logging profile the box no
- *  longer has. The box exposes no endpoint to list them (every plausible path
- *  404s), so these are the names observed in use on working testcases, tried in
- *  order until one is accepted. */
-const LOG_PROFILE_FALLBACKS = ['debug', 'default', 'enable_all'];
+/** Profiles to try when the box cannot be asked what it has — see
+ *  alignSettingNames, which asks it first and only falls back to this when
+ *  the listing is unreachable. */
+const LOG_PROFILE_FALLBACKS = ['nas_rrc_debug', 'debug', 'info'];
+
+/** The two settings a definition names by string, and where the box lists them.
+ *  Both endpoints answer 200 with {items:[{name,isDefault,…}]} — an older
+ *  comment here claimed no such endpoint existed, which is no longer true. */
+const NAMED_SETTINGS = [
+  { field: 'loggingProfileName', path: '/system/log-settings' },
+  { field: 'successCriteriaName', path: '/system/success-settings' },
+] as const;
+
+/**
+ * Rewrite a definition's named settings to the names THIS box holds.
+ *
+ * Returns a note per field that changed, for the row's detail. Never throws:
+ * a box that will not list its settings leaves the definition exactly as it
+ * was, and the create either succeeds or fails on the box's own terms — which
+ * is what happened before this existed.
+ */
+async function alignSettingNames(opts: ApiOpts, token: string, td: any): Promise<string[]> {
+  if (!td?.settings) return [];
+  const notes: string[] = [];
+
+  for (const { field, path } of NAMED_SETTINGS) {
+    let available: BoxSetting[] = [];
+    try {
+      const r = await fetch(`http://${opts.host}/v2${path}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!r.ok) continue;
+      const j: any = await r.json();
+      const items = j?.items ?? j?.data?.items ?? j?.data ?? [];
+      if (Array.isArray(items)) available = items as BoxSetting[];
+    } catch {
+      continue;                       // unreachable: leave the field alone
+    }
+
+    const wanted = td.settings[field] as string | undefined;
+    const res = resolveSettingName(wanted, available);
+    if (res.name && res.name !== wanted) td.settings[field] = res.name;
+    const note = resolutionNote(field, wanted, res);
+    if (note) notes.push(note);
+  }
+
+  return notes;
+}
 
 
 /** Name the copy in every place the box reads a name from. */
@@ -292,6 +338,23 @@ export async function createFromDefinition(
   finalName: string,
   extraWarnings: string[] = [],
 ): Promise<DuplicateResult> {
+  // Match the named settings to the ones THIS box holds, before it is asked
+  // to create anything.
+  //
+  // A definition names a logging profile and a success criteria by string, and
+  // the box compares exactly. NSA_3cell_Mobility_Vonr_1UEs_automation asks for
+  // "4gMobility" while .95 holds "4gmobility", so creating it was refused —
+  // BAD_REQUEST successCriteriaName '4gMobility' does not exist — for a
+  // setting that was there all along under a different capital letter. Carried
+  // between boxes, or written before someone renamed a setting, a definition
+  // keeps the old spelling for ever.
+  //
+  // Asking the box what it has turns that into an answer rather than a
+  // failure: its spelling where the name exists, its default where it does
+  // not, and the definition untouched when it lists nothing at all. See
+  // settingNames.ts.
+  const settingNotes = await alignSettingNames(opts, token, td);
+
   const cells = await post(opts, token, '/tests/cells', { cellConfig: td.cellConfig });
   const id: string | undefined = cells.json?.testCaseId;
   if (!cells.ok || !id) {
@@ -309,7 +372,7 @@ export async function createFromDefinition(
   // settings LAST — it finalises and locks the case.
   sections.push(['settings', `/tests/${encodeURIComponent(id)}/settings`, { settings: td.settings }]);
 
-  const warnings: string[] = [...extraWarnings];
+  const warnings: string[] = [...extraWarnings, ...settingNotes];
 
   for (const [step, path, body] of sections) {
     if (body == null || (body as any)[Object.keys(body as any)[0]] == null) continue;
@@ -424,6 +487,12 @@ export async function updateTestcaseInPlace(
   const td: any = JSON.parse(JSON.stringify(testDefinition));
   const currentName = String(current?.name ?? '');
 
+  // The same alignment the create path does: a definition names its logging
+  // profile and success criteria by string and the box compares exactly, so
+  // rebuilding a row on a box that spells one differently fails on a setting
+  // that is really there. See alignSettingNames.
+  const settingNotes = await alignSettingNames(opts, token, td);
+
   // Do what the box's own GUI does when an antenna count changes — resize
   // the per-antenna gain arrays — or a hand edit like DL 4 → 2 is refused
   // ("rxGain array size (4) must match DL antenna count (2)").
@@ -431,7 +500,7 @@ export async function updateTestcaseInPlace(
 
   const diff = diffSections(curTd, td, currentName);
   const finalName = diff.rename ?? currentName ?? testcaseId;
-  const warnings = [...adjusted, ...diff.warnings];
+  const warnings = [...adjusted, ...diff.warnings, ...settingNotes];
   const updated: SectionName[] = [];
   const id = encodeURIComponent(testcaseId);
 
