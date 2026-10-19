@@ -18,6 +18,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { statusLabel, verdictLabel, verdictClass, statusStyle } from '@/lib/automation/outcome';
+// Why a row did not run, in a sentence -- the same reader the suite history uses.
+import { failureReason, reasonIsOnTheBox } from '@/lib/automation/failureReason';
 import { useConfirm } from '@/components/ConfirmDialog';
 
 interface SuiteItemRow { id: string; name: string; simnovatorTcId: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string; durationSec?: number }
@@ -54,6 +56,26 @@ export default function CampaignsPage() {
   /** Picked test cases, as "<suiteId>|<itemId>", in the order they were ticked
    *  — which is the order they will execute in. */
   const [picked, setPicked] = useState<string[]>([]);
+  /** Set when the picker is open to ADD to an existing campaign rather than
+   *  create one. Same UI, same picks; a different thing happens on save. */
+  const [addingTo, setAddingTo] = useState<CampaignRow | null>(null);
+
+  // ── finding things ──────────────────────────────────────────────────────
+  //
+  // Both lists grow past the point of scanning them: a lab accumulates
+  // campaigns, and the picker shows every test case of every suite. A search
+  // narrows by substring; the dropdown beside it goes straight to one.
+  const [campaignQuery, setCampaignQuery] = useState('');
+  const [onlyCampaign, setOnlyCampaign] = useState('');
+  const [suiteQuery, setSuiteQuery] = useState('');
+  const [onlySuite, setOnlySuite] = useState('');
+
+  /** Rows ticked for "Run Selected", per campaign. */
+  const [pickedRows, setPickedRows] = useState<Record<string, Set<string>>>({});
+  /** Which campaign's rows this run is limited to — null means all of them. */
+  const [runSubset, setRunSubset] = useState<string[] | null>(null);
+  /** The row being dragged, while it is being dragged. */
+  const [dragRow, setDragRow] = useState<{ campaignId: string; id: string } | null>(null);
 
   // ── execution ───────────────────────────────────────────────────────────
   const [runFor, setRunFor] = useState<CampaignRow | null>(null);
@@ -188,13 +210,121 @@ export default function CampaignsPage() {
     finally { setBusy(''); }
   };
 
-  const openRun = (c: CampaignRow) => {
+  const openRun = (c: CampaignRow, subset?: string[]) => {
     setRunFor(c);
+    setRunSubset(subset && subset.length ? subset : null);
     // Open on wherever it ran last — a starting point, never a binding.
     setRunSimnovator(c.lastUesimSystemId ?? '');
     setRunCallbox(c.lastCallboxSystemId ?? '');
     setRunUe(c.lastUeSystemId ?? '');
     setLicenceEdits({});
+  };
+
+  /**
+   * The callbox and UE that go with a Simnovator, from the suites themselves.
+   *
+   * A lab's boxes are wired together in fixed sets, and every suite built on
+   * a Simnovator records which callbox and UE it used. So picking the
+   * Simnovator is enough to know the rest — and having to pick all three,
+   * from dropdowns that happily allow a combination no suite has ever run
+   * on, was three chances to get it wrong.
+   *
+   * Only ever a default: both fields stay editable.
+   */
+  const partnersFor = useCallback((uesimSystemId: string) => {
+    const onThisBox = suites.filter(s => s.uesimSystemId === uesimSystemId);
+    const commonest = (pick: (s: SuiteRow) => string | undefined) => {
+      const tally = new Map<string, number>();
+      for (const s of onThisBox) {
+        const v = pick(s);
+        if (v) tally.set(v, (tally.get(v) ?? 0) + 1);
+      }
+      let best: string | undefined; let n = 0;
+      for (const [v, c] of tally) if (c > n) { best = v; n = c; }
+      return best;
+    };
+    return { callbox: commonest(s => s.callboxSystemId), ue: commonest(s => s.ueSystemId) };
+  }, [suites]);
+
+  // Choosing the Simnovator fills in the rest of the setup.
+  useEffect(() => {
+    if (!runFor || !runSimnovator) return;
+    const { callbox, ue } = partnersFor(runSimnovator);
+    // The campaign's own last run wins when it was on THIS Simnovator —
+    // what it actually used beats what its suites usually use.
+    const sameBox = runFor.lastUesimSystemId === runSimnovator;
+    setRunCallbox((sameBox && runFor.lastCallboxSystemId) || callbox || '');
+    setRunUe((sameBox && runFor.lastUeSystemId) || ue || '');
+  }, [runSimnovator, runFor, partnersFor]);
+
+  /** Campaigns to show: the dropdown picks one, the box filters by name. */
+  const shownCampaigns = useMemo(() => {
+    const q = campaignQuery.trim().toLowerCase();
+    return campaigns.filter(c =>
+      (!onlyCampaign || c.id === onlyCampaign)
+      && (!q || c.name.toLowerCase().includes(q)));
+  }, [campaigns, campaignQuery, onlyCampaign]);
+
+  /** Suites to offer in the picker. The search looks at test case names too:
+   *  you usually know the test case you want, not which suite holds it. */
+  const shownSuites = useMemo(() => {
+    const q = suiteQuery.trim().toLowerCase();
+    return suites.filter(s =>
+      (!onlySuite || s.id === onlySuite)
+      && (!q || s.name.toLowerCase().includes(q)
+        || (s.items ?? []).some(i => i.name.toLowerCase().includes(q))));
+  }, [suites, suiteQuery, onlySuite]);
+
+  const rowsPicked = (campaignId: string) => pickedRows[campaignId] ?? new Set<string>();
+  const toggleRow = (campaignId: string, itemId: string) => {
+    setPickedRows(prev => {
+      const next = new Set(prev[campaignId] ?? []);
+      if (next.has(itemId)) next.delete(itemId); else next.add(itemId);
+      return { ...prev, [campaignId]: next };
+    });
+  };
+
+  /** Save a new running order after a drag. */
+  const reorder = async (c: CampaignRow, fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    const ids = c.items.map(i => i.id);
+    const from = ids.indexOf(fromId);
+    const to = ids.indexOf(toId);
+    if (from < 0 || to < 0) return;
+    ids.splice(to, 0, ...ids.splice(from, 1));
+    // Shown immediately, saved behind it: a drag that waits for the server
+    // before it moves does not feel like a drag.
+    setCampaigns(prev => prev.map(x => x.id !== c.id ? x
+      : { ...x, items: ids.map(id => x.items.find(i => i.id === id)!).filter(Boolean) }));
+    try {
+      const r = await fetch(`/api/automation/campaigns/${c.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order: ids }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) throw new Error(d?.error ?? `HTTP ${r.status}`);
+    } catch (e: any) {
+      setError(`the new order could not be saved: ${e?.message ?? e}`);
+      await load();                       // put it back the way the server has it
+    }
+  };
+
+  /** Append the ticked test cases to an existing campaign. */
+  const addToCampaign = async () => {
+    if (!addingTo || picked.length === 0) return;
+    setBusy('add'); setError('');
+    try {
+      const addPicks = picked.map(k => { const [suiteId, itemId] = k.split('|'); return { suiteId, itemId }; });
+      const r = await fetch(`/api/automation/campaigns/${addingTo.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ addPicks }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) throw new Error(d?.error ?? `HTTP ${r.status}`);
+      setAddingTo(null); setBuilding(false); setPicked([]);
+      await load();
+    } catch (e: any) { setError(e?.message ?? String(e)); }
+    finally { setBusy(''); }
   };
 
   /** What this campaign last ran with on the callbox currently selected. */
@@ -233,6 +363,8 @@ export default function CampaignsPage() {
           ueSystemId: runUe || undefined,
           // Entered beats remembered; the route merges and saves the result.
           ...(licenceEdits.enb || licenceEdits.mme ? { licenceTags: licenceEdits } : {}),
+          // Only the ticked rows, when Run Selected opened this.
+          ...(runSubset ? { itemIds: runSubset } : {}),
         }),
       });
       const d = await r.json();
@@ -328,10 +460,35 @@ export default function CampaignsPage() {
           </div>
         )}
 
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-base font-semibold text-slate-900">Campaigns ({campaigns.length})</h2>
-          <button onClick={() => setBuilding(b => !b)}
-            className="rounded-md bg-blue-600 hover:bg-blue-700 text-on-accent text-xs font-semibold px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <h2 className="text-base font-semibold text-slate-900">
+            Campaigns ({shownCampaigns.length === campaigns.length
+              ? campaigns.length
+              : `${shownCampaigns.length} of ${campaigns.length}`})
+          </h2>
+          {/* Search narrows by name; the dropdown goes straight to one. Both
+              are here because they answer different questions — "which ones
+              are about VoNR" and "take me to camp1". */}
+          <input
+            value={campaignQuery}
+            onChange={e => setCampaignQuery(e.target.value)}
+            placeholder="Search campaign name…"
+            aria-label="Search campaigns"
+            className="border border-slate-300 rounded-md px-2 py-1 text-xs w-56" />
+          <select
+            value={onlyCampaign}
+            onChange={e => setOnlyCampaign(e.target.value)}
+            aria-label="Go to campaign"
+            className="border border-slate-300 rounded-md px-2 py-1 text-xs max-w-[14rem]">
+            <option value="">all campaigns</option>
+            {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          {(campaignQuery || onlyCampaign) && (
+            <button onClick={() => { setCampaignQuery(''); setOnlyCampaign(''); }}
+              className="text-[11px] text-slate-500 hover:text-slate-800 underline">clear</button>
+          )}
+          <button onClick={() => { setBuilding(b => !b); setAddingTo(null); setPicked([]); }}
+            className="ml-auto rounded-md bg-blue-600 hover:bg-blue-700 text-on-accent text-xs font-semibold px-3 py-1.5">
             {building ? 'Cancel' : '+ Create Campaign'}
           </button>
         </div>
@@ -339,15 +496,48 @@ export default function CampaignsPage() {
         {/* ── Create: test cases only. No machines are chosen here. ───────── */}
         {building && (
           <section className="bg-surface border border-line rounded-lg p-4 mb-6">
-            <label className="block text-xs text-slate-600 mb-3">
-              Campaign name
-              <input value={newName} onChange={e => setNewName(e.target.value)}
-                placeholder="e.g. Nightly regression"
-                className="mt-1 w-full max-w-sm border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
-            </label>
+            {addingTo ? (
+              <p className="text-sm text-slate-700 mb-3">
+                Adding test cases to <b>{addingTo.name}</b> — they go on the end of the running order,
+                in the order you tick them.
+              </p>
+            ) : (
+              <label className="block text-xs text-slate-600 mb-3">
+                Campaign name
+                <input value={newName} onChange={e => setNewName(e.target.value)}
+                  placeholder="e.g. Nightly regression"
+                  className="mt-1 w-full max-w-sm border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+              </label>
+            )}
 
-            <div className="text-xs font-semibold text-slate-700 mb-1">
-              Test cases ({picked.length} selected)
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <span className="text-xs font-semibold text-slate-700">
+                Test cases ({picked.length} selected)
+              </span>
+              {/* The picker lists every test case of every suite, which is
+                  hundreds. Search looks at test case names as well as suite
+                  names, because you usually know the test case you want and
+                  not which suite holds it. */}
+              <input
+                value={suiteQuery}
+                onChange={e => setSuiteQuery(e.target.value)}
+                placeholder="Search suite or test case…"
+                aria-label="Search suites and test cases"
+                className="border border-slate-300 rounded-md px-2 py-1 text-xs w-60" />
+              <select
+                value={onlySuite}
+                onChange={e => setOnlySuite(e.target.value)}
+                aria-label="Show one suite"
+                className="border border-slate-300 rounded-md px-2 py-1 text-xs max-w-[14rem]">
+                <option value="">all suites</option>
+                {suites.map(s => (
+                  <option key={s.id} value={s.id}>{s.name} ({(s.items ?? []).length})</option>
+                ))}
+              </select>
+              {(suiteQuery || onlySuite) && (
+                <button onClick={() => { setSuiteQuery(''); setOnlySuite(''); }}
+                  className="text-[11px] text-slate-500 hover:text-slate-800 underline">clear</button>
+              )}
             </div>
             <p className="text-[11px] text-slate-500 mb-2">
               Tick test cases from any suite. They execute in the order you tick them. The suites
@@ -356,7 +546,12 @@ export default function CampaignsPage() {
 
             <div className="space-y-3 max-h-[26rem] overflow-y-auto pr-1">
               {suites.length === 0 && <p className="text-xs text-slate-500">No suites to draw from yet.</p>}
-              {suites.map(s => (
+              {suites.length > 0 && shownSuites.length === 0 && (
+                <p className="text-xs text-slate-500">
+                  No suite or test case matches “{suiteQuery}”.
+                </p>
+              )}
+              {shownSuites.map(s => (
                 <div key={s.id} className="border border-line rounded-md">
                   <div className="px-3 py-2 border-b border-line flex items-baseline gap-2">
                     <span className="text-sm font-medium text-slate-800">{s.name}</span>
@@ -385,12 +580,19 @@ export default function CampaignsPage() {
             </div>
 
             <div className="mt-3 flex justify-end gap-2">
-              <button onClick={() => { setBuilding(false); setPicked([]); setNewName(''); }}
+              <button onClick={() => { setBuilding(false); setAddingTo(null); setPicked([]); setNewName(''); }}
                 className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-3 py-1.5">Cancel</button>
-              <button onClick={createCampaign} disabled={!newName.trim() || picked.length === 0 || busy === 'create'}
-                className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-on-accent text-xs font-semibold px-3 py-1.5">
-                {busy === 'create' ? 'Creating…' : `Create Campaign (${picked.length})`}
-              </button>
+              {addingTo ? (
+                <button onClick={addToCampaign} disabled={picked.length === 0 || busy === 'add'}
+                  className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-on-accent text-xs font-semibold px-3 py-1.5">
+                  {busy === 'add' ? 'Adding…' : `Add to ${addingTo.name} (${picked.length})`}
+                </button>
+              ) : (
+                <button onClick={createCampaign} disabled={!newName.trim() || picked.length === 0 || busy === 'create'}
+                  className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-on-accent text-xs font-semibold px-3 py-1.5">
+                  {busy === 'create' ? 'Creating…' : `Create Campaign (${picked.length})`}
+                </button>
+              )}
             </div>
           </section>
         )}
@@ -414,12 +616,29 @@ export default function CampaignsPage() {
                     {running === c.id ? (
                       <button onClick={() => stop(c)}
                         className="rounded-md bg-red-600 hover:bg-red-700 text-on-accent text-xs font-semibold px-3 py-1.5">⏹ Stop</button>
-                    ) : (
+                    ) : (<>
+                      {/* Only the ticked rows — the same thing the suite page
+                          calls Run Selected, and the run route has always
+                          accepted a subset. */}
+                      <button
+                        onClick={() => openRun(c, [...rowsPicked(c.id)])}
+                        disabled={rowsPicked(c.id).size === 0}
+                        title={rowsPicked(c.id).size === 0
+                          ? 'Tick one or more test cases first'
+                          : `Run the ${rowsPicked(c.id).size} ticked test case(s)`}
+                        className="rounded-md border border-blue-600 text-blue-700 hover:bg-blue-50 disabled:border-slate-300 disabled:text-slate-400 text-xs font-semibold px-3 py-1.5">
+                        ▶ Run Selected{rowsPicked(c.id).size > 0 ? ` (${rowsPicked(c.id).size})` : ''}
+                      </button>
+                      <button
+                        onClick={() => { setAddingTo(c); setBuilding(true); setPicked([]); setSuiteQuery(''); setOnlySuite(''); }}
+                        className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-3 py-1.5">
+                        + Add Test Cases
+                      </button>
                       <button onClick={() => openRun(c)}
                         className="rounded-md bg-blue-600 hover:bg-blue-700 text-on-accent text-xs font-semibold px-3 py-1.5">▶ Execute Campaign</button>
-                    )}
-                    <button onClick={() => remove(c)} disabled={!!busy}
-                      className="rounded-md border border-red-300 text-red-600 hover:bg-red-50 text-xs px-3 py-1.5">Delete</button>
+                    </>)}
+                    <button onClick={() => remove(c)} disabled={!!busy || running === c.id}
+                      className="rounded-md border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40 text-xs px-3 py-1.5">Delete</button>
                   </div>
                 </div>
 
@@ -427,6 +646,7 @@ export default function CampaignsPage() {
                   <table className="text-xs w-full">
                     <thead className="bg-slate-50 text-slate-500">
                       <tr>
+                        <th className="px-3 py-1.5 text-left w-8"></th>
                         <th className="px-3 py-1.5 text-left w-10">#</th>
                         <th className="px-3 py-1.5 text-left">Source Suite</th>
                         <th className="px-3 py-1.5 text-left">Test Case</th>
@@ -440,11 +660,52 @@ export default function CampaignsPage() {
                       {c.items.map((it, i) => {
                         const { st, vd, why } = rowStatus(c, it.name);
                         const style = statusStyle(st);
+                        const dragging = dragRow?.campaignId === c.id && dragRow.id === it.id;
                         return (
-                          <tr key={it.id}>
-                            <td className="px-3 py-1.5 text-slate-400">{i + 1}</td>
+                          // Drag to change the running order. The handle is the
+                          // whole row, which is what people try first; dropping
+                          // on another row puts this one in its place and the
+                          // new order is saved behind the move.
+                          <tr key={it.id}
+                            draggable={running !== c.id}
+                            onDragStart={() => setDragRow({ campaignId: c.id, id: it.id })}
+                            onDragEnd={() => setDragRow(null)}
+                            onDragOver={e => { if (dragRow?.campaignId === c.id) e.preventDefault(); }}
+                            onDrop={e => {
+                              e.preventDefault();
+                              if (dragRow?.campaignId === c.id) void reorder(c, dragRow.id, it.id);
+                              setDragRow(null);
+                            }}
+                            className={dragging ? 'opacity-40' : undefined}>
+                            <td className="px-3 py-1.5">
+                              <input type="checkbox"
+                                checked={rowsPicked(c.id).has(it.id)}
+                                onChange={() => toggleRow(c.id, it.id)}
+                                aria-label={`Select ${it.name}`} />
+                            </td>
+                            <td className="px-3 py-1.5 text-slate-400 cursor-grab select-none"
+                              title={running === c.id ? undefined : 'Drag to reorder'}>
+                              {running === c.id ? i + 1 : <span>⠿ {i + 1}</span>}
+                            </td>
                             <td className="px-3 py-1.5 text-slate-600 truncate" title={it.sourceSuiteName}>{it.sourceSuiteName}</td>
-                            <td className="px-3 py-1.5 font-medium text-slate-800 truncate" title={it.name}>{it.name}</td>
+                            {/* Why it did not run, beside the row rather than
+                                hidden in a tooltip. A campaign row that says
+                                only "Not Executed" sends people to the box to
+                                find out what SimQA already knows. */}
+                            <td className="px-3 py-1.5 font-medium text-slate-800">
+                              <div className="truncate" title={it.name}>{it.name}</div>
+                              {(() => {
+                                const reason = failureReason(why, st);
+                                if (!reason) return null;
+                                return (
+                                  <div className={'mt-0.5 text-[11px] font-normal '
+                                    + (reasonIsOnTheBox(reason) ? 'text-amber-700' : 'text-rose-700')}
+                                    title={why}>
+                                    {reason}
+                                  </div>
+                                );
+                              })()}
+                            </td>
                             <td className="px-3 py-1.5 font-mono text-[11px] text-slate-600 truncate">{it.callboxCfg ?? '–'}</td>
                             <td className="px-3 py-1.5 font-mono text-[11px] text-slate-600 truncate">{it.mmeCfg ?? '–'}</td>
                             <td className={`px-3 py-1.5 whitespace-nowrap ${style.cls}`} title={why}>{style.dot} {st}</td>
@@ -464,11 +725,16 @@ export default function CampaignsPage() {
         {runFor && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4"
             onClick={() => setRunFor(null)}>
-            <div className="bg-surface rounded-xl shadow-xl border border-line max-w-md w-full p-5"
+            {/* Bounded and scrollable: with the setup fields, the licence
+                panel and a long campaign's summary, the dialog grew past the
+                bottom of the screen and the Execute button went with it. */}
+            <div className="bg-surface rounded-xl shadow-xl border border-line max-w-md w-full p-5 max-h-[88vh] overflow-y-auto"
               onClick={e => e.stopPropagation()}>
               <h3 className="text-base font-semibold text-slate-900">Execute Campaign</h3>
               <p className="mt-1 text-sm text-slate-600">
-                {runFor.name} — {runFor.items.length} test cases, in order.
+                {runSubset
+                  ? <>{runFor.name} — <b>{runSubset.length} selected</b> of {runFor.items.length} test cases, in order.</>
+                  : <>{runFor.name} — {runFor.items.length} test cases, in order.</>}
               </p>
               <p className="mt-1 text-[11px] text-slate-500">
                 Choose where this runs. The suites these test cases came from were built on their own

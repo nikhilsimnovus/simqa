@@ -93,6 +93,24 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     } catch { /* remembering is a convenience — never fail a run over it */ }
   }
 
+  // Which boxes this run is on, recorded BEFORE it starts.
+  //
+  // These were written only after the run returned, as "the default the next
+  // dialog opens on". But Stop needs them too: it has to know which
+  // Simnovator to stop the execution on, and it falls back to these when the
+  // page cannot say — which is every Stop pressed after a refresh, from
+  // another tab, or by anyone who did not start the run. During the run they
+  // still held the PREVIOUS run's box, or nothing at all on a first run, so
+  // Stop cancelled SimQA's queue and left the Simnovator executing.
+  try {
+    updateCampaign(id, {
+      lastUesimSystemId: target.uesimSystemId,
+      lastBoxUserId: target.boxUserId,
+      lastCallboxSystemId: target.callboxSystemId,
+      lastUeSystemId: target.ueSystemId,
+    });
+  } catch { /* the run is what matters */ }
+
   try {
     const result = await runCampaign({ ...campaign, items: rows }, target, {
       signal: abort.signal,
@@ -107,15 +125,6 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         status: step.boxStatus, result: step.boxResult, verdict: step.verdict, stopped: step.stopped,
       }),
     });
-    // Remembered only as the default the next Run dialog opens on.
-    try {
-      updateCampaign(id, {
-        lastUesimSystemId: target.uesimSystemId,
-        lastBoxUserId: target.boxUserId,
-        lastCallboxSystemId: target.callboxSystemId,
-        lastUeSystemId: target.ueSystemId,
-      });
-    } catch { /* the run is what matters */ }
     return NextResponse.json({ ok: true, result, runId: result.runId });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });
