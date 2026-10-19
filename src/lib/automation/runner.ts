@@ -36,6 +36,8 @@ import { preflightRows } from './preflightConfigs';
 // Read a saved test.json the same way an uploaded one is read — tolerating
 // the comments and trailing commas a hand edit leaves in it.
 import { definitionFromText } from './importPack';
+// The name a config is deployed under on the callbox -- pure, tested on its own.
+import { automationName, isAutomationName } from './callboxNames';
 import { expectedRunSeconds } from './durationFit';
 import { withLicenceTag, licenceTagOf } from './licenceTag';
 // Which config gets which of the two entered licences.
@@ -1451,6 +1453,10 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         ? Buffer.from(suite.uploadedConfigs[nm], 'base64').toString('utf8')
         : undefined);
 
+      /** A base64 blob the suite carries, as text. Counts as the automation
+       *  server's copy: it is the row's own file, just not synced yet. */
+      const blob_ = (b64?: string) => (b64 ? Buffer.from(b64, 'base64').toString('utf8') : undefined);
+
       try {
         // One connection for the whole phase. Every step here used to open an
         // SSH session of its own — four or five handshakes per row against the
@@ -1563,6 +1569,14 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
                 throw new Error(`${name} is not a usable ${ROLE_LABEL[role]}: ${why.join('; ')}`);
               }
             }
+            // Clear the previous run's copy before writing this one, as asked.
+            // Only ever a file SimQA deployed — isAutomationName is the guard,
+            // so nothing of the lab's can be removed here. install(1) would
+            // replace the file anyway; the delete also clears a destination
+            // left as a symlink or with odd permissions by something else.
+            if (isAutomationName(name)) {
+              await ssh.execCommand(`sudo -n rm -f ${q(dest)} 2>/dev/null || rm -f ${q(dest)} 2>/dev/null || true`);
+            }
             const tmp = `/tmp/.simqa-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
             const sftp = await ssh.requestSFTP();
             await new Promise<void>((resolve, reject) => {
@@ -1603,34 +1617,29 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             await push(name, got.stdout, where, role);
           };
 
-          const serverEnb = fromServer[cfg];
-          if (serverEnb) {
-            target = `/root/enb/config/${cfg}`;
-            const isNew = !existing.has(cfg);
-            await push(cfg, serverEnb, '/root/enb/config', 'enb');
-            if (isNew) addedThisRun.add(cfg);
-            existing.add(cfg);
-            // Only a file the callbox did not have is ours to clean up later.
-            if (isNew) pushedCfg = cfg;
-            servedFromFolder = true;
-            stepDetails.push(`cfg-source: ${testCaseDir(cfgFrom, item.name)}/enb.cfg → ${cfg}`);
-          } else if (existing.has(cfg)) {
-            // Already on the callbox — link at it directly, nothing to copy.
-            // Except the licence: if one was chosen, it has to go in, or the
-            // run would use whatever tag this box happened to be left on.
-            target = `/root/enb/config/${cfg}`;
-            stepDetails.push(`cfg-source: existing "${cfg}"`);
-            await ensureLicence(cfg, '/root/enb/config', 'enb');
-          } else if (blob) {
-            const buf = Buffer.from(blob, 'base64');
-            target = `/root/enb/config/${cfg}`;
-            await push(cfg, buf.toString('utf8'), '/root/enb/config', 'enb');
-            existing.add(cfg);
-            pushedCfg = cfg;
-            stepDetails.push(`cfg-push: scp ${buf.length}B → ${cfg}`);
-          } else {
-            throw new Error(`cfg "${cfg}" not in suite uploadedConfigs and missing on callbox /root/enb/config`);
+          // The automation server is the only source, and the copy that lands
+          // on the callbox carries _automation in its name.
+          //
+          // A run used to fall back to the callbox's own file when the folder
+          // had none, and to push under the lab's filename — so running a
+          // suite could execute a config nobody in the suite had seen, and
+          // could overwrite SA-1cell.cfg that other setups share. Now the
+          // folder provides it or the row says what is missing, and SimQA
+          // only ever writes files it owns.
+          const serverEnb = fromServer[cfg] ?? blob_(blob);
+          const enbAs = automationName(cfg);
+          if (serverEnb === undefined) {
+            throw new Error(
+              `enb.cfg: ${testCaseDir(cfgFrom, item.name)} holds no copy of "${cfg}", and a run `
+              + `deploys only what the automation server holds. Sync the suite, or upload the file.`);
           }
+          target = `/root/enb/config/${enbAs}`;
+          const isNew = !existing.has(enbAs);
+          await push(enbAs, serverEnb, '/root/enb/config', 'enb');
+          if (isNew) { addedThisRun.add(enbAs); pushedCfg = enbAs; }
+          existing.add(enbAs);
+          servedFromFolder = true;
+          stepDetails.push(`cfg-source: ${testCaseDir(cfgFrom, item.name)}/enb.cfg → ${enbAs}`);
 
           // Only re-link what is not already linked. Consecutive rows often
           // share a radio cfg and differ only in the core one; re-pointing a
@@ -1643,18 +1652,18 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           {
             const prev = await ssh.execCommand(`readlink ${q(linkPath)} || true`);
             prevEnbLink = (prev.stdout ?? '').trim();
-            if (relinked || !sameCfg(prevEnbLink, cfg)) {
+            if (relinked || !sameCfg(prevEnbLink, enbAs)) {
               // Linked from inside the directory with a bare basename, so the
               // link is relative — `enb.cfg -> SA-1Cell.cfg_June2026`, which is
               // how the operators write it by hand and how it reads in the
               // callbox terminal.
               const r = await ssh.execCommand(
-                sudoLink('/root/enb/config', q(cfg), 'enb.cfg'));
+                sudoLink('/root/enb/config', q(enbAs), 'enb.cfg'));
               if (r.code !== 0) throw new Error(`ln: ${r.stderr || r.stdout || `exit ${r.code}`}`);
               relinked = true;
-              stepDetails.push(`cfg-link: ln -sfn ${cfg} enb.cfg`);
+              stepDetails.push(`cfg-link: ln -sfn ${enbAs} enb.cfg`);
             } else {
-              stepDetails.push(`cfg-link: enb.cfg already → ${cfg}`);
+              stepDetails.push(`cfg-link: enb.cfg already → ${enbAs}`);
             }
           }
 
@@ -1672,45 +1681,48 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           // as it always has.
           if (item.mmeCfg && item.dbCfg) {
             const db = item.dbCfg;
-            // The database file itself has to be on the box to be included.
-            if (!existingCore.has(db)) {
+            // Deployed under its _automation name like every other file, and
+            // the include line below is rewritten to match — the MME will not
+            // start if it names a database that is not there under that name.
+            const dbAs = automationName(db);
+            {
               const dbText = fromServer[db] ?? uploaded(db);
-              if (!dbText) {
+              if (dbText === undefined) {
                 throw new Error(
-                  `database "${db}" is not on ${callboxSys.host}, is not in `
-                  + `${testCaseDir(cfgFrom, item.name)}, and is not uploaded with this suite`,
+                  `database: ${testCaseDir(cfgFrom, item.name)} holds no copy of "${db}", and a run `
+                  + `deploys only what the automation server holds. Sync the suite, or upload the file.`,
                 );
               }
-              await push(db, dbText, '/root/mme/config', 'db');
-              existingCore.add(db);
-              addedThisRun.add(db);
-              stepDetails.push(`cfg-push: ${db} → /root/mme/config`);
+              if (!existingCore.has(dbAs)) addedThisRun.add(dbAs);
+              await push(dbAs, dbText, '/root/mme/config', 'db');
+              existingCore.add(dbAs);
+              stepDetails.push(`cfg-push: ${testCaseDir(cfgFrom, item.name)}/${db} → /root/mme/config/${dbAs}`);
             }
-            // The MME config's text, from wherever this row gets it.
-            const base = fromServer[item.mmeCfg] ?? uploaded(item.mmeCfg)
-              ?? await (async () => {
-                const r = await ssh.execCommand(
-                  `sudo -n cat ${q(`/root/mme/config/${item.mmeCfg}`)} 2>/dev/null `
-                  + `|| cat ${q(`/root/mme/config/${item.mmeCfg}`)} 2>/dev/null || true`);
-                return (r.stdout ?? '').trim() ? r.stdout : undefined;
-              })();
-            if (!base) {
-              throw new Error(`cannot read "${item.mmeCfg}" to point it at database "${db}"`);
+            // The MME config's text, from the automation server only.
+            const base = fromServer[item.mmeCfg] ?? uploaded(item.mmeCfg);
+            if (base === undefined) {
+              throw new Error(
+                `mme.cfg: ${testCaseDir(cfgFrom, item.name)} holds no copy of "${item.mmeCfg}", `
+                + `so it cannot be pointed at database "${db}". Sync the suite, or upload the file.`);
             }
-            const bound = withDbInclude(base, db);
+            // Point it at the name the database is DEPLOYED under. The folder
+            // keeps "ue_db_1000_xor.json"; the callbox gets
+            // "ue_db_1000_xor_automation.json", and an include naming the
+            // folder's spelling would leave the core unable to start.
+            //
+            // No derived filename any more: the copy this run deploys is
+            // already Mohan_mme_automation.cfg, which is SimQA's own, so
+            // there is nothing of the lab's left to protect by inventing a
+            // third name.
+            const bound = withDbInclude(base, dbAs);
             if (!bound.changed) {
-              stepDetails.push(`cfg-db: ${item.mmeCfg} already includes ${db}`);
+              stepDetails.push(`cfg-db: ${item.mmeCfg} already includes ${dbAs}`);
             } else {
-              // A name that says what it is and which database it carries, so
-              // an operator reading /root/mme/config can tell at a glance.
-              const derived = `${item.mmeCfg.replace(/\.cfg$/, '')}.simqa-${db.replace(/\.(cfg|json)$/, '').replace(/[^A-Za-z0-9_-]+/g, '_')}.cfg`;
-              // Pushed by the loop below, which already handles "the server's
-              // copy wins" and the relink that changed content requires.
-              fromServer[derived] = bound.text;
-              mmePick = derived;
+              fromServer[item.mmeCfg] = bound.text;
               stepDetails.push(
-                `cfg-db: mme.cfg → ${derived}, a copy of ${item.mmeCfg} including ${db}`
-                + `${bound.replaced.length ? ` instead of ${bound.replaced.join(', ')}` : ''} — ${item.mmeCfg} itself is untouched`,
+                `cfg-db: the deployed ${automationName(item.mmeCfg)} includes ${dbAs}`
+                + `${bound.replaced.length ? ` instead of ${bound.replaced.join(', ')}` : ''}`
+                + ` — ${testCaseDir(cfgFrom, item.name)}/${item.mmeCfg} is untouched`,
               );
             }
           }
@@ -1724,60 +1736,34 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           // Relative, same as enb.cfg above: `mme.cfg -> demo-mme.cfg`.
           for (const [linkName, pick] of coreLinks) {
             if (!pick) continue;
-            let justUploaded = false;
-            // The server's copy wins for the core cfgs too.
-            const fromFolder = fromServer[pick];
-            if (fromFolder) {
-              if (!existingCore.has(pick)) addedThisRun.add(pick);
-              await push(pick, fromFolder, '/root/mme/config', linkName === 'mme.cfg' ? 'mme' : 'ims');
-              existingCore.add(pick);
-              justUploaded = true;
-              stepDetails.push(`cfg-source: ${linkName} from ${testCaseDir(cfgFrom, item.name)}`);
-            }
-            // An uploaded core cfg isn't on the box yet — push it under its own
-            // name first, so the link reads the same as the operator's pick.
-            if (!existingCore.has(pick) && suite.uploadedConfigs?.[pick]) {
-              const buf = Buffer.from(suite.uploadedConfigs[pick], 'base64');
-              await push(pick, buf.toString('utf8'), '/root/mme/config', linkName === 'mme.cfg' ? 'mme' : 'ims');
-              existingCore.add(pick);
-              justUploaded = true;
-              stepDetails.push(`cfg-push: scp ${buf.length}B → /root/mme/config/${pick}`);
-            }
-            // Nothing to link to.
-            //
-            // The folder did not have it, the suite did not upload it, and this
-            // callbox does not hold it — which is what running a suite on a
-            // setup other than the one it was built on looks like when its
-            // folder is incomplete. Linking anyway leaves mme.cfg pointing at a
-            // file that is not there, the core refuses to start, and the row
-            // fails later as "no UEs attached", which sends people looking at
-            // the radio. Say it here, naming the file and where it should have
-            // come from.
-            if (!existingCore.has(pick)) {
+            const coreRole: CfgRole = linkName === 'mme.cfg' ? 'mme' : 'ims';
+            // Folder only, deployed under its _automation name — the same
+            // rule as enb.cfg above. Mohan_mme.cfg is a file several setups
+            // share; the run writes Mohan_mme_automation.cfg instead.
+            const coreText = fromServer[pick] ?? uploaded(pick);
+            const pickAs = automationName(pick);
+            if (coreText === undefined) {
               throw new Error(
-                `${linkName}: "${pick}" is not on ${callboxSys.host} and is not in `
-                + `${testCaseDir(cfgFrom, item.name)} — run this suite once on the setup it was built on, `
-                + `or upload the file, before running it here`,
-              );
+                `${linkName}: ${testCaseDir(cfgFrom, item.name)} holds no copy of "${pick}", and a run `
+                + `deploys only what the automation server holds. Sync the suite, or upload the file.`);
             }
-            // Linked where it lies, so nothing was written — but the licence
-            // still has to be the one that was chosen.
-            if (!justUploaded) {
-              await ensureLicence(pick, '/root/mme/config', linkName === 'mme.cfg' ? 'mme' : 'ims');
+            if (!existingCore.has(pickAs)) addedThisRun.add(pickAs);
+            await push(pickAs, coreText, '/root/mme/config', coreRole);
+            existingCore.add(pickAs);
+            stepDetails.push(
+              `cfg-source: ${linkName} ← ${testCaseDir(cfgFrom, item.name)}/${pick}, deployed as ${pickAs}`);
+            {
+              const prev = await ssh.execCommand(`readlink /root/mme/config/${linkName} || true`);
+              const prevTarget = (prev.stdout ?? '').trim();
+              if (linkName === 'mme.cfg') prevMmeLink = prevTarget; else prevImsLink = prevTarget;
+              // Always relinked: the bytes under this name were just replaced,
+              // so the link pointing at it already says nothing about what it
+              // now holds.
+              const r = await ssh.execCommand(sudoLink('/root/mme/config', q(pickAs), linkName));
+              if (r.code !== 0) throw new Error(`ln ${linkName}: ${r.stderr || r.stdout || `exit ${r.code}`}`);
+              relinked = true;
+              stepDetails.push(`cfg-link: ln -sfn ${pickAs} ${linkName}`);
             }
-
-            const prev = await ssh.execCommand(`readlink /root/mme/config/${linkName} || true`);
-            const prevTarget = (prev.stdout ?? '').trim();
-            if (linkName === 'mme.cfg') prevMmeLink = prevTarget; else prevImsLink = prevTarget;
-            if (!justUploaded && sameCfg(prevTarget, pick)) {
-              stepDetails.push(`cfg-link: ${linkName} already → ${pick}`);
-              continue;
-            }
-            const r = await ssh.execCommand(
-              sudoLink('/root/mme/config', q(pick), linkName));
-            if (r.code !== 0) throw new Error(`ln ${linkName}: ${r.stderr || r.stdout || `exit ${r.code}`}`);
-            relinked = true;
-            stepDetails.push(`cfg-link: ln -sfn ${pick} ${linkName}`);
           }
 
           // ── ots.cfg ────────────────────────────────────────────────────
@@ -1802,24 +1788,26 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             // or the edit does nothing. Only when the folder has nothing does
             // the box's own file stand.
             const text = fromServer[pick] ?? uploaded(pick);
-            if (!existingOts.has(pick) && !text) {
+            const otsAs = automationName(pick);
+            if (text === undefined) {
               throw new Error(
-                `ots.cfg: "${pick}" is not on ${callboxSys.host}, is not in `
-                + `${testCaseDir(cfgFrom, item.name)}, and is not uploaded with this suite`,
+                `ots.cfg: ${testCaseDir(cfgFrom, item.name)} holds no copy of "${pick}", and a run `
+                + `deploys only what the automation server holds. Sync the suite, or upload the file.`,
               );
             }
-            if (text !== undefined) {
-              const dest = `/root/ots/config/${pick}`;
+            {
+              const dest = `/root/ots/config/${otsAs}`;
               const want = createHash('md5').update(text, 'utf8').digest('hex');
               const got = await ssh.execCommand(
                 `sudo -n md5sum ${q(dest)} 2>/dev/null || md5sum ${q(dest)} 2>/dev/null || true`);
               if ((got.stdout ?? '').trim().split(/\s+/)[0] !== want) {
-                const isNew = !existingOts.has(pick);
-                await push(pick, text, '/root/ots/config', 'ots');
-                if (isNew) addedThisRun.add(pick);
-                existingOts.add(pick);
+                const isNew = !existingOts.has(otsAs);
+                await push(otsAs, text, '/root/ots/config', 'ots');
+                if (isNew) addedThisRun.add(otsAs);
+                existingOts.add(otsAs);
                 relinked = true;
-                stepDetails.push(`cfg-push: ${pick} → /root/ots/config, from ${testCaseDir(cfgFrom, item.name)}`);
+                stepDetails.push(
+                  `cfg-push: ${testCaseDir(cfgFrom, item.name)}/${pick} → /root/ots/config/${otsAs}`);
               }
             }
             const prev = await ssh.execCommand(`readlink /root/ots/config/ots.cfg || true`);
@@ -1836,13 +1824,13 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
                 stepDetails.push('cfg-ots: the callbox had ots.cfg as a plain file — kept as ots.cfg.simqa-backup');
               }
             }
-            if (otsWasPlain || !sameCfg(prevOtsLink, pick)) {
-              const r = await ssh.execCommand(sudoLink('/root/ots/config', q(pick), 'ots.cfg'));
+            if (otsWasPlain || !sameCfg(prevOtsLink, otsAs)) {
+              const r = await ssh.execCommand(sudoLink('/root/ots/config', q(otsAs), 'ots.cfg'));
               if (r.code !== 0) throw new Error(`ln ots.cfg: ${r.stderr || r.stdout || `exit ${r.code}`}`);
               relinked = true;
-              stepDetails.push(`cfg-link: ln -sfn ${pick} ots.cfg`);
+              stepDetails.push(`cfg-link: ln -sfn ${otsAs} ots.cfg`);
             } else {
-              stepDetails.push(`cfg-link: ots.cfg already → ${pick}`);
+              stepDetails.push(`cfg-link: ots.cfg already → ${otsAs}`);
             }
           }
 
