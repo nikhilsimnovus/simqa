@@ -182,34 +182,6 @@ chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${SIMQA_HOME}"
 log "Running npm ci (production deps + dev deps for build)"
 su -s /bin/bash -c "cd '${SIMQA_HOME}' && npm ci --no-audit --no-fund" "${SERVICE_USER}"
 
-# Build with the old server stopped.
-#
-# next build was SIGKILLed three times at "Creating an optimized production
-# build", the last with one worker and a 2GB heap cap — so the machine is
-# short of memory, not the build greedy. The biggest thing resident while it
-# compiles is the running simqa server itself, and it is about to be replaced
-# anyway.
-#
-# Stopping it first hands its memory to the build. The cost is that SimQA is
-# down for the length of the build rather than for the restart at the end, so
-# the trap below puts it back if anything here fails — a failed deploy must
-# never leave the service stopped.
-SIMQA_WAS_ACTIVE=no
-if systemctl is-active --quiet simqa.service 2>/dev/null; then
-  SIMQA_WAS_ACTIVE=yes
-  log "Stopping simqa.service for the build (it is about to be replaced)"
-  systemctl stop simqa.service || true
-fi
-restore_service_on_failure() {
-  local code=$?
-  if [[ ${code} -ne 0 && "${SIMQA_WAS_ACTIVE}" == "yes" ]]; then
-    warn "install failed (exit ${code}) — restarting the service that was running"
-    systemctl start simqa.service || true
-  fi
-  return ${code}
-}
-trap restore_service_on_failure EXIT
-
 log "Running next build"
 # Cap the heap so V8 collects instead of growing until the kernel kills it.
 # The build was SIGKILLed twice at "Creating an optimized production build" on
