@@ -14,5 +14,17 @@ const nextConfig = {
   // default loader can't parse. Listing it here makes Next leave it alone and
   // require() it at runtime from node_modules. playwright has the same issue.
   serverExternalPackages: ['ssh2', 'node-ssh', 'playwright', 'playwright-core'],
+  // Build with one worker.
+  //
+  // next build fans out across CPUs and each worker holds its own copy of the
+  // module graph, so peak memory is roughly workers x graph. On the automation
+  // server that grew past what the box has: the build was SIGKILLed by the OOM
+  // killer at 'Creating an optimized production build', twice, once with
+  // nothing else running. One worker is slower and fits, and a deploy that
+  // takes longer beats a deploy that cannot finish.
+  experimental: {
+    cpus: 1,
+    workerThreads: false,
+  },
 };
 export default nextConfig;

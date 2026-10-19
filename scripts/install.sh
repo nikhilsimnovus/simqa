@@ -183,7 +183,13 @@ log "Running npm ci (production deps + dev deps for build)"
 su -s /bin/bash -c "cd '${SIMQA_HOME}' && npm ci --no-audit --no-fund" "${SERVICE_USER}"
 
 log "Running next build"
-su -s /bin/bash -c "cd '${SIMQA_HOME}' && npm run build" "${SERVICE_USER}"
+# Cap the heap so V8 collects instead of growing until the kernel kills it.
+# The build was SIGKILLed twice at "Creating an optimized production build" on
+# the automation server, the second time with nothing else running. A bounded
+# heap turns "killed" into "slower", which is the right trade on a host that
+# also runs tests. Paired with experimental.cpus=1 in next.config.mjs, which
+# stops the build holding one module graph per CPU.
+su -s /bin/bash -c "cd '${SIMQA_HOME}' && NODE_OPTIONS=--max-old-space-size=2048 npm run build" "${SERVICE_USER}"
 
 # Update-path safety net: when this script runs via the self-update wrapper
 # it is a CHILD OF THE SIMQA SERVICE ITSELF, so the `systemctl restart` at
