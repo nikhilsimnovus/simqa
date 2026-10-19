@@ -56,13 +56,20 @@ export function keepHandEdits(
   for (const [name, text] of Object.entries(incoming)) {
     if (text === undefined) continue;
     const have = onDisk[name];
-    if (have === undefined) { files[name] = text; continue; }     // not there yet
+    if (have === undefined) { files[name] = text; continue; }     // not there yet: fill the gap
     const mine = written[name];
-    if (mine === undefined) { files[name] = text; continue; }     // never recorded — refresh
-    if (hash(have) === mine) { files[name] = text; continue; }    // untouched since SimQA wrote it
-    // Changed underneath. Writing over it would throw away someone's work,
-    // and silently: the run would then use a config nobody had seen.
-    if (have === text) continue;             // edited INTO what we were going to write anyway
+    // Refreshed only when this is demonstrably the file SimQA wrote and
+    // nobody has touched it since.
+    //
+    // Everything else is kept — including a file with no manifest entry at
+    // all. That case is every folder that existed before the manifest did,
+    // and treating it as "ours to overwrite" would spend the operator's
+    // first edit proving the point: they edit test.json, press Run, and the
+    // sync writes the suite's stored copy over it because it had no record
+    // saying otherwise. The folder is the source now, so an existing file is
+    // the operator's until it is deleted.
+    if (mine !== undefined && hash(have) === mine) { files[name] = text; continue; }
+    if (have === text) continue;             // already exactly what we would write
     kept.push(name);
     notes.push(`${name} was edited in the folder — keeping your version, not the one from the box`);
   }

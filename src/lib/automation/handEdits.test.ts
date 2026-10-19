@@ -35,17 +35,31 @@ test('a file that is not there yet is written', () => {
   assert.deepEqual(r.files, { 'enb.cfg': 'ENB' });
 });
 
-test('a folder with no manifest keeps todays behaviour', () => {
-  // Folders written before this existed have no record of what SimQA wrote,
-  // and refusing to refresh them would freeze every suite in the lab.
+test('a file already in the folder with no manifest entry is kept', () => {
+  // Every folder that existed before the manifest did lands here. Treating
+  // these as SimQA's own would spend the operator's FIRST edit proving the
+  // point: edit test.json, press Run, and the sync writes the suite's stored
+  // copy over it because nothing recorded that it was theirs.
   const r = keepHandEdits(
-    { 'enb.cfg': 'FRESH' },
-    { 'enb.cfg': 'WHATEVER IS THERE' },
+    { 'enb.cfg': 'FROM THE SUITE' },
+    { 'enb.cfg': 'WHATEVER IS ALREADY THERE' },
     {},
     h,
   );
-  assert.deepEqual(r.files, { 'enb.cfg': 'FRESH' });
-  assert.deepEqual(r.kept, []);
+  assert.deepEqual(r.files, {});
+  assert.deepEqual(r.kept, ['enb.cfg']);
+});
+
+test('an unrecorded file stays kept — the manifest never adopts it', () => {
+  // If the first pass recorded the operator's bytes as "what SimQA wrote",
+  // the second pass would see a match and overwrite. The edit has to survive
+  // every run, not just the next one.
+  const first = keepHandEdits({ 'test.json': 'SUITE' }, { 'test.json': 'MINE' }, {}, h);
+  const after = nextManifest({}, first.files, ['test.json'], h);
+  assert.deepEqual(after, {}, 'nothing adopted');
+  const second = keepHandEdits({ 'test.json': 'SUITE' }, { 'test.json': 'MINE' }, after, h);
+  assert.deepEqual(second.kept, ['test.json']);
+  assert.deepEqual(second.files, {});
 });
 
 test('an edit that happens to match what we would write is not flagged', () => {
