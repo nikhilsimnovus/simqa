@@ -38,6 +38,8 @@ import { preflightRows } from './preflightConfigs';
 import { definitionFromText } from './importPack';
 // The name a config is deployed under on the callbox -- pure, tested on its own.
 import { automationName, isAutomationName } from './callboxNames';
+// A row never stops at "In Progress" -- pure, and tested on its own.
+import { reconcileRow, needsReconcile } from './reconcileRow';
 import { expectedRunSeconds } from './durationFit';
 import { withLicenceTag, licenceTagOf } from './licenceTag';
 // Which config gets which of the two entered licences.
@@ -273,6 +275,30 @@ interface ExecutionState {
   result?: string;
   executionId?: string;
   durationSeconds?: number;
+}
+
+/**
+ * Ask the box again about every row the run left mid-flight.
+ *
+ * A run stops watching for reasons that have nothing to do with the box: the
+ * poll budget runs out, the run is stopped, the network drops for a moment.
+ * Whatever status was last seen then became the row's permanent record, and
+ * finished runs were left claiming rows were still In Progress — three of
+ * them in the history on .36, the oldest from 12 October.
+ *
+ * Called just before a result is recorded. Best-effort: a box that cannot be
+ * reached leaves the rows exactly as they were, which is no worse than before.
+ */
+async function reconcileSteps(steps: SuiteRunStep[], host: string, token: string): Promise<void> {
+  for (const step of steps) {
+    if (!needsReconcile(step)) continue;
+    const box = await fetchLastExecution(host, token, step.boxTestcaseId as string);
+    const fixed = reconcileRow(step, box);
+    if (!fixed) continue;
+    step.boxStatus = fixed.boxStatus;
+    step.boxResult = fixed.boxResult;
+    step.detail = step.detail ? `${step.detail} · ${fixed.note}` : fixed.note;
+  }
 }
 
 async function fetchLastExecution(host: string, token: string, tcId: string): Promise<ExecutionState | null> {
@@ -692,6 +718,8 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
     }
   }
   opts.onProgress?.(steps.length, suite.testcaseIds.length);
+  // Before anything is written down: no row may be left saying In Progress.
+  await reconcileSteps(steps, ueOpts.host, token);
   const buildVersion = await fetchBuildVersion(ueOpts.host, token);
   return {
     startedAt, finishedAt: new Date().toISOString(),
@@ -951,6 +979,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   }
   const totalFinal = (cfg ? 3 : 0) + tcs.length;
   opts.onProgress?.(totalFinal, totalFinal);
+  await reconcileSteps(steps, ueOpts.host, token);
 
   return {
     startedAt, finishedAt: new Date().toISOString(),
@@ -2173,6 +2202,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
   }
 
   opts.onProgress?.(total, total);
+  if (token) await reconcileSteps(rawSteps, ueOpts.host, token);
   const buildVersion = token ? await fetchBuildVersion(ueOpts.host, token) : undefined;
 
   return {

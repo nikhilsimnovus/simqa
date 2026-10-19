@@ -189,3 +189,38 @@ test('an export pack is still named from Test_Name', () => {
   }));
   assert.equal(r.name, 'IMS_PDN');
 });
+
+test('an export of a UE-type test case is refused with its reason', () => {
+  // The real shape from .102: the Export button on
+  // AIO_Network_Slicing_singleslice produces a valid export whose
+  // Config_File.config is the UE simulator's own config. Every structural
+  // check passes, so this used to reach the box and come back as
+  // "CellConfig: Section is required but missing" seconds into the row.
+  const pack = {
+    test_case_details: [{
+      Test_Id: '01a15293-ac3c-78fa-a5cb-8fb58d7a5979',
+      Test_Name: 'AIO_Network_Slicing_singleslice',
+      State: 'active',
+      Type: 'UE',
+      Config_File: { config: { cell_groups: [{ cells: [{ band: 78 }] }], ue_list: [] } },
+    }],
+  };
+  const r = definitionFromPack(pack);
+  assert.equal(r.definition, undefined);
+  assert.match(r.error!, /AIO_Network_Slicing_singleslice/);
+  assert.match(r.error!, /UE simulator's configuration \(Type: UE\)/);
+  assert.match(r.error!, /no\s+cellConfig/);
+  assert.match(r.error!, /sync the suite/);
+});
+
+test('a real export is still accepted', () => {
+  const pack = {
+    test_case_details: [{
+      Test_Name: 'Good_One',
+      Config_File: { config: { cellConfig: [{ id: 1 }], subsConfig: { subs: [] }, settings: {} } },
+    }],
+  };
+  const r = definitionFromPack(pack);
+  assert.equal(r.name, 'Good_One');
+  assert.ok(r.definition?.cellConfig, 'the definition comes through');
+});

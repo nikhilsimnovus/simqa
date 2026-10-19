@@ -147,6 +147,22 @@ export function definitionFromPack(raw: unknown): { name?: string; definition?: 
     if (!def || typeof def !== 'object') {
       return { error: 'the export has no Config_File.config to build a test case from' };
     }
+    // An export of a Type: "UE" test case carries the UE SIMULATOR's config
+    // in Config_File.config — cell_groups, ue_list, rf_port — and not the
+    // definition the box builds a test case from. It is a real export of a
+    // real test case, so it passes every other check here, and handing it on
+    // meant the box answered "CellConfig: Section is required but missing"
+    // several seconds into the row. Said here instead, where the file is.
+    if (!def.cellConfig && !def.subsConfig && !def.userPlaneConfig
+        && (def.cell_groups || def.ue_list)) {
+      const named = String(first.Test_Name ?? '').trim();
+      return {
+        error: `this export of ${named ? `"${named}"` : 'the test case'} carries the UE simulator's `
+          + `configuration${first.Type ? ` (Type: ${first.Type})` : ''}, not a test definition — there is no `
+          + 'cellConfig in it, so the Simnovator cannot build a test case from it. Point the row at the '
+          + 'test case on the Simnovator and sync the suite, which saves the definition the box holds.',
+      };
+    }
     return { name: String(first.Test_Name ?? '').trim() || undefined, definition: def };
   }
 
