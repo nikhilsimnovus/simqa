@@ -22,6 +22,9 @@ import { statusLabel, verdictLabel, verdictClass, statusStyle } from '@/lib/auto
 import { failureReason, reasonIsOnTheBox } from '@/lib/automation/failureReason';
 import { useConfirm } from '@/components/ConfirmDialog';
 
+/** The box refuses a shorter power-on than this. */
+const MIN_POWER_ON = 20;
+
 interface SuiteItemRow { id: string; name: string; simnovatorTcId: string; callboxCfg?: string; mmeCfg?: string; imsCfg?: string; durationSec?: number }
 interface SuiteRow { id: string; name: string; kind?: string; uesimSystemId?: string; callboxSystemId?: string; ueSystemId?: string; boxUserId?: string; items?: SuiteItemRow[] }
 interface CampaignRow {
@@ -39,6 +42,66 @@ interface Progress {
   /** The box's own status and verdict per row, as each one finishes. */
   boxes?: Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean }>;
   finished?: boolean;
+}
+
+/**
+ * A dropdown that ticks rather than chooses.
+ *
+ * The lists here are "show me these three suites", not "show me one" — so the
+ * control is a set of checkboxes behind a button, and the button says how many
+ * are ticked. Closing on an outside click rather than on each tick, because
+ * ticking three things should take one opening.
+ */
+function CheckDropdown({ allLabel, options, selected, onToggle, onClear }: {
+  allLabel: string;
+  options: Array<{ id: string; label: string; hint?: string }>;
+  selected: Set<string>;
+  onToggle: (id: string) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', away);
+    return () => document.removeEventListener('mousedown', away);
+  }, [open]);
+
+  // One tick reads better as its name than as "1".
+  const only = selected.size === 1 ? options.find(o => selected.has(o.id)) : undefined;
+  const face = selected.size === 0 ? allLabel : (only ? only.label : `${selected.size} selected`);
+
+  return (
+    <div className="relative" ref={box}>
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="border border-slate-300 rounded-md px-2 py-1 text-xs bg-surface hover:bg-slate-50 max-w-[16rem] truncate text-left">
+        {face} <span className="text-slate-400">▾</span>
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 w-72 max-h-72 overflow-y-auto rounded-md border border-line bg-surface shadow-lg py-1">
+          <button type="button" onClick={() => { onClear(); setOpen(false); }}
+            className="w-full text-left px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 border-b border-line">
+            {allLabel}
+          </button>
+          {options.map(o => (
+            // The whole line toggles, not just the box — see the list below.
+            <label key={o.id}
+              className="flex items-start gap-2 px-3 py-1.5 text-xs hover:bg-slate-50 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={selected.has(o.id)}
+                onChange={() => onToggle(o.id)} />
+              <span className="min-w-0">
+                <span className="block text-slate-800 truncate">{o.label}</span>
+                {o.hint && <span className="block text-[10px] text-slate-400">{o.hint}</span>}
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function CampaignsPage() {
@@ -63,12 +126,17 @@ export default function CampaignsPage() {
   // ── finding things ──────────────────────────────────────────────────────
   //
   // Both lists grow past the point of scanning them: a lab accumulates
-  // campaigns, and the picker shows every test case of every suite. A search
-  // narrows by substring; the dropdown beside it goes straight to one.
-  const [campaignQuery, setCampaignQuery] = useState('');
-  const [onlyCampaign, setOnlyCampaign] = useState('');
-  const [suiteQuery, setSuiteQuery] = useState('');
-  const [onlySuite, setOnlySuite] = useState('');
+  // campaigns, and the picker shows every test case of every suite. One
+  // control each, ticking as many as you want — the search boxes went,
+  // because the dropdown already answers "which ones" and two ways of
+  // narrowing the same list is one too many.
+  const [showCampaigns, setShowCampaigns] = useState<Set<string>>(new Set());
+  const [showSuites, setShowSuites] = useState<Set<string>>(new Set());
+  const toggleIn = (set: Set<string>, id: string) => {
+    const next = new Set(set);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  };
 
   /** Rows ticked for "Run Selected", per campaign. */
   const [pickedRows, setPickedRows] = useState<Record<string, Set<string>>>({});
@@ -86,6 +154,8 @@ export default function CampaignsPage() {
    *  chosen callbox last ran with, and remembered when changed. */
   const [licenceEdits, setLicenceEdits] = useState<{ enb?: string; mme?: string }>({});
   const [runUe, setRunUe] = useState('');
+  /** One power-on duration for every row of this run. Blank = each keeps its own. */
+  const [runDuration, setRunDuration] = useState('');
   const [boxUsers, setBoxUsers] = useState<BoxUser[]>([]);
   const [running, setRunning] = useState('');
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -213,11 +283,15 @@ export default function CampaignsPage() {
   const openRun = (c: CampaignRow, subset?: string[]) => {
     setRunFor(c);
     setRunSubset(subset && subset.length ? subset : null);
-    // Open on wherever it ran last — a starting point, never a binding.
-    setRunSimnovator(c.lastUesimSystemId ?? '');
+    // Open on a Simnovator, not on an empty field: wherever it ran last, and
+    // otherwise the first one there is. A starting point, never a binding —
+    // and with one chosen, the callbox, the UE and the licence panel fill
+    // themselves in, so the dialog opens showing the whole setup.
+    setRunSimnovator(c.lastUesimSystemId ?? simnovators[0]?.id ?? '');
     setRunCallbox(c.lastCallboxSystemId ?? '');
     setRunUe(c.lastUeSystemId ?? '');
     setLicenceEdits({});
+    setRunDuration('');
   };
 
   /**
@@ -257,23 +331,19 @@ export default function CampaignsPage() {
     setRunUe((sameBox && runFor.lastUeSystemId) || ue || '');
   }, [runSimnovator, runFor, partnersFor]);
 
-  /** Campaigns to show: the dropdown picks one, the box filters by name. */
+  /** Campaigns to show. Ticked ones first and on their own; nothing ticked
+   *  means all of them. */
   const shownCampaigns = useMemo(() => {
-    const q = campaignQuery.trim().toLowerCase();
-    return campaigns.filter(c =>
-      (!onlyCampaign || c.id === onlyCampaign)
-      && (!q || c.name.toLowerCase().includes(q)));
-  }, [campaigns, campaignQuery, onlyCampaign]);
+    if (showCampaigns.size === 0) return campaigns;
+    return [...campaigns.filter(c => showCampaigns.has(c.id)),
+      ...campaigns.filter(c => !showCampaigns.has(c.id))]
+      .filter(c => showCampaigns.has(c.id));
+  }, [campaigns, showCampaigns]);
 
-  /** Suites to offer in the picker. The search looks at test case names too:
-   *  you usually know the test case you want, not which suite holds it. */
-  const shownSuites = useMemo(() => {
-    const q = suiteQuery.trim().toLowerCase();
-    return suites.filter(s =>
-      (!onlySuite || s.id === onlySuite)
-      && (!q || s.name.toLowerCase().includes(q)
-        || (s.items ?? []).some(i => i.name.toLowerCase().includes(q))));
-  }, [suites, suiteQuery, onlySuite]);
+  /** Suites to offer in the picker, the same way. */
+  const shownSuites = useMemo(() => (
+    showSuites.size === 0 ? suites : suites.filter(s => showSuites.has(s.id))
+  ), [suites, showSuites]);
 
   const rowsPicked = (campaignId: string) => pickedRows[campaignId] ?? new Set<string>();
   const toggleRow = (campaignId: string, itemId: string) => {
@@ -307,6 +377,41 @@ export default function CampaignsPage() {
       setError(`the new order could not be saved: ${e?.message ?? e}`);
       await load();                       // put it back the way the server has it
     }
+  };
+
+  /** Drop the ticked test cases from a campaign. */
+  const removeRows = async (c: CampaignRow) => {
+    const ids = rowsPicked(c.id);
+    if (ids.size === 0) return;
+    const keep = c.items.filter(i => !ids.has(i.id));
+    if (keep.length === 0) {
+      // A campaign with no test cases cannot run, so this is really a delete
+      // — say so rather than leaving an empty one behind.
+      if (!(await confirm({
+        title: `Remove every test case from "${c.name}"?`,
+        message: 'That leaves nothing to run. Delete the campaign instead.',
+        confirmLabel: 'Delete campaign', tone: 'danger',
+      }))) return;
+      await remove(c);
+      return;
+    }
+    if (!(await confirm({
+      title: `Remove ${ids.size} test case${ids.size === 1 ? '' : 's'} from "${c.name}"?`,
+      message: 'The suites they came from are not touched.',
+      confirmLabel: 'Remove', tone: 'danger',
+    }))) return;
+    setBusy('rows'); setError('');
+    try {
+      const r = await fetch(`/api/automation/campaigns/${c.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: keep }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) throw new Error(d?.error ?? `HTTP ${r.status}`);
+      setPickedRows(prev => ({ ...prev, [c.id]: new Set() }));
+      await load();
+    } catch (e: any) { setError(e?.message ?? String(e)); }
+    finally { setBusy(''); }
   };
 
   /** Append the ticked test cases to an existing campaign. */
@@ -365,6 +470,11 @@ export default function CampaignsPage() {
           ...(licenceEdits.enb || licenceEdits.mme ? { licenceTags: licenceEdits } : {}),
           // Only the ticked rows, when Run Selected opened this.
           ...(runSubset ? { itemIds: runSubset } : {}),
+          // One power-on duration for every row — overrides what each row's
+          // suite saved. Absent leaves them on their own figures.
+          ...(runDuration.trim()
+            ? { overallDurationSec: Math.max(MIN_POWER_ON, Number(runDuration) || MIN_POWER_ON) }
+            : {}),
         }),
       });
       const d = await r.json();
@@ -466,26 +576,16 @@ export default function CampaignsPage() {
               ? campaigns.length
               : `${shownCampaigns.length} of ${campaigns.length}`})
           </h2>
-          {/* Search narrows by name; the dropdown goes straight to one. Both
-              are here because they answer different questions — "which ones
-              are about VoNR" and "take me to camp1". */}
-          <input
-            value={campaignQuery}
-            onChange={e => setCampaignQuery(e.target.value)}
-            placeholder="Search campaign name…"
-            aria-label="Search campaigns"
-            className="border border-slate-300 rounded-md px-2 py-1 text-xs w-56" />
-          <select
-            value={onlyCampaign}
-            onChange={e => setOnlyCampaign(e.target.value)}
-            aria-label="Go to campaign"
-            className="border border-slate-300 rounded-md px-2 py-1 text-xs max-w-[14rem]">
-            <option value="">all campaigns</option>
-            {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          {(campaignQuery || onlyCampaign) && (
-            <button onClick={() => { setCampaignQuery(''); setOnlyCampaign(''); }}
-              className="text-[11px] text-slate-500 hover:text-slate-800 underline">clear</button>
+          {/* Hidden while the builder is open: picking test cases has nothing
+              to do with which campaigns the list below shows, and the two
+              sitting together read as one confused form. */}
+          {!building && campaigns.length > 0 && (
+            <CheckDropdown
+              allLabel="all campaigns"
+              options={campaigns.map(c => ({ id: c.id, label: c.name, hint: `${c.items.length} test cases` }))}
+              selected={showCampaigns}
+              onToggle={id => setShowCampaigns(s => toggleIn(s, id))}
+              onClear={() => setShowCampaigns(new Set())} />
           )}
           <button onClick={() => { setBuilding(b => !b); setAddingTo(null); setPicked([]); }}
             className="ml-auto rounded-md bg-blue-600 hover:bg-blue-700 text-on-accent text-xs font-semibold px-3 py-1.5">
@@ -514,30 +614,16 @@ export default function CampaignsPage() {
               <span className="text-xs font-semibold text-slate-700">
                 Test cases ({picked.length} selected)
               </span>
-              {/* The picker lists every test case of every suite, which is
-                  hundreds. Search looks at test case names as well as suite
-                  names, because you usually know the test case you want and
-                  not which suite holds it. */}
-              <input
-                value={suiteQuery}
-                onChange={e => setSuiteQuery(e.target.value)}
-                placeholder="Search suite or test case…"
-                aria-label="Search suites and test cases"
-                className="border border-slate-300 rounded-md px-2 py-1 text-xs w-60" />
-              <select
-                value={onlySuite}
-                onChange={e => setOnlySuite(e.target.value)}
-                aria-label="Show one suite"
-                className="border border-slate-300 rounded-md px-2 py-1 text-xs max-w-[14rem]">
-                <option value="">all suites</option>
-                {suites.map(s => (
-                  <option key={s.id} value={s.id}>{s.name} ({(s.items ?? []).length})</option>
-                ))}
-              </select>
-              {(suiteQuery || onlySuite) && (
-                <button onClick={() => { setSuiteQuery(''); setOnlySuite(''); }}
-                  className="text-[11px] text-slate-500 hover:text-slate-800 underline">clear</button>
-              )}
+              {/* Tick as many suites as you want to draw from; nothing ticked
+                  shows them all. */}
+              <CheckDropdown
+                allLabel="all suites"
+                options={suites.map(s => ({
+                  id: s.id, label: s.name, hint: `${(s.items ?? []).length} test cases`,
+                }))}
+                selected={showSuites}
+                onToggle={id => setShowSuites(s => toggleIn(s, id))}
+                onClear={() => setShowSuites(new Set())} />
             </div>
             <p className="text-[11px] text-slate-500 mb-2">
               Tick test cases from any suite. They execute in the order you tick them. The suites
@@ -546,11 +632,6 @@ export default function CampaignsPage() {
 
             <div className="space-y-3 max-h-[26rem] overflow-y-auto pr-1">
               {suites.length === 0 && <p className="text-xs text-slate-500">No suites to draw from yet.</p>}
-              {suites.length > 0 && shownSuites.length === 0 && (
-                <p className="text-xs text-slate-500">
-                  No suite or test case matches “{suiteQuery}”.
-                </p>
-              )}
               {shownSuites.map(s => (
                 <div key={s.id} className="border border-line rounded-md">
                   <div className="px-3 py-2 border-b border-line flex items-baseline gap-2">
@@ -566,10 +647,14 @@ export default function CampaignsPage() {
                         const k = key(s.id, it.id);
                         const at = picked.indexOf(k);
                         return (
-                          <li key={it.id} className="px-3 py-1.5 flex items-center gap-2 text-xs">
-                            <input type="checkbox" checked={at >= 0} onChange={() => togglePick(s.id, it.id)} />
-                            <span className="text-slate-800 truncate" title={it.name}>{it.name}</span>
-                            {at >= 0 && <span className="ml-auto text-[10px] text-blue-700 font-semibold">#{at + 1}</span>}
+                          // A <label> round the whole row, so the name ticks
+                          // the box as well as the box does — aiming at a
+                          // 13px square was the only way to pick a test case.
+                          <li key={it.id}>
+                            <label className="px-3 py-1.5 flex items-center gap-2 text-xs cursor-pointer hover:bg-slate-50">
+                              <input type="checkbox" checked={at >= 0} onChange={() => togglePick(s.id, it.id)} />
+                              <span className="text-slate-800 truncate" title={it.name}>{it.name}</span>
+                            </label>
                           </li>
                         );
                       })}
@@ -611,7 +696,6 @@ export default function CampaignsPage() {
                 <div className="px-4 py-3 border-b border-line flex items-center gap-3">
                   <h3 className="text-sm font-semibold text-slate-900 truncate" title={c.name}>{c.name}</h3>
                   <span className="text-[11px] text-slate-500">{c.items.length} test cases</span>
-                  {c.createdBy && <span className="text-[11px] text-slate-400">by {c.createdBy}</span>}
                   <div className="ml-auto flex items-center gap-2">
                     {running === c.id ? (
                       <button onClick={() => stop(c)}
@@ -629,8 +713,19 @@ export default function CampaignsPage() {
                         className="rounded-md border border-blue-600 text-blue-700 hover:bg-blue-50 disabled:border-slate-300 disabled:text-slate-400 text-xs font-semibold px-3 py-1.5">
                         ▶ Run Selected{rowsPicked(c.id).size > 0 ? ` (${rowsPicked(c.id).size})` : ''}
                       </button>
+                      {/* Drop the ticked rows. The same ticks Run Selected
+                          uses, because "these ones" is the same question. */}
                       <button
-                        onClick={() => { setAddingTo(c); setBuilding(true); setPicked([]); setSuiteQuery(''); setOnlySuite(''); }}
+                        onClick={() => void removeRows(c)}
+                        disabled={rowsPicked(c.id).size === 0 || !!busy}
+                        title={rowsPicked(c.id).size === 0
+                          ? 'Tick one or more test cases first'
+                          : `Remove the ${rowsPicked(c.id).size} ticked test case(s) from this campaign`}
+                        className="rounded-md border border-red-300 text-red-600 hover:bg-red-50 disabled:border-slate-300 disabled:text-slate-400 text-xs px-3 py-1.5">
+                        Delete Selected{rowsPicked(c.id).size > 0 ? ` (${rowsPicked(c.id).size})` : ''}
+                      </button>
+                      <button
+                        onClick={() => { setAddingTo(c); setBuilding(true); setPicked([]); setShowSuites(new Set()); }}
                         className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-3 py-1.5">
                         + Add Test Cases
                       </button>
@@ -647,7 +742,7 @@ export default function CampaignsPage() {
                     <thead className="bg-slate-50 text-slate-500">
                       <tr>
                         <th className="px-3 py-1.5 text-left w-8"></th>
-                        <th className="px-3 py-1.5 text-left w-10">#</th>
+                        <th className="px-3 py-1.5 text-left w-8"></th>
                         <th className="px-3 py-1.5 text-left">Source Suite</th>
                         <th className="px-3 py-1.5 text-left">Test Case</th>
                         <th className="px-3 py-1.5 text-left">gNB Configuration</th>
@@ -657,7 +752,7 @@ export default function CampaignsPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {c.items.map((it, i) => {
+                      {c.items.map((it) => {
                         const { st, vd, why } = rowStatus(c, it.name);
                         const style = statusStyle(st);
                         const dragging = dragRow?.campaignId === c.id && dragRow.id === it.id;
@@ -683,9 +778,12 @@ export default function CampaignsPage() {
                                 onChange={() => toggleRow(c.id, it.id)}
                                 aria-label={`Select ${it.name}`} />
                             </td>
+                            {/* The handle, not a position. The order is the
+                                order of the rows; numbering it as well was
+                                saying the same thing twice. */}
                             <td className="px-3 py-1.5 text-slate-400 cursor-grab select-none"
                               title={running === c.id ? undefined : 'Drag to reorder'}>
-                              {running === c.id ? i + 1 : <span>⠿ {i + 1}</span>}
+                              {running === c.id ? '' : '⠿'}
                             </td>
                             <td className="px-3 py-1.5 text-slate-600 truncate" title={it.sourceSuiteName}>{it.sourceSuiteName}</td>
                             {/* Why it did not run, beside the row rather than
@@ -733,20 +831,20 @@ export default function CampaignsPage() {
               <h3 className="text-base font-semibold text-slate-900">Execute Campaign</h3>
               <p className="mt-1 text-sm text-slate-600">
                 {runSubset
-                  ? <>{runFor.name} — <b>{runSubset.length} selected</b> of {runFor.items.length} test cases, in order.</>
-                  : <>{runFor.name} — {runFor.items.length} test cases, in order.</>}
+                  ? <>{runFor.name} — <b>{runSubset.length} selected</b> of {runFor.items.length} test cases.</>
+                  : <>{runFor.name} — {runFor.items.length} test cases.</>}
               </p>
               <p className="mt-1 text-[11px] text-slate-500">
-                Choose where this runs. The suites these test cases came from were built on their own
-                setups; this campaign runs on whatever you pick here, using each test case&apos;s saved
-                configuration.
+                Choose the Simnovator to execute on.
               </p>
 
+              {/* Opens on a Simnovator rather than on "select a Simnovator…":
+                  the campaign's last one, or the only one there is. */}
               <label className="block mt-3 text-xs text-slate-600">
                 Setup — Simnovator
                 <select value={runSimnovator} onChange={e => setRunSimnovator(e.target.value)}
                   className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
-                  <option value="">select a Simnovator…</option>
+                  {simnovators.length === 0 && <option value="">no Simnovator in the inventory</option>}
                   {simnovators.map(s => <option key={s.id} value={s.id}>{s.host}</option>)}
                 </select>
               </label>
@@ -763,7 +861,7 @@ export default function CampaignsPage() {
               </label>
 
               <label className="block mt-2 text-xs text-slate-600">
-                Callbox <span className="text-slate-400">(needed when the test cases bring up a radio)</span>
+                Callbox
                 <select value={runCallbox} onChange={e => setRunCallbox(e.target.value)}
                   className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
                   <option value="">none — UESIM only</option>
@@ -772,7 +870,7 @@ export default function CampaignsPage() {
               </label>
 
               <label className="block mt-2 text-xs text-slate-600">
-                UE simulator <span className="text-slate-400">(for the attach check)</span>
+                UE simulator
                 <select value={runUe} onChange={e => setRunUe(e.target.value)}
                   className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm">
                   <option value="">from the topology</option>
@@ -821,20 +919,46 @@ export default function CampaignsPage() {
                       </label>
                     ))}
                   </div>
-                  {savedLicence?.updatedAt ? (
+                  {/* The "leave blank and nothing changes" paragraph is gone:
+                      blank already does nothing, and saying so every time was
+                      three lines explaining an empty field. What the box last
+                      ran with is still worth saying, because it is where the
+                      values in the fields came from. */}
+                  {savedLicence?.updatedAt && (
                     <p className="mt-1.5 text-[11px] text-slate-500">
-                      Filled in from the last run on this callbox
-                      {' '}({new Date(savedLicence.updatedAt).toLocaleString()}). Change either one and the
-                      change is remembered for next time.
-                    </p>
-                  ) : (
-                    <p className="mt-1.5 text-[11px] text-slate-500">
-                      Leave blank to keep each config&apos;s own licence. What you enter is written into the
-                      configs pushed to the callbox and <b>put back</b> when the run ends.
+                      From the last run on this callbox
+                      {' '}({new Date(savedLicence.updatedAt).toLocaleString()}).
                     </p>
                   )}
                 </div>
               )}
+
+              {/* ── Overall duration ─────────────────────────────────────
+                  One power-on duration for every test case in the run.
+                  Each row's own figure is what the suite saved, which for a
+                  campaign assembled from several suites is a mix of whatever
+                  those suites happened to use — so a campaign could not be
+                  told "give them all 100s" without editing every row in
+                  every suite it drew from.
+                  Blank leaves each row on its own figure, as now. */}
+              <label className="block mt-3 text-xs text-slate-600">
+                Overall power-on duration (s)
+                <input
+                  type="number" min={MIN_POWER_ON}
+                  value={runDuration}
+                  onChange={e => setRunDuration(e.target.value)}
+                  onBlur={e => setRunDuration(e.target.value === ''
+                    ? ''
+                    : String(Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON)))}
+                  placeholder="each test case keeps its own"
+                  className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm" />
+                <span className="mt-1 block text-[11px] text-slate-500">
+                  {runDuration.trim()
+                    ? <>Every test case in this run is created with a {runDuration.trim()}s power-on
+                      duration, and its session, call and loops are re-derived to fit.</>
+                    : <>Leave blank and each test case keeps the duration its suite saved.</>}
+                </span>
+              </label>
 
               <div className="mt-4 flex justify-end gap-2">
                 <button onClick={() => setRunFor(null)}

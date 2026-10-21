@@ -44,6 +44,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     callboxSystemId: body.callboxSystemId ? String(body.callboxSystemId) : undefined,
     ueSystemId: body.ueSystemId ? String(body.ueSystemId) : undefined,
     defaultDurationSec: typeof body.defaultDurationSec === 'number' ? body.defaultDurationSec : undefined,
+    // One power-on duration for every row of this run — see CampaignRunTarget.
+    overallDurationSec: Number.isFinite(Number(body.overallDurationSec)) && Number(body.overallDurationSec) > 0
+      ? Math.max(20, Math.floor(Number(body.overallDurationSec)))
+      : undefined,
     stopOnFail: !!body.stopOnFail,
   };
 

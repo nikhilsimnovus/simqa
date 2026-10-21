@@ -30,6 +30,16 @@ export interface CampaignRunTarget {
   ueSystemId?: string;
   /** Applies to rows that do not carry their own. */
   defaultDurationSec?: number;
+  /**
+   * One power-on duration for EVERY row, overriding what each row's suite
+   * saved.
+   *
+   * Different from defaultDurationSec, which only fills in rows that have
+   * none. A campaign assembled from several suites inherits whatever figure
+   * each of those suites happened to use, so "run them all for 100s" could
+   * not be said without editing every row in every suite it draws from.
+   */
+  overallDurationSec?: number;
   stopOnFail?: boolean;
 }
 
@@ -49,7 +59,10 @@ export function suiteForCampaign(campaign: TestCampaign, target: CampaignRunTarg
     callboxCfg: it.callboxCfg,
     mmeCfg: it.mmeCfg,
     imsCfg: it.imsCfg,
-    durationSec: it.durationSec,
+    // The overall figure wins when one was given: the runner applies this
+    // when it creates or updates the row's testcase on the box, so the test
+    // case really is cut to that duration rather than merely polled for it.
+    durationSec: target.overallDurationSec ?? it.durationSec,
     // Where this row's saved configs live — the suite it came from.
     configSuite: it.configSuite ?? it.sourceSuiteName,
   }));
