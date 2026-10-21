@@ -40,6 +40,8 @@ import { definitionFromText } from './importPack';
 import { automationName, isAutomationName } from './callboxNames';
 // A row never stops at "In Progress" -- pure, and tested on its own.
 import { reconcileRow, needsReconcile } from './reconcileRow';
+// Telling a slow start from one the box never made -- pure, tested on its own.
+import { confirmUnstarted, givenUp, unstartedDetail, START_GRACE_SEC } from './neverStarted';
 import { expectedRunSeconds } from './durationFit';
 import { withLicenceTag, licenceTagOf } from './licenceTag';
 // Which config gets which of the two entered licences.
@@ -327,9 +329,16 @@ async function pollExecutionToTerminal(
   /** The execution lastExecution held BEFORE this run triggered. Anything
    *  still wearing that id is the previous run's, not ours. */
   priorExecId?: string,
+  /** Told when the box turns out never to have started it, so the row can say
+   *  so instead of waiting out its whole duration. See neverStarted.ts. */
+  onUnstarted?: (why: string) => void,
 ): Promise<ExecutionState | null> {
   const deadline = Date.now() + Math.max(5, maxWaitSec) * 1000;
+  const triggeredAt = Date.now();
   let last: ExecutionState | null = null;
+  /** Agreeing looks that the start never took. Reset by any disagreement. */
+  let unstarted = 0;
+  let nextProbe = 0;
   while (Date.now() < deadline && !signal?.aborted) {
     const s = await fetchLastExecution(host, token, tcId);
     if (s) {
@@ -349,6 +358,40 @@ async function pollExecutionToTerminal(
       // appears now times out and says so, which is the honest answer — far
       // better than inheriting a verdict from four days ago.
       if (isOurExecution(s, triggerExecId, priorExecId) && isTerminalStatus(s.status)) return s;
+    }
+
+    // Did the start actually take?
+    //
+    // Asked only every 10s and only once past the grace, because it costs a
+    // second request to the box and the answer cannot change quickly. A test
+    // that is really running holds the simulator, so this can only fire when
+    // there is no execution of ours AND nothing is running — three times over.
+    const sinceTriggerSec = (Date.now() - triggeredAt) / 1000;
+    if (sinceTriggerSec >= START_GRACE_SEC && Date.now() >= nextProbe) {
+      nextProbe = Date.now() + 10_000;
+      // Unreadable counts as busy: a box that will not answer is not evidence
+      // that nothing is running.
+      let simulatorBusy = true;
+      try {
+        const r = await fetch(`http://${host}/v2/simulators`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (r.ok) {
+          const j: any = await r.json();
+          const sims: any[] = j?.items ?? j?.data ?? [];
+          simulatorBusy = sims.some(x => String(x?.availability ?? '').toUpperCase() === 'BUSY');
+        }
+      } catch { /* leave it as busy */ }
+      unstarted = confirmUnstarted(unstarted, {
+        sinceTriggerSec,
+        haveOurExecution: !!last && isOurExecution(last, triggerExecId, priorExecId),
+        simulatorBusy,
+      });
+      if (givenUp(unstarted)) {
+        onUnstarted?.(unstartedDetail(sinceTriggerSec));
+        return null;
+      }
     }
     await new Promise(r => setTimeout(r, 2000));
   }
@@ -400,8 +443,15 @@ async function settleExecution(
   /** What lastExecution held before this run triggered — see
    *  pollExecutionToTerminal. */
   priorExecId?: string,
-): Promise<{ finalState: ExecutionState | null; stoppedByUs: boolean; execId?: string; lateFinish: boolean }> {
-  let finalState = await pollExecutionToTerminal(host, token, tcId, triggerExecId, windowSec, signal, priorExecId);
+): Promise<{
+  finalState: ExecutionState | null; stoppedByUs: boolean; execId?: string; lateFinish: boolean;
+  /** Set when the box turned out never to have started it, with the reason. */
+  unstarted?: string;
+}> {
+  let unstarted: string | undefined;
+  let finalState = await pollExecutionToTerminal(
+    host, token, tcId, triggerExecId, windowSec, signal, priorExecId,
+    (why) => { unstarted = why; });
   let naturallyDone = isTerminalStatus(finalState?.status);
   let lateFinish = false;
   if (!naturallyDone && !signal?.aborted) {
@@ -416,6 +466,10 @@ async function settleExecution(
   }
   const execId = finalState?.executionId ?? triggerExecId;
   let stoppedByUs = false;
+  // Nothing was ever started, so there is nothing to stop. Asking the box to
+  // stop an execution it never made just adds a failing call and the
+  // misleading "(stopped by simqa)" to a row that never ran.
+  if (unstarted) return { finalState: null, stoppedByUs: false, execId: undefined, lateFinish: false, unstarted };
   if (!naturallyDone && execId && !signal?.aborted) {
     const settled = await stopAndFinalize(host, token, tcId, execId, signal, simulatorId);
     if (settled) finalState = settled;
@@ -696,7 +750,7 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
       // This path runs the testcase as it stands, so how long it takes is the
       // testcase's business, not the row's figure.
       const window1 = Math.max(durSec, await fetchExpectedRun(ueOpts.host, token, tcId)) + POLL_MARGIN_SEC;
-      const { finalState, stoppedByUs, execId, lateFinish } =
+      const { finalState, stoppedByUs, execId, lateFinish, unstarted } =
         await settleExecution(ueOpts.host, token, tcId, r.answer.executionId, window1, opts.signal, simulatorId, priorExec);
       const verdict = deriveVerdict(finalState, !finalState);
       const passLike = verdict === 'PASS';
@@ -707,7 +761,8 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
         detail: finalState
           ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s`
             + `${lateFinish ? ' (the box finished while the last poll was in flight)' : ''}${stoppedByUs ? ' (stopped by simqa)' : ''}`
-          : `triggered but no terminal state within ${window1}s — stop attempted${stoppedByUs ? '; box never settled' : ''}`,
+          : unstarted
+            ?? `triggered but no terminal state within ${window1}s — stop attempted${stoppedByUs ? '; box never settled' : ''}`,
         durationMs: Date.now() - t0,
       });
       if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) break; }
@@ -964,7 +1019,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
           detail: finalState
             ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s`
               + `${settledRun.lateFinish ? ' (the box finished while the last poll was in flight)' : ''}${stoppedByUs ? ' (stopped by simqa)' : ''}`
-            : `triggered but no terminal state within ${window2}s`,
+            : settledRun.unstarted ?? `triggered but no terminal state within ${window2}s`,
           durationMs: Date.now() - t0,
         });
         if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) break; }
@@ -1869,9 +1924,29 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           // is pushed under the name the row picked, in the ots block above.
           const folder = readAllTestCaseFiles(cfgFrom, item.name);
           const sent: string[] = [];
+          // What this loop must NOT treat as an MME include.
+          //
+          // The role names, as always — and now the row's own filenames too.
+          // Since the folder started keeping each config under the name it
+          // was picked or uploaded under, enb.cfg has a twin beside it
+          // (nbiot_mohan2cells.cfg) that this loop did not recognise, so it
+          // pushed the RADIO config into /root/mme/config as though the core
+          // included it. For mme and ims it was worse: those names are the
+          // lab's own files on the callbox — Mohan_mme.cfg — and writing them
+          // is the one thing the _automation copies exist to prevent. It only
+          // escaped notice because the bytes happened to match and the
+          // checksum skipped the write.
+          //
+          // It also set `relinked`, which forces a `service lte restart`, so
+          // every row was paying for a bring-up it did not need.
+          const notIncludes = new Set<string>([
+            'enb.cfg', 'mme.cfg', 'ims.cfg', 'ue.cfg', 'test.json', 'ots.cfg',
+            ...[cfg, item.mmeCfg, item.imsCfg, item.otsCfg].filter((n): n is string => !!n),
+          ]);
           for (const [name, text] of Object.entries(folder)) {
-            // The role files are pushed above; test.json is not a callbox file.
-            if (['enb.cfg', 'mme.cfg', 'ims.cfg', 'ue.cfg', 'test.json', 'ots.cfg'].includes(name)) continue;
+            // The role files and the row's own picks are pushed above;
+            // test.json is not a callbox file at all.
+            if (notIncludes.has(name)) continue;
             const dest = `/root/mme/config/${name}`;
             const want = createHash('md5').update(text, 'utf8').digest('hex');
             const got = await ssh.execCommand(
@@ -2076,7 +2151,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
         verdict, boxStatus: finalState?.status, boxResult: finalState?.result, stopped: stoppedByUs,
         detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}${finalState
           ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s${stoppedByUs ? ' (stopped by simqa)' : ''}`
-          : `triggered but no terminal state within ${pollWindow}s — stop attempted${stoppedByUs ? '; box never settled' : ''}`}`,
+          : (settledRun.unstarted ?? `triggered but no terminal state within ${pollWindow}s — stop attempted${stoppedByUs ? '; box never settled' : ''}`)}`,
         durationMs: Date.now() - t0,
       });
       if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) { done += 1; break; } }
