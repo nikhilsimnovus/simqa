@@ -939,7 +939,7 @@ export default function UiTestsPage() {
               built-in catalogue. The categories above are untouched. */}
           <Card>
             <CardHeader><CardTitle>Jira Categories</CardTitle></CardHeader>
-            <CardBody><JiraCategories /></CardBody>
+            <CardBody><JiraCategories systemId={targetSystemId} headless={headless} /></CardBody>
           </Card>
 
           <Card>
