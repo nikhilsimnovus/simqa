@@ -10,6 +10,8 @@ import {
   Eye, Globe, ShieldCheck, Activity, Search,
 } from 'lucide-react';
 import { useConfirm } from '@/components/ConfirmDialog';
+// The Jira-driven half of the profile — see JiraCategories.tsx.
+import JiraCategories from './JiraCategories';
 
 // A category used to be one of sixteen fixed names. It is now any string,
 // because the categories that matter are the ones the selected setup actually
@@ -950,6 +952,15 @@ export default function UiTestsPage() {
                 </label>
               ))}
             </CardBody>
+          </Card>
+
+          {/* The Jira half of the profile: categories derived from the SIM40
+              tickets, alongside the built-in presets above. The existing
+              profiles are untouched — this is another way to choose what to
+              run, not a replacement for them. */}
+          <Card>
+            <CardHeader><CardTitle>Jira Categories</CardTitle></CardHeader>
+            <CardBody><JiraCategories /></CardBody>
           </Card>
 
           <Card>
