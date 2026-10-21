@@ -934,6 +934,14 @@ export default function UiTestsPage() {
             </CardBody>
           </Card>
 
+          {/* Directly under Categories, because it answers the same question
+              — what shall I run — just from the Jira tickets rather than the
+              built-in catalogue. The categories above are untouched. */}
+          <Card>
+            <CardHeader><CardTitle>Jira Categories</CardTitle></CardHeader>
+            <CardBody><JiraCategories /></CardBody>
+          </Card>
+
           <Card>
             <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
             <CardBody className="space-y-2 text-sm">
@@ -952,15 +960,6 @@ export default function UiTestsPage() {
                 </label>
               ))}
             </CardBody>
-          </Card>
-
-          {/* The Jira half of the profile: categories derived from the SIM40
-              tickets, alongside the built-in presets above. The existing
-              profiles are untouched — this is another way to choose what to
-              run, not a replacement for them. */}
-          <Card>
-            <CardHeader><CardTitle>Jira Categories</CardTitle></CardHeader>
-            <CardBody><JiraCategories /></CardBody>
           </Card>
 
           <Card>
