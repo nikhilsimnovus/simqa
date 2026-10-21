@@ -1943,15 +1943,28 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             'enb.cfg', 'mme.cfg', 'ims.cfg', 'ue.cfg', 'test.json', 'ots.cfg',
             ...[cfg, item.mmeCfg, item.imsCfg, item.otsCfg].filter((n): n is string => !!n),
           ]);
-          for (const [name, text] of Object.entries(folder)) {
-            // The role files and the row's own picks are pushed above;
-            // test.json is not a callbox file at all.
-            if (notIncludes.has(name)) continue;
-            const dest = `/root/mme/config/${name}`;
+          // Every checksum in ONE round trip.
+          //
+          // This asked the callbox for one md5sum per file, one SSH command
+          // at a time, and the lab's subscriber databases are a third of a
+          // megabyte each with several per row. The answers do not depend on
+          // each other, so there is no reason to pay a round trip apiece —
+          // and between two rows that was most of the gap.
+          const candidates = Object.keys(folder).filter(n => !notIncludes.has(n));
+          const onBox = new Map<string, string>();
+          if (candidates.length) {
+            const listed = await ssh.execCommand(
+              `sudo -n md5sum ${candidates.map(n => q(`/root/mme/config/${n}`)).join(' ')} 2>/dev/null `
+              + `|| md5sum ${candidates.map(n => q(`/root/mme/config/${n}`)).join(' ')} 2>/dev/null || true`);
+            for (const line of String(listed.stdout ?? '').split('\n')) {
+              const m = /^([0-9a-f]{32})\s+(.+)$/.exec(line.trim());
+              if (m) onBox.set(m[2].split('/').pop() as string, m[1]);
+            }
+          }
+          for (const name of candidates) {
+            const text = folder[name];
             const want = createHash('md5').update(text, 'utf8').digest('hex');
-            const got = await ssh.execCommand(
-              `sudo -n md5sum ${q(dest)} 2>/dev/null || md5sum ${q(dest)} 2>/dev/null || true`);
-            if ((got.stdout ?? '').trim().split(/\s+/)[0] === want) continue;
+            if (onBox.get(name) === want) continue;
             await push(name, text, '/root/mme/config');
             relinked = true;
             sent.push(name);
@@ -1976,8 +1989,33 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
             // root.
             const r = await ssh.execCommand(`sudo service lte restart`);
             if (r.code !== 0) throw new Error(`restart lte: ${r.stderr || r.stdout || `exit ${r.code}`}`);
-            await new Promise(res => setTimeout(res, 15_000));
-            stepDetails.push(`cfg-restart: lte restarted (enb+mme+ims) + 15s settle`);
+            // Wait for the stack to be up, not for a fixed 15 seconds.
+            //
+            // The blind sleep was the single largest fixed cost between two
+            // rows, and it was sized for the worst case: ltestart.sh launches
+            // .ENB.sh, .MME.sh and .IMS.sh, and on .106 all three are present
+            // within a few seconds. Polling for them costs a round trip a
+            // second and gives the time back — and it can never be SLOWER
+            // than the old sleep, because the ceiling is the same 15s.
+            const upBy = Date.now() + 15_000;
+            let allUp = false;
+            while (Date.now() < upBy) {
+              const seen = await ssh.execCommand(
+                'pgrep -fa "\\.ENB\\.sh" >/dev/null 2>&1 && echo enb; '
+                + 'pgrep -fa "\\.MME\\.sh" >/dev/null 2>&1 && echo mme; '
+                + 'pgrep -fa "\\.IMS\\.sh" >/dev/null 2>&1 && echo ims; true');
+              const got = String(seen.stdout ?? '');
+              if (got.includes('enb') && got.includes('mme') && got.includes('ims')) { allUp = true; break; }
+              await new Promise(res => setTimeout(res, 1_000));
+            }
+            // A short settle once they are all there: a process existing is
+            // not quite the radio being ready, and this is the part the old
+            // 15s was really buying.
+            await new Promise(res => setTimeout(res, 3_000));
+            const waited = Math.round((15_000 - Math.max(0, upBy - Date.now())) / 1000) + 3;
+            stepDetails.push(allUp
+              ? `cfg-restart: lte restarted (enb+mme+ims up after ${waited}s)`
+              : `cfg-restart: lte restarted — enb/mme/ims not all visible within 15s, carried on anyway`);
           }
         });
       } catch (e: any) {
@@ -2086,7 +2124,15 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       // box would otherwise report as PASS, so cut it short instead of burning
       // the rest of the duration on a test that cannot do anything.
       if (ueSys) {
-        const grace = Math.min(ATTACH_CHECK_DELAY_SEC, durSec + POLL_MARGIN_SEC);
+        // Bounded by how long the test actually runs, not by the margin.
+        //
+        // This was min(55, durSec + 180), so for a 20s test it slept 55s —
+        // 35 of them after the test had already finished, with the next row
+        // waiting. The margin is the poll's allowance for a box that
+        // overruns; it says nothing about when the UEs attach. What does is
+        // the run itself: there is no point looking for an attach later than
+        // the test can still be going.
+        const grace = Math.max(5, Math.min(ATTACH_CHECK_DELAY_SEC, Math.max(durSec, expectedRun || 0)));
         await new Promise(res => setTimeout(res, grace * 1000));
         const ev = await gatherAttachEvidence(ueSys, createdName);
         // Only a log that positively says the UE searched and found nothing is
