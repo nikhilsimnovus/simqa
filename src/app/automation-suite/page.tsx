@@ -2570,7 +2570,8 @@ export default function AutomationSuitePage() {
                                 const editing = editRow?.suiteId === s.id && editRow?.itemId === it.id;
                                 if (editing) {
                                   return (
-                                    <tr key={it.id} className="bg-amber-50/60">
+                                    <React.Fragment key={it.id}>
+                                    <tr className="bg-amber-50/60">
                                       <td className="px-2 py-1" />
                                       <td className="px-1 py-1" />
                                       <td className="px-2 py-1 text-slate-400 align-top">{i + 1}</td>
@@ -2731,6 +2732,32 @@ export default function AutomationSuitePage() {
                                           className="rounded border border-slate-300 hover:bg-slate-100 text-[11px] px-2 py-0.5">Cancel</button>
                                       </td>
                                     </tr>
+                                    {/* Post-execution processing for a row that already
+                                        exists. It used to be reachable only while ADDING a
+                                        test case, so a row's rules could never be changed
+                                        afterwards -- the only way to add one to an existing
+                                        row was to delete it and add it again.
+
+                                        Edited in the draft like every other field, so
+                                        Cancel discards it and Save writes it with the rest
+                                        of the row. */}
+                                    <tr className="bg-amber-50/60">
+                                      <td colSpan={99} className="px-3 pb-3 pt-0">
+                                        <PostRules
+                                          compact
+                                          rules={(rowDraft.postRules ?? []) as PostRuleDraft[]}
+                                          onChange={(nextRules) => setRowDraft({
+                                            ...rowDraft,
+                                            // Rules with no message name are dropped: one that
+                                            // names nothing can never be checked, and keeping it
+                                            // would fail the row for a reason nobody chose.
+                                            postRules: nextRules.filter((r) => r.messageName.trim()).length
+                                              ? nextRules.filter((r) => r.messageName.trim())
+                                              : undefined,
+                                          })} />
+                                      </td>
+                                    </tr>
+                                    </React.Fragment>
                                   );
                                 }
                                 const st = statusOf(s, it);
