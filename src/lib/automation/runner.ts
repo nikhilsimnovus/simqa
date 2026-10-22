@@ -1216,28 +1216,20 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     /** enb.cfg's target before this row re-pointed it — reported only, so the
      *  run log records what the callbox was bound to beforehand. */
     let prevEnbLink = '';
-    let prevMmeLink = '';
-    let prevImsLink = '';
-    /** What ots.cfg pointed at before this row, and whether it was a plain file
-     *  rather than a link — the two callboxes differ, and putting it back
-     *  afterwards means something different in each case. */
+    /** What ots.cfg pointed at before this row, and whether it was a plain
+     *  file rather than a link. The target decides whether re-linking is even
+     *  needed; the plain file is the one thing cleanup puts back, because the
+     *  two callboxes differ in which shape their operators set up. */
     let prevOtsLink = '';
     let otsWasPlain = false;
-    /** What mme.cfg was actually linked at. Differs from item.mmeCfg when the
-     *  row overrode the subscriber database, in which case it is the generated
-     *  copy that includes it — and cleanup has to know that name to take it
-     *  away again. */
-    let mmePick = item.mmeCfg;
-    /** Set only when this row UPLOADED a cfg that wasn't already on the callbox;
-     *  that file is the sole thing opt-in cleanup may remove. */
+    /** Set only when this row UPLOADED a cfg that wasn't already on the
+     *  callbox — reported, so the log distinguishes a file this run put there
+     *  from one the callbox already had. */
     let pushedCfg = '';
     /** Set when a file came from the Automation Server's folder. The name on
      *  the callbox is unchanged, so the symlink can look right while the
      *  contents underneath have moved — which means relink and restart. */
     let servedFromFolder = false;
-    /** Files this run actually created on the callbox — the only ones cleanup
-     *  may take away again. */
-    const addedThisRun = new Set<string>();
     // ── Phase 0: create the row's testcase on the Simnovator first, under the
     // display name and with the row's duration baked in — so the case exists in
     // the box's catalogue before the callbox is touched. If the box rejects it
@@ -1706,7 +1698,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           target = `/root/enb/config/${enbAs}`;
           const isNew = !existing.has(enbAs);
           await push(enbAs, serverEnb, '/root/enb/config', 'enb');
-          if (isNew) { addedThisRun.add(enbAs); pushedCfg = enbAs; }
+          if (isNew) pushedCfg = enbAs;
           existing.add(enbAs);
           servedFromFolder = true;
           stepDetails.push(`cfg-source: ${testCaseDir(cfgFrom, item.name)}/enb.cfg → ${enbAs}`);
@@ -1763,7 +1755,6 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
                   + `deploys only what the automation server holds. Sync the suite, or upload the file.`,
                 );
               }
-              if (!existingCore.has(dbAs)) addedThisRun.add(dbAs);
               await push(dbAs, dbText, '/root/mme/config', 'db');
               existingCore.add(dbAs);
               stepDetails.push(`cfg-push: ${testCaseDir(cfgFrom, item.name)}/${db} → /root/mme/config/${dbAs}`);
@@ -1800,7 +1791,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           // Core cfgs live in /root/mme/config. A test needs the core up as
           // well as the radio, so both links are re-pointed per row.
           const coreLinks: Array<[string, string | undefined]> = [
-            ['mme.cfg', mmePick],
+            ['mme.cfg', item.mmeCfg],
             ['ims.cfg', item.imsCfg],
           ];
           // Relative, same as enb.cfg above: `mme.cfg -> demo-mme.cfg`.
@@ -1817,15 +1808,15 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
                 `${linkName}: ${testCaseDir(cfgFrom, item.name)} holds no copy of "${pick}", and a run `
                 + `deploys only what the automation server holds. Sync the suite, or upload the file.`);
             }
-            if (!existingCore.has(pickAs)) addedThisRun.add(pickAs);
             await push(pickAs, coreText, '/root/mme/config', coreRole);
             existingCore.add(pickAs);
             stepDetails.push(
               `cfg-source: ${linkName} ← ${testCaseDir(cfgFrom, item.name)}/${pick}, deployed as ${pickAs}`);
             {
-              const prev = await ssh.execCommand(`readlink /root/mme/config/${linkName} || true`);
-              const prevTarget = (prev.stdout ?? '').trim();
-              if (linkName === 'mme.cfg') prevMmeLink = prevTarget; else prevImsLink = prevTarget;
+              // Where the link pointed before is not read: the run no longer
+              // puts it back, so asking cost an SSH round trip per row for an
+              // answer nothing used.
+              //
               // Always relinked: the bytes under this name were just replaced,
               // so the link pointing at it already says nothing about what it
               // now holds.
@@ -1871,9 +1862,7 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
               const got = await ssh.execCommand(
                 `sudo -n md5sum ${q(dest)} 2>/dev/null || md5sum ${q(dest)} 2>/dev/null || true`);
               if ((got.stdout ?? '').trim().split(/\s+/)[0] !== want) {
-                const isNew = !existingOts.has(otsAs);
                 await push(otsAs, text, '/root/ots/config', 'ots');
-                if (isNew) addedThisRun.add(otsAs);
                 existingOts.add(otsAs);
                 relinked = true;
                 stepDetails.push(
@@ -2209,21 +2198,15 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       // Phase 6: per-item cleanup — once the execution has finished.
       //
       // /root/automation_configs holds this row's configs, and a run puts them
-      // on the callbox because that is where the radio reads them from. The
-      // copies are taken off again afterwards, so a shared callbox does not
-      // fill up with files nobody can date and the folder stays the lasting
-      // copy.
+      // on the callbox because that is where the radio reads them from. They
+      // STAY there, and enb.cfg / mme.cfg / ims.cfg / ots.cfg stay pointing at
+      // them: what a test case ran on is what is on the box afterwards, which
+      // is what anyone looking at the callbox expects to find.
       //
-      // What it will NOT remove, learned by breaking a live callbox with it:
-      //
-      //   * a file a live symlink points at. enb.cfg/mme.cfg/ims.cfg are what
-      //     the stack reads at startup, and deleting their target leaves a
-      //     dangling link — the running stack survives on the open file and
-      //     the next restart fails, which is the worst possible time to find
-      //     out.
-      //   * a file the MME config includes. Same reason, one level down.
-      //   * anything, while somebody else is executing on that callbox.
-      //   * anything this row did not name.
+      // So there is almost nothing to do here. The one thing still undone is
+      // an ots.cfg that was a plain file before this row made it a link, and
+      // that is skipped while somebody else is executing on the callbox —
+      // the shape of the box is theirs to rely on while they run.
       if (callboxSys) {
         const sq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
         try {
@@ -2236,73 +2219,36 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
           if (othersRunning) {
             stepDetails.push('cfg-cleanup: skipped — another user is executing on this callbox');
           } else {
-            const removed: string[] = [];
-            const kept: string[] = [];
-            await withSsh(callboxSys, async (ssh) => {
-              // Links first, so nothing points at a file that is about to go.
-              if (prevEnbLink) {
-                await ssh.execCommand(`cd /root/enb/config && sudo -n ln -sfn ${sq(prevEnbLink)} 'enb.cfg' 2>/dev/null || ln -sfn ${sq(prevEnbLink)} 'enb.cfg'`);
-              }
-              for (const [linkName, prev] of [['mme.cfg', prevMmeLink], ['ims.cfg', prevImsLink]] as const) {
-                if (prev) await ssh.execCommand(`cd /root/mme/config && sudo -n ln -sfn ${sq(prev)} ${sq(linkName)} 2>/dev/null || ln -sfn ${sq(prev)} ${sq(linkName)}`);
-              }
-              // ots.cfg: a link goes back to where it pointed; a plain file
-              // that this row replaced with a link is restored from the backup,
-              // because re-pointing a link it never had would leave the callbox
-              // in a shape its operators did not set up.
-              if (otsWasPlain) {
+            // Nothing is taken off the callbox, and nothing is put back.
+            //
+            // This used to point enb.cfg / mme.cfg / ims.cfg / ots.cfg back
+            // where they pointed before the run and delete the configs it had
+            // pushed. The callbox was then reading whatever had run there
+            // before: one was found afterwards on
+            // "enb.cfg -> nbiot_inband_default.cfg", an NB-IoT default with
+            // nothing to do with the test case that had just finished, and
+            // the row's own config sitting unreferenced beside it.
+            //
+            // A row's configs go on under their own _automation names, so
+            // none of the lab's own files were overwritten and there is
+            // nothing to undo. The names are stable, so the next run of the
+            // row replaces them in place rather than leaving another behind.
+            //
+            // ots.cfg is the one exception. Where this row replaced a PLAIN
+            // FILE with a link, the backup goes back: leaving a link where
+            // its operators had a real file changes the shape of the box,
+            // not just what it points at.
+            if (otsWasPlain) {
+              await withSsh(callboxSys, async (ssh) => {
                 const bk = '/root/ots/config/ots.cfg.simqa-backup';
                 await ssh.execCommand(
                   `test -e ${sq(bk)} && (sudo -n mv -f ${sq(bk)} /root/ots/config/ots.cfg 2>/dev/null `
                   + `|| mv -f ${sq(bk)} /root/ots/config/ots.cfg) || true`);
-              } else if (prevOtsLink) {
-                await ssh.execCommand(`cd /root/ots/config && sudo -n ln -sfn ${sq(prevOtsLink)} 'ots.cfg' 2>/dev/null || ln -sfn ${sq(prevOtsLink)} 'ots.cfg'`);
-              }
-              // What the box still depends on: the targets of the live links,
-              // and every file the live MME config includes.
-              const needed = new Set<string>();
-              for (const [dir, link] of [['/root/enb/config', 'enb.cfg'], ['/root/mme/config', 'mme.cfg'], ['/root/mme/config', 'ims.cfg']] as const) {
-                const t = await ssh.execCommand(`cd ${dir} && readlink ${link} 2>/dev/null || true`);
-                const target = (t.stdout ?? '').trim().split('/').filter(Boolean).pop();
-                if (target) needed.add(target);
-              }
-              const inc = await ssh.execCommand(
-                `sudo -n grep -oP '(?<=include ")[^"]*(?=")' /root/mme/config/mme.cfg 2>/dev/null || true`);
-              for (const n of String(inc.stdout ?? '').split('\n').map(x => x.trim()).filter(Boolean)) needed.add(n);
-
-              for (const [name, dir] of [
-                [item.callboxCfg, '/root/enb/config'],
-                [item.mmeCfg, '/root/mme/config'],
-                [item.imsCfg, '/root/mme/config'],
-                // The DB and the mme copy that includes it, and the ots pick.
-                // Without these the derived copy stayed behind every run,
-                // unreferenced, accumulating in /root/mme/config.
-                [item.dbCfg, '/root/mme/config'],
-                [mmePick !== item.mmeCfg ? mmePick : undefined, '/root/mme/config'],
-                [item.otsCfg, '/root/ots/config'],
-              ] as const) {
-                if (!name) continue;
-                // Never the live links themselves — only what they point at.
-                if (['enb.cfg', 'mme.cfg', 'ims.cfg', 'ots.cfg'].includes(name)) continue;
-                if (needed.has(name)) { kept.push(name); continue; }
-                // Only what THIS run put on the box. Removing configs that were
-                // already there took them out of the pickers and emptied the
-                // Database column, because both read the callbox: a file the
-                // box no longer has cannot be offered, and an mme cfg that is
-                // gone has no include line to name a DB. The folder keeps its
-                // own copy either way.
-                if (!addedThisRun.has(name)) { kept.push(name); continue; }
-                const p = `${dir}/${name}`;
-                const r = await ssh.execCommand(`sudo -n rm -f ${sq(p)} 2>/dev/null || rm -f ${sq(p)}`);
-                if (r.code === 0) removed.push(name);
-              }
-            });
-            if (removed.length) {
-              stepDetails.push(`cfg-cleanup: removed ${removed.join(', ')} from the callbox — kept in ${testCaseDir(cfgFrom, item.name)}`);
+              });
             }
-            if (kept.length) {
-              stepDetails.push(`cfg-cleanup: left ${kept.join(', ')} in place — the callbox still points at it`);
-            }
+            stepDetails.push(
+              'cfg-cleanup: left the callbox on this test case’s own configs'
+              + (otsWasPlain ? ' — ots.cfg restored to the plain file it was' : ''));
           }
         } catch { /* cleanup is best-effort — never changes the verdict */ }
       }

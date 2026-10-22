@@ -32,6 +32,8 @@ import { powerOnOf } from '@/lib/automation/durationFit';
 import { useConfirm } from '@/components/ConfirmDialog';
 // Post-Execution Processing rules -- see PostRules.tsx.
 import PostRules, { type PostRuleDraft } from './PostRules';
+// A row is named <test case>_automation -- once, never twice. See rowName.ts.
+import { defaultRowNameFor as defaultRowName } from '@/lib/automation/rowName';
 
 interface SystemRow {
   id: string; name: string; host: string; type: string;
@@ -92,19 +94,6 @@ const NOT_CONFIGURED = <span className="font-sans text-slate-400">Not configured
 
 /* The read-only cfg box that used to live here is gone: the DB and ots fields
    were the only two that used it, and both are now pickers like the rest. */
-
-/**
- * What a row is called on the Simnovator by default: the source testcase's
- * name with "_automation" after it.
- *
- * A suite row creates its OWN testcase on the box (names are unique there), so
- * it needs a name of its own — and one that says where it came from and that a
- * suite made it, rather than a bare copy of the original sitting beside it.
- */
-function defaultRowName(testcaseName?: string): string {
-  const base = (testcaseName ?? '').trim();
-  return base ? `${base}_automation` : '';
-}
 
 /** Options for a cfg picker: uploads first, then what is on the callbox. */
 function cfgOptions(files: Array<{ name: string; mtime?: string }>, uploaded: Record<string, string> = {}) {
