@@ -31,14 +31,6 @@ interface Ticket {
   runnable: boolean; blockedReason?: string;
 }
 
-/** PASS green, FAIL red, BLOCKED amber, NOT EXECUTED grey — requirement 6. */
-const STATUS_STYLE: Record<string, string> = {
-  'PASS': 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  'FAIL': 'bg-red-50 text-red-700 border-red-200',
-  'BLOCKED': 'bg-amber-50 text-amber-800 border-amber-200',
-  'NOT EXECUTED': 'bg-slate-50 text-slate-500 border-slate-200',
-};
-
 interface Result {
   key: string; summary: string; category: string; status: string;
   expected: string; actual: string; error?: string; failedStep?: string;
@@ -47,15 +39,46 @@ interface Result {
 }
 interface RunCounts { total: number; done: number; passed: number; failed: number; blocked: number; notExecuted: number }
 
-export default function JiraCategories({ systemId, headless }: { systemId?: string; headless?: boolean }) {
+/**
+ * A Jira ticket shaped like the page's own result rows.
+ *
+ * The results list, its All/Failed/Passed/Pending chips and its search box
+ * already exist and already work. Building a second list beside them would
+ * mean two places to look and two sets of filters to keep in step, so the
+ * tickets are handed over in the shape that list already renders.
+ */
+export interface JiraRow {
+  id: string;
+  number: number;
+  name: string;
+  description: string;
+  category: string;
+  severity: 'critical' | 'normal' | 'optional';
+  state: 'pass' | 'fail' | 'skip' | 'pending';
+  detail?: string;
+  expected?: string;
+  durationMs?: number;
+  /** The ticket's own evidence, for the expanded panel. */
+  jiraKey: string;
+  jiraUrl: string;
+  recording?: string;
+  recordingUnavailable?: string;
+  screenshots?: string[];
+  failedStep?: string;
+}
+
+export default function JiraCategories({ systemId, headless, onRows }: {
+  systemId?: string;
+  headless?: boolean;
+  /** Hands the chosen category's tickets to the page's results list. */
+  onRows?: (rows: JiraRow[]) => void;
+}) {
   const [meta, setMeta] = useState<CategoriesResponse | null>(null);
   const [picked, setPicked] = useState<string>('');
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [open, setOpen] = useState<string>('');
   const [runnableOnly, setRunnableOnly] = useState(false);
-  const [picks, setPicks] = useState<Set<string>>(new Set());
   const [runId, setRunId] = useState('');
   const [results, setResults] = useState<Record<string, Result>>({});
   const [counts, setCounts] = useState<RunCounts | null>(null);
@@ -74,7 +97,7 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
   useEffect(() => { void load(); }, [load]);
 
   const pick = useCallback(async (name: string) => {
-    setPicked(name); setTickets([]); setError(''); setOpen(''); setStatusFilter('ALL'); setPicks(new Set());
+    setPicked(name); setTickets([]); setError(''); setStatusFilter('ALL');
     if (!name) return;
     setLoading(true);
     try {
@@ -139,11 +162,41 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
     return n;
   }, [tickets, statusOf]);
 
-  const shown = useMemo(() => {
-    let rows = runnableOnly ? tickets.filter((t) => t.runnable) : tickets;
-    if (statusFilter !== 'ALL') rows = rows.filter((t) => statusOf(t) === statusFilter);
-    return rows;
-  }, [tickets, runnableOnly, statusFilter, statusOf]);
+  // Hand the tickets to the page's results list, in its own row shape, so
+  // they appear under the All/Failed/Passed/Pending chips that are already
+  // there rather than in a second list with a second set of filters.
+  useEffect(() => {
+    if (!onRows) return;
+    onRows(tickets.map((t, i) => {
+      const res = results[t.key];
+      const state: JiraRow['state'] = res?.status === 'PASS' ? 'pass'
+        : res?.status === 'FAIL' ? 'fail'
+        // BLOCKED is not a failure of the product — it is a ticket that could
+        // not be asserted. 'skip' is the list's word for that.
+        : res?.status === 'BLOCKED' || !t.runnable ? 'skip'
+        : 'pending';
+      return {
+        id: `jira:${t.key}`,
+        number: i + 1,
+        name: `${t.key} — ${t.summary}`,
+        description: t.runnable
+          ? (t.expected || 'no expected result stated')
+          : (t.blockedReason ?? 'cannot be tested'),
+        category: t.category,
+        severity: 'normal' as const,
+        state,
+        detail: res ? (res.error ? `${res.actual} · ${res.error}` : res.actual) : undefined,
+        expected: t.expected || undefined,
+        durationMs: res?.durationMs,
+        jiraKey: t.key,
+        jiraUrl: t.url,
+        recording: res?.recording,
+        recordingUnavailable: res?.recordingUnavailable,
+        screenshots: res?.screenshots,
+        failedStep: res?.failedStep,
+      };
+    }));
+  }, [tickets, results, onRows]);
   const summary = useMemo(() => ({
     total: tickets.length,
     runnable: tickets.filter((t) => t.runnable).length,
@@ -240,11 +293,6 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
               className="rounded-md bg-primary-600 hover:bg-primary-700 disabled:bg-slate-300 text-white text-[11px] font-semibold px-3 py-1.5">
               ▶ Run Category
             </button>
-            <button type="button" disabled={running || picks.size === 0}
-              onClick={() => void start({ category: picked, keys: [...picks] })}
-              className="rounded-md border border-primary-600 text-primary-700 hover:bg-primary-50 disabled:border-slate-300 disabled:text-slate-400 text-[11px] font-semibold px-3 py-1.5">
-              ▶ Run Selected{picks.size > 0 ? ` (${picks.size})` : ''}
-            </button>
             <button type="button" disabled={running || Object.values(results).every((r) => r.status !== 'FAIL')}
               onClick={() => void start({
                 category: picked,
@@ -279,173 +327,17 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
             )}
           </div>
 
-          {/* All / Passed / Failed / Blocked / Pending, with the tickets
-              underneath. Counted over the whole category rather than the
-              filtered view, so the numbers do not move as you click. */}
-          <div className="flex flex-wrap items-center gap-1 px-3 py-2 border-b border-line">
-            {([
-              ['ALL', 'All', 'border-slate-300 text-slate-700 bg-white'],
-              ['PASS', 'Passed', 'border-emerald-300 text-emerald-800 bg-emerald-50'],
-              ['FAIL', 'Failed', 'border-red-300 text-red-700 bg-red-50'],
-              ['BLOCKED', 'Blocked', 'border-amber-300 text-amber-800 bg-amber-50'],
-              ['NOT EXECUTED', 'Pending', 'border-slate-300 text-slate-500 bg-slate-50'],
-            ] as Array<[string, string, string]>).map(([id, label, tone]) => (
-              <button key={id} type="button" onClick={() => setStatusFilter(id)}
-                className={'rounded-full border px-2.5 py-0.5 text-[11px] font-medium tabular-nums transition-colors '
-                  + (statusFilter === id ? `${tone} ring-2 ring-primary-300` : 'border-line text-slate-500 hover:bg-slate-50')}>
-                {label} {tallies[id] ?? 0}
-              </button>
-            ))}
-          </div>
-
-          {loading ? (
-            <p className="px-3 py-3 text-xs text-slate-500">Loading tickets…</p>
-          ) : shown.length === 0 ? (
-            <p className="px-3 py-3 text-xs text-slate-500">
-              {statusFilter === 'ALL'
-                ? 'No tickets to show.'
-                : `No tickets are ${statusFilter.toLowerCase()} in this category yet.`}
-            </p>
-          ) : (
-            <div className="max-h-[32rem] overflow-y-auto divide-y divide-slate-100">
-              {shown.map((t) => {
-                const res = results[t.key];
-                // The run's verdict wins once there is one; before that a
-                // ticket that cannot be tested already reads BLOCKED.
-                const status = res?.status ?? (t.runnable ? 'NOT EXECUTED' : 'BLOCKED');
-                return (
-                  <div key={t.key} className="px-3 py-2">
-                    <div className="flex items-start gap-2">
-                      <input type="checkbox" className="mt-1 accent-primary-600"
-                        checked={picks.has(t.key)}
-                        onChange={() => setPicks((p) => {
-                          const n = new Set(p);
-                          if (n.has(t.key)) n.delete(t.key); else n.add(t.key);
-                          return n;
-                        })}
-                        aria-label={`Select ${t.key}`} />
-                      <span className={'shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold ' + STATUS_STYLE[status]}>
-                        {status}
-                      </span>
-                      <a href={t.url} target="_blank" rel="noreferrer"
-                        className="shrink-0 font-mono text-[11px] text-primary-700 hover:underline">{t.key}</a>
-                      <span className="min-w-0 flex-1 text-xs text-slate-800">{t.summary}</span>
-                      {/* Run this one ticket, on its own, with its own
-                          recording. Absent when the ticket cannot be tested —
-                          a Run that can only ever report "cannot be tested"
-                          is a button that lies about what it does. */}
-                      {t.runnable && (
-                        <button type="button" disabled={running}
-                          onClick={() => void start({ category: picked, keys: [t.key] })}
-                          title={`Run ${t.key} on its own and record it`}
-                          className="shrink-0 rounded bg-primary-600 hover:bg-primary-700 disabled:bg-slate-300 text-white text-[10px] font-semibold px-2 py-0.5">
-                          ▶ Run
-                        </button>
-                      )}
-                      <button type="button" onClick={() => setOpen(open === t.key ? '' : t.key)}
-                        className="shrink-0 text-[11px] text-slate-500 hover:text-slate-900 hover:underline">
-                        {open === t.key ? 'hide' : 'details'}
-                      </button>
-                    </div>
-                    <div className="mt-0.5 ml-[4.2rem] flex flex-wrap gap-x-3 text-[10px] text-slate-500">
-                      <span>{t.type}</span>
-                      {/* Jira's own resolution, kept distinct from any result
-                          this tool produces — requirement 8. */}
-                      <span>Jira: {t.jiraStatus}{t.jiraResolution ? ` / ${t.jiraResolution}` : ''}</span>
-                      {t.pages.length > 0 && <span>pages: {t.pages.join(' → ')}</span>}
-                      {t.steps.length > 0 && <span>{t.steps.length} steps</span>}
-                      {t.testTypes.length > 0 && <span>{t.testTypes.join(', ')}</span>}
-                    </div>
-
-                    {/* The result of THIS ticket's execution: what happened,
-                        the exact error, its own recording and its own
-                        screenshots — requirement 6. */}
-                    {res && (
-                      <div className="mt-1 ml-[5.6rem] space-y-1 text-[11px]">
-                        {/* Expected beside actual, always both — a verdict
-                            you cannot check against the ticket is just an
-                            assertion about an assertion. */}
-                        {res.expected && (
-                          <p className="text-slate-600"><b>Expected:</b> {res.expected}</p>
-                        )}
-                        <p className={res.status === 'FAIL' ? 'text-red-700' : res.status === 'PASS' ? 'text-emerald-700' : 'text-amber-800'}>
-                          <b>{res.status === 'PASS' ? 'Verified:' : 'Actual:'}</b> {res.actual}
-                        </p>
-                        {res.error && res.status !== 'PASS' && (
-                          <p className={res.status === 'FAIL' ? 'text-red-700' : 'text-amber-800'}>
-                            <b>{res.status === 'FAIL' ? 'Error:' : 'Why not asserted:'}</b> {res.error}
-                          </p>
-                        )}
-                        {res.failedStep && <p className="text-slate-600"><b>Failed at:</b> {res.failedStep}</p>}
-                        <p className="flex flex-wrap items-center gap-2 text-slate-500">
-                          {res.recording ? (
-                            <a href={`/api/jira-ui/evidence/${res.recording}`} target="_blank" rel="noreferrer"
-                              className="text-primary-700 hover:underline">▶ play recording</a>
-                          ) : (
-                            <span className="text-amber-700">
-                              recording unavailable{res.recordingUnavailable ? ` — ${res.recordingUnavailable}` : ''}
-                            </span>
-                          )}
-                          {res.screenshots?.map((s, i) => (
-                            <a key={s} href={`/api/jira-ui/evidence/${s}`} target="_blank" rel="noreferrer"
-                              className="text-primary-700 hover:underline">shot {i + 1}</a>
-                          ))}
-                          <span className="tabular-nums">{Math.round(res.durationMs / 1000)}s</span>
-                          <span>{new Date(res.startedAt).toLocaleTimeString()}</span>
-                          <button type="button" onClick={() => void start({ category: picked, keys: [t.key] })}
-                            disabled={running} className="text-slate-500 hover:text-slate-900 hover:underline disabled:text-slate-300">
-                            rerun
-                          </button>
-                        </p>
-                      </div>
-                    )}
-
-                    {open === t.key && (
-                      <div className="mt-2 ml-[4.2rem] space-y-2 text-[11px]">
-                        {!t.runnable && (
-                          <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">
-                            <b>Cannot be tested:</b> {t.blockedReason}
-                          </p>
-                        )}
-                        {t.expected && (
-                          <p>
-                            <b className="text-slate-700">Expected:</b> {t.expected}{' '}
-                            <span className={'rounded border px-1 ' + (t.expectedSource === 'stated'
-                              ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                              : 'border-sky-200 bg-sky-50 text-sky-800')}>
-                              {t.expectedSource === 'stated'
-                                ? 'stated in the ticket'
-                                : 'derived from the defect summary'}
-                            </span>
-                          </p>
-                        )}
-                        {t.observed && (
-                          <p><b className="text-slate-700">Reported behaviour:</b> {t.observed}</p>
-                        )}
-                        {t.steps.length > 0 && (
-                          <ol className="space-y-0.5">
-                            {t.steps.map((s) => (
-                              <li key={s.n} className="flex gap-2">
-                                <span className="shrink-0 text-slate-400 tabular-nums">{s.n}.</span>
-                                <span className={s.isCheck ? 'text-slate-900' : 'text-slate-600'}>
-                                  {s.text}
-                                  {s.page && <span className="ml-1 text-[10px] text-primary-700">[{s.page}]</span>}
-                                  {s.isCheck && <span className="ml-1 text-[10px] text-amber-700">check</span>}
-                                </span>
-                              </li>
-                            ))}
-                          </ol>
-                        )}
-                        <p className="text-slate-400">
-                          categorised because {t.categoryWhy?.join('; ') || 'no signal'}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          {/* The tickets themselves are rendered by the page's results
+              list below, under its own All/Failed/Passed/Pending chips and
+              its search box. One list, one set of filters -- two would have
+              meant two places to look and two things to keep in step. */}
+          <p className="px-3 py-2 text-[11px] text-slate-500">
+            {loading
+              ? 'Loading tickets…'
+              : `${summary.total} ticket${summary.total === 1 ? '' : 's'} listed below — `
+                + 'filter them with All / Failed / Passed / Pending, search them, and press '
+                + '▶ on any row to run that one on its own.'}
+          </p>
         </div>
         )}
       </div>

@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { useConfirm } from '@/components/ConfirmDialog';
 // The Jira-driven half of the profile — see JiraCategories.tsx.
-import JiraCategories from './JiraCategories';
+import JiraCategories, { type JiraRow } from './JiraCategories';
 
 // A category used to be one of sixteen fixed names. It is now any string,
 // because the categories that matter are the ones the selected setup actually
@@ -154,6 +154,9 @@ export default function UiTestsPage() {
   const [data, setData] = useState<RunResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  /** The chosen Jira category's tickets, as result rows. Empty when no
+   *  category is picked, and then the built-in catalogue is shown. */
+  const [jiraRows, setJiraRows] = useState<JiraRow[]>([]);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [runStatus, setRunStatus] = useState<RunStatus>({ running: false });
@@ -435,6 +438,26 @@ export default function UiTestsPage() {
   }
 
   async function run(opts?: { onlyId?: string; idsToRun?: string[] }) {
+    // A Jira ticket row runs through the Jira executor, not this one. Its
+    // ids carry a "jira:" prefix for exactly this reason — the row sits in
+    // the same list as the built-in checks, and Run on it has to reach the
+    // thing that knows how to walk a ticket's steps and record it.
+    if (opts?.onlyId?.startsWith('jira:')) {
+      const key = opts.onlyId.slice('jira:'.length);
+      setBusy(true); setErr(null); setSingleRunningId(opts.onlyId);
+      try {
+        const r = await fetch('/api/jira-ui/run', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ systemId: targetSystemId, keys: [key], headless }),
+        }).then((x) => x.json());
+        if (!r.ok) throw new Error(r.error ?? 'the ticket could not be run');
+      } catch (e: any) {
+        setErr(e?.message ?? String(e));
+      } finally {
+        setBusy(false); setSingleRunningId(null);
+      }
+      return;
+    }
     setBusy(true); setErr(null);
     if (!opts?.onlyId && !opts?.idsToRun) { setData(null); setExpanded(new Set()); }
     if (opts?.onlyId) setSingleRunningId(opts.onlyId);
@@ -602,6 +625,14 @@ export default function UiTestsPage() {
     | (CatalogEntry & { state: 'running' })
     | (UiTestResult & { state: 'pass' | 'fail' | 'skip' });
   const rows: Row[] = useMemo(() => {
+    // A chosen Jira category takes the list over.
+    //
+    // The two are different universes — 156 built-in checks against 996 Jira
+    // tickets — and showing them interleaved would mean a filter chip
+    // counting apples and oranges together. Picking a category is a clear
+    // statement of which one you want to look at; clearing it gives the
+    // built-in catalogue back.
+    if (jiraRows.length > 0) return jiraRows as unknown as Row[];
     if (!catalog && uiChecks.length === 0) return [];
     const liveById = new Map((runStatus.liveResults ?? []).map((r) => [r.id, r]));
     const finalById = data ? new Map(data.results.map((r) => [r.id, r])) : null;
@@ -612,7 +643,7 @@ export default function UiTestsPage() {
       if (runningSet.has(c.id)) return { ...c, state: 'running' as const };
       return { ...c, state: 'pending' as const };
     });
-  }, [data, catalog, allCatalog, uiChecks, enabled, runStatus.liveResults, runStatus.runningTestIds]);
+  }, [data, catalog, allCatalog, uiChecks, enabled, runStatus.liveResults, runStatus.runningTestIds, jiraRows]);
 
   const visible = useMemo(() => {
     const ql = search.trim().toLowerCase();
@@ -939,7 +970,7 @@ export default function UiTestsPage() {
               built-in catalogue. The categories above are untouched. */}
           <Card>
             <CardHeader><CardTitle>Jira Categories</CardTitle></CardHeader>
-            <CardBody><JiraCategories systemId={targetSystemId} headless={headless} /></CardBody>
+            <CardBody><JiraCategories systemId={targetSystemId} headless={headless} onRows={setJiraRows} /></CardBody>
           </Card>
 
           <Card>
