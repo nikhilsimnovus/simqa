@@ -259,6 +259,18 @@ export interface SuiteItem {
    *  terminal state. Falls back to the suite's defaultDurationSec
    *  (or 10) when absent. */
   durationSec?: number;
+  /**
+   * Post-execution processing rules for this row.
+   *
+   * Checked against the OTA RRC/NAS messages in the execution's own log once
+   * it finishes — see src/lib/postProcess. Absent or empty means no
+   * post-processing, and the row's execution result stands untouched.
+   *
+   * Typed loosely here on purpose: inventory.ts is imported by almost
+   * everything, and the rule shape belongs to postProcess/rules.ts. The
+   * editor and the processor both narrow it to PostRule.
+   */
+  postRules?: Array<Record<string, unknown>>;
 }
 
 export interface AutomationSuite {

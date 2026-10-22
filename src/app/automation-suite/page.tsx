@@ -30,6 +30,8 @@ import { validateCfg, dbIncludesOf, ROLE_LABEL, type CfgRole, type CfgVerdict } 
 // test case and one on the box are understood the same way.
 import { powerOnOf } from '@/lib/automation/durationFit';
 import { useConfirm } from '@/components/ConfirmDialog';
+// Post-Execution Processing rules -- see PostRules.tsx.
+import PostRules, { type PostRuleDraft } from './PostRules';
 
 interface SystemRow {
   id: string; name: string; host: string; type: string;
@@ -150,6 +152,9 @@ interface SuiteItem {
    *  already on. */
   otsCfg?: string;
   durationSec?: number;
+  /** Post-execution processing rules — see PostRules.tsx and
+   *  src/lib/postProcess. Absent means no post-processing for this row. */
+  postRules?: PostRuleDraft[];
 }
 interface SuiteRow {
   id: string; name: string;
@@ -457,6 +462,8 @@ export default function AutomationSuitePage() {
    *  window the box allows. Typing over it is the point — it is the field the
    *  whole duration fit is driven from. */
   const [addDur,   setAddDur]           = useState<string>('');
+  /** Post-execution processing rules for the row being added. */
+  const [addPostRules, setAddPostRules] = useState<PostRuleDraft[]>([]);
   /** What the picked test case holds, for the line under that field: the
    *  figure itself, the other windows when its power-cycle profiles disagree,
    *  and what kind of traffic it is. */
@@ -3145,6 +3152,24 @@ export default function AutomationSuitePage() {
                           </tr>
                         );
                       })}
+                      {/* A saved row's post-processing rules, editable in
+                          place. Shown under the row it belongs to, and only
+                          while that row is being edited, so the table stays a
+                          table. */}
+                      {groupItems.map((it) => (editRowId === it.id ? (
+                        <tr key={`${it.id}-post`}>
+                          <td colSpan={99} className="px-2 py-2 bg-slate-50/60 border-t border-line">
+                            <PostRules
+                              compact
+                              rules={it.postRules ?? []}
+                              onChange={(next) => setItems(items.map((x) => (x.id === it.id
+                                ? { ...x, postRules: next.filter((r) => r.messageName.trim()).length
+                                    ? next.filter((r) => r.messageName.trim())
+                                    : undefined }
+                                : x)))} />
+                          </td>
+                        </tr>
+                      ) : null))}
                     </tbody>
                   </table>
                 </div>
@@ -3406,6 +3431,14 @@ export default function AutomationSuitePage() {
                       </span>
                     </label>
                   </>)}
+                  {/* Post-Execution Processing — configured here because this
+                      is where you know what the test is meant to do. Checked
+                      against the OTA RRC/NAS log of this row's own execution
+                      once it finishes. */}
+                  <div className="col-span-3 border-t border-line pt-3 mt-1">
+                    <PostRules rules={addPostRules} onChange={setAddPostRules} />
+                  </div>
+
                   <div className="col-span-3 flex gap-2 justify-end">
                     <button type="button" onClick={async () => {
                       if (!addTcId) return;
@@ -3465,8 +3498,16 @@ export default function AutomationSuitePage() {
                         // test case nor the operator named one, which is when
                         // falling back to the suite default is the honest thing.
                         durationSec: addDur.trim() ? Math.max(MIN_POWER_ON, Number(addDur) || MIN_POWER_ON) : undefined,
+                        // Post-execution processing, if any was configured.
+                        // Rules with no message name are dropped: an unnamed
+                        // rule can never be checked, and carrying it would
+                        // make the row fail for a reason nobody chose.
+                        postRules: addPostRules.filter((r) => r.messageName.trim()).length
+                          ? addPostRules.filter((r) => r.messageName.trim())
+                          : undefined,
                       };
                       setItems([...items, newItem]);
+                      setAddPostRules([]);
                       setAddTcId(''); setAddCfg(''); setAddMme(''); setAddIms(''); setAddDisplayName('');
                       setAddDb(''); dbFollowedMme.current = '';
                       setAddDur(''); setAddDurSrc(null);

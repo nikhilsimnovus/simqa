@@ -55,6 +55,16 @@ export async function POST(req: Request) {
         mmeCfg: typeof it.mmeCfg === 'string' && it.mmeCfg.trim() ? it.mmeCfg.trim() : undefined,
         imsCfg: typeof it.imsCfg === 'string' && it.imsCfg.trim() ? it.imsCfg.trim() : undefined,
         durationSec: typeof it.durationSec === 'number' && it.durationSec > 0 ? it.durationSec : undefined,
+        // Post-execution processing rules travel with the row. Only rules
+        // that name a message are kept: one without a name can never be
+        // checked, and keeping it would fail the row for nothing.
+        postRules: Array.isArray(it.postRules)
+          ? (() => {
+              const kept = it.postRules.filter(
+                (r: any) => r && typeof r === 'object' && typeof r.messageName === 'string' && r.messageName.trim());
+              return kept.length ? kept : undefined;
+            })()
+          : undefined,
       })) : undefined,
       testcaseIds: Array.isArray(body.testcaseIds) ? body.testcaseIds : [],
       stopOnFail: !!body.stopOnFail,
