@@ -61,6 +61,8 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
   const [counts, setCounts] = useState<RunCounts | null>(null);
   const [running, setRunning] = useState(false);
   const [max, setMax] = useState('10');
+  /** Which status the list is filtered to. 'ALL' shows everything. */
+  const [statusFilter, setStatusFilter] = useState<string>('ALL');
 
   const load = useCallback(async () => {
     try {
@@ -72,7 +74,7 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
   useEffect(() => { void load(); }, [load]);
 
   const pick = useCallback(async (name: string) => {
-    setPicked(name); setTickets([]); setError(''); setOpen('');
+    setPicked(name); setTickets([]); setError(''); setOpen(''); setStatusFilter('ALL'); setPicks(new Set());
     if (!name) return;
     setLoading(true);
     try {
@@ -122,10 +124,26 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
     await fetch(`/api/jira-ui/runs/${runId}`, { method: 'DELETE' }).catch(() => {});
   }, [runId]);
 
-  const shown = useMemo(
-    () => (runnableOnly ? tickets.filter((t) => t.runnable) : tickets),
-    [tickets, runnableOnly],
+  /** A ticket's status: the run's verdict once there is one, and before that
+   *  BLOCKED for anything that cannot be tested at all. */
+  const statusOf = useCallback(
+    (t: Ticket) => results[t.key]?.status ?? (t.runnable ? 'NOT EXECUTED' : 'BLOCKED'),
+    [results],
   );
+
+  /** How many tickets sit under each chip. Counted over the whole category,
+   *  not the filtered view, or the chips would change as you click them. */
+  const tallies = useMemo(() => {
+    const n: Record<string, number> = { ALL: tickets.length, PASS: 0, FAIL: 0, BLOCKED: 0, 'NOT EXECUTED': 0 };
+    for (const t of tickets) n[statusOf(t)] = (n[statusOf(t)] ?? 0) + 1;
+    return n;
+  }, [tickets, statusOf]);
+
+  const shown = useMemo(() => {
+    let rows = runnableOnly ? tickets.filter((t) => t.runnable) : tickets;
+    if (statusFilter !== 'ALL') rows = rows.filter((t) => statusOf(t) === statusFilter);
+    return rows;
+  }, [tickets, runnableOnly, statusFilter, statusOf]);
   const summary = useMemo(() => ({
     total: tickets.length,
     runnable: tickets.filter((t) => t.runnable).length,
@@ -195,9 +213,16 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
               fill in once a run exists. */}
           <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-line bg-slate-50/60">
             <span className="text-xs font-semibold text-slate-900">{picked}</span>
+            {/* Real counts, from the run as it goes — not placeholders. */}
             <span className="text-[11px] text-slate-600 tabular-nums">
-              {summary.total} total · {summary.runnable} runnable · {summary.blocked} blocked ·
-              {' '}0 passed · 0 failed · {summary.total} not executed
+              {summary.total} total · {summary.runnable} runnable ·{' '}
+              <b className="text-emerald-700">{tallies.PASS ?? 0} passed</b> ·{' '}
+              <b className="text-red-700">{tallies.FAIL ?? 0} failed</b> ·{' '}
+              <b className="text-amber-700">{tallies.BLOCKED ?? 0} blocked</b> ·{' '}
+              {tallies['NOT EXECUTED'] ?? 0} pending
+              {counts && counts.total > 0 && (
+                <> · {Math.round((counts.done / Math.max(1, counts.total)) * 100)}% complete</>
+              )}
             </span>
             <label className="ml-auto flex items-center gap-1.5 text-[11px] text-slate-600">
               <input type="checkbox" checked={runnableOnly}
@@ -254,10 +279,33 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
             )}
           </div>
 
+          {/* All / Passed / Failed / Blocked / Pending, with the tickets
+              underneath. Counted over the whole category rather than the
+              filtered view, so the numbers do not move as you click. */}
+          <div className="flex flex-wrap items-center gap-1 px-3 py-2 border-b border-line">
+            {([
+              ['ALL', 'All', 'border-slate-300 text-slate-700 bg-white'],
+              ['PASS', 'Passed', 'border-emerald-300 text-emerald-800 bg-emerald-50'],
+              ['FAIL', 'Failed', 'border-red-300 text-red-700 bg-red-50'],
+              ['BLOCKED', 'Blocked', 'border-amber-300 text-amber-800 bg-amber-50'],
+              ['NOT EXECUTED', 'Pending', 'border-slate-300 text-slate-500 bg-slate-50'],
+            ] as Array<[string, string, string]>).map(([id, label, tone]) => (
+              <button key={id} type="button" onClick={() => setStatusFilter(id)}
+                className={'rounded-full border px-2.5 py-0.5 text-[11px] font-medium tabular-nums transition-colors '
+                  + (statusFilter === id ? `${tone} ring-2 ring-primary-300` : 'border-line text-slate-500 hover:bg-slate-50')}>
+                {label} {tallies[id] ?? 0}
+              </button>
+            ))}
+          </div>
+
           {loading ? (
             <p className="px-3 py-3 text-xs text-slate-500">Loading tickets…</p>
           ) : shown.length === 0 ? (
-            <p className="px-3 py-3 text-xs text-slate-500">No tickets to show.</p>
+            <p className="px-3 py-3 text-xs text-slate-500">
+              {statusFilter === 'ALL'
+                ? 'No tickets to show.'
+                : `No tickets are ${statusFilter.toLowerCase()} in this category yet.`}
+            </p>
           ) : (
             <div className="max-h-[32rem] overflow-y-auto divide-y divide-slate-100">
               {shown.map((t) => {
