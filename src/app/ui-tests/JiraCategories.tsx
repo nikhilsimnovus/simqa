@@ -158,33 +158,39 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
         </span>
       </div>
 
-      {/* Categories. The runnable count is shown beside the total because it
-          is what decides whether running the category is worth it. */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5">
-        {(meta.categories ?? []).map((c) => (
-          <button key={c.name} type="button" onClick={() => void pick(c.name)}
-            className={'text-left rounded-md border px-2.5 py-2 transition-colors '
-              + (picked === c.name
-                ? 'border-primary-400 bg-primary-50'
-                : 'border-line hover:bg-slate-50')}>
-            <div className="text-xs font-medium text-slate-900 leading-snug">{c.name}</div>
-            <div className="mt-0.5 text-[11px] text-slate-500 tabular-nums">
-              <b className="text-slate-800">{c.total}</b> tickets ·{' '}
-              <span className={c.runnable > 0 ? 'text-emerald-700' : 'text-slate-400'}>
-                {c.runnable} runnable
-              </span>
-              {c.blocked > 0 && <> · <span className="text-amber-700">{c.blocked} blocked</span></>}
-            </div>
-          </button>
-        ))}
-      </div>
-
       {error && (
         <div className="text-xs rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-700">{error}</div>
       )}
 
-      {picked && (
-        <div className="rounded-md border border-line">
+      {/* Categories on the left, the chosen one's tickets on the right.
+          A category list that pushed 297 rows beneath it meant scrolling
+          past the whole thing to reach the next category. */}
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(13rem,17rem)_1fr] gap-3 items-start">
+        <div className="space-y-1 lg:max-h-[38rem] lg:overflow-y-auto lg:pr-1">
+          {(meta.categories ?? []).map((c) => (
+            <button key={c.name} type="button" onClick={() => void pick(c.name)}
+              className={'w-full text-left rounded-md border px-2.5 py-2 transition-colors '
+                + (picked === c.name
+                  ? 'border-primary-400 bg-primary-50'
+                  : 'border-line hover:bg-slate-50')}>
+              <div className="text-xs font-medium text-slate-900 leading-snug">{c.name}</div>
+              <div className="mt-0.5 text-[11px] text-slate-500 tabular-nums">
+                <b className="text-slate-800">{c.total}</b> ·{' '}
+                <span className={c.runnable > 0 ? 'text-emerald-700' : 'text-slate-400'}>
+                  {c.runnable} runnable
+                </span>
+                {c.blocked > 0 && <> · <span className="text-amber-700">{c.blocked} blocked</span></>}
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {!picked ? (
+          <div className="rounded-md border border-dashed border-line px-4 py-10 text-center">
+            <p className="text-xs text-slate-500">Pick a category to see its tickets.</p>
+          </div>
+        ) : (
+        <div className="rounded-md border border-line min-w-0">
           {/* Category summary — requirement 7. Real counts; the executed ones
               fill in once a run exists. */}
           <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-line bg-slate-50/60">
@@ -276,6 +282,18 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
                       <a href={t.url} target="_blank" rel="noreferrer"
                         className="shrink-0 font-mono text-[11px] text-primary-700 hover:underline">{t.key}</a>
                       <span className="min-w-0 flex-1 text-xs text-slate-800">{t.summary}</span>
+                      {/* Run this one ticket, on its own, with its own
+                          recording. Absent when the ticket cannot be tested —
+                          a Run that can only ever report "cannot be tested"
+                          is a button that lies about what it does. */}
+                      {t.runnable && (
+                        <button type="button" disabled={running}
+                          onClick={() => void start({ category: picked, keys: [t.key] })}
+                          title={`Run ${t.key} on its own and record it`}
+                          className="shrink-0 rounded bg-primary-600 hover:bg-primary-700 disabled:bg-slate-300 text-white text-[10px] font-semibold px-2 py-0.5">
+                          ▶ Run
+                        </button>
+                      )}
                       <button type="button" onClick={() => setOpen(open === t.key ? '' : t.key)}
                         className="shrink-0 text-[11px] text-slate-500 hover:text-slate-900 hover:underline">
                         {open === t.key ? 'hide' : 'details'}
@@ -296,10 +314,20 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
                         screenshots — requirement 6. */}
                     {res && (
                       <div className="mt-1 ml-[5.6rem] space-y-1 text-[11px]">
+                        {/* Expected beside actual, always both — a verdict
+                            you cannot check against the ticket is just an
+                            assertion about an assertion. */}
+                        {res.expected && (
+                          <p className="text-slate-600"><b>Expected:</b> {res.expected}</p>
+                        )}
                         <p className={res.status === 'FAIL' ? 'text-red-700' : res.status === 'PASS' ? 'text-emerald-700' : 'text-amber-800'}>
-                          <b>Actual:</b> {res.actual}
+                          <b>{res.status === 'PASS' ? 'Verified:' : 'Actual:'}</b> {res.actual}
                         </p>
-                        {res.error && <p className="text-red-700"><b>Error:</b> {res.error}</p>}
+                        {res.error && res.status !== 'PASS' && (
+                          <p className={res.status === 'FAIL' ? 'text-red-700' : 'text-amber-800'}>
+                            <b>{res.status === 'FAIL' ? 'Error:' : 'Why not asserted:'}</b> {res.error}
+                          </p>
+                        )}
                         {res.failedStep && <p className="text-slate-600"><b>Failed at:</b> {res.failedStep}</p>}
                         <p className="flex flex-wrap items-center gap-2 text-slate-500">
                           {res.recording ? (
@@ -371,7 +399,8 @@ export default function JiraCategories({ systemId, headless }: { systemId?: stri
             </div>
           )}
         </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
