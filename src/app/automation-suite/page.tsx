@@ -32,6 +32,8 @@ import { powerOnOf } from '@/lib/automation/durationFit';
 import { useConfirm } from '@/components/ConfirmDialog';
 // Post-Execution Processing rules -- see PostRules.tsx.
 import PostRules, { type PostRuleDraft } from './PostRules';
+// The Result cell, its hover summary, and the full report -- see PostReport.tsx.
+import PostReport, { PostResultCell } from './PostReport';
 // A row is named <test case>_automation -- once, never twice. See rowName.ts.
 import { defaultRowNameFor as defaultRowName } from '@/lib/automation/rowName';
 
@@ -673,6 +675,8 @@ export default function AutomationSuitePage() {
    *  outcome, and the Result it produced together with the execution's
    *  verdict. Empty for a row that configured no rules — the Result column
    *  then has nothing to say, which is not the same as a pass. */
+  /** Which row's full post-processing report is open, if any. */
+  const [postReportFor, setPostReportFor] = useState<{ suiteId: string; row: string } | null>(null);
   const [lastPost, setLastPost] = useState<Record<string, Record<string, {
     outcome?: string; result?: string; passedRules?: number; rules?: number; problem?: string;
   }>>>({});
@@ -2808,9 +2812,12 @@ export default function AutomationSuitePage() {
                                     {(() => {
                                       const rs = resultOf(s, it);
                                       return (
-                                        <td className={`px-2 py-1 whitespace-nowrap cursor-help ${rs.cls}`} title={rs.title}>
-                                          {rs.text}
-                                        </td>
+                                        <PostResultCell
+                                          suiteId={s.id} row={it.name}
+                                          text={rs.text} cls={rs.cls} title={rs.title}
+                                          // An em dash or an ellipsis has no report behind it yet.
+                                          hasResult={rs.text !== '—' && rs.text !== '…'}
+                                          onOpen={() => setPostReportFor({ suiteId: s.id, row: it.name })} />
                                       );
                                     })()}
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
@@ -3630,6 +3637,15 @@ export default function AutomationSuitePage() {
               </div>
             )}
           </section>
+        )}
+
+        {/* The full post-processing report for one row, opened by
+            double-clicking its Result. */}
+        {postReportFor && (
+          <PostReport
+            suiteId={postReportFor.suiteId}
+            row={postReportFor.row}
+            onClose={() => setPostReportFor(null)} />
         )}
 
         {/* Run result */}
