@@ -114,7 +114,12 @@ interface SuiteProgress {
   current?: string;
   statuses: Record<string, 'running' | 'passed' | 'failed' | 'skipped' | 'pending'>;
   /** The box's own status and verdict per row, as each one finishes. */
-  boxes?: Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean }>;
+  boxes?: Record<string, {
+    status?: string; result?: string; verdict?: string; stopped?: boolean;
+    /** Post-processing's outcome and the Result it produced — carried live so
+     *  a row that has just finished reads the same before the run is saved. */
+    post?: string; final?: string;
+  }>;
   finished?: boolean;
 }
 interface SuiteItem {
@@ -439,7 +444,7 @@ export default function AutomationSuitePage() {
   /** The per-suite test case table — the only resizable grid left here: the
    *  suites themselves are cards now, so there is nothing to drag around them. */
   const { colWidths: itemCols, tableWidth: itemsTableWidth, startResize: startItemResize } =
-    useColumnWidths([28, 24, 32, 240, 150, 150, 170, 150, 140, 130, 130, 90, 170]);
+    useColumnWidths([28, 24, 32, 240, 150, 150, 170, 150, 140, 130, 130, 90, 90, 170]);
   const [addCfg,   setAddCfg]           = useState<string>('');
   const [addMme,   setAddMme]           = useState<string>('');
   const [addIms,   setAddIms]           = useState<string>('');
@@ -664,6 +669,13 @@ export default function AutomationSuitePage() {
    *  verdict. Shown as-is, so the Status column can be read against the
    *  Simnovator's own screen rather than being SimQA's paraphrase of it. */
   const [lastBox, setLastBox] = useState<Record<string, Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean; boxTestcaseId?: string }>>>({});
+  /** What POST-EXECUTION PROCESSING made of each row last time: its own
+   *  outcome, and the Result it produced together with the execution's
+   *  verdict. Empty for a row that configured no rules — the Result column
+   *  then has nothing to say, which is not the same as a pass. */
+  const [lastPost, setLastPost] = useState<Record<string, Record<string, {
+    outcome?: string; result?: string; passedRules?: number; rules?: number; problem?: string;
+  }>>>({});
 
   /**
    * Where a row's report lives — the same validation page the dashboard opens,
@@ -806,6 +818,9 @@ export default function AutomationSuitePage() {
       const out: Record<string, Record<string, boolean>> = {};
       const reasons: Record<string, Record<string, string>> = {};
       const boxes: Record<string, Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean }>> = {};
+      const posts: Record<string, Record<string, {
+        outcome?: string; result?: string; passedRules?: number; rules?: number; problem?: string;
+      }>> = {};
       for (const s of suites) {
         try {
           // Dedicated endpoint: /runs returns summaries WITHOUT steps, so the
@@ -814,9 +829,10 @@ export default function AutomationSuitePage() {
           if (r?.ok && r.statuses) out[s.id] = r.statuses;
           if (r?.ok && r.details) reasons[s.id] = r.details;
           if (r?.ok && r.box) boxes[s.id] = r.box;
+          if (r?.ok && r.post) posts[s.id] = r.post;
         } catch { /* a suite with no history is fine */ }
       }
-      if (!cancelled) { setLastStatus(out); setLastDetail(reasons); setLastBox(boxes); }
+      if (!cancelled) { setLastStatus(out); setLastDetail(reasons); setLastBox(boxes); setLastPost(posts); }
     })();
     return () => { cancelled = true; };
   }, [suites, statusNonce]);
@@ -894,6 +910,58 @@ export default function AutomationSuitePage() {
     if (prev === undefined) return show({ neverRun: true });
     return show({ ok: prev, boxStatus: box?.status, verdict: box?.verdict, stopped: box?.stopped }, reason);
   }, [progress, lastStatus, lastDetail, lastBox, busyBySystem]);
+
+  /**
+   * What to show in the RESULT column for one row.
+   *
+   * A third value beside Status and Verdict, and deliberately not a
+   * replacement for either: Verdict stays the Simnovator's own PASS/FAIL for
+   * the execution, and this is that verdict combined with the row's
+   * post-execution processing rules — see postProcess/rules.ts.
+   *
+   * A row with no rules has nothing to say here, and says so with an em
+   * dash. It does NOT fall back to the verdict: a Result column that copies
+   * the Verdict column would read as though rules had been checked.
+   */
+  const resultOf = useCallback((s: SuiteRow, it: SuiteItem): {
+    text: string; cls: string; title?: string;
+  } => {
+    const rules = Array.isArray(it.postRules) ? it.postRules.length : 0;
+    const nothing = (title: string) => ({ text: '—', cls: 'text-slate-400', title });
+
+    const livePr = progress && progress.suiteId === s.id ? progress.statuses?.[it.name] : undefined;
+    if (livePr === 'running') {
+      return rules === 0
+        ? nothing('no post-execution processing configured for this row')
+        : { text: '…', cls: 'text-slate-400', title: 'the rules are checked against the OTA log once this row finishes' };
+    }
+
+    // Live where the run is still in flight, saved otherwise — the same
+    // precedence the Status column uses, so the two never disagree.
+    const liveBox = progress && progress.suiteId === s.id ? progress.boxes?.[it.name] : undefined;
+    const saved = lastPost[s.id]?.[it.name];
+    const src = liveBox?.final ? { result: liveBox.final, outcome: liveBox.post } : saved;
+
+    if (!src?.result) {
+      return nothing(rules === 0
+        ? 'no post-execution processing configured for this row'
+        : `${rules} rule${rules === 1 ? '' : 's'} configured — the Result appears once this row runs`);
+    }
+
+    const result = String(src.result).toUpperCase();
+    const outcome = (saved?.outcome ?? src.outcome ?? '').toUpperCase();
+    const cls = result === 'PASS' ? 'text-emerald-700 font-medium'
+      : result === 'FAIL' ? 'text-red-700 font-medium'
+      : 'text-amber-700';
+    const bits: string[] = [];
+    if (outcome) bits.push(`post-processing ${outcome}`);
+    if (saved?.rules !== undefined) {
+      bits.push(`${saved.passedRules ?? 0}/${saved.rules} rule${saved.rules === 1 ? '' : 's'} passed`);
+    }
+    if (saved?.problem) bits.push(saved.problem);
+    bits.push('the execution’s own verdict is in the Verdict column, untouched');
+    return { text: result, cls, title: bits.join(' · ') };
+  }, [progress, lastPost]);
 
   /** Rough wall-clock estimate for a run.
    *
@@ -2484,7 +2552,7 @@ export default function AutomationSuitePage() {
                                 <th className="px-2 py-1 text-left">#</th>
                                 {/* Drag any right edge — the cfg names are long
                                     and which one a row runs is the point. */}
-                                {['Test Case', 'gNB Configuration', 'MME Configuration', 'Database Configuration', 'IMS Configuration', 'OTS Configuration', 'Power-On Duration', 'Status', 'Verdict', 'Actions'].map((label, i) => (
+                                {['Test Case', 'gNB Configuration', 'MME Configuration', 'Database Configuration', 'IMS Configuration', 'OTS Configuration', 'Power-On Duration', 'Status', 'Verdict', 'Result', 'Actions'].map((label, i) => (
                                   <th key={label}
                                     className={'relative px-2 py-1 border-r border-slate-200 last:border-r-0 ' + (i >= 4 && i !== 5 ? 'text-right' : 'text-left')}>
                                     <span className="truncate block">{label}</span>
@@ -2639,8 +2707,9 @@ export default function AutomationSuitePage() {
                                           onBlur={e => setRowDraft({ ...rowDraft, durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
                                           className="border border-slate-300 rounded px-1 py-0.5 w-[60px] text-[11px] text-right" />
                                       </td>
-                                      {/* Status and Verdict: both belong to the last run, and a
-                                          row being edited has not run yet. */}
+                                      {/* Status, Verdict and Result all belong to the last run,
+                                          and a row being edited has not run yet. */}
+                                      <td className="px-2 py-1" />
                                       <td className="px-2 py-1" />
                                       <td className="px-2 py-1" />
                                       <td className="px-2 py-1 text-right whitespace-nowrap align-top">
@@ -2732,6 +2801,18 @@ export default function AutomationSuitePage() {
                                         ? <a href={reportHref(s, it)} onClick={e => openReport(e, s, it)} className="hover:underline">{st.verdict}</a>
                                         : (st.verdict ?? '–')}
                                     </td>
+                                    {/* Result: the verdict combined with this row's
+                                        post-execution processing rules. An em dash
+                                        where no rules are configured — the Verdict
+                                        beside it is then the whole answer. */}
+                                    {(() => {
+                                      const rs = resultOf(s, it);
+                                      return (
+                                        <td className={`px-2 py-1 whitespace-nowrap cursor-help ${rs.cls}`} title={rs.title}>
+                                          {rs.text}
+                                        </td>
+                                      );
+                                    })()}
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
                                       <button
                                         onClick={() => setConfirmRun({ suite: s, rows: [it] })}

@@ -127,6 +127,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       // the same live as it will once the run is saved.
       onStep: (step) => markStep(id, step.testcaseId, step.ok, {
         status: step.boxStatus, result: step.boxResult, verdict: step.verdict, stopped: step.stopped,
+        post: step.postProcessing?.outcome, final: step.finalResult,
       }),
     });
     return NextResponse.json({ ok: true, result, runId: result.runId });

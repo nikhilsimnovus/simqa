@@ -45,7 +45,14 @@ export interface SuiteProgress {
    *  while the run is in flight as it will once the run is saved: without it
    *  a finished-and-failed row showed 'Not Executed · Error' until a reload,
    *  because SimQA's ok was all the live view had. */
-  boxes?: Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean }>;
+  boxes?: Record<string, {
+    status?: string; result?: string; verdict?: string; stopped?: boolean;
+    /** Post-processing's own outcome, and the Result it produced with the
+     *  execution verdict. Live for the same reason the verdict is: a row
+     *  that has just finished should read the same before the run is saved
+     *  as it will afterwards. */
+    post?: string; final?: string;
+  }>;
   finished?: boolean;
   /** Set when the process that was running this is gone — a deploy or a crash
    *  ended it. The run did not finish and nothing was saved for it. */
@@ -152,7 +159,10 @@ export function markStep(
   suiteId: string,
   name: string,
   ok: boolean,
-  box?: { status?: string; result?: string; verdict?: string; stopped?: boolean },
+  box?: {
+    status?: string; result?: string; verdict?: string; stopped?: boolean;
+    post?: string; final?: string;
+  },
 ): void {
   const s = store();
   const p = s.live.get(suiteId);
@@ -160,7 +170,7 @@ export function markStep(
   p.statuses[name] = ok ? 'passed' : 'failed';
   // Only when the box actually said something. An empty object would claim a
   // status the Simnovator never gave.
-  if (box && (box.status || box.result || box.verdict || box.stopped)) {
+  if (box && (box.status || box.result || box.verdict || box.stopped || box.final)) {
     p.boxes = { ...(p.boxes ?? {}), [name]: box };
   }
   persist(p, suiteId);

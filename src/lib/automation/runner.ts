@@ -38,6 +38,12 @@ import { preflightRows } from './preflightConfigs';
 import { definitionFromText } from './importPack';
 // The name a config is deployed under on the callbox -- pure, tested on its own.
 import { automationName, isAutomationName } from './callboxNames';
+// Post-execution processing: the row's rules against the execution's own OTA
+// log, through the same module the preview endpoint uses.
+import {
+  postProcessExecution, asRules, reportLine, notConfigured, errorReport,
+  type PostProcessReport,
+} from '../postProcess/afterExecution';
 // A row never stops at "In Progress" -- pure, and tested on its own.
 import { reconcileRow, needsReconcile } from './reconcileRow';
 // Telling a slow start from one the box never made -- pure, tested on its own.
@@ -173,6 +179,24 @@ export interface SuiteRunStep {
   /** Whether the test was stopped explicitly by simqa (vs. finished
    *  on its own within the duration window). */
   stopped?: boolean;
+  /**
+   * Post-execution processing: the row's rules checked against this
+   * execution's own OTA log, once the box had finished with it.
+   *
+   * Absent on a row that configured no rules, and on every run recorded
+   * before this existed — which is why the Result column reads from
+   * `finalResult` and falls back to the verdict rather than assuming.
+   */
+  postProcessing?: PostProcessReport;
+  /**
+   * The Result column: the execution's verdict combined with ours.
+   *
+   * A THIRD value beside boxResult and verdict, never a replacement for
+   * them. With no rules it is the execution's own result; a failing rule
+   * makes it FAIL; a rule that could not be checked at all also refuses to
+   * report PASS — see finalResult() in postProcess/rules.ts.
+   */
+  finalResult?: string;
   detail?: string;
   durationMs: number;
 }
@@ -2179,17 +2203,51 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       if (settledRun.lateFinish) stepDetails.push('the box finished while the last poll was in flight');
       const verdict = deriveVerdict(finalState, !finalState);
       const passLike = verdict === 'PASS';
+
+      // Phase 5b: post-execution processing — the row's rules against this
+      // execution's own OTA log.
+      //
+      // Done here, while the execution id is in hand, and not later from the
+      // run record: the log lives on the box, and the box does not keep it
+      // forever. A result that can still be explained next week is worth more
+      // than a rule that could be re-run in theory.
+      //
+      // Several attempts, because the execution reaches a terminal state
+      // before the box has finished writing its log, so the first read can
+      // come back short. A short log never passes a rule — see rules.ts.
+      const postEid = finalState?.executionId ?? execId;
+      const rules = asRules(item.postRules);
+      let post: PostProcessReport = notConfigured(verdict);
+      if (rules.length > 0) {
+        post = postEid
+          ? await postProcessExecution({
+              host: ueOpts.host, token, executionId: postEid, rules,
+              executionResult: verdict, attempts: 3, signal: opts.signal,
+            })
+          : errorReport(
+              'no execution id came back from the box, so there is no log to check',
+              rules.length, verdict);
+        stepDetails.push(reportLine(post));
+      }
+      // The Result column. Equal to the verdict when no rules are configured,
+      // so a row without post-processing reads exactly as it did before.
+      const rowResult = post.finalResult ?? verdict;
+      const rowOk = rules.length > 0 ? rowResult === 'PASS' : passLike;
+
       steps.push({
-        testcaseId: item.name, status: r.status, ok: passLike,
+        testcaseId: item.name, status: r.status, ok: rowOk,
         boxTestcaseId: runTcId,
         executionId: finalState?.executionId ?? execId,
         verdict, boxStatus: finalState?.status, boxResult: finalState?.result, stopped: stoppedByUs,
+        // The box's verdict is untouched above; this is the third value.
+        postProcessing: rules.length > 0 ? post : undefined,
+        finalResult: rowResult || undefined,
         detail: `${stepDetails.join(' · ')}${stepDetails.length ? ' · ' : ''}${finalState
           ? `verdict=${verdict} status=${finalState.status ?? '?'} result=${finalState.result ?? '?'} dur=${finalState.durationSeconds ?? '?'}s${stoppedByUs ? ' (stopped by simqa)' : ''}`
           : (settledRun.unstarted ?? `triggered but no terminal state within ${pollWindow}s — stop attempted${stoppedByUs ? '; box never settled' : ''}`)}`,
         durationMs: Date.now() - t0,
       });
-      if (passLike) passed += 1; else { failed += 1; if (suite.stopOnFail) { done += 1; break; } }
+      if (rowOk) passed += 1; else { failed += 1; if (suite.stopOnFail) { done += 1; break; } }
     } catch (e: any) {
       steps.push({ testcaseId: item.name, status: 0, ok: false, detail: `threw: ${e?.message ?? e}`, durationMs: Date.now() - t0 });
       failed += 1;

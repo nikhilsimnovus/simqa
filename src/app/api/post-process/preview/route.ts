@@ -6,18 +6,18 @@
 // happened, see the counts the log really gives, and adjust the expected
 // numbers to match reality rather than to a guess.
 //
-// It is also the honest way to answer "would this rule have passed", because
-// it reads the same log, through the same fetcher, with the same evaluator
-// the automatic run will use.
+// It is the honest way to answer "would this rule have passed", because it
+// goes through postProcessExecution() — the same fetcher and the same
+// evaluator the automatic run uses when a row finishes. If it computed the
+// answer its own way, a rule could preview PASS and then run FAIL, which
+// would make the preview worse than useless.
 //
 // Nothing here touches API Tests or API Validation, and no code is shared
 // with them.
 
 import { NextResponse } from 'next/server';
 import { getSystem, uesimApiOptsForSystem, loadInventory } from '@/lib/inventory';
-import { fetchExecutionLogWithRetry } from '@/lib/postProcess/fetchLogs';
-import { parseMessages, messageTally } from '@/lib/postProcess/otaParse';
-import { evaluateRule, overallOutcome, finalResult, type PostRule } from '@/lib/postProcess/rules';
+import { postProcessExecution, asRules } from '@/lib/postProcess/afterExecution';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,7 +33,7 @@ export async function POST(req: Request) {
 
   const systemId = String(body.systemId ?? '').trim();
   const executionId = String(body.executionId ?? '').trim();
-  const rules: PostRule[] = Array.isArray(body.rules) ? body.rules : [];
+  const rules = asRules(Array.isArray(body.rules) ? body.rules : []);
   if (!systemId || !executionId) {
     return NextResponse.json(
       { ok: false, error: 'systemId and executionId are both required' }, { status: 400 });
@@ -49,37 +49,29 @@ export async function POST(req: Request) {
 
   try {
     const token = await tokenFor(opts.host, opts.username, opts.password);
-    const log = await fetchExecutionLogWithRetry({
-      host: opts.host, token, executionId,
+    const report = await postProcessExecution({
+      host: opts.host, token, executionId, rules,
       // A preview should answer quickly: one attempt unless asked otherwise,
-      // because the operator is sitting in front of it.
+      // because the operator is sitting in front of it. The runner asks for
+      // several, because it arrives before the box has finished writing.
       attempts: Number(body.attempts) > 0 ? Number(body.attempts) : 1,
+      executionResult: body.executionResult ? String(body.executionResult) : undefined,
     });
-    const messages = parseMessages(log.records);
-    const usable = { usable: log.complete && log.records.length > 0, problem: log.problem };
-    const results = rules.map((r) => evaluateRule(r, messages, usable));
-    const post = overallOutcome(results, rules.length, usable.usable);
 
     return NextResponse.json({
       ok: true,
       host: opts.host,
       executionId,
-      log: {
-        records: log.records.length,
-        perLayer: log.perLayer,
-        requests: log.requests,
-        complete: log.complete,
-        problem: log.problem,
-      },
+      log: { ...report.log, problem: report.problem },
       // What the log actually contains, so an expected count can be set from
       // the evidence instead of from memory.
-      messages: messages.length,
-      tally: messageTally(messages),
-      results,
-      postProcessing: post,
-      ...(body.executionResult
-        ? { executionResult: body.executionResult, finalResult: finalResult(String(body.executionResult), post) }
-        : {}),
+      messages: report.log.messages,
+      tally: report.tally,
+      results: report.results,
+      postProcessing: report.outcome,
+      ...(report.executionResult === undefined
+        ? {}
+        : { executionResult: report.executionResult, finalResult: report.finalResult }),
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 500 });

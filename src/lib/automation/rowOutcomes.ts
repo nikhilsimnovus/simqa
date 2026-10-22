@@ -23,6 +23,24 @@ export interface RowOutcomes {
    *  (PASS, INCOMPLETE, …). The Status and Verdict columns are these two and
    *  nothing else, so they are carried through unmapped. */
   box: Record<string, { status?: string; result?: string; verdict?: string; stopped?: boolean; boxTestcaseId?: string }>;
+  /**
+   * The Result column: what post-processing made of the row's OTA log, and
+   * the result it produced together with the execution's own verdict.
+   *
+   * Absent for a row whose last run configured no rules, and for every run
+   * recorded before post-processing existed. The column shows an em dash
+   * there rather than inventing a result — "no rules" is not a verdict.
+   */
+  post: Record<string, {
+    /** PASS / FAIL / ERROR / NOT CONFIGURED — post-processing's own word. */
+    outcome?: string;
+    /** Execution verdict combined with it. This is what the column shows. */
+    result?: string;
+    passedRules?: number;
+    rules?: number;
+    /** Why it could not be established, when it could not be. */
+    problem?: string;
+  }>;
 }
 
 /**
@@ -69,6 +87,7 @@ export function rowOutcomes(suiteId: string): RowOutcomes {
   const details: Record<string, string> = {};
   const lastRunAt: Record<string, string> = {};
   const box: RowOutcomes['box'] = {};
+  const post: RowOutcomes['post'] = {};
   for (const run of runs) {
     for (const st of run?.steps ?? []) {
       if (!st?.testcaseId || st.testcaseId in statuses) continue;
@@ -86,8 +105,20 @@ export function rowOutcomes(suiteId: string): RowOutcomes {
         // Which testcase on the box to open a report for.
         boxTestcaseId: st.boxTestcaseId,
       };
+      // Only where the row actually had rules. A step with no postProcessing
+      // is either a row that configured none or a run from before this
+      // existed, and both must read as "nothing to say" rather than as PASS.
+      if (st.postProcessing && st.postProcessing.rulesConfigured > 0) {
+        post[st.testcaseId] = {
+          outcome: st.postProcessing.outcome,
+          result: st.finalResult,
+          passedRules: st.postProcessing.passedRules,
+          rules: st.postProcessing.rulesConfigured,
+          problem: st.postProcessing.problem,
+        };
+      }
       if (run.finishedAt) lastRunAt[st.testcaseId] = run.finishedAt;
     }
   }
-  return { statuses, details, lastRunAt, box };
+  return { statuses, details, lastRunAt, box, post };
 }
