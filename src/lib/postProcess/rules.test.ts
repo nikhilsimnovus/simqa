@@ -205,3 +205,50 @@ test('the condition reads back in words for the report', () => {
     'contains any of: "a", "b"');
   assert.equal(conditionText({ id: 'x', messageName: 'm', mode: 'count' }), undefined);
 });
+
+// ── the five comparisons, and the punctuation the box does not print ──────
+
+test('a count can be asked for with =, >=, <=, > or <', () => {
+  const at = (comparison: any, expected: number) =>
+    evaluateRule(R({ mode: 'count', expectedMessageCount: expected, comparison }), REAL, OK).pass;
+  // REAL holds 6 "RRC reconfiguration".
+  assert.equal(at('eq', 6), true);
+  assert.equal(at('eq', 5), false);
+  assert.equal(at('min', 6), true);
+  assert.equal(at('max', 6), true);
+  assert.equal(at('gt', 5), true, '6 > 5');
+  assert.equal(at('gt', 6), false, '6 is not > 6');
+  assert.equal(at('lt', 7), true, '6 < 7');
+  assert.equal(at('lt', 6), false, '6 is not < 6');
+});
+
+test('the strict comparisons say so when they fail', () => {
+  const r = evaluateRule(R({ mode: 'count', expectedMessageCount: 6, comparison: 'gt' }), REAL, OK);
+  assert.match(r.failure!, /expected more than 6, found 6/);
+  const l = evaluateRule(R({ mode: 'count', expectedMessageCount: 6, comparison: 'lt' }), REAL, OK);
+  assert.match(l.failure!, /expected fewer than 6, found 6/);
+});
+
+test('quotes and colons are not what a rule turns on', () => {
+  // The box prints ASN.1 value notation; people write the spec's spelling.
+  // Measured on execution 01a16490 (AIO_5GSA_Redcap): the log line is
+  // "                supportOfRedCap-r17 supported,".
+  const body = 'redCapParameters-r17 {\n  supportOfRedCap-r17 supported,\n  supportOf16DRB-RedCap-r17 supported\n}';
+  const rule = (s: string): PostRule =>
+    ({ id: 'x', messageName: 'UE capability information', mode: 'content', expectedStrings: [s] });
+  assert.equal(bodyMatches(body, rule('supportOfRedCap-r17: "supported"')), true);
+  assert.equal(bodyMatches(body, rule('supportOfRedCap-r17 supported')), true);
+  assert.equal(bodyMatches(body, rule('supportOfRedCap-r17:supported')), true);
+  // What it must still refuse: a different field, and a different value.
+  assert.equal(bodyMatches(body, rule('supportOfRedCapX-r17: "supported"')), false);
+  assert.equal(bodyMatches(body, rule('supportOfRedCap-r17: "notSupported"')), false);
+  // And the occurrence count follows the same form, so a message that
+  // matches can never count zero occurrences of what matched it.
+  assert.equal(countOccurrences([body], rule('supportOfRedCap-r17: "supported"')), 1);
+});
+
+test('exact mode stays literal — it is the strict option on purpose', () => {
+  const rule: PostRule = { id: 'x', messageName: 'm', mode: 'content', matchMode: 'exact', expectedStrings: ['a: "b"'] };
+  assert.equal(bodyMatches('a: "b"', rule), true);
+  assert.equal(bodyMatches('a b', rule), false);
+});

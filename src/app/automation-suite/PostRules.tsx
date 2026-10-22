@@ -23,7 +23,7 @@ import React from 'react';
 
 export type ValidationMode = 'count' | 'content' | 'countAndContent';
 export type StringCondition = 'ALL' | 'ANY' | 'NONE';
-export type Comparison = 'eq' | 'min' | 'max';
+export type Comparison = 'eq' | 'min' | 'max' | 'gt' | 'lt';
 
 export interface PostRuleDraft {
   id: string;
@@ -172,12 +172,15 @@ export default function PostRules({ rules, onChange, compact }: {
               )}
               <label className="flex flex-col text-[11px] text-slate-600">
                 Count must be
+{/* The symbols a requirement is written in, not words for them. */}
                 <select value={r.comparison ?? 'eq'}
                   onChange={(e) => set(r.id, { comparison: e.target.value as Comparison })}
                   className="mt-0.5 border border-slate-300 rounded px-2 py-1 text-xs">
-                  <option value="eq">exactly</option>
-                  <option value="min">at least</option>
-                  <option value="max">at most</option>
+                  <option value="eq">=  (exactly)</option>
+                  <option value="min">&gt;=  (at least)</option>
+                  <option value="max">&lt;=  (at most)</option>
+                  <option value="gt">&gt;  (more than)</option>
+                  <option value="lt">&lt;  (fewer than)</option>
                 </select>
               </label>
             </div>
@@ -195,6 +198,13 @@ export default function PostRules({ rules, onChange, compact }: {
                     className="mt-0.5 border border-slate-300 rounded px-2 py-1 text-xs font-mono" />
                   <span className="mt-0.5 text-[10px] text-slate-400">
                     comma separated · matched inside this message only, never across the log
+                  </span>
+                  {/* The box prints ASN.1 value notation, people write the
+                      spec's spelling. Saying so here is cheaper than a rule
+                      that reports 0 and gives no reason. */}
+                  <span className="mt-0.5 text-[10px] text-slate-400">
+                    quotes and colons are ignored — <span className="font-mono">supportOfRedCap-r17: &quot;supported&quot;</span>{' '}
+                    finds the log&rsquo;s <span className="font-mono">supportOfRedCap-r17 supported</span>
                   </span>
                 </label>
                 <label className="flex flex-col text-[11px] text-slate-600">

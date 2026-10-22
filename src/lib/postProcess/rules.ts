@@ -35,7 +35,15 @@ export type ValidationMode = 'count' | 'content' | 'countAndContent';
 /** ALL: every string present. ANY: at least one. NONE: none present. */
 export type StringCondition = 'ALL' | 'ANY' | 'NONE';
 export type MatchMode = 'contains' | 'exact';
-export type Comparison = 'eq' | 'min' | 'max';
+/**
+ * How a count is compared: =, >=, <=, >, <.
+ *
+ * The ids are the ones already stored in saved suites ('min' is >=, 'max' is
+ * <=), so adding the two strict ones did not require rewriting anybody's
+ * rules. The symbols are what the editor and the report show, because that
+ * is what people write on a requirement.
+ */
+export type Comparison = 'eq' | 'min' | 'max' | 'gt' | 'lt';
 
 export interface PostRule {
   /** Stable within the test case, so results can be matched to the rule. */
@@ -92,10 +100,38 @@ export interface LogContext {
 }
 
 const cmp = (actual: number, expected: number, how: Comparison): boolean =>
-  how === 'min' ? actual >= expected : how === 'max' ? actual <= expected : actual === expected;
+  how === 'min' ? actual >= expected
+  : how === 'max' ? actual <= expected
+  : how === 'gt' ? actual > expected
+  : how === 'lt' ? actual < expected
+  : actual === expected;
+
+/** The symbol, for the failure line and the report. */
+export const cmpSymbol = (how: Comparison): string =>
+  how === 'min' ? '>=' : how === 'max' ? '<=' : how === 'gt' ? '>' : how === 'lt' ? '<' : '=';
 
 const cmpWord = (how: Comparison): string =>
-  how === 'min' ? 'at least' : how === 'max' ? 'at most' : 'exactly';
+  how === 'min' ? 'at least' : how === 'max' ? 'at most'
+  : how === 'gt' ? 'more than' : how === 'lt' ? 'fewer than' : 'exactly';
+
+/**
+ * The form a body and an expected string are compared in.
+ *
+ * The box prints ASN.1 value notation -- "supportOfRedCap-r17 supported," --
+ * while people write the field the way it reads in a spec or a JSON dump:
+ * supportOfRedCap-r17: "supported". Those are the same fact, and a rule that
+ * failed on the punctuation between them taught nothing about the product.
+ *
+ * So quotes, colons, commas and semicolons are dropped and runs of
+ * whitespace (newlines included, since a decode is indented over many lines)
+ * become one space. Nothing else is touched: letters, digits, hyphens and
+ * underscores are compared exactly, so supportOfRedCap-r17 still does not
+ * match supportOf16DRB-RedCap-r17, and case still matters -- "supported" and
+ * "notSupported" differ by case in ASN.1 and must keep differing here.
+ */
+export function matchForm(text: string): string {
+  return String(text ?? '').replace(/["',:;]/g, ' ').replace(/\s+/g, ' ').trim();
+}
 
 /** Does one message body satisfy the rule's string condition? */
 export function bodyMatches(body: string, rule: PostRule): boolean {
@@ -105,7 +141,8 @@ export function bodyMatches(body: string, rule: PostRule): boolean {
   // 'exact' means the body IS the string, which is almost never what a
   // decoded message is — it is offered because the requirement asks for
   // literal exact matching, and it is deliberately strict.
-  const has = (s: string) => (exact ? body.trim() === s : body.includes(s));
+  const form = matchForm(body);
+  const has = (s: string) => (exact ? body.trim() === s : form.includes(matchForm(s)));
   const condition = rule.condition ?? 'ALL';
   if (condition === 'ANY') return strings.some(has);
   if (condition === 'NONE') return !strings.some(has);
@@ -119,8 +156,13 @@ export function countOccurrences(bodies: string[], rule: PostRule): number {
   for (const body of bodies) {
     for (const s of strings) {
       if (!s) continue;
-      let at = body.indexOf(s);
-      while (at >= 0) { n += 1; at = body.indexOf(s, at + s.length); }
+      // The same form bodyMatches uses, or a rule could match a message and
+      // then count zero occurrences in it.
+      const hay = matchForm(body);
+      const needle = matchForm(s);
+      if (!needle) continue;
+      let at = hay.indexOf(needle);
+      while (at >= 0) { n += 1; at = hay.indexOf(needle, at + needle.length); }
     }
   }
   return n;

@@ -97,6 +97,19 @@ const NOT_CONFIGURED = <span className="font-sans text-slate-400">Not configured
 /* The read-only cfg box that used to live here is gone: the DB and ots fields
    were the only two that used it, and both are now pickers like the rest. */
 
+/**
+ * The rules worth saving with a row.
+ *
+ * A rule is dropped only HERE, on the way to the server -- never while the
+ * editor is open. Filtering on every keystroke is what made "+ Add rule"
+ * look broken: a new rule starts with no message name, so it was thrown
+ * away by the same change that added it, and the panel stayed empty.
+ */
+function keepNamedRules(rules?: PostRuleDraft[]): PostRuleDraft[] | undefined {
+  const kept = (rules ?? []).filter((r) => String(r?.messageName ?? '').trim());
+  return kept.length ? kept : undefined;
+}
+
 /** Options for a cfg picker: uploads first, then what is on the callbox. */
 function cfgOptions(files: Array<{ name: string; mtime?: string }>, uploaded: Record<string, string> = {}) {
   return [
@@ -1582,7 +1595,9 @@ export default function AutomationSuitePage() {
     const cur = s.items ?? [];
     const i = cur.findIndex(x => x.id === editRow.itemId);
     if (i < 0) { setEditRow(null); return; }
-    const next = cur.map(x => x.id === editRow.itemId ? { ...x, ...rowDraft } : x);
+    const next = cur.map(x => (x.id === editRow.itemId
+      ? { ...x, ...rowDraft, postRules: keepNamedRules(rowDraft.postRules) }
+      : x));
     if (move) {
       const [row] = next.splice(i, 1);
       const to = move === 'first' ? 0 : move === 'up' ? Math.max(0, i - 1) : Math.min(next.length, i + 1);
@@ -1677,7 +1692,10 @@ export default function AutomationSuitePage() {
           ...basePayload,
           name: suiteName,
           testcaseIds: groupItems.length > 0 ? groupItems.map(it => it.simnovatorTcId) : tcs,
-          items: groupItems.length > 0 ? groupItems : undefined,
+          // Unnamed rules are dropped here, not while they are being typed.
+          items: groupItems.length > 0
+            ? groupItems.map((it) => ({ ...it, postRules: keepNamedRules(it.postRules) }))
+            : undefined,
         };
         // Update in place only when this group IS the suite we opened for edit.
         const isEdited = !!editingId && suiteName === editingName;
@@ -2567,205 +2585,20 @@ export default function AutomationSuitePage() {
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                               {(s.items ?? []).map((it, i) => {
+                                // The row editor is a DIALOG now, rendered once at the
+                                // bottom of the page. It used to be these same fields
+                                // squeezed into the row’s own cells, which meant a
+                                // 90px-wide dropdown holding a 40-character config name,
+                                // a Cancel button pushed past the right edge, and a rules
+                                // panel with nowhere to open. The row just marks itself.
                                 const editing = editRow?.suiteId === s.id && editRow?.itemId === it.id;
-                                if (editing) {
-                                  return (
-                                    <React.Fragment key={it.id}>
-                                    <tr className="bg-amber-50/60">
-                                      <td className="px-2 py-1" />
-                                      <td className="px-1 py-1" />
-                                      <td className="px-2 py-1 text-slate-400 align-top">{i + 1}</td>
-                                      <td className="px-2 py-1 align-top">
-                                        <div className="font-medium text-slate-800">
-                                          {it.name}
-                                          {/* Who it executes as — a testcase belongs to one
-                                              login, so the name alone does not say whose. */}
-                                          <span className="text-slate-400 font-normal"> — {userOf(s)}</span>
-                                        </div>
-                                        {/* Setup Kind is a property of the SUITE, not of one row —
-                                            every row shares the same systems. Editing it here
-                                            changes the suite, so it is labelled as such. */}
-                                        <label className="block mt-1 text-[10px] text-slate-500">
-                                          Setup Kind (whole suite)
-                                          <select
-                                            value={s.kind ?? 'uesim-only'}
-                                            onChange={async e => {
-                                              const kind = e.target.value;
-                                              // Dropping the callbox means dropping what only it
-                                              // used: the box itself, the uploaded cfgs and every
-                                              // row's gnb/mme/ims picks. Left behind they would
-                                              // still show in the table and still be written to
-                                              // the server folder, for a suite that no longer has
-                                              // a callbox to run them on. null clears a field;
-                                              // undefined would silently keep the old value.
-                                              const body: any = { kind };
-                                              if (kind === 'uesim-only') {
-                                                body.callboxSystemId = null;
-                                                body.callboxConfig = null;
-                                                body.uploadedConfigs = null;
-                                                body.items = (s.items ?? []).map(({ callboxCfg, mmeCfg, imsCfg, ...rest }) => rest);
-                                              }
-                                              await fetch(`/api/automation/suites/${s.id}`, {
-                                                method: 'PUT', headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify(body),
-                                              });
-                                              await refresh();
-                                            }}
-                                            className="mt-0.5 w-full border border-slate-300 rounded px-1 py-0.5 text-[11px]">
-                                            {/* Offered only to a suite that
-                                                already is one, so it can be
-                                                converted away rather than
-                                                rendering blank. */}
-                                            {s.kind === 'uesim-only' && <option value="uesim-only">UESIM only (retired)</option>}
-                                            <option value="uesim+callbox">UESIM + CALLBOX</option>
-                                          </select>
-                                        </label>
-                                        <label className="block mt-1 text-[10px] text-slate-500">
-                                          Simnovator testcase
-                                          <select
-                                            value={rowDraft.simnovatorTcId ?? it.simnovatorTcId}
-                                            onChange={e => {
-                                              // The row's name is derived from its testcase, and
-                                              // it is not editable here — so a row pointed at a
-                                              // different testcase while still carrying the old
-                                              // one's name would be lying about what it runs.
-                                              const id = e.target.value;
-                                              const picked = uesimTestcases.find(t => t.id === id)?.name;
-                                              setRowDraft({
-                                                ...rowDraft,
-                                                simnovatorTcId: id,
-                                                name: defaultRowName(picked) || rowDraft.name || it.name,
-                                              });
-                                            }}
-                                            className="mt-0.5 w-full border border-slate-300 rounded px-1 py-0.5 text-[11px]">
-                                            {uesimTestcases.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                                          </select>
-                                        </label>
-                                      </td>
-                                      {/* gnb · mme · DB · ims · ots. The DB and
-                                          ots cells default to what the callbox
-                                          already has — leave them alone and the
-                                          row behaves exactly as it used to —
-                                          and can now be pointed elsewhere. */}
-                                      {([['callboxCfg', callboxFiles], ['mmeCfg', mmeFiles]] as const).map(([field, list]) => (
-                                        <td key={field} className="px-2 py-1 align-top">
-                                          <select
-                                            value={(rowDraft[field] ?? it[field] ?? '') as string}
-                                            onChange={e => setRowDraft({ ...rowDraft, [field]: e.target.value || undefined })}
-                                            className="w-full border border-slate-300 rounded px-1 py-0.5 text-[11px]">
-                                            <option value="">— none —</option>
-                                            {list.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
-                                          </select>
-                                        </td>
-                                      ))}
-                                      {/* The DB is included by name from inside
-                                          the mme cfg, so "— from mme.cfg —"
-                                          means exactly that: whatever the
-                                          chosen core config brings with it. */}
-                                      <td className="px-2 py-1 align-top">
-                                        <select
-                                          value={(rowDraft.dbCfg ?? it.dbCfg ?? '') as string}
-                                          onChange={e => setRowDraft({ ...rowDraft, dbCfg: e.target.value || undefined })}
-                                          className="w-full border border-slate-300 rounded px-1 py-0.5 text-[11px]">
-                                          <option value="">— from mme.cfg —</option>
-                                          {mmeFiles.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
-                                        </select>
-                                      </td>
-                                      {([['imsCfg', mmeFiles]] as const).map(([field, list]) => (
-                                        <td key={field} className="px-2 py-1 align-top">
-                                          <select
-                                            value={(rowDraft[field] ?? it[field] ?? '') as string}
-                                            onChange={e => setRowDraft({ ...rowDraft, [field]: e.target.value || undefined })}
-                                            className="w-full border border-slate-300 rounded px-1 py-0.5 text-[11px]">
-                                            <option value="">— none —</option>
-                                            {list.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
-                                          </select>
-                                        </td>
-                                      ))}
-                                      <td className="px-2 py-1 align-top">
-                                        <select
-                                          value={(rowDraft.otsCfg ?? it.otsCfg ?? '') as string}
-                                          onChange={e => setRowDraft({ ...rowDraft, otsCfg: e.target.value || undefined })}
-                                          className="w-full border border-slate-300 rounded px-1 py-0.5 text-[11px]">
-                                          <option value="">
-                                            {otsByCallbox[s.callboxSystemId ?? ''] ? `— the callbox's own: ${otsByCallbox[s.callboxSystemId ?? '']} —` : '— the callbox’s own —'}
-                                          </option>
-                                          {otsFiles.map(f => <option key={f.name} value={f.name}>{f.name}</option>)}
-                                        </select>
-                                      </td>
-                                      <td className="px-2 py-1 text-right align-top">
-                                        {/* Store the raw typed number and only raise it to the
-                                            minimum on blur. Clamping on every keystroke made this
-                                            feel uneditable: clearing the field and typing "35" hit
-                                            "3" first, which max(20, 3) snapped straight back to 20,
-                                            so a value below the minimum could never be typed. */}
-                                        {/* Bind to the draft ONLY — not `?? it.durationSec`.
-                                            The draft is seeded from the row when editing starts,
-                                            so the fallback was redundant, and it made the field
-                                            un-clearable: backspacing to empty set durationSec to
-                                            undefined, which fell back to the saved value (a 2x
-                                            number), so you could never clear it to type e.g. 3000. */}
-                                        <input type="number" min={MIN_POWER_ON}
-                                          value={rowDraft.durationSec ?? ''}
-                                          placeholder={String(s.defaultDurationSec ?? MIN_POWER_ON)}
-                                          onChange={e => setRowDraft({ ...rowDraft, durationSec: e.target.value === '' ? undefined : Number(e.target.value) })}
-                                          onBlur={e => setRowDraft({ ...rowDraft, durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
-                                          className="border border-slate-300 rounded px-1 py-0.5 w-[60px] text-[11px] text-right" />
-                                      </td>
-                                      {/* Status, Verdict and Result all belong to the last run,
-                                          and a row being edited has not run yet. */}
-                                      <td className="px-2 py-1" />
-                                      <td className="px-2 py-1" />
-                                      <td className="px-2 py-1" />
-                                      <td className="px-2 py-1 text-right whitespace-nowrap align-top">
-                                        {/* Gated on the global op-flag (an in-flight save), NOT
-                                            on boxBusy: saving a row is a local inventory edit and
-                                            is fine while the box runs another testcase. */}
-                                        <button onClick={() => saveEditRow(s)} disabled={!!busy}
-                                          className="rounded bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-[11px] px-2 py-0.5 mr-1">Save</button>
-                                        {i > 0 && (
-                                          <button onClick={() => saveEditRow(s, 'first')} disabled={!!busy}
-                                            title="Save and move to position 1 — it will then execute first"
-                                            className="rounded border border-slate-300 hover:bg-slate-100 text-[11px] px-2 py-0.5 mr-1">Save &amp; make first</button>
-                                        )}
-                                        <button onClick={() => { setEditRow(null); setRowDraft({}); }}
-                                          className="rounded border border-slate-300 hover:bg-slate-100 text-[11px] px-2 py-0.5">Cancel</button>
-                                      </td>
-                                    </tr>
-                                    {/* Post-execution processing for a row that already
-                                        exists. It used to be reachable only while ADDING a
-                                        test case, so a row's rules could never be changed
-                                        afterwards -- the only way to add one to an existing
-                                        row was to delete it and add it again.
-
-                                        Edited in the draft like every other field, so
-                                        Cancel discards it and Save writes it with the rest
-                                        of the row. */}
-                                    <tr className="bg-amber-50/60">
-                                      <td colSpan={99} className="px-3 pb-3 pt-0">
-                                        <PostRules
-                                          compact
-                                          rules={(rowDraft.postRules ?? []) as PostRuleDraft[]}
-                                          onChange={(nextRules) => setRowDraft({
-                                            ...rowDraft,
-                                            // Rules with no message name are dropped: one that
-                                            // names nothing can never be checked, and keeping it
-                                            // would fail the row for a reason nobody chose.
-                                            postRules: nextRules.filter((r) => r.messageName.trim()).length
-                                              ? nextRules.filter((r) => r.messageName.trim())
-                                              : undefined,
-                                          })} />
-                                      </td>
-                                    </tr>
-                                    </React.Fragment>
-                                  );
-                                }
                                 const st = statusOf(s, it);
                                 return (
                                   <tr key={it.id}
                                     onDragOver={e => { if (dragRow?.suiteId === s.id) e.preventDefault(); }}
                                     onDrop={() => dropOn(s, it)}
-                                    className={dragRow?.itemId === it.id ? 'opacity-40' : ''}>
+                                    className={cn(dragRow?.itemId === it.id && 'opacity-40',
+                                      editing && 'bg-amber-50/60 ring-1 ring-inset ring-amber-300')}>
                                     <td className="px-2 py-1">
                                       <input
                                         type="checkbox"
@@ -3266,11 +3099,8 @@ export default function AutomationSuitePage() {
                             <PostRules
                               compact
                               rules={it.postRules ?? []}
-                              onChange={(next) => setItems(items.map((x) => (x.id === it.id
-                                ? { ...x, postRules: next.filter((r) => r.messageName.trim()).length
-                                    ? next.filter((r) => r.messageName.trim())
-                                    : undefined }
-                                : x)))} />
+                              onChange={(next) => setItems(items.map((x) => (
+                                x.id === it.id ? { ...x, postRules: next } : x)))} />
                           </td>
                         </tr>
                       ) : null))}
@@ -3665,6 +3495,196 @@ export default function AutomationSuitePage() {
             )}
           </section>
         )}
+
+        {/* ── Edit a test case row ────────────────────────────────────────
+            A dialog, the size of the Add a TestCase panel, because that is
+            the same work: every field is full width and readable, and the
+            post-processing rules have room to open underneath.
+
+            It used to be the row itself turned into inputs. A table built
+            for names and verdicts gave a config dropdown 90px, pushed the
+            buttons past the right edge, and left the rules panel nowhere to
+            go — the thing you were editing was the thing you could not
+            see. */}
+        {editRow && (() => {
+          const s = suites.find((x) => x.id === editRow.suiteId);
+          const it = (s?.items ?? []).find((x) => x.id === editRow.itemId);
+          if (!s || !it) return null;
+          const at = (s.items ?? []).findIndex((x) => x.id === it.id);
+          const close = () => { setEditRow(null); setRowDraft({}); };
+          const pick = (field: 'callboxCfg' | 'mmeCfg' | 'imsCfg') => (
+            <select
+              value={(rowDraft[field] ?? it[field] ?? '') as string}
+              onChange={(e) => setRowDraft({ ...rowDraft, [field]: e.target.value || undefined })}
+              className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-xs font-mono">
+              <option value="">— none —</option>
+              {(field === 'callboxCfg' ? callboxFiles : mmeFiles).map((f) => (
+                <option key={f.name} value={f.name}>{f.name}</option>
+              ))}
+            </select>
+          );
+          return (
+            <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 px-4 py-8 overflow-auto"
+              onClick={close}>
+              <div className="bg-surface rounded-xl shadow-xl border border-line w-full max-w-3xl"
+                onClick={(e) => e.stopPropagation()}>
+
+                <div className="flex items-center gap-3 px-5 py-4 border-b border-line">
+                  <div>
+                    <h3 className="text-base font-semibold text-slate-900">Edit test case</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      <span className="font-mono">{it.name}</span>
+                      {' · '}row {at + 1} of {(s.items ?? []).length} in <b>{s.name}</b>
+                      {' · '}runs as {userOf(s)}
+                    </p>
+                  </div>
+                  <button onClick={close}
+                    className="ml-auto rounded border border-slate-300 hover:bg-slate-100 text-xs px-2 py-1">Close</button>
+                </div>
+
+                <div className="px-5 py-4 space-y-4">
+                  <label className="block text-[11px] text-slate-600">
+                    Simnovator testcase
+                    <select
+                      value={rowDraft.simnovatorTcId ?? it.simnovatorTcId}
+                      onChange={(e) => {
+                        // The row's name is derived from its testcase, so a row
+                        // pointed at a different testcase while still carrying the
+                        // old one's name would be lying about what it runs.
+                        const id = e.target.value;
+                        const picked = uesimTestcases.find((t) => t.id === id)?.name;
+                        setRowDraft({
+                          ...rowDraft,
+                          simnovatorTcId: id,
+                          name: defaultRowName(picked) || rowDraft.name || it.name,
+                        });
+                      }}
+                      className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-xs">
+                      {uesimTestcases.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                    <span className="mt-0.5 block text-[10px] text-slate-400">
+                      the row runs as <span className="font-mono">{rowDraft.name ?? it.name}</span> on the box
+                    </span>
+                  </label>
+
+                  {/* The configs, each one full width: these are 40-character
+                      names and the point of the row is which ones it runs. */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label className="block text-[11px] text-slate-600">gNB Configuration{pick('callboxCfg')}</label>
+                    <label className="block text-[11px] text-slate-600">MME Configuration{pick('mmeCfg')}</label>
+                    <label className="block text-[11px] text-slate-600">
+                      Database Configuration
+                      <select
+                        value={(rowDraft.dbCfg ?? it.dbCfg ?? '') as string}
+                        onChange={(e) => setRowDraft({ ...rowDraft, dbCfg: e.target.value || undefined })}
+                        className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-xs font-mono">
+                        {/* The DB is included by name from inside the mme cfg, so
+                            this means exactly that: whatever the core config brings. */}
+                        <option value="">— from mme.cfg —</option>
+                        {mmeFiles.map((f) => <option key={f.name} value={f.name}>{f.name}</option>)}
+                      </select>
+                    </label>
+                    <label className="block text-[11px] text-slate-600">IMS Configuration{pick('imsCfg')}</label>
+                    <label className="block text-[11px] text-slate-600">
+                      OTS Configuration
+                      <select
+                        value={(rowDraft.otsCfg ?? it.otsCfg ?? '') as string}
+                        onChange={(e) => setRowDraft({ ...rowDraft, otsCfg: e.target.value || undefined })}
+                        className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-xs font-mono">
+                        <option value="">
+                          {otsByCallbox[s.callboxSystemId ?? '']
+                            ? `— the callbox's own: ${otsByCallbox[s.callboxSystemId ?? '']} —`
+                            : '— the callbox’s own —'}
+                        </option>
+                        {otsFiles.map((f) => <option key={f.name} value={f.name}>{f.name}</option>)}
+                      </select>
+                    </label>
+                    <label className="block text-[11px] text-slate-600">
+                      Power-On Duration (seconds)
+                      {/* Store the raw typed number and only raise it to the minimum
+                          on blur. Clamping on every keystroke made this feel
+                          uneditable: clearing the field and typing "35" hit "3"
+                          first, which max(20, 3) snapped straight back to 20. */}
+                      <input type="number" min={MIN_POWER_ON}
+                        value={rowDraft.durationSec ?? ''}
+                        placeholder={String(s.defaultDurationSec ?? MIN_POWER_ON)}
+                        onChange={(e) => setRowDraft({ ...rowDraft, durationSec: e.target.value === '' ? undefined : Number(e.target.value) })}
+                        onBlur={(e) => setRowDraft({ ...rowDraft, durationSec: e.target.value === '' ? undefined : Math.max(MIN_POWER_ON, Number(e.target.value) || MIN_POWER_ON) })}
+                        className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-xs" />
+                      <span className="mt-0.5 block text-[10px] text-slate-400">
+                        empty uses the suite default ({s.defaultDurationSec ?? MIN_POWER_ON}s)
+                      </span>
+                    </label>
+                  </div>
+
+                  {/* Post-execution processing: rules for THIS row, editable
+                      whether it was added today or a month ago. */}
+                  <div className="rounded-lg border border-line bg-slate-50/60 p-3">
+                    <PostRules
+                      rules={(rowDraft.postRules ?? []) as PostRuleDraft[]}
+                      onChange={(nextRules) => setRowDraft({ ...rowDraft, postRules: nextRules })} />
+                  </div>
+
+                  {/* Setup Kind belongs to the SUITE, not to this row — every
+                      row shares the same systems. Kept out of the fields above
+                      and labelled as what it is. */}
+                  <details className="text-[11px] text-slate-500">
+                    <summary className="cursor-pointer">Suite-wide setting</summary>
+                    <label className="block mt-2">
+                      Setup Kind (applies to the whole suite, saves immediately)
+                      <select
+                        value={s.kind ?? 'uesim-only'}
+                        onChange={async (e) => {
+                          const kind = e.target.value;
+                          // Dropping the callbox means dropping what only it used:
+                          // the box itself, the uploaded cfgs and every row's
+                          // gnb/mme/ims picks. null clears a field; undefined
+                          // would silently keep the old value.
+                          const body: any = { kind };
+                          if (kind === 'uesim-only') {
+                            body.callboxSystemId = null;
+                            body.callboxConfig = null;
+                            body.uploadedConfigs = null;
+                            body.items = (s.items ?? []).map(({ callboxCfg, mmeCfg, imsCfg, ...rest }) => rest);
+                          }
+                          await fetch(`/api/automation/suites/${s.id}`, {
+                            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body),
+                          });
+                          await refresh();
+                        }}
+                        className="mt-0.5 w-full border border-slate-300 rounded px-2 py-1.5 text-xs">
+                        {s.kind === 'uesim-only' && <option value="uesim-only">UESIM only (retired)</option>}
+                        <option value="uesim+callbox">UESIM + CALLBOX</option>
+                      </select>
+                    </label>
+                  </details>
+                </div>
+
+                {/* Inside the dialog, where they belong — the old buttons were
+                    in a table cell and the last one fell off the right edge. */}
+                <div className="flex items-center gap-2 px-5 py-4 border-t border-line bg-slate-50/60 rounded-b-xl">
+                  {/* Gated on the global op-flag (an in-flight save), NOT on
+                      boxBusy: saving a row is a local inventory edit and is fine
+                      while the box runs another testcase. */}
+                  <button onClick={() => saveEditRow(s)} disabled={!!busy}
+                    className="rounded-md bg-orange-500 hover:bg-orange-600 disabled:bg-slate-300 text-on-accent text-sm font-medium px-4 py-2">
+                    {busy === 'update' ? 'Saving…' : 'Save'}
+                  </button>
+                  {at > 0 && (
+                    <button onClick={() => saveEditRow(s, 'first')} disabled={!!busy}
+                      title="Save and move to position 1 — it will then execute first"
+                      className="rounded-md border border-slate-300 hover:bg-slate-100 text-sm px-4 py-2">
+                      Save &amp; make first
+                    </button>
+                  )}
+                  <button onClick={close}
+                    className="ml-auto rounded-md border border-slate-300 hover:bg-slate-100 text-sm px-4 py-2">Cancel</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* The full post-processing report for one row, opened by
             double-clicking its Result. */}

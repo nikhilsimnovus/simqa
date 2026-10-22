@@ -17,7 +17,7 @@ import React, { useEffect, useState } from 'react';
 
 interface CountCheck {
   label: string; expected: number; actual: number;
-  comparison: 'eq' | 'min' | 'max'; pass: boolean;
+  comparison: 'eq' | 'min' | 'max' | 'gt' | 'lt'; pass: boolean;
 }
 
 interface RuleResult {
@@ -65,7 +65,7 @@ const MODE_LABEL: Record<string, string> = {
   countAndContent: 'Message count and content',
 };
 
-const CMP: Record<string, string> = { eq: 'exactly', min: 'at least', max: 'at most' };
+const CMP: Record<string, string> = { eq: '=', min: '>=', max: '<=', gt: '>', lt: '<' };
 
 const outcomeCls = (o?: string) =>
   o === 'PASS' ? 'text-emerald-700' : o === 'FAIL' ? 'text-red-700' : 'text-amber-700';
