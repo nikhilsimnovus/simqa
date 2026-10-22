@@ -8,6 +8,8 @@
 import { NextResponse } from 'next/server';
 import { getCampaign, updateCampaign, deleteCampaign, type CampaignItem } from '@/lib/automation/campaignStore';
 import { getSuite } from '@/lib/automation/store';
+// The shortest power-on the box accepts — the same floor the runner applies.
+import { MIN_POWER_ON_SEC } from '@/lib/automation/durationFit';
 import { userFromRequest } from '@/lib/identity';
 
 export const dynamic = 'force-dynamic';
@@ -89,6 +91,39 @@ export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }
       patch.items = [...moved, ...(current.items ?? []).filter((i) => !seen.has(i.id))];
     }
     delete patch.order;
+
+    // Power-on durations.
+    //
+    // `durationForAll` sets every row at once — the usual case, because a
+    // campaign is normally one window applied to the lot — and `durations`
+    // ({ rowId: seconds | null }) overrides the ones that differ. Both may
+    // arrive together, and the per-row map wins, so "60 for all, 300 for
+    // that one" is a single call.
+    //
+    // Given as figures rather than as an `items` array on purpose, for the
+    // same reason adding rows goes through addPicks: the page never sends
+    // the rows back, so no edit here can corrupt what a row IS.
+    if (patch.durationForAll !== undefined || patch.durations !== undefined) {
+      const current = getCampaign(id);
+      if (!current) return NextResponse.json({ ok: false, error: `no campaign "${id}"` }, { status: 404 });
+      // null/'' clears, so a row can go back to the suite's own default.
+      const secs = (v: unknown): number | undefined => {
+        if (v === null || v === '' || v === undefined) return undefined;
+        const n = Math.floor(Number(v));
+        return Number.isFinite(n) && n > 0 ? Math.max(MIN_POWER_ON_SEC, n) : undefined;
+      };
+      const all = patch.durationForAll === undefined ? undefined : secs(patch.durationForAll);
+      const per = (patch.durations && typeof patch.durations === 'object' ? patch.durations : {}) as Record<string, unknown>;
+      const base = (patch.items as CampaignItem[] | undefined) ?? current.items ?? [];
+      patch.items = base.map((it) => {
+        const own = Object.prototype.hasOwnProperty.call(per, it.id) ? secs(per[it.id]) : undefined;
+        if (Object.prototype.hasOwnProperty.call(per, it.id)) return { ...it, durationSec: own };
+        if (patch.durationForAll !== undefined) return { ...it, durationSec: all };
+        return it;
+      });
+    }
+    delete patch.durationForAll;
+    delete patch.durations;
 
     return NextResponse.json({ ok: true, campaign: updateCampaign(id, patch), ...(skipped.length ? { skipped } : {}) });
   } catch (e: any) {

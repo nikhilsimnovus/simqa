@@ -354,6 +354,47 @@ export default function CampaignsPage() {
     });
   };
 
+  /** Every row ticked, or none — the header checkbox. */
+  const toggleAllRows = (c: CampaignRow) => {
+    setPickedRows(prev => {
+      const have = prev[c.id] ?? new Set<string>();
+      // Anything short of "all of them" ticks the rest, which is what the
+      // box looks like it will do while it is showing a dash.
+      const all = have.size === c.items.length && c.items.length > 0;
+      return { ...prev, [c.id]: all ? new Set<string>() : new Set(c.items.map(i => i.id)) };
+    });
+  };
+
+  /** What is typed in a row's duration field before it is saved. */
+  const [durationDraft, setDurationDraft] = useState<Record<string, string>>({});
+  /** The figure typed in a campaign's "apply to all" field. */
+  const [allDuration, setAllDuration] = useState<Record<string, string>>({});
+
+  /**
+   * Power-on duration, for one row or for every row.
+   *
+   * Sent as figures, never as rows: the server holds what a campaign row IS
+   * (it reads it out of the source suite) and this only says how long it runs.
+   * Empty clears it, and the row falls back to the source suite's own figure.
+   */
+  const saveDurations = async (
+    c: CampaignRow, body: { durations?: Record<string, number | null>; durationForAll?: number | null },
+  ) => {
+    setBusy('duration'); setError('');
+    try {
+      const r = await fetch(`/api/automation/campaigns/${c.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) throw new Error(d?.error ?? `HTTP ${r.status}`);
+      await load();
+    } catch (e: any) {
+      setError(`the power-on duration could not be saved: ${e?.message ?? e}`);
+      await load();                       // put the fields back the way the server has them
+    } finally { setBusy(''); }
+  };
+
   /** Save a new running order after a drag. */
   const reorder = async (c: CampaignRow, fromId: string, toId: string) => {
     if (fromId === toId) return;
@@ -724,6 +765,33 @@ export default function CampaignsPage() {
                         className="rounded-md border border-red-300 text-red-600 hover:bg-red-50 disabled:border-slate-300 disabled:text-slate-400 text-xs px-3 py-1.5">
                         Delete Selected{rowsPicked(c.id).size > 0 ? ` (${rowsPicked(c.id).size})` : ''}
                       </button>
+                      {/* One window for the whole campaign: typed once and
+                          applied to every row. A test case that needs its own
+                          is edited in its cell afterwards. */}
+                      <label className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                        Power-On Duration
+                        <input type="number" min={MIN_POWER_ON} placeholder="all rows"
+                          value={allDuration[c.id] ?? ''}
+                          onChange={e => setAllDuration({ ...allDuration, [c.id]: e.target.value })}
+                          onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                          className="w-[72px] border border-slate-300 rounded px-1.5 py-1 text-xs text-right" />
+                        <span className="text-slate-400">s</span>
+                        <button
+                          onClick={() => {
+                            const raw = (allDuration[c.id] ?? '').trim();
+                            setDurationDraft({});
+                            void saveDurations(c, {
+                              durationForAll: raw === '' ? null : Math.max(MIN_POWER_ON, Number(raw) || MIN_POWER_ON),
+                            });
+                          }}
+                          disabled={!!busy || running === c.id}
+                          title={(allDuration[c.id] ?? '').trim() === ''
+                            ? 'Clear every duration — each test case falls back to its suite default'
+                            : `Set every test case in this campaign to ${allDuration[c.id]}s`}
+                          className="rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-40 text-[11px] px-2 py-1">
+                          Apply to all
+                        </button>
+                      </label>
                       <button
                         onClick={() => { setAddingTo(c); setBuilding(true); setPicked([]); setShowSuites(new Set()); }}
                         className="rounded-md border border-slate-300 hover:bg-slate-50 text-xs px-3 py-1.5">
@@ -741,12 +809,24 @@ export default function CampaignsPage() {
                   <table className="text-xs w-full">
                     <thead className="bg-slate-50 text-slate-500">
                       <tr>
-                        <th className="px-3 py-1.5 text-left w-8"></th>
+                        {/* Tick the lot. Ticks are what Run Selected and
+                            Delete Selected act on, and ticking 29 rows by hand
+                            was the only way to act on all of them. */}
+                        <th className="px-3 py-1.5 text-left w-8">
+                          <input type="checkbox"
+                            aria-label="Select all test cases"
+                            title={rowsPicked(c.id).size === c.items.length && c.items.length > 0
+                              ? 'Clear the selection' : 'Select every test case'}
+                            checked={c.items.length > 0 && rowsPicked(c.id).size === c.items.length}
+                            ref={el => { if (el) el.indeterminate = rowsPicked(c.id).size > 0 && rowsPicked(c.id).size < c.items.length; }}
+                            onChange={() => toggleAllRows(c)} />
+                        </th>
                         <th className="px-3 py-1.5 text-left w-8"></th>
                         <th className="px-3 py-1.5 text-left">Source Suite</th>
                         <th className="px-3 py-1.5 text-left">Test Case</th>
                         <th className="px-3 py-1.5 text-left">gNB Configuration</th>
                         <th className="px-3 py-1.5 text-left">MME Configuration</th>
+                        <th className="px-3 py-1.5 text-right">Power-On Duration</th>
                         <th className="px-3 py-1.5 text-left">Status</th>
                         <th className="px-3 py-1.5 text-left">Verdict</th>
                       </tr>
@@ -806,6 +886,27 @@ export default function CampaignsPage() {
                             </td>
                             <td className="px-3 py-1.5 font-mono text-[11px] text-slate-600 truncate">{it.callboxCfg ?? '–'}</td>
                             <td className="px-3 py-1.5 font-mono text-[11px] text-slate-600 truncate">{it.mmeCfg ?? '–'}</td>
+                            {/* This row's own window. Saved when the field is
+                                left, not on every keystroke: typing "300"
+                                would otherwise save 3, then 30. */}
+                            <td className="px-3 py-1.5 text-right whitespace-nowrap">
+                              <input type="number" min={MIN_POWER_ON}
+                                value={durationDraft[it.id] ?? (it.durationSec ?? '')}
+                                placeholder="suite default"
+                                disabled={running === c.id}
+                                onChange={e => setDurationDraft({ ...durationDraft, [it.id]: e.target.value })}
+                                onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                onBlur={e => {
+                                  const raw = e.target.value.trim();
+                                  const want = raw === '' ? null : Math.max(MIN_POWER_ON, Number(raw) || MIN_POWER_ON);
+                                  setDurationDraft(d => { const n = { ...d }; delete n[it.id]; return n; });
+                                  if (want === (it.durationSec ?? null)) return;   // nothing changed
+                                  void saveDurations(c, { durations: { [it.id]: want } });
+                                }}
+                                title="Seconds this test case powers on for. Empty uses the source suite's own figure."
+                                className="w-[76px] border border-slate-300 rounded px-1.5 py-0.5 text-[11px] text-right" />
+                              <span className="ml-1 text-[10px] text-slate-400">s</span>
+                            </td>
                             <td className={`px-3 py-1.5 whitespace-nowrap ${style.cls}`} title={why}>{style.dot} {st}</td>
                             <td className={`px-3 py-1.5 whitespace-nowrap ${verdictClass(vd as any)}`}>{vd || '–'}</td>
                           </tr>
@@ -956,7 +1057,8 @@ export default function CampaignsPage() {
                   {runDuration.trim()
                     ? <>Every test case in this run is created with a {runDuration.trim()}s power-on
                       duration, and its session, call and loops are re-derived to fit.</>
-                    : <>Leave blank and each test case keeps the duration its suite saved.</>}
+                    : <>Leave blank and each test case runs for the duration shown in the
+                      campaign&rsquo;s own Power-On Duration column.</>}
                 </span>
               </label>
 
