@@ -14,6 +14,8 @@
 // counts it was decided on.
 
 import React, { useEffect, useState } from 'react';
+// The card lives outside the table's scroll box -- see FloatingCard.tsx.
+import FloatingCard, { useHoverAnchor } from './FloatingCard';
 
 interface CountCheck {
   label: string; expected: number; actual: number;
@@ -96,13 +98,6 @@ function loadReport(suiteId: string, row: string): Promise<Picked> {
   return p;
 }
 
-/** The compact "expected N, detected M" line a rule reduces to. */
-function ruleLine(r: RuleResult): string {
-  const c = r.checks?.find((x) => !x.pass) ?? r.checks?.[0];
-  if (!c) return `${r.messageName}: nothing to compare`;
-  return `${r.messageName}: expected ${CMP[c.comparison] ?? ''} ${c.expected}, detected ${c.actual}`;
-}
-
 /**
  * The Result cell: the value, a hover summary, and the full report on
  * double-click.
@@ -122,9 +117,10 @@ export function PostResultCell({ suiteId, row, text, cls, title, hasResult, onOp
   hasResult: boolean;
   onOpen: () => void;
 }) {
-  const [hover, setHover] = useState(false);
+  const { anchor, cellProps, cardProps, close } = useHoverAnchor();
   const [peek, setPeek] = useState<Picked | null>(null);
   const [failed, setFailed] = useState(false);
+  const hover = !!anchor;
 
   useEffect(() => {
     if (!hover || !hasResult || peek || failed) return;
@@ -138,18 +134,16 @@ export function PostResultCell({ suiteId, row, text, cls, title, hasResult, onOp
   const rep = peek?.found ? peek.report : undefined;
 
   return (
-    <td className={`relative px-2 py-1 whitespace-nowrap ${hasResult ? 'cursor-pointer' : 'cursor-help'} ${cls}`}
+    <td className={`px-2 py-1 whitespace-nowrap ${hasResult ? 'cursor-pointer' : 'cursor-help'} ${cls}`}
       // The native tooltip only where there is no card to show, so the two
       // never appear on top of each other.
       title={hasResult ? undefined : title}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onDoubleClick={() => { if (hasResult) onOpen(); }}>
+      {...cellProps}
+      onDoubleClick={() => { if (hasResult) { close(); onOpen(); } }}>
       {text}
-      {hover && hasResult && (
-        <div className="absolute right-0 top-full z-40 mt-1 w-[360px] cursor-default whitespace-normal
-                        rounded-lg border border-line bg-surface p-3 text-left shadow-xl"
-          onDoubleClick={(e) => { e.stopPropagation(); onOpen(); }}>
+      {hasResult && (
+        <FloatingCard anchor={anchor} width={460} {...cardProps}
+          onDoubleClick={(e) => { e.stopPropagation(); close(); onOpen(); }}>
           {!peek && !failed && <p className="text-[11px] text-slate-500">Loading the report…</p>}
           {failed && <p className="text-[11px] text-slate-500">The report could not be loaded.</p>}
           {peek && !peek.found && (
@@ -169,15 +163,45 @@ export function PostResultCell({ suiteId, row, text, cls, title, hasResult, onOp
                 {rep.passedRules}/{rep.rulesConfigured} rule{rep.rulesConfigured === 1 ? '' : 's'} passed ·{' '}
                 {rep.log.messages} OTA message{rep.log.messages === 1 ? '' : 's'} in {rep.log.records} log records
               </p>
-              <ul className="mt-2 space-y-1">
-                {rep.results.slice(0, 6).map((r, i) => (
-                  <li key={r.ruleId || i}
-                    className={`text-[11px] ${r.pass ? 'text-emerald-700' : 'text-red-700'}`}>
-                    {r.pass ? '✓' : '✗'} {ruleLine(r)}
+              {/* Rule by rule: what it was asked to verify, what the log
+                  held, and -- when they differ -- the sentence saying so.
+                  The question a red cell raises is "what did it check?", and
+                  a card that answered only "FAIL" raised it again. */}
+              <ul className="mt-2 space-y-2">
+                {rep.results.slice(0, 4).map((r, i) => (
+                  <li key={r.ruleId || i} className="rounded border border-line p-1.5">
+                    <div className="flex items-baseline gap-1.5">
+                      <span className={r.pass ? 'text-emerald-700' : 'text-red-700'}>{r.pass ? '✓' : '✗'}</span>
+                      <span className="font-mono text-[11px] text-slate-800">{r.messageName}</span>
+                      <span className={`ml-auto text-[10px] font-semibold ${r.pass ? 'text-emerald-700' : 'text-red-700'}`}>
+                        {r.pass ? 'PASS' : 'FAIL'}
+                      </span>
+                    </div>
+                    {/* What it verified, in the rule's own terms. */}
+                    <div className="text-[10px] text-slate-500">
+                      {MODE_LABEL[r.mode] ?? r.mode}
+                      {r.expectedCondition ? <> · {r.expectedCondition}</> : null}
+                    </div>
+                    <ul className="mt-1 space-y-0.5">
+                      {r.checks.map((c, n) => (
+                        <li key={n} className={`text-[11px] ${c.pass ? 'text-slate-600' : 'text-red-700'}`}>
+                          {c.label}: expected {CMP[c.comparison] ?? ''} {c.expected}, detected{' '}
+                          <span className="font-mono font-semibold">{c.actual}</span> {c.pass ? '✓' : '✗'}
+                        </li>
+                      ))}
+                      <li className="text-[11px] text-slate-500">
+                        messages of this name in the log:{' '}
+                        <span className="font-mono">{r.actualMessageCount}</span>
+                      </li>
+                    </ul>
+                    {/* Why it is wrong, in words, where it is wrong. */}
+                    {r.failure && <p className="mt-1 text-[11px] text-red-700">{r.failure}</p>}
                   </li>
                 ))}
-                {rep.results.length > 6 && (
-                  <li className="text-[11px] text-slate-500">+{rep.results.length - 6} more</li>
+                {rep.results.length > 4 && (
+                  <li className="text-[11px] text-slate-500">
+                    +{rep.results.length - 4} more — double-click for all of them
+                  </li>
                 )}
               </ul>
               {rep.problem && <p className="mt-1.5 text-[11px] text-amber-700">{rep.problem}</p>}
@@ -186,7 +210,7 @@ export function PostResultCell({ suiteId, row, text, cls, title, hasResult, onOp
               </p>
             </>
           )}
-        </div>
+        </FloatingCard>
       )}
     </td>
   );

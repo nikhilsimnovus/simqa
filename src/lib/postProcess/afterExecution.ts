@@ -183,6 +183,9 @@ export function reportLine(r: PostProcessReport): string {
   const src = `${r.log.messages} OTA message${r.log.messages === 1 ? '' : 's'} in ${r.log.records} log records`;
   const why = r.problem ? ` — ${r.problem}` : '';
   const failed = r.results.filter((x) => !x.pass).map((x) => `${x.messageName}: ${x.failure ?? 'failed'}`);
+  // Joined with "; " and never with the middle dot: the dot is what
+  // separates the run narrative's own steps, and a post-processing line
+  // carrying one inside it split into two steps that each read as nonsense.
   return `post-processing: ${r.outcome} (${of}, ${src})${why}`
-    + (failed.length ? ` · ${failed.join(' · ')}` : '');
+    + (failed.length ? `; ${failed.join('; ')}` : '');
 }

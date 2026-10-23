@@ -34,6 +34,8 @@ import { useConfirm } from '@/components/ConfirmDialog';
 import PostRules, { type PostRuleDraft } from './PostRules';
 // The Result cell, its hover summary, and the full report -- see PostReport.tsx.
 import PostReport, { PostResultCell } from './PostReport';
+// Status and Verdict, with the run's own record behind them -- see WhyCell.tsx.
+import WhyCell from './WhyCell';
 // A row is named <test case>_automation -- once, never twice. See rowName.ts.
 import { defaultRowNameFor as defaultRowName } from '@/lib/automation/rowName';
 
@@ -2654,17 +2656,44 @@ export default function AutomationSuitePage() {
                                     <td className="px-2 py-1 text-right whitespace-nowrap">
                                       {it.durationSec ?? s.defaultDurationSec ?? MIN_POWER_ON} s
                                     </td>
-                                    <td className={`px-2 py-1 whitespace-nowrap ${st.cls} ${st.title ? 'cursor-help' : ''}`} title={st.title}>{st.dot} {st.label}</td>
+                                    {/* Status and Verdict both open the same card: they are
+                                        two words from one story, and someone asking "why
+                                        Error?" is asking the same thing as "why not
+                                        Passed?". The card is the run's own record -- the
+                                        test case it created, every config it pushed and
+                                        linked, the attach check, the box's fields, and what
+                                        post-processing checked. */}
+                                    <WhyCell
+                                      className={`px-2 py-1 whitespace-nowrap ${st.cls}`}
+                                      title={st.title}
+                                      status={st.label} verdictLabel={st.verdict}
+                                      detail={lastDetail[s.id]?.[it.name]}
+                                      reason={st.title}
+                                      boxStatus={lastBox[s.id]?.[it.name]?.status}
+                                      boxResult={lastBox[s.id]?.[it.name]?.result}
+                                      verdict={lastBox[s.id]?.[it.name]?.verdict}
+                                      stopped={lastBox[s.id]?.[it.name]?.stopped}>
+                                      {st.dot} {st.label}
+                                    </WhyCell>
                                     {/* The box's own PASS/FAIL, beside its own status — the
                                         pair the Simnovator GUI shows for an execution. */}
                                     {/* The verdict opens the report too — clicking
                                         "Passed" to see why is the Simnovator's own
                                         habit, and the one people arrive with. */}
-                                    <td className={`px-2 py-1 whitespace-nowrap ${st.verdictCls ?? 'text-slate-400'}`} title={st.title}>
+                                    <WhyCell
+                                      className={`px-2 py-1 whitespace-nowrap ${st.verdictCls ?? 'text-slate-400'}`}
+                                      title={st.title}
+                                      status={st.label} verdictLabel={st.verdict}
+                                      detail={lastDetail[s.id]?.[it.name]}
+                                      reason={st.title}
+                                      boxStatus={lastBox[s.id]?.[it.name]?.status}
+                                      boxResult={lastBox[s.id]?.[it.name]?.result}
+                                      verdict={lastBox[s.id]?.[it.name]?.verdict}
+                                      stopped={lastBox[s.id]?.[it.name]?.stopped}>
                                       {st.verdict && st.verdict !== '–'
                                         ? <a href={reportHref(s, it)} onClick={e => openReport(e, s, it)} className="hover:underline">{st.verdict}</a>
                                         : (st.verdict ?? '–')}
-                                    </td>
+                                    </WhyCell>
                                     {/* Result: the verdict combined with this row's
                                         post-execution processing rules. An em dash
                                         where no rules are configured — the Verdict
