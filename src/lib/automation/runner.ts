@@ -44,6 +44,8 @@ import {
   chooseSimulator, readSimulator, simulatorsOfUser, ranOnOurSimulator,
   type BoxSimulator, type SimulatorPick, type SimulatorRefusal,
 } from './simulatorChoice';
+// admin manages the box; it does not execute. See boxRoles.ts.
+import { readBoxUsers, looksLikeAdmin, adminCannotExecute, type BoxUserRecord } from './boxRoles';
 // Post-execution processing: the row's rules against the execution's own OTA
 // log, through the same module the preview endpoint uses.
 import {
@@ -698,6 +700,24 @@ async function fetchSimulator(
  * nothing connected is refused rather than started on a simulator whose
  * manual execution fails with a connectivity error.
  */
+/**
+ * The box's own user list, or nothing.
+ *
+ * GET /v2/users is admin-only and answers 403 for an operator's token. That
+ * is not a failure: a plain login is already scoped to itself, and the only
+ * thing this adds for it would be other people's names.
+ */
+async function fetchBoxUsers(host: string, token: string): Promise<BoxUserRecord[]> {
+  try {
+    const r = await fetch(`http://${host}/v2/users`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!r.ok) return [];
+    return readBoxUsers(await r.json());
+  } catch { return []; }
+}
+
 async function resolveSimulator(
   host: string, token: string, runAs?: string,
 ): Promise<SimulatorPick | SimulatorRefusal> {
@@ -1236,6 +1256,17 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
   // Resolved ONCE for the run: every row executes on the same simulator, and
   // a run that has none to use must say so on every row rather than failing
   // each one with a different-looking error.
+  // Who this login IS on the box. Read where it can be (GET /v2/users is
+  // admin-only); a plain login cannot ask, and does not need to.
+  const boxUsers: BoxUserRecord[] = token ? await fetchBoxUsers(ueOpts.host, token) : [];
+  // admin is the Simnovator's administrator, not an operator: it creates
+  // users and simulators and the box does not execute test cases as it. A run
+  // that starts as admin can only end as a failure nobody can read, so it is
+  // refused here, before a testcase is created or a callbox is touched.
+  const adminRun = token && looksLikeAdmin(ueOpts.username, boxUsers)
+    ? adminCannotExecute(ueOpts.username, boxUsers)
+    : undefined;
+
   const simPick = token ? await resolveSimulator(ueOpts.host, token, ueOpts.username) : undefined;
   const sim = simPick?.ok ? simPick.sim : undefined;
   const simulatorId = sim?.id;
@@ -1260,6 +1291,19 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     // both are reasons a row cannot start and both must leave the box
     // untouched: no testcase created, no callbox re-linked, no execution
     // triggered at a machine that is not connected.
+    if (adminRun) {
+      const step = {
+        testcaseId: item.name, status: 0, ok: false,
+        detail: `cannot run this row: ${adminRun}`,
+        durationMs: Date.now() - t0,
+      };
+      steps.push(step);
+      failed += 1; done += 1;
+      opts.onStep?.(step);
+      if (suite.stopOnFail) break;
+      continue;
+    }
+
     if (simPick && !simPick.ok) {
       const step = {
         testcaseId: item.name, status: 0, ok: false,

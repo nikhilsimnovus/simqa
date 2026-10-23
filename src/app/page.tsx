@@ -14,6 +14,8 @@ import { Wifi, WifiOff, Play, History, ArrowUpRight } from 'lucide-react';
 import * as net from 'node:net';
 import Link from 'next/link';
 import { RecentRunsTable } from './RecentRunsTable';
+// What only an admin login can see about a box -- see BoxAdminCard.tsx.
+import BoxAdminCard from './BoxAdminCard';
 import { collectBoxActivity, type BoxExecution, type BoxUserState } from '@/lib/boxActivity';
 import { formatDuration, windowOf, endFromDuration } from '@/lib/timeFormat';
 
@@ -478,6 +480,12 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
         {primary && boxUsers.length > 0 ? (
           <BoxUsersCard host={primary.host} users={boxUsers} systemId={primary.id} selectedUser={selectedUser} range={selectedRange} />
         ) : null}
+
+        {/* The administrator's own view of the box: how it is installed, who
+            is registered on it, which simulators they hold, and which logins
+            may execute at all. Collapsed by default -- it is four calls to
+            the box, and the dashboard's job is the runs. */}
+        {primary ? <BoxAdminCard systemId={primary.id} host={primary.host} /> : null}
 
         {/* The bottom row takes whatever is left and never more. Recent Runs
             grows into it, because a longer list of runs is worth reading;
