@@ -7,6 +7,8 @@ import { listSimulators, getTestcase } from '@/lib/uesimClient';
 import { listRuns } from '@/lib/runStore';
 import { AutoRefresh } from '@/components/AutoRefresh';
 import { ensureStationMonitor } from '@/lib/stationMonitor';
+// Why a box did not answer, in words -- see probeError.ts.
+import { describeProbeError, probeErrorLine, type ProbeFailure } from '@/lib/probeError';
 import { ensureFidelityWatcher } from '@/lib/liveFidelity/watcher';
 import { Wifi, WifiOff, Play, History, ArrowUpRight } from 'lucide-react';
 import * as net from 'node:net';
@@ -19,6 +21,19 @@ export const dynamic = 'force-dynamic';
 
 async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   try { return await fn(); } catch { return fallback; }
+}
+
+/**
+ * Like safe(), but keeps WHY it failed.
+ *
+ * The plain version threw the error away, so a box that was up with its web
+ * service stopped, a box that was off, and a box refusing SimQA's login all
+ * produced the same empty fallback and the same one word on the tile.
+ */
+async function safely<T extends object>(
+  fn: () => Promise<T>, fallback: T, host: string,
+): Promise<T & { problem?: ProbeFailure }> {
+  try { return await fn(); } catch (e) { return { ...fallback, problem: describeProbeError(e, { host }) }; }
 }
 
 // The dashboard is force-dynamic, so every click re-probed both boxes and
@@ -77,6 +92,8 @@ interface BoxStatus {
   online: boolean;
   busy: boolean;
   simulators: number;
+  /** Why it did not answer. Absent when it did. */
+  problem?: ProbeFailure;
 }
 
 type StationState = 'available' | 'running' | 'unavailable';
@@ -176,11 +193,12 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
       // Every tile therefore gets its true state from ONE request — no
       // per-box testcase count call, which is why that line is gone.
       const sims = await cached(`sims:${s.host}`, () =>
-        safe(() => listSimulators(opts).then((r) => ({ ok: true, items: r.items ?? [] })),
-          { ok: false, items: [] as any[] }));
+        safely(() => listSimulators(opts).then((r) => ({ ok: true, items: r.items ?? [] })),
+          { ok: false, items: [] as any[] }, s.host));
       const box: BoxStatus = {
         id: s.id, name: s.name, host: s.host,
         online: sims.ok,
+        problem: sims.problem,
         busy: sims.items.some((x: any) => String(x?.availability ?? '').toUpperCase() === 'BUSY'),
         simulators: sims.items.length,
       };
@@ -415,11 +433,24 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                         {/* Same three words + colours used everywhere else a
                             station's state shows up, so one colour never
                             means two different things across the app. */}
-                        <Badge tone={state.tone} title={state.title} className="shrink-0 gap-1">
+                        <Badge tone={state.tone}
+                          title={b.problem ? probeErrorLine(b.problem) : state.title}
+                          className="shrink-0 gap-1">
                           {b.online ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
                           {state.label}
                         </Badge>
                       </div>
+                      {/* Why, on the tile rather than only in a tooltip: a
+                          wall-mounted dashboard is read from across the room,
+                          and "unavailable" alone sends somebody to the lab to
+                          find out what SimQA already knows. */}
+                      {b.problem && (
+                        <p className="mt-1.5 text-[11px] leading-snug text-rose-700">
+                          {b.problem.text}
+                          {b.problem.code ? <span className="text-rose-400"> ({b.problem.code})</span> : null}
+                          {b.problem.hint ? <span className="block text-slate-500">{b.problem.hint}</span> : null}
+                        </p>
+                      )}
                     </CardBody>
                   </Card>
                 </Link>

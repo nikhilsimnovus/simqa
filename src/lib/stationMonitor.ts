@@ -30,6 +30,8 @@ import * as net from 'node:net';
 import { loadInventory, uesimApiCredentials, type Inventory, type InventorySystem } from './inventory';
 import { listSimulators } from './uesimClient';
 import { recordObservations, type Observation, type StationState } from './stationHistory';
+// The reason a probe failed, kept rather than swallowed -- see probeError.ts.
+import { describeProbeError, type ProbeFailure } from './probeError.ts';
 
 /** Seconds between polls. 60s keeps the boxes' load negligible while still
  *  catching a short testcase. Override with SIMQA_STATION_POLL_SEC. */
@@ -148,6 +150,36 @@ function roleOf(inv: Inventory, sys: InventorySystem): { role: string; stationHo
  * Probe every system once and fold the result into history.
  * Returns the observations so a caller (or a test) can inspect them.
  */
+/**
+ * Why each system last failed to answer, by system id.
+ *
+ * Held here rather than in the history store: history is a timeline of
+ * states, and a reason belongs to the latest reading of one box. Cleared the
+ * moment it answers, so nothing can show a stale excuse under a green badge.
+ */
+function problems(): Map<string, { host: string; at: number; problem: ProbeFailure }> {
+  const g = globalThis as any;
+  if (!g.__simqaStationProblems__) g.__simqaStationProblems__ = new Map();
+  return g.__simqaStationProblems__;
+}
+
+function noteProblem(systemId: string, host: string, problem: ProbeFailure): void {
+  problems().set(systemId, { host, at: Date.now(), problem });
+}
+
+function clearProblem(systemId: string): void {
+  problems().delete(systemId);
+}
+
+/** What the UI shows beside "unavailable". */
+export function stationProblems(): Record<string, { host: string; at: number; text: string; code?: string; hint?: string }> {
+  const out: Record<string, { host: string; at: number; text: string; code?: string; hint?: string }> = {};
+  for (const [id, v] of problems()) {
+    out[id] = { host: v.host, at: v.at, text: v.problem.text, code: v.problem.code, hint: v.problem.hint };
+  }
+  return out;
+}
+
 export async function pollOnce(): Promise<Observation[]> {
   const inv = loadInventory();
   const at = Date.now();
@@ -167,11 +199,18 @@ export async function pollOnce(): Promise<Observation[]> {
       .then((r) => ({
         up: true,
         busy: (r.items ?? []).some((x: any) => String(x?.availability ?? '').toUpperCase() === 'BUSY'),
+        problem: undefined as ProbeFailure | undefined,
       }))
-      .catch(() => ({ up: false, busy: false }));
+      // The reason is KEPT. It used to be dropped here, which is why every
+      // way of being unreachable looked the same everywhere downstream.
+      .catch((e) => ({
+        up: false, busy: false,
+        problem: describeProbeError(e, { host: s.host, timeoutMs: API_TIMEOUT_MS }),
+      }));
 
     const r = await twice(probe, (v) => !v.up);
     busyByHost.set(s.host, r.busy);
+    if (r.problem) noteProblem(s.id, s.host, r.problem); else clearProblem(s.id);
     const state: StationState = !r.up ? 'offline' : r.busy ? 'in_use' : 'available';
     obs.push({
       systemId: s.id, host: s.host, name: s.name,
