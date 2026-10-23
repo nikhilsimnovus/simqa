@@ -24,7 +24,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { checkPassword } from './passwordPolicy';
+import { checkPassword } from './passwordPolicy.ts';
 
 interface StoredHash { salt: string; hash: string; at?: string }
 
