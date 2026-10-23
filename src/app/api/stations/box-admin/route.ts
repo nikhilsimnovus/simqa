@@ -26,6 +26,7 @@ import {
   readBoxUsers, readHosts, installModeOf, installLine, executingLogins,
 } from '@/lib/automation/boxRoles';
 import { readSimulator } from '@/lib/automation/simulatorChoice';
+import { attributeCatalogue, catalogueCounts } from '@/lib/automation/boxCatalogue';
 
 export const dynamic = 'force-dynamic';
 
@@ -73,7 +74,25 @@ export async function GET(req: Request) {
       asJson(opts.host, token, '/v2/version'),
     ]);
 
+    // Every test case on the box.
+    //
+    // Measured on 4.1.0: the catalogue is NOT scoped per login -- admin and a
+    // plain user are served the same rows (35 each on .102, 274 each on .95).
+    // So this is "all the users' test cases" in the only sense the box has
+    // one, and who each belongs to comes from the simulator its last
+    // execution ran on. Paged by PAGE INDEX, which is what this API's offset
+    // means.
+    const rows: any[] = [];
+    for (let page = 0; page < 20; page++) {
+      const d = await asJson(opts.host, token, `/v2/testcases?limit=500&offset=${page}`);
+      const batch: any[] = d?.items ?? d?.data ?? [];
+      if (batch.length === 0) break;
+      rows.push(...batch);
+      if (batch.length < 500) break;
+    }
+
     const users = readBoxUsers(usersJ);
+    const catalogue = attributeCatalogue(rows, users);
     const hosts = readHosts(hostsJ);
     const simulators = (simsJ?.items ?? simsJ?.data ?? []).map(readSimulator).filter(Boolean);
     const ownerOf = new Map<string, string[]>();
@@ -93,6 +112,10 @@ export async function GET(req: Request) {
       hosts,
       users,
       executing: executingLogins(users),
+      // The whole catalogue, with an owner where the box allows one to be
+      // worked out. Trimmed to what the block shows.
+      testcases: catalogue,
+      catalogue: catalogueCounts(catalogue),
       simulators: simulators.map((s: any) => ({
         ...s,
         assignedTo: ownerOf.get(s.id) ?? [],

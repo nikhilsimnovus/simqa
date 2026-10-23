@@ -35,12 +35,31 @@ interface AdminView {
     cards: number[]; assignedTo: string[]; cardHolders: number[];
   }>;
   hosts?: Array<{ name: string; rfAllocation?: string; nodes: Array<{ host: string; mode?: string; agentConnected?: boolean; os?: string }> }>;
+  testcases?: CatalogueEntry[];
+  catalogue?: {
+    total: number; neverRun: number; unowned: number;
+    byUser: Array<{ username: string; count: number }>;
+  };
+}
+
+interface CatalogueEntry {
+  id: string;
+  name: string;
+  simulatorName?: string;
+  result?: string;
+  status?: string;
+  executedOn?: string;
+  durationSeconds?: number;
+  owners: string[];
 }
 
 export default function BoxAdminCard({ systemId, host }: { systemId: string; host: string }) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<AdminView | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Whose test cases to show. '' is everybody's, which is admin's own view. */
+  const [who, setWho] = useState('');
+  const [find, setFind] = useState('');
 
   const load = async () => {
     setBusy(true);
@@ -180,6 +199,87 @@ export default function BoxAdminCard({ systemId, host }: { systemId: string; hos
                   </tbody>
                 </table>
               </div>
+              {/* Every test case on the box.
+
+                  Measured on 4.1.0: the catalogue is not scoped per login --
+                  admin and a plain user are served the same rows. So this IS
+                  everyone's, and the owner column is worked out from the
+                  simulator each test case last ran on, which is the only
+                  ownership the box records. */}
+              {data.testcases && (
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      Test cases on this box
+                    </p>
+                    <span className="text-[10px] text-slate-500">
+                      {data.catalogue?.total ?? data.testcases.length} in all
+                      {data.catalogue?.neverRun ? ' · ' + data.catalogue.neverRun + ' never run' : ''}
+                      {data.catalogue?.unowned ? ' · ' + data.catalogue.unowned + ' on a simulator nobody holds' : ''}
+                    </span>
+                    <input
+                      value={find}
+                      onChange={(e) => setFind(e.target.value)}
+                      placeholder="find a test case"
+                      className="ml-auto w-[180px] border border-slate-300 rounded px-2 py-0.5 text-[11px]" />
+                  </div>
+
+                  {/* Click a login to see only what ran on its simulator. */}
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    <button onClick={() => setWho('')}
+                      className={`rounded-full border px-2 py-0.5 text-[10px] ${who === '' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}>
+                      everyone ({data.catalogue?.total ?? data.testcases.length})
+                    </button>
+                    {(data.catalogue?.byUser ?? []).map((u) => (
+                      <button key={u.username} onClick={() => setWho(who === u.username ? '' : u.username)}
+                        className={`rounded-full border px-2 py-0.5 text-[10px] ${who === u.username ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}>
+                        {u.username} ({u.count})
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="mt-1 max-h-[34vh] overflow-auto">
+                    <table className="w-full text-[11px]">
+                      <thead className="sticky top-0 bg-surface text-slate-500">
+                        <tr>
+                          <th className="text-left font-medium py-0.5">Test case</th>
+                          <th className="text-left font-medium py-0.5">Belongs to</th>
+                          <th className="text-left font-medium py-0.5">Last run on</th>
+                          <th className="text-left font-medium py-0.5">Result</th>
+                          <th className="text-right font-medium py-0.5">When</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {data.testcases
+                          .filter((t) => (who ? t.owners.includes(who) : true))
+                          .filter((t) => (find.trim() ? t.name.toLowerCase().includes(find.trim().toLowerCase()) : true))
+                          .map((t) => (
+                            <tr key={t.id}>
+                              <td className="py-0.5 pr-2 font-medium text-slate-800">{t.name}</td>
+                              <td className="py-0.5 pr-2 text-slate-600">
+                                {t.owners.length ? t.owners.join(', ')
+                                  : t.simulatorName ? <span className="text-amber-700">nobody holds {t.simulatorName}</span>
+                                  : <span className="text-slate-400">never run</span>}
+                              </td>
+                              <td className="py-0.5 pr-2 font-mono text-slate-600">{t.simulatorName ?? '—'}</td>
+                              <td className={`py-0.5 pr-2 ${t.result === 'PASS' ? 'text-emerald-700' : t.result ? 'text-rose-700' : 'text-slate-400'}`}>
+                                {t.result ?? '—'}{t.status && t.status !== t.result ? ` · ${t.status}` : ''}
+                              </td>
+                              <td className="py-0.5 text-right tabular-nums text-slate-500">
+                                {t.executedOn ? new Date(t.executedOn).toLocaleString() : '—'}
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    This build serves one catalogue to every login, so these are all of them.
+                    Who a test case belongs to is worked out from the simulator its last
+                    execution ran on &mdash; the box records the simulator, never a username.
+                  </p>
+                </div>
+              )}
             </>
           )}
         </CardBody>
