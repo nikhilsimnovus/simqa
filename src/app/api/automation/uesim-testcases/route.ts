@@ -19,6 +19,13 @@ import { loadInventory, uesimApiOptsForSystem } from '@/lib/inventory';
 
 export const dynamic = 'force-dynamic';
 
+/** When a row says its test case last ran. 0 when it has never run. */
+function executedAt(t: any): number {
+  const at = t?.metadata?.lastExecution?.executedOn ?? t?.metadata?.lastExecutedOn;
+  const ms = at ? Date.parse(String(at)) : NaN;
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const systemId = url.searchParams.get('systemId');
@@ -53,7 +60,7 @@ export async function GET(req: Request) {
     // unique on .95), which surfaced as a React duplicate-key error in the
     // suite picker. Deduping here fixes it for every consumer rather than in
     // one component, and means `total` is a count of real testcases.
-    const seen = new Set<string>();
+    const seen = new Map<string, number>();
     const items: any[] = [];
     let serverTotal = 0;
     let rowsRead = 0;
@@ -72,9 +79,18 @@ export async function GET(req: Request) {
       rowsRead += batch.length;
       for (const t of batch) {
         const id = String(t?.id ?? '');
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        items.push(t);
+        if (!id) continue;
+        const at = seen.get(id);
+        if (at === undefined) { seen.set(id, items.length); items.push(t); continue; }
+        // The same test case comes back once per SIMULATOR it has run on.
+        // Measured on 192.168.1.102: 90 rows, 62 test cases, and
+        // 5G_1cell_UDP_64UEs_automation appears twice -- once showing its run
+        // on UE-Simulator (23 Oct, 113s) and once on Simulator_test (19 Oct,
+        // 213s). Keeping whichever arrived first showed a four-day-old run
+        // from another simulator as this test case's last result, which is
+        // also what the box's own single-testcase read does NOT do: it
+        // returns the newest. Keep the newest here too.
+        if (executedAt(t) > executedAt(items[at])) items[at] = t;
       }
       // serverTotal counts the box's duplicates, so compare against rows READ,
       // not rows kept — otherwise a duplicate-heavy catalogue never terminates.

@@ -38,6 +38,12 @@ import { preflightRows } from './preflightConfigs';
 import { definitionFromText } from './importPack';
 // The name a config is deployed under on the callbox -- pure, tested on its own.
 import { automationName, isAutomationName } from './callboxNames';
+// Which simulator may run this, and why not -- pure, tested against the real
+// state of 192.168.1.102. See simulatorChoice.ts.
+import {
+  chooseSimulator, readSimulator, simulatorsOfUser, ranOnOurSimulator,
+  type BoxSimulator, type SimulatorPick, type SimulatorRefusal,
+} from './simulatorChoice';
 // Post-execution processing: the row's rules against the execution's own OTA
 // log, through the same module the preview endpoint uses.
 import {
@@ -301,6 +307,11 @@ interface ExecutionState {
   result?: string;
   executionId?: string;
   durationSeconds?: number;
+  /** Which simulator the box says ran it. Carried so a verdict can be
+   *  checked against the simulator SimQA asked for -- a result from another
+   *  machine is a result about another machine. */
+  simulatorId?: string | number;
+  simulatorName?: string;
 }
 
 /**
@@ -340,6 +351,7 @@ async function fetchLastExecution(host: string, token: string, tcId: string): Pr
     return {
       status: le.status, result: le.result,
       executionId: le.executionId, durationSeconds: le.durationSeconds,
+      simulatorId: le.simulatorId, simulatorName: le.simulatorName,
     };
   } catch { return null; }
 }
@@ -654,8 +666,8 @@ const TRIGGER_ANSWER_TIMEOUT_MS = 90_000;
  *  /v2/testcases/{id}/executions now rejects with 500 "No default
  *  simulator found" when no ?simulatorId=… is passed (regression
  *  introduced ~4.0.0_260605); pin every trigger to the first sim. */
-async function fetchFirstSimulatorId(host: string, token: string): Promise<string | undefined> {
-  return (await fetchSimulator(host, token))?.id;
+async function fetchFirstSimulatorId(host: string, token: string, runAs?: string): Promise<string | undefined> {
+  return (await fetchSimulator(host, token, runAs))?.id;
 }
 
 /** The simulator a trigger will name, with the radio cards it owns.
@@ -664,37 +676,61 @@ async function fetchFirstSimulatorId(host: string, token: string): Promise<strin
  *  start one whose cells name a card this simulator does not own, and it
  *  refuses to save one that puts two cells on the same card. See rfCards.ts. */
 async function fetchSimulator(
-  host: string, token: string,
+  host: string, token: string, runAs?: string,
 ): Promise<{ id: string; name?: string; cards: number[] } | undefined> {
+  const r = await resolveSimulator(host, token, runAs);
+  return r.ok ? { id: r.sim.id, name: r.sim.name, cards: r.sim.cards } : undefined;
+}
+
+/**
+ * Which simulator this run may execute on — with the reason when it may not.
+ *
+ * Two readings of the box, in the order that matters:
+ *
+ *   /v2/simulators  as the login the run executes as. A plain login is shown
+ *                   only its own, so this IS the ownership list for it.
+ *   /v2/users       admin only. An admin token is shown everybody's
+ *                   simulators, and this says which belong to the run-as
+ *                   login — the Users section an operator checks by hand.
+ *
+ * The rule the pick follows lives in simulatorChoice.ts, with the measured
+ * state of 192.168.1.102 in its tests: CONNECTED first, and a run with
+ * nothing connected is refused rather than started on a simulator whose
+ * manual execution fails with a connectivity error.
+ */
+async function resolveSimulator(
+  host: string, token: string, runAs?: string,
+): Promise<SimulatorPick | SimulatorRefusal> {
+  let raw: any[];
   try {
     const r = await fetch(`http://${host}/v2/simulators`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(5_000),
     });
-    if (!r.ok) return undefined;
+    if (!r.ok) return { ok: false, reason: `the Simnovator answered ${r.status} for its simulator list` };
     const j: any = await r.json();
-    const sims: any[] = j?.items ?? j?.data ?? [];
-    const read = (s: any) => ({
-      id: String(s.id),
-      name: s.name ? String(s.name) : undefined,
-      cards: (s?.nodes?.rfCards ?? [])
-        .map((c: unknown) => Number(c))
-        .filter((c: number) => Number.isFinite(c)) as number[],
-      free: String(s.availability ?? '').toUpperCase() !== 'BUSY',
-    });
-    // Most logins can use exactly one simulator and the choice is moot. An
-    // admin token sees several, and taking whichever came back first meant
-    // taking one that may be busy, or one with fewer radio cards than the
-    // suite's cells need — so prefer free, then the most cards. (A box with
-    // six cards splits them across its simulators; a 3-cell test case needs
-    // one simulator owning three.)
-    const best = sims
-      .filter((s) => s?.id)
-      .map(read)
-      .sort((a, b) => Number(b.free) - Number(a.free) || b.cards.length - a.cards.length)[0];
-    if (!best) return undefined;
-    return { id: best.id, name: best.name, cards: best.cards };
-  } catch { return undefined; }
+    raw = j?.items ?? j?.data ?? [];
+  } catch (e: any) {
+    return { ok: false, reason: `the Simnovator's simulator list could not be read: ${e?.message ?? e}` };
+  }
+
+  const sims = raw.map(readSimulator).filter((x): x is BoxSimulator => !!x);
+
+  // Ownership, only where the box will tell us. /v2/users is admin-only and
+  // answers 403 for a plain login — which is not a failure: that login was
+  // already shown nothing but its own.
+  let owned: Array<{ id: string; name?: string }> | undefined;
+  if (runAs) {
+    try {
+      const u = await fetch(`http://${host}/v2/users`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (u.ok) owned = simulatorsOfUser(await u.json(), runAs);
+    } catch { /* not available — the scoped list above still holds */ }
+  }
+
+  return chooseSimulator(sims, { runAs, owned });
 }
 
 /**
@@ -736,7 +772,7 @@ async function runUesimOnly(suite: AutomationSuite, opts: RunOpts): Promise<Suit
   if (!ueOpts) throw new Error(`suite uesimSystemId "${suite.uesimSystemId}" not testable`);
   const token = await login(ueOpts.host, ueOpts.username, ueOpts.password);
   const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  const simulatorId = await fetchFirstSimulatorId(ueOpts.host, token);
+  const simulatorId = await fetchFirstSimulatorId(ueOpts.host, token, ueOpts.username);
   const triggerBody = JSON.stringify(simulatorId ? { simulatorId } : {});
   const steps: SuiteRunStep[] = [];
   let passed = 0, failed = 0;
@@ -993,7 +1029,7 @@ async function runCallbox(suite: AutomationSuite, opts: RunOpts): Promise<SuiteR
   }
   if (token) {
     const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-    const simulatorId = await fetchFirstSimulatorId(ueOpts.host, token);
+    const simulatorId = await fetchFirstSimulatorId(ueOpts.host, token, ueOpts.username);
     const simQ = simulatorId ? `?simulatorId=${encodeURIComponent(simulatorId)}` : '';
     // total may have been bumped by the callbox bring-up steps — use it
     // for progress reporting in both branches.
@@ -1197,7 +1233,11 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
 
   const token = await login(ueOpts.host, ueOpts.username, ueOpts.password).catch(() => '');
   const H = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  const sim = token ? await fetchSimulator(ueOpts.host, token) : undefined;
+  // Resolved ONCE for the run: every row executes on the same simulator, and
+  // a run that has none to use must say so on every row rather than failing
+  // each one with a different-looking error.
+  const simPick = token ? await resolveSimulator(ueOpts.host, token, ueOpts.username) : undefined;
+  const sim = simPick?.ok ? simPick.sim : undefined;
   const simulatorId = sim?.id;
   const simQ = simulatorId ? `?simulatorId=${encodeURIComponent(simulatorId)}` : '';
   const defaultDur = suite.defaultDurationSec ?? 10;
@@ -1216,6 +1256,23 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     // Refused before anything is touched, naming the row and the files. The
     // box is left exactly as it was: no half-prepared callbox, no testcase
     // created for a row that could never have run.
+    // No simulator, no run. Checked here, beside the config check, because
+    // both are reasons a row cannot start and both must leave the box
+    // untouched: no testcase created, no callbox re-linked, no execution
+    // triggered at a machine that is not connected.
+    if (simPick && !simPick.ok) {
+      const step = {
+        testcaseId: item.name, status: 0, ok: false,
+        detail: `cannot run this row: ${simPick.reason}`,
+        durationMs: Date.now() - t0,
+      };
+      steps.push(step);
+      failed += 1; done += 1;
+      opts.onStep?.(step);
+      if (suite.stopOnFail) break;
+      continue;
+    }
+
     const blocked = blockedRows.get(item.name);
     if (blocked) {
       const step = {
@@ -1236,6 +1293,12 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
     // a running order, the suite is where the files were captured — while a
     // suite's own rows read their own. Needed from phase 0 (rebuilding a
     // deleted testcase from test.json) through to the cleanup message.
+    // Which simulator this row executes on, in the row's own record. The box
+    // lists a test case once per simulator it has run on, so "it ran twice"
+    // is usually two rows of one listing -- and the only way to tell them
+    // apart afterwards is to have written down which one SimQA used.
+    if (simPick?.ok) stepDetails.push(simPick.note);
+
     const cfgFrom = item.configSuite ?? suite.name;
     /** enb.cfg's target before this row re-pointed it — reported only, so the
      *  run log records what the callbox was bound to beforehand. */
@@ -2215,6 +2278,13 @@ async function runItems(suite: AutomationSuite, items: SuiteItem[], opts: RunOpt
       // Several attempts, because the execution reaches a terminal state
       // before the box has finished writing its log, so the first read can
       // come back short. A short log never passes a rule — see rules.ts.
+      // Did it run where we asked? A verdict from another simulator is a
+      // verdict about another machine.
+      if (finalState) {
+        const where = ranOnOurSimulator(finalState, simulatorId);
+        if (!where.ours && where.note) stepDetails.push(`simulator: ${where.note}`);
+      }
+
       const postEid = finalState?.executionId ?? execId;
       const rules = asRules(item.postRules);
       let post: PostProcessReport = notConfigured(verdict);
